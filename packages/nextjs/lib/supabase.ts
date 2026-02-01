@@ -13,7 +13,7 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 export interface RobotMetadata {
   robot_type: string;
   chassis_description: string;
-  primary_weapon: string;
+  fists_description: string;  // BARE KNUCKLE fighting - no weapons!
   fighting_style: "aggressive" | "defensive" | "balanced" | "tactical" | "berserker";
   personality: string | null;
   signature_move: string;

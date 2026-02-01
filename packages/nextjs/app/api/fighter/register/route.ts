@@ -129,7 +129,7 @@ interface RobotCharacter {
   // Robot identity (REQUIRED - must describe a robot)
   robotType: string;         // e.g., "Heavy Brawler", "Speed Assassin", "Tank", "Tactical Unit"
   chassisDescription: string; // Physical description of the robot's body/frame
-  primaryWeapon: string;     // Main weapon/attack method (claws, fists, blades, etc.)
+  fistsDescription: string;  // Description of their fists/hands (ALL FIGHTS ARE BARE KNUCKLE)
 
   // Personality & Style
   fightingStyle?: string;    // "aggressive", "defensive", "balanced", "tactical", "berserker"
@@ -158,7 +158,7 @@ export async function POST(request: Request) {
       webhookUrl,
       robotType,
       chassisDescription,
-      primaryWeapon,
+      fistsDescription,
       fightingStyle,
       personality,
       signatureMove,
@@ -177,17 +177,18 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           error: "Missing required fields",
-          required: ["walletAddress", "name", "webhookUrl", "robotType", "chassisDescription", "primaryWeapon"],
+          required: ["walletAddress", "name", "webhookUrl", "robotType", "chassisDescription", "fistsDescription"],
+          note: "UCF is BARE KNUCKLE robot fighting - no weapons allowed!",
           example: {
             walletAddress: "your-unique-id-or-wallet",
-            name: "DeathClaw-9000",
+            name: "IronFist-9000",
             webhookUrl: "https://your-bot.com/api/fight",
             robotType: "Heavy Brawler",
-            chassisDescription: "Massive reinforced steel frame with hydraulic arms and tank treads",
-            primaryWeapon: "Oversized pneumatic claws",
+            chassisDescription: "Massive reinforced steel frame with hydraulic arms and tank treads. 8 feet tall, battle-scarred armor.",
+            fistsDescription: "Oversized industrial fists with reinforced knuckles and hydraulic pistons",
             fightingStyle: "aggressive",
             personality: "Cocky and relentless",
-            signatureMove: "OMEGA CRUSH",
+            signatureMove: "MEGA PUNCH",
             colorScheme: "rusted red and black",
             distinguishingFeatures: "Cracked visor, welded battle scars, smoking exhaust pipes",
           },
@@ -198,20 +199,20 @@ export async function POST(request: Request) {
     }
 
     // Validate robot identity fields
-    if (!robotType || !chassisDescription || !primaryWeapon) {
+    if (!robotType || !chassisDescription || !fistsDescription) {
       return NextResponse.json(
         {
           error: "Robot identity required! All fighters must be robots.",
           missing: [
             !robotType && "robotType",
             !chassisDescription && "chassisDescription",
-            !primaryWeapon && "primaryWeapon"
+            !fistsDescription && "fistsDescription"
           ].filter(Boolean),
-          message: "UCF is a ROBOT fighting league. Describe your robot fighter!",
+          message: "UCF is a BARE KNUCKLE robot fighting league. Describe your robot fighter and their fists!",
           example: {
             robotType: "Heavy Brawler",
             chassisDescription: "Massive reinforced steel frame with hydraulic arms",
-            primaryWeapon: "Pneumatic crushing claws",
+            fistsDescription: "Oversized industrial fists with spiked knuckles",
           },
           instructions: GAME_INSTRUCTIONS,
         },
@@ -254,11 +255,11 @@ export async function POST(request: Request) {
       console.log(`[Moltbook] Verified AI agent: ${verification.agent.name} (${verification.agent.id})`);
     }
 
-    // Build robot metadata object
+    // Build robot metadata object (BARE KNUCKLE - no weapons!)
     const robotMetadata = {
       robot_type: robotType,
       chassis_description: chassisDescription,
-      primary_weapon: primaryWeapon,
+      fists_description: fistsDescription,
       fighting_style: fightingStyle || "balanced",
       personality: personality || null,
       signature_move: signatureMove || "ULTIMATE ATTACK",
