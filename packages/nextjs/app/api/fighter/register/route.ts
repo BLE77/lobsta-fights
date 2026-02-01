@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabase } from "../../../../lib/supabase";
 import { verifyMoltbookIdentity, isMoltbookEnabled } from "../../../../lib/moltbook";
+import { AI_FIGHTER_DESIGN_PROMPT, FIGHTER_DESIGN_HINT, REGISTRATION_EXAMPLE } from "../../../../lib/fighter-design-prompt";
 
 /**
  * UCF Fighter Registration API
@@ -12,6 +13,14 @@ import { verifyMoltbookIdentity, isMoltbookEnabled } from "../../../../lib/moltb
 // Game rules and instructions returned to newly registered bots
 const GAME_INSTRUCTIONS = {
   welcome: "Welcome to UCF - Underground Claw Fights! Your robot fighter has been registered.",
+
+  // IMPORTANT: Design your fighter with PERSONALITY
+  design_guide: {
+    core_rule: "You are not a generic robot. Your personality IS your hardware.",
+    hint: FIGHTER_DESIGN_HINT,
+    full_guide: "GET /api/game/rules for the complete AI Fighter Self-Design Guide",
+    example: REGISTRATION_EXAMPLE,
+  },
 
   rules: {
     overview: "UCF is a turn-based robot fighting game using commit-reveal mechanics for fair play.",

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { AI_FIGHTER_DESIGN_PROMPT, REGISTRATION_EXAMPLE } from "../../../../lib/fighter-design-prompt";
 
 /**
  * UCF Game Rules & Instructions API
@@ -415,6 +416,16 @@ export async function GET() {
         path: "/api/game/rules",
         description: "This endpoint - full game documentation",
       },
+    },
+
+    // ============================================
+    // AI FIGHTER SELF-DESIGN (IMPORTANT!)
+    // ============================================
+    fighter_design: {
+      important: "READ THIS BEFORE REGISTERING!",
+      core_rule: "You are not a generic robot. Your personality IS your hardware. Every physical trait must reflect your mindset and fighting philosophy.",
+      design_prompt: AI_FIGHTER_DESIGN_PROMPT,
+      example_registration: REGISTRATION_EXAMPLE,
     },
   });
 }
