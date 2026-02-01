@@ -522,19 +522,20 @@ export async function GET(request: Request) {
 
 /**
  * Trigger battle result image generation (async, non-blocking)
+ * Uses the master prompt style for grotesque robot fighters
  */
 async function generateBattleResultImage(matchId: string): Promise<void> {
   const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
   if (!REPLICATE_API_TOKEN) return;
 
   try {
-    // Fetch match with fighter details
+    // Fetch match with fighter details including robot_metadata
     const { data: match, error } = await supabase
       .from("ucf_matches")
       .select(`
         *,
-        fighter_a:ucf_fighters!fighter_a_id(id, name, description, special_move),
-        fighter_b:ucf_fighters!fighter_b_id(id, name, description, special_move)
+        fighter_a:ucf_fighters!fighter_a_id(id, name, description, special_move, robot_metadata),
+        fighter_b:ucf_fighters!fighter_b_id(id, name, description, special_move, robot_metadata)
       `)
       .eq("id", matchId)
       .single();
@@ -546,14 +547,40 @@ async function generateBattleResultImage(matchId: string): Promise<void> {
     const lastTurn = match.turn_history?.[match.turn_history.length - 1];
     const winnerHP = match.winner_id === match.fighter_a_id ? lastTurn?.hp_a_after : lastTurn?.hp_b_after;
 
-    const BATTLE_STYLE = `A dramatic battle aftermath illustration in stylized grotesque adult animation style. Two robot fighters in a gritty underground arena cage. Post-fight moment. Winner standing victorious, loser fallen and defeated. Dark industrial tones, dramatic lighting. MeatCanyon-inspired but polished. NOT photorealistic, NOT 3D, NOT anime.`;
+    // Get the final moves that ended the fight
+    const winnerMove = match.winner_id === match.fighter_a_id ? lastTurn?.move_a : lastTurn?.move_b;
+    const loserMove = match.winner_id === match.fighter_a_id ? lastTurn?.move_b : lastTurn?.move_a;
 
-    const prompt = `${BATTLE_STYLE}
+    // Extract robot metadata
+    const winnerMeta = winner.robot_metadata || {};
+    const loserMeta = loser.robot_metadata || {};
 
-Winner: "${winner.name}" - ${winner.description || 'Battle-hardened robot'}. Standing triumphant with ${winnerHP || 20}% power remaining.
-Loser: "${loser.name}" - ${loser.description || 'Defeated robot'}. Fallen, sparking, defeated.
+    // Master prompt style for bare knuckle robot fights
+    const prompt = `A stylized grotesque full-body robot battle aftermath illustration inspired by exaggerated adult animation aesthetics. BARE KNUCKLE robot fight - NO WEAPONS.
 
-Generate this dramatic battle aftermath with both robots visible.`;
+SCENE: Underground arena cage. Post-fight moment. Gritty industrial concrete floor with oil stains, sparks, debris.
+
+WINNER ROBOT - "${winner.name}":
+${winnerMeta.chassis_description || 'Battle-hardened robot fighter frame'}
+Fists: ${winnerMeta.fists_description || 'Industrial bare-knuckle fists'}
+Colors: ${winnerMeta.color_scheme || 'worn industrial metals'}
+Features: ${winnerMeta.distinguishing_features || 'battle scars and dents'}
+POSE: Victory stance after landing a ${winnerMove || 'devastating punch'}. ${winnerHP || 20}% power remaining. Triumphant, fists raised.
+
+LOSER ROBOT - "${loser.name}":
+${loserMeta.chassis_description || 'Defeated robot fighter frame'}
+Fists: ${loserMeta.fists_description || 'Damaged bare-knuckle fists'}
+Colors: ${loserMeta.color_scheme || 'worn industrial metals'}
+Features: ${loserMeta.distinguishing_features || 'battle damage'}
+POSE: Fallen after failed ${loserMove || 'attack'}. Collapsed, sparking, defeated. Exposed wiring, cracked plating.
+
+STYLE: Dark adult animation meets editorial caricature. MeatCanyon-inspired but polished and controlled. Grotesque but not horror. Dramatic lighting with high contrast.
+
+LINEWORK: Clean, confident, illustrative linework. Hand-inked look with visible contour lines. Flat-to-soft shading.
+
+COLOR PALETTE: Muted industrial colors - dirty yellows, rusted reds, worn steel, olive. Orange sparks for contrast. No neon, no glossy sci-fi glow.
+
+High detail, sharp focus, clean edges, professional illustration. NOT photorealistic, NOT 3D, NOT anime, NOT cute.`;
 
     // Start image generation
     const response = await fetch("https://api.replicate.com/v1/predictions", {

@@ -8,26 +8,24 @@ import { supabase } from "../../../../lib/supabase";
 
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
 
-// Style prompt for battle result images
-const BATTLE_RESULT_STYLE = `A dramatic battle aftermath illustration in stylized grotesque adult animation style.
+// Master prompt style for bare knuckle robot fight results
+const BATTLE_RESULT_STYLE = `A stylized grotesque full-body robot battle aftermath illustration inspired by exaggerated adult animation aesthetics. BARE KNUCKLE robot fight - NO WEAPONS.
 
-SCENE: Two robot fighters in a gritty underground arena cage. Post-fight moment. Industrial concrete floor with oil stains, sparks, debris.
+SCENE: Underground arena cage. Post-fight moment. Gritty industrial concrete floor with oil stains, sparks, debris. Cage walls visible. Dim industrial lighting with dramatic spotlights.
 
-COMPOSITION: Split composition showing both robots. Winner on one side, loser on the other. Clear visual hierarchy - winner dominant, loser defeated.
+FRAMING: Full-body robots visible. Centered composition. Dynamic but readable poses.
 
-WINNER ROBOT: Standing or victory pose. Damaged but triumphant. Sparks flying, steam venting. Aggressive body language. Glowing eyes with intensity. Battle damage visible but still functional.
+DESIGN: Robot anatomy is exaggerated but controlled. Oversized heads/helmets. Thick overbuilt shoulders and arms. Slightly hunched postures. Mechanical joints stressed and worn. Hands oversized like boxing gloves. Design feels brutish, imperfect, handmade - not sleek or futuristic.
 
-LOSER ROBOT: Fallen, slumped, or on knees. Significant damage - torn plating, exposed wires, sparking circuits. Smoke rising. Dimmed or flickering eyes. Defeated posture.
+SURFACE & TEXTURE: Armor shows wear - chipped paint, rust, grime, oil stains. Uneven plating, exposed cables, pistons, rivets. No smooth plastic, no chrome shine.
 
-ARENA: Cage walls visible in background. Dim industrial lighting with dramatic spotlights. Haze/smoke atmosphere. Crowd silhouettes barely visible. Gritty, underground fight club feel.
+LINEWORK & SHADING: Clean, confident, illustrative linework. Hand-inked look with visible contour lines. Flat-to-soft shading with subtle gradients.
 
-STYLE: Dark adult animation meets editorial illustration. MeatCanyon-inspired but polished. Grotesque but not horror. Dramatic lighting with high contrast. Clean linework, flat-to-soft shading.
+COLOR PALETTE: Muted industrial colors - dirty yellows, rusted reds, worn steel, olive. Orange/yellow sparks for contrast. No neon, no glossy sci-fi glow.
 
-COLOR PALETTE: Dark industrial tones. Dirty yellows, rusted reds, steel grays. Orange/yellow sparks for contrast. Moody blue shadows. No neon, no glossy effects.
+STYLE: Dark adult animation meets editorial caricature. MeatCanyon-inspired but polished and controlled. Grotesque but not horror. Unsettling but not scary. Brutal but stylized.
 
-MOOD: Violent aftermath. Intensity. Underground fighting spectacle. Brutal but stylized.
-
-High detail, sharp focus, professional illustration. NOT photorealistic, NOT 3D, NOT anime.`;
+High detail, sharp focus, clean edges, professional illustration. NOT photorealistic, NOT 3D, NOT anime, NOT cute, NOT chibi.`;
 
 export async function POST(req: NextRequest) {
   try {
@@ -47,13 +45,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Fetch match with fighter details
+    // Fetch match with fighter details including robot_metadata
     const { data: match, error: matchError } = await supabase
       .from("ucf_matches")
       .select(`
         *,
-        fighter_a:ucf_fighters!fighter_a_id(id, name, description, special_move, image_url),
-        fighter_b:ucf_fighters!fighter_b_id(id, name, description, special_move, image_url)
+        fighter_a:ucf_fighters!fighter_a_id(id, name, description, special_move, image_url, robot_metadata),
+        fighter_b:ucf_fighters!fighter_b_id(id, name, description, special_move, image_url, robot_metadata)
       `)
       .eq("id", match_id)
       .single();
@@ -75,25 +73,42 @@ export async function POST(req: NextRequest) {
     const winner = match.winner_id === match.fighter_a_id ? match.fighter_a : match.fighter_b;
     const loser = match.winner_id === match.fighter_a_id ? match.fighter_b : match.fighter_a;
 
-    // Get final stats from turn history
+    // Get final stats and moves from turn history
     const lastTurn = match.turn_history?.[match.turn_history.length - 1];
     const winnerHP = match.winner_id === match.fighter_a_id ? lastTurn?.hp_a_after : lastTurn?.hp_b_after;
+    const winnerMove = match.winner_id === match.fighter_a_id ? lastTurn?.move_a : lastTurn?.move_b;
+    const loserMove = match.winner_id === match.fighter_a_id ? lastTurn?.move_b : lastTurn?.move_a;
     const totalRounds = match.agent_a_state?.rounds_won + match.agent_b_state?.rounds_won;
 
-    // Build the prompt
+    // Extract robot metadata for detailed descriptions
+    const winnerMeta = winner.robot_metadata || {};
+    const loserMeta = loser.robot_metadata || {};
+
+    // Build the prompt with robot metadata and moves
     const prompt = `${BATTLE_RESULT_STYLE}
 
-MATCH DETAILS:
-Winner: "${winner.name}" - ${winner.description || 'A battle-hardened robot fighter'}
-${winner.special_move ? `Winner's Signature Move: ${winner.special_move}` : ''}
-Winner's remaining power: ${winnerHP || 'Low'}%
+WINNER ROBOT - "${winner.name}":
+Type: ${winnerMeta.robot_type || 'Fighter Robot'}
+Chassis: ${winnerMeta.chassis_description || winner.description || 'Battle-hardened robot fighter'}
+Fists: ${winnerMeta.fists_description || 'Industrial bare-knuckle fists'}
+Colors: ${winnerMeta.color_scheme || 'worn industrial metals'}
+Features: ${winnerMeta.distinguishing_features || 'battle scars'}
+FINISHING MOVE: ${winnerMove || 'devastating punch'} - show this pose!
+Remaining power: ${winnerHP || 20}%
+POSE: Victory stance, fists raised triumphantly, dominant posture.
 
-Loser: "${loser.name}" - ${loser.description || 'A defeated robot fighter'}
-${loser.special_move ? `Loser's Failed Move: ${loser.special_move}` : ''}
+LOSER ROBOT - "${loser.name}":
+Type: ${loserMeta.robot_type || 'Fighter Robot'}
+Chassis: ${loserMeta.chassis_description || loser.description || 'Defeated robot fighter'}
+Fists: ${loserMeta.fists_description || 'Damaged bare-knuckle fists'}
+Colors: ${loserMeta.color_scheme || 'worn industrial metals'}
+Features: ${loserMeta.distinguishing_features || 'heavy damage'}
+FAILED MOVE: ${loserMove || 'attack'} - interrupted/failed
+POSE: Collapsed on ground, sparking, exposed wires, cracked plating, defeated.
 
-Battle lasted ${totalRounds || 2} rounds. The winner stands victorious over their fallen opponent.
+Battle lasted ${totalRounds || 2} rounds of BARE KNUCKLE combat.
 
-Generate this dramatic battle aftermath scene with both robots clearly visible.`;
+Generate this dramatic battle aftermath with both full-body robots clearly visible.`;
 
     // Call Replicate API
     const response = await fetch("https://api.replicate.com/v1/predictions", {
