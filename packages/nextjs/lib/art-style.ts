@@ -192,7 +192,6 @@ BOTH ROBOTS must be clearly visible. This is a KNOCKOUT VICTORY moment.
 
 QUALITY: Masterpiece, best quality, highly detailed, dramatic lighting, professional fighting game art, cinematic composition, 8k resolution`;
 }
-}
 
 // =============================================================================
 // TURN ACTION PROMPT - For individual turn/move visualization (future use)
