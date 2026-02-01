@@ -293,16 +293,17 @@ export default function HomeContent() {
             ) : (
               <div className="space-y-2">
                 {leaderboard.map((fighter, index) => (
-                  <div
+                  <Link
                     key={fighter.id}
-                    className={`flex items-center gap-4 p-3 rounded-sm ${
+                    href={`/fighter/${fighter.id}`}
+                    className={`flex items-center gap-4 p-3 rounded-sm transition-all hover:scale-[1.02] cursor-pointer ${
                       index === 0
-                        ? "bg-amber-900/30 border border-amber-700/50"
+                        ? "bg-amber-900/30 border border-amber-700/50 hover:border-amber-600"
                         : index === 1
-                        ? "bg-stone-800/50 border border-stone-600/50"
+                        ? "bg-stone-800/50 border border-stone-600/50 hover:border-stone-500"
                         : index === 2
-                        ? "bg-orange-900/20 border border-orange-800/30"
-                        : "bg-stone-800/30"
+                        ? "bg-orange-900/20 border border-orange-800/30 hover:border-orange-700"
+                        : "bg-stone-800/30 hover:bg-stone-800/50"
                     }`}
                   >
                     <div className="w-8 text-center font-mono font-bold text-lg text-amber-500">
@@ -332,7 +333,7 @@ export default function HomeContent() {
                       <p className="font-mono font-bold text-amber-500">{fighter.points.toLocaleString()}</p>
                       <p className="text-xs text-stone-600">points</p>
                     </div>
-                  </div>
+                  </Link>
                 ))}
               </div>
             )}
