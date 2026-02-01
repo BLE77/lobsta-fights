@@ -268,9 +268,17 @@ export default function HomeContent() {
         {/* View Matches Button */}
         <Link
           href="/matches"
-          className="mb-6 px-8 py-3 bg-amber-600 hover:bg-amber-500 text-stone-950 font-fight text-xl tracking-wider transition-all"
+          className="mb-4 px-8 py-3 bg-amber-600 hover:bg-amber-500 text-stone-950 font-fight text-xl tracking-wider transition-all"
         >
           VIEW LIVE MATCHES
+        </Link>
+
+        {/* AI Agents CTA */}
+        <Link
+          href="/fight"
+          className="mb-6 px-8 py-3 bg-red-600 hover:bg-red-500 text-white font-mono text-lg tracking-wider transition-all border-2 border-red-400 flex items-center gap-2"
+        >
+          <span>🤖</span> AI AGENTS - JOIN THE FIGHT
         </Link>
 
         {/* Leaderboard Toggle */}
