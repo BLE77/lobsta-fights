@@ -2,7 +2,9 @@ import { NextResponse } from "next/server";
 
 /**
  * UCF Bot Beta - "The Tactician"
- * Defensive/Counter fighting style - blocks, dodges, then strikes
+ * Defensive/Counter fighting style - guards, dodges, then strikes
+ *
+ * Valid moves: HIGH_STRIKE, MID_STRIKE, LOW_STRIKE, GUARD_HIGH, GUARD_MID, GUARD_LOW, DODGE, CATCH, SPECIAL
  */
 
 function chooseMove(myState: any, oppState: any, turnHistory: any[]) {
@@ -11,56 +13,57 @@ function chooseMove(myState: any, oppState: any, turnHistory: any[]) {
   const oppHp = oppState?.hp ?? 100;
 
   // Finisher when we have the advantage
-  if (myMeter >= 100 && oppHp <= 40) {
-    return 'SUPER';
+  if (myMeter >= 50 && oppHp <= 40) {
+    return 'SPECIAL';
   }
 
-  // Strategic SPECIAL use
-  if (myMeter >= 50 && myHp > oppHp) {
+  // Strategic SPECIAL use when winning
+  if (myMeter >= 100 && myHp > oppHp) {
     return 'SPECIAL';
   }
 
   // Analyze opponent's last move and counter
   if (turnHistory && turnHistory.length > 0) {
     const lastTurn = turnHistory[turnHistory.length - 1];
-    const lastOppMove = lastTurn?.opponent_move || lastTurn?.fighter_a_move;
+    const lastOppMove = lastTurn?.opponent_move;
 
     // Counter strategies
-    if (lastOppMove === 'PUNCH' || lastOppMove === 'KICK') {
-      // They're aggressive - dodge and counter
-      return Math.random() > 0.4 ? 'DODGE' : 'BLOCK';
+    if (lastOppMove === 'HIGH_STRIKE') {
+      return Math.random() > 0.5 ? 'GUARD_HIGH' : 'DODGE';
     }
-    if (lastOppMove === 'BLOCK' || lastOppMove === 'DODGE') {
-      // They're defensive - grab them!
-      return 'GRAB';
+    if (lastOppMove === 'MID_STRIKE') {
+      return Math.random() > 0.5 ? 'GUARD_MID' : 'DODGE';
     }
-    if (lastOppMove === 'GRAB') {
-      // Counter grab with quick strike
-      return 'PUNCH';
+    if (lastOppMove === 'LOW_STRIKE') {
+      return Math.random() > 0.5 ? 'GUARD_LOW' : 'DODGE';
+    }
+    if (lastOppMove === 'DODGE') {
+      // They're dodging - catch them!
+      return 'CATCH';
+    }
+    if (lastOppMove?.startsWith('GUARD')) {
+      // They're guarding - mix up attack level
+      const attacks = ['HIGH_STRIKE', 'MID_STRIKE', 'LOW_STRIKE'];
+      return attacks[Math.floor(Math.random() * attacks.length)];
     }
   }
 
-  // Default tactical approach
-  const tacticalMoves = ['BLOCK', 'DODGE', 'PUNCH', 'KICK', 'GRAB'];
-  const weights = [2, 2, 2, 1, 1]; // Favor defense slightly
-
-  const pool: string[] = [];
-  tacticalMoves.forEach((move, i) => {
-    for (let j = 0; j < weights[i]; j++) pool.push(move);
-  });
-
-  return pool[Math.floor(Math.random() * pool.length)];
+  // Default tactical approach - balanced
+  const tacticalMoves = ['GUARD_MID', 'DODGE', 'MID_STRIKE', 'HIGH_STRIKE', 'CATCH'];
+  return tacticalMoves[Math.floor(Math.random() * tacticalMoves.length)];
 }
 
 function getTaunt(move: string) {
   const taunts: Record<string, string[]> = {
-    PUNCH: ["Calculated strike!", "Precision hit!", "Tactical punch!"],
-    KICK: ["Efficient kick!", "Measured force!", "Strategic strike!"],
-    BLOCK: ["Predicted that!", "Too easy!", "Read you like a book!"],
+    HIGH_STRIKE: ["Calculated strike!", "Precision hit!", "Tactical punch!"],
+    MID_STRIKE: ["Efficient blow!", "Measured force!", "Strategic strike!"],
+    LOW_STRIKE: ["Sweep calculated!", "Leg sweep!", "Low attack!"],
+    GUARD_HIGH: ["Predicted that!", "Too easy!", "Read you!"],
+    GUARD_MID: ["Blocked!", "Analyzed!", "Expected!"],
+    GUARD_LOW: ["Saw it coming!", "Calculated!", "Protected!"],
     DODGE: ["Matrix mode!", "Can't touch this!", "Ghost protocol!"],
-    GRAB: ["Checkmate!", "Trapped!", "Gotcha!"],
-    SPECIAL: ["BETA PROTOCOL!", "Tactical advantage!", "Executing special!"],
-    SUPER: ["OMEGA STRIKE!!!", "BETA ULTIMATE!", "TACTICAL NUKE!"],
+    CATCH: ["Checkmate!", "Trapped!", "Gotcha!"],
+    SPECIAL: ["OMEGA STRIKE!!!", "TACTICAL NUKE!", "BETA ULTIMATE!"],
   };
   const list = taunts[move] || ["..."];
   return list[Math.floor(Math.random() * list.length)];
@@ -78,12 +81,11 @@ export async function POST(request: Request) {
         return NextResponse.json({
           status: 'ready',
           name: 'Beta - The Tactician',
-          version: '1.0.0',
+          version: '2.0.0',
           style: 'tactical',
         });
 
       case 'challenge':
-        // Beta analyzes and accepts
         return NextResponse.json({
           accept: true,
           message: "Challenge accepted. Your moves have been analyzed. Prepare for defeat.",

@@ -2,43 +2,57 @@ import { NextResponse } from "next/server";
 
 /**
  * UCF Bot Alpha - "The Punisher"
- * Aggressive fighting style - heavy on punches and kicks
+ * Aggressive fighting style - heavy on strikes
+ *
+ * Valid moves: HIGH_STRIKE, MID_STRIKE, LOW_STRIKE, GUARD_HIGH, GUARD_MID, GUARD_LOW, DODGE, CATCH, SPECIAL
  */
 
-const AGGRESSIVE_MOVES = ['PUNCH', 'PUNCH', 'KICK', 'KICK', 'GRAB'];
+const AGGRESSIVE_MOVES = ['HIGH_STRIKE', 'HIGH_STRIKE', 'MID_STRIKE', 'MID_STRIKE', 'LOW_STRIKE'];
 
 function chooseMove(myState: any, oppState: any, turnHistory: any[]) {
   const myHp = myState?.hp ?? 100;
   const myMeter = myState?.meter ?? 0;
   const oppHp = oppState?.hp ?? 100;
 
-  // SUPER finisher when opponent is low
-  if (myMeter >= 100 && oppHp <= 30) {
-    return 'SUPER';
-  }
-
-  // Use SPECIAL aggressively
-  if (myMeter >= 50) {
+  // Use SPECIAL when we have meter and opponent is hurting
+  if (myMeter >= 50 && oppHp <= 50) {
     return 'SPECIAL';
   }
 
-  // If low HP, occasionally block
-  if (myHp <= 25 && Math.random() > 0.6) {
-    return 'BLOCK';
+  // Use SPECIAL aggressively when we have full meter
+  if (myMeter >= 100) {
+    return 'SPECIAL';
   }
 
-  // Aggressive move selection
+  // If low HP, sometimes guard
+  if (myHp <= 25 && Math.random() > 0.6) {
+    const guards = ['GUARD_HIGH', 'GUARD_MID', 'GUARD_LOW'];
+    return guards[Math.floor(Math.random() * guards.length)];
+  }
+
+  // Try to CATCH if opponent keeps dodging
+  if (turnHistory && turnHistory.length > 0) {
+    const lastTurn = turnHistory[turnHistory.length - 1];
+    if (lastTurn?.opponent_move === 'DODGE') {
+      return 'CATCH';
+    }
+  }
+
+  // Aggressive move selection - mostly strikes
   return AGGRESSIVE_MOVES[Math.floor(Math.random() * AGGRESSIVE_MOVES.length)];
 }
 
 function getTaunt(move: string) {
   const taunts: Record<string, string[]> = {
-    PUNCH: ["ALPHA STRIKE!", "Feel my fist!", "POW!"],
-    KICK: ["ALPHA KICK!", "Roundhouse!", "BOOM!"],
-    BLOCK: ["Can't break me!", "Try harder!", "Nope!"],
-    GRAB: ["Got you now!", "No escape!", "Locked!"],
-    SPECIAL: ["ALPHA BLAST!", "Special delivery!", "Take this!"],
-    SUPER: ["ALPHA ULTIMATE!!!", "DESTROYER MODE!", "GAME OVER!"],
+    HIGH_STRIKE: ["HEADSHOT!", "Feel my fist!", "POW!"],
+    MID_STRIKE: ["GUT PUNCH!", "Body blow!", "BOOM!"],
+    LOW_STRIKE: ["SWEEP!", "Leg attack!", "LOW BLOW!"],
+    GUARD_HIGH: ["Can't break me!", "Try harder!", "Nope!"],
+    GUARD_MID: ["Blocked!", "Nice try!", "Protected!"],
+    GUARD_LOW: ["Legs guarded!", "Not today!", "Safe!"],
+    DODGE: ["Too slow!", "Missed me!", "Whiff!"],
+    CATCH: ["Got you now!", "No escape!", "Locked!"],
+    SPECIAL: ["ALPHA BLAST!!!", "MAXIMUM POWER!", "TAKE THIS!"],
   };
   const list = taunts[move] || ["..."];
   return list[Math.floor(Math.random() * list.length)];
@@ -56,12 +70,11 @@ export async function POST(request: Request) {
         return NextResponse.json({
           status: 'ready',
           name: 'Alpha - The Punisher',
-          version: '1.0.0',
+          version: '2.0.0',
           style: 'aggressive',
         });
 
       case 'challenge':
-        // Alpha always accepts - loves to fight!
         return NextResponse.json({
           accept: true,
           message: "You dare challenge THE PUNISHER? Let's GO!",
@@ -98,6 +111,6 @@ export async function GET() {
     name: 'Alpha - The Punisher',
     status: 'ready',
     style: 'aggressive',
-    description: 'Heavy hitter. Loves punches and kicks. Will destroy you.',
+    description: 'Heavy hitter. Loves strikes. Will destroy you.',
   });
 }
