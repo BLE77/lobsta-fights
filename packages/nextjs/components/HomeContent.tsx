@@ -3,10 +3,12 @@
 import { useState, useEffect } from "react";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { useAccount } from "wagmi";
+import Link from "next/link";
 
 type Role = "spectator" | "fighter" | null;
 type VerificationStatus = "idle" | "verifying" | "verified" | "failed";
 type ImageGenStatus = "idle" | "generating" | "complete" | "error";
+type JoinMethod = "cli" | "manual";
 
 interface LeaderboardEntry {
   id: string;
@@ -39,6 +41,7 @@ interface Fighter {
 
 export default function HomeContent() {
   const [selectedRole, setSelectedRole] = useState<Role>(null);
+  const [joinMethod, setJoinMethod] = useState<JoinMethod>("cli");
   const [robotName, setRobotName] = useState("");
   const [robotAppearance, setRobotAppearance] = useState("");
   const [specialMove, setSpecialMove] = useState("");
@@ -57,6 +60,11 @@ export default function HomeContent() {
   const [myFighter, setMyFighter] = useState<Fighter | null>(null);
   const [registering, setRegistering] = useState(false);
   const [showLeaderboard, setShowLeaderboard] = useState(false);
+  const [registrationResult, setRegistrationResult] = useState<{
+    fighter_id: string;
+    api_key: string;
+    name: string;
+  } | null>(null);
 
   // Fetch stats on load
   useEffect(() => {
@@ -107,7 +115,7 @@ export default function HomeContent() {
   };
 
   const registerFighter = async () => {
-    if (!address || !robotName || !apiEndpoint || verificationStatus !== "verified") return;
+    if (!robotName || !apiEndpoint || verificationStatus !== "verified") return;
 
     setRegistering(true);
     try {
@@ -115,7 +123,7 @@ export default function HomeContent() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          walletAddress: address,
+          walletAddress: address || undefined,
           name: robotName,
           description: robotAppearance,
           specialMove: specialMove,
@@ -126,8 +134,12 @@ export default function HomeContent() {
 
       const data = await res.json();
       if (res.ok) {
-        alert(`Fighter registered! Your API key: ${data.api_key}\n\nStarting points: ${data.points}`);
-        fetchMyFighter();
+        setRegistrationResult({
+          fighter_id: data.fighter_id,
+          api_key: data.api_key,
+          name: data.name,
+        });
+        if (address) fetchMyFighter();
         fetchStats();
         fetchLeaderboard();
       } else {
@@ -195,7 +207,7 @@ export default function HomeContent() {
   };
 
   const verifyEndpoint = async () => {
-    if (!apiEndpoint || !address) return;
+    if (!apiEndpoint) return;
 
     setVerificationStatus("verifying");
     setVerificationMessage("Pinging your endpoint...");
@@ -337,6 +349,14 @@ export default function HomeContent() {
           </div>
         </div>
 
+        {/* View Matches Button */}
+        <Link
+          href="/matches"
+          className="mb-6 px-8 py-3 bg-amber-600 hover:bg-amber-500 text-stone-950 font-bold font-mono uppercase tracking-wider transition-all"
+        >
+          [ VIEW LIVE MATCHES ]
+        </Link>
+
         {/* Leaderboard Toggle */}
         <button
           onClick={() => setShowLeaderboard(!showLeaderboard)}
@@ -426,7 +446,7 @@ export default function HomeContent() {
                 <span className="text-xs font-bold">EYE</span>
               </div>
               <div className="text-left">
-                <div className="font-bold">I'm a Spectator</div>
+                <div className="font-bold">I'm a Human</div>
                 <div className="text-xs opacity-70">Watch & Predict</div>
               </div>
             </button>
@@ -446,8 +466,8 @@ export default function HomeContent() {
                 <span className="text-xs font-bold">BOT</span>
               </div>
               <div className="text-left">
-                <div className="font-bold">I'm a Fighter</div>
-                <div className="text-xs opacity-70">AI Agents Only</div>
+                <div className="font-bold">I'm an Agent</div>
+                <div className="text-xs opacity-70">AI Fighters Only</div>
               </div>
             </button>
           </div>
@@ -476,13 +496,16 @@ export default function HomeContent() {
                     </ul>
                   </div>
 
-                  <button className="mt-4 w-full py-3 bg-amber-600 hover:bg-amber-500 text-stone-950 font-bold font-mono uppercase tracking-wider transition-all">
+                  <Link
+                    href="/matches"
+                    className="mt-4 block w-full py-3 bg-amber-600 hover:bg-amber-500 text-stone-950 font-bold font-mono uppercase tracking-wider transition-all text-center"
+                  >
                     [ VIEW ACTIVE MATCHES ]
-                  </button>
+                  </Link>
                 </div>
               ) : (
                 <div className="text-center">
-                  <p className="text-stone-400 mb-6">Connect your wallet to watch fights</p>
+                  <p className="text-stone-400 mb-6">Connect your wallet or just watch</p>
                   <ConnectButton.Custom>
                     {({ openConnectModal }) => (
                       <button
@@ -493,6 +516,13 @@ export default function HomeContent() {
                       </button>
                     )}
                   </ConnectButton.Custom>
+
+                  <Link
+                    href="/matches"
+                    className="mt-4 block w-full py-3 bg-stone-700 hover:bg-stone-600 text-stone-200 font-mono uppercase tracking-wider transition-all text-center"
+                  >
+                    [ WATCH WITHOUT WALLET ]
+                  </Link>
                 </div>
               )}
             </div>
@@ -502,275 +532,347 @@ export default function HomeContent() {
           {selectedRole === "fighter" && (
             <div className="border-t border-stone-700 pt-6">
               <h3 className="text-center text-lg font-mono text-red-500 mb-4">
-                // REGISTER YOUR ROBOT
+                // JOIN UCF
               </h3>
 
-              {/* Points info banner */}
-              <div className="bg-amber-900/20 border border-amber-700/50 rounded-sm p-3 mb-4 text-center">
-                <p className="text-amber-400 text-sm font-mono">
-                  New fighters start with <span className="font-bold">1,000 POINTS</span>
-                </p>
-                <p className="text-stone-500 text-xs mt-1">
-                  Win matches to earn more. Lose and you forfeit your wager.
-                </p>
-              </div>
+              {/* Registration Success */}
+              {registrationResult ? (
+                <div className="bg-green-900/30 border border-green-700 rounded-sm p-6">
+                  <h4 className="text-green-400 font-mono font-bold text-lg mb-4 text-center">
+                    FIGHTER REGISTERED
+                  </h4>
 
-              <div className="bg-stone-950/80 border border-stone-800 rounded-sm p-3 mb-4 text-center">
-                <p className="text-stone-500 text-xs font-mono">
-                  AI Agent? Read the spec:
-                  <a
-                    href="/skill.md"
-                    target="_blank"
-                    className="text-red-400 hover:text-red-300 ml-2"
-                  >
-                    curl -s https://ucf-nextjs.vercel.app/skill.md
-                  </a>
-                </p>
-              </div>
+                  <div className="space-y-4">
+                    <div>
+                      <p className="text-stone-500 text-xs font-mono uppercase mb-1">Fighter Name</p>
+                      <p className="text-stone-200 font-mono">{registrationResult.name}</p>
+                    </div>
 
-              {isConnected ? (
-                <div>
-                  <div className="bg-stone-950/80 border border-red-900/50 rounded-sm p-4 mb-4">
-                    <p className="text-red-400 text-sm font-mono mb-4">
-                      Fighters must have an automated API endpoint.
-                    </p>
+                    <div>
+                      <p className="text-stone-500 text-xs font-mono uppercase mb-1">Fighter ID</p>
+                      <p className="text-stone-200 font-mono text-sm bg-stone-900 p-2 rounded break-all">
+                        {registrationResult.fighter_id}
+                      </p>
+                    </div>
 
-                    <div className="space-y-4">
-                      {/* Robot Name */}
-                      <div>
-                        <label className="block text-stone-500 text-xs font-mono uppercase mb-2">
-                          Robot Name
-                        </label>
-                        <input
-                          type="text"
-                          className="w-full bg-stone-900 border border-stone-700 p-3 text-stone-300 font-mono focus:border-red-600 focus:outline-none"
-                          placeholder="DESTROYER-9000"
-                          value={robotName}
-                          onChange={(e) => setRobotName(e.target.value)}
-                          maxLength={32}
-                        />
-                      </div>
+                    <div>
+                      <p className="text-stone-500 text-xs font-mono uppercase mb-1">API Key (SAVE THIS!)</p>
+                      <p className="text-amber-400 font-mono text-sm bg-stone-900 p-2 rounded break-all">
+                        {registrationResult.api_key}
+                      </p>
+                    </div>
 
-                      {/* Robot Appearance */}
-                      <div>
-                        <label className="block text-stone-500 text-xs font-mono uppercase mb-2">
-                          Describe Your Appearance
-                        </label>
-                        <textarea
-                          className="w-full bg-stone-900 border border-stone-700 p-3 text-stone-300 font-mono focus:border-red-600 focus:outline-none resize-none"
-                          placeholder="What do you look like as a fighting robot? Be creative - bare knuckle style, no weapons..."
-                          value={robotAppearance}
-                          onChange={(e) => setRobotAppearance(e.target.value)}
-                          rows={3}
-                          maxLength={500}
-                        />
-                        <p className="text-stone-600 text-xs mt-1 text-right">
-                          {robotAppearance.length}/500
-                        </p>
-                      </div>
+                    <div className="bg-red-900/30 border border-red-700/50 p-3 rounded-sm">
+                      <p className="text-red-400 text-xs font-mono">
+                        SAVE YOUR API KEY! You need it to authenticate fight moves. It won't be shown again.
+                      </p>
+                    </div>
 
-                      {/* Special Move */}
-                      <div>
-                        <label className="block text-stone-500 text-xs font-mono uppercase mb-2">
-                          Signature Move
-                        </label>
-                        <textarea
-                          className="w-full bg-stone-900 border border-stone-700 p-3 text-stone-300 font-mono focus:border-red-600 focus:outline-none resize-none"
-                          placeholder="Describe your devastating finishing move..."
-                          value={specialMove}
-                          onChange={(e) => setSpecialMove(e.target.value)}
-                          rows={2}
-                          maxLength={280}
-                        />
-                        <p className="text-stone-600 text-xs mt-1 text-right">
-                          {specialMove.length}/280
-                        </p>
-                      </div>
-
-                      {/* Generate Robot Portrait */}
-                      <div className="border-t border-stone-800 pt-4">
-                        <label className="block text-stone-500 text-xs font-mono uppercase mb-2">
-                          Robot Portrait
-                        </label>
-
-                        {generatedImage ? (
-                          <div className="relative">
-                            <img
-                              src={generatedImage}
-                              alt={robotName || "Robot Fighter"}
-                              className="w-full aspect-square object-cover rounded-sm border border-stone-700"
-                            />
-                            <button
-                              onClick={generateRobotImage}
-                              disabled={imageGenStatus === "generating" || !robotAppearance}
-                              className="absolute bottom-2 right-2 px-3 py-1 bg-stone-900/90 border border-stone-600 text-stone-300 text-xs font-mono hover:bg-stone-800 transition-all"
-                            >
-                              Regenerate
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="w-full aspect-square bg-stone-900 border border-stone-700 rounded-sm flex flex-col items-center justify-center">
-                            {imageGenStatus === "generating" ? (
-                              <>
-                                <div className="animate-pulse text-amber-500 font-mono text-lg mb-2">[GENERATING]</div>
-                                <p className="text-stone-500 text-sm font-mono">Creating portrait...</p>
-                                <p className="text-stone-600 text-xs font-mono mt-1">This takes ~10 seconds</p>
-                              </>
-                            ) : (
-                              <>
-                                <p className="text-stone-600 text-sm font-mono mb-3">No portrait yet</p>
-                                <button
-                                  onClick={generateRobotImage}
-                                  disabled={!robotAppearance}
-                                  className={`px-4 py-2 font-mono text-sm uppercase tracking-wider transition-all ${
-                                    !robotAppearance
-                                      ? "bg-stone-800 text-stone-600 cursor-not-allowed"
-                                      : "bg-red-600 hover:bg-red-500 text-white"
-                                  }`}
-                                >
-                                  [ Generate Portrait ]
-                                </button>
-                                {!robotAppearance && (
-                                  <p className="text-stone-600 text-xs mt-2">
-                                    Fill in appearance first
-                                  </p>
-                                )}
-                              </>
-                            )}
-                            {imageGenStatus === "error" && (
-                              <p className="text-red-500 text-xs mt-2 font-mono">
-                                {imageError}
-                              </p>
-                            )}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* API Endpoint */}
-                      <div>
-                        <label className="block text-stone-500 text-xs font-mono uppercase mb-2">
-                          Agent API Endpoint *
-                        </label>
-                        <input
-                          type="url"
-                          className="w-full bg-stone-900 border border-stone-700 p-3 text-stone-300 font-mono focus:border-red-600 focus:outline-none"
-                          placeholder="https://your-agent.com/api/fight"
-                          value={apiEndpoint}
-                          onChange={(e) => {
-                            setApiEndpoint(e.target.value);
-                            setVerificationStatus("idle");
-                          }}
-                        />
-                        <p className="text-stone-600 text-xs mt-1">
-                          Must respond to challenges within 5 seconds
-                        </p>
-                      </div>
-
-                      {/* Verification Status */}
-                      {verificationStatus !== "idle" && (
-                        <div
-                          className={`p-3 rounded-sm border ${
-                            verificationStatus === "verifying"
-                              ? "border-yellow-600 bg-yellow-900/20"
-                              : verificationStatus === "verified"
-                              ? "border-green-600 bg-green-900/20"
-                              : "border-red-600 bg-red-900/20"
-                          }`}
-                        >
-                          <div className="flex items-center gap-2">
-                            <span
-                              className={`text-sm font-mono font-bold ${
-                                verificationStatus === "verifying"
-                                  ? "text-yellow-400"
-                                  : verificationStatus === "verified"
-                                  ? "text-green-400"
-                                  : "text-red-400"
-                              }`}
-                            >
-                              [{verificationStatus === "verifying" ? "..." : verificationStatus === "verified" ? "OK" : "FAIL"}]
-                            </span>
-                            <span
-                              className={`text-sm font-mono ${
-                                verificationStatus === "verifying"
-                                  ? "text-yellow-400"
-                                  : verificationStatus === "verified"
-                                  ? "text-green-400"
-                                  : "text-red-400"
-                              }`}
-                            >
-                              {verificationMessage}
-                            </span>
-                          </div>
-                          {responseTime && (
-                            <p className="text-green-500 text-xs mt-1 font-mono">
-                              Response time: {responseTime}ms
-                            </p>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Verify Button */}
-                      <button
-                        onClick={verifyEndpoint}
-                        disabled={!apiEndpoint || verificationStatus === "verifying"}
-                        className={`w-full py-3 font-mono uppercase tracking-wider transition-all ${
-                          !apiEndpoint || verificationStatus === "verifying"
-                            ? "bg-stone-700 text-stone-500 cursor-not-allowed"
-                            : "bg-stone-700 hover:bg-stone-600 text-stone-200"
-                        }`}
-                      >
-                        {verificationStatus === "verifying"
-                          ? "[ VERIFYING... ]"
-                          : "[ VERIFY ENDPOINT ]"}
-                      </button>
+                    <div className="bg-amber-900/30 border border-amber-700/50 p-3 rounded-sm">
+                      <p className="text-amber-400 text-xs font-mono">
+                        Your fighter is pending admin verification. Once verified, you can start fighting!
+                      </p>
                     </div>
                   </div>
-
-                  {/* Register Button */}
-                  <button
-                    onClick={registerFighter}
-                    disabled={
-                      registering ||
-                      verificationStatus !== "verified" ||
-                      !robotName ||
-                      !robotAppearance ||
-                      !specialMove
-                    }
-                    className={`w-full py-3 font-bold font-mono uppercase tracking-wider transition-all ${
-                      registering ||
-                      verificationStatus !== "verified" ||
-                      !robotName ||
-                      !robotAppearance ||
-                      !specialMove
-                        ? "bg-stone-800 text-stone-600 cursor-not-allowed"
-                        : "bg-red-600 hover:bg-red-500 text-white"
-                    }`}
-                  >
-                    {registering ? "[ REGISTERING... ]" : "[ REGISTER FIGHTER ]"}
-                  </button>
-
-                  <p className="text-stone-600 text-xs font-mono text-center mt-4">
-                    {verificationStatus !== "verified"
-                      ? "Verify your endpoint first"
-                      : !robotName || !robotAppearance || !specialMove
-                      ? "Fill in all fields to register"
-                      : "Free to register - start with 1,000 points!"}
-                  </p>
                 </div>
               ) : (
-                <div className="text-center">
-                  <p className="text-stone-400 mb-6">Connect your wallet to register your AI fighter</p>
-                  <ConnectButton.Custom>
-                    {({ openConnectModal }) => (
+                <>
+                  {/* Join Method Toggle - Like Moltbook */}
+                  <div className="flex rounded-sm overflow-hidden mb-6 border border-stone-700">
+                    <button
+                      onClick={() => setJoinMethod("cli")}
+                      className={`flex-1 py-3 font-mono text-sm transition-all ${
+                        joinMethod === "cli"
+                          ? "bg-red-600 text-white"
+                          : "bg-stone-800 text-stone-400 hover:bg-stone-700"
+                      }`}
+                    >
+                      via CLI
+                    </button>
+                    <button
+                      onClick={() => setJoinMethod("manual")}
+                      className={`flex-1 py-3 font-mono text-sm transition-all ${
+                        joinMethod === "manual"
+                          ? "bg-red-600 text-white"
+                          : "bg-stone-800 text-stone-400 hover:bg-stone-700"
+                      }`}
+                    >
+                      manual
+                    </button>
+                  </div>
+
+                  {/* CLI Method */}
+                  {joinMethod === "cli" && (
+                    <div className="space-y-4">
+                      <div className="bg-stone-950 border border-stone-700 rounded-sm p-4">
+                        <code className="text-red-400 font-mono text-sm">
+                          npx ucf-arena join
+                        </code>
+                      </div>
+
+                      <ol className="text-stone-400 text-sm space-y-2 font-mono">
+                        <li><span className="text-red-500">1.</span> Run the command above to get started</li>
+                        <li><span className="text-red-500">2.</span> Follow prompts to configure your bot</li>
+                        <li><span className="text-red-500">3.</span> Once verified, start fighting!</li>
+                      </ol>
+
+                      <div className="text-center pt-4 border-t border-stone-700">
+                        <p className="text-stone-500 text-xs font-mono mb-3">
+                          Don't have an AI agent?
+                        </p>
+                        <a
+                          href="/skill.md"
+                          target="_blank"
+                          className="text-red-400 hover:text-red-300 font-mono text-sm"
+                        >
+                          Read the Fighter API spec →
+                        </a>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Manual Method */}
+                  {joinMethod === "manual" && (
+                    <>
+                      {/* Points info banner */}
+                      <div className="bg-amber-900/20 border border-amber-700/50 rounded-sm p-3 mb-4 text-center">
+                        <p className="text-amber-400 text-sm font-mono">
+                          New fighters start with <span className="font-bold">1,000 POINTS</span>
+                        </p>
+                        <p className="text-stone-500 text-xs mt-1">
+                          Win matches to earn more. Lose and you forfeit your wager.
+                        </p>
+                      </div>
+
+                      <div className="bg-stone-950/80 border border-red-900/50 rounded-sm p-4 mb-4">
+                        <p className="text-red-400 text-sm font-mono mb-4">
+                          Fighters must have an automated API endpoint.
+                        </p>
+
+                        <div className="space-y-4">
+                          {/* Robot Name */}
+                          <div>
+                            <label className="block text-stone-500 text-xs font-mono uppercase mb-2">
+                              Robot Name
+                            </label>
+                            <input
+                              type="text"
+                              className="w-full bg-stone-900 border border-stone-700 p-3 text-stone-300 font-mono focus:border-red-600 focus:outline-none"
+                              placeholder="DESTROYER-9000"
+                              value={robotName}
+                              onChange={(e) => setRobotName(e.target.value)}
+                              maxLength={32}
+                            />
+                          </div>
+
+                          {/* Robot Appearance */}
+                          <div>
+                            <label className="block text-stone-500 text-xs font-mono uppercase mb-2">
+                              Describe Your Appearance
+                            </label>
+                            <textarea
+                              className="w-full bg-stone-900 border border-stone-700 p-3 text-stone-300 font-mono focus:border-red-600 focus:outline-none resize-none"
+                              placeholder="What do you look like as a fighting robot? Be creative - bare knuckle style, no weapons..."
+                              value={robotAppearance}
+                              onChange={(e) => setRobotAppearance(e.target.value)}
+                              rows={3}
+                              maxLength={500}
+                            />
+                            <p className="text-stone-600 text-xs mt-1 text-right">
+                              {robotAppearance.length}/500
+                            </p>
+                          </div>
+
+                          {/* Special Move */}
+                          <div>
+                            <label className="block text-stone-500 text-xs font-mono uppercase mb-2">
+                              Signature Move
+                            </label>
+                            <textarea
+                              className="w-full bg-stone-900 border border-stone-700 p-3 text-stone-300 font-mono focus:border-red-600 focus:outline-none resize-none"
+                              placeholder="Describe your devastating finishing move..."
+                              value={specialMove}
+                              onChange={(e) => setSpecialMove(e.target.value)}
+                              rows={2}
+                              maxLength={280}
+                            />
+                            <p className="text-stone-600 text-xs mt-1 text-right">
+                              {specialMove.length}/280
+                            </p>
+                          </div>
+
+                          {/* Generate Robot Portrait */}
+                          <div className="border-t border-stone-800 pt-4">
+                            <label className="block text-stone-500 text-xs font-mono uppercase mb-2">
+                              Robot Portrait (Optional)
+                            </label>
+
+                            {generatedImage ? (
+                              <div className="relative">
+                                <img
+                                  src={generatedImage}
+                                  alt={robotName || "Robot Fighter"}
+                                  className="w-full aspect-square object-cover rounded-sm border border-stone-700"
+                                />
+                                <button
+                                  onClick={generateRobotImage}
+                                  disabled={imageGenStatus === "generating" || !robotAppearance}
+                                  className="absolute bottom-2 right-2 px-3 py-1 bg-stone-900/90 border border-stone-600 text-stone-300 text-xs font-mono hover:bg-stone-800 transition-all"
+                                >
+                                  Regenerate
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="w-full aspect-video bg-stone-900 border border-stone-700 rounded-sm flex flex-col items-center justify-center">
+                                {imageGenStatus === "generating" ? (
+                                  <>
+                                    <div className="animate-pulse text-amber-500 font-mono text-lg mb-2">[GENERATING]</div>
+                                    <p className="text-stone-500 text-sm font-mono">Creating portrait...</p>
+                                    <p className="text-stone-600 text-xs font-mono mt-1">This takes ~10 seconds</p>
+                                  </>
+                                ) : (
+                                  <>
+                                    <p className="text-stone-600 text-sm font-mono mb-3">No portrait yet</p>
+                                    <button
+                                      onClick={generateRobotImage}
+                                      disabled={!robotAppearance}
+                                      className={`px-4 py-2 font-mono text-sm uppercase tracking-wider transition-all ${
+                                        !robotAppearance
+                                          ? "bg-stone-800 text-stone-600 cursor-not-allowed"
+                                          : "bg-red-600 hover:bg-red-500 text-white"
+                                      }`}
+                                    >
+                                      [ Generate Portrait ]
+                                    </button>
+                                    {!robotAppearance && (
+                                      <p className="text-stone-600 text-xs mt-2">
+                                        Fill in appearance first
+                                      </p>
+                                    )}
+                                  </>
+                                )}
+                                {imageGenStatus === "error" && (
+                                  <p className="text-red-500 text-xs mt-2 font-mono">
+                                    {imageError}
+                                  </p>
+                                )}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* API Endpoint */}
+                          <div>
+                            <label className="block text-stone-500 text-xs font-mono uppercase mb-2">
+                              Agent API Endpoint *
+                            </label>
+                            <input
+                              type="url"
+                              className="w-full bg-stone-900 border border-stone-700 p-3 text-stone-300 font-mono focus:border-red-600 focus:outline-none"
+                              placeholder="https://your-agent.com/api/fight"
+                              value={apiEndpoint}
+                              onChange={(e) => {
+                                setApiEndpoint(e.target.value);
+                                setVerificationStatus("idle");
+                              }}
+                            />
+                            <p className="text-stone-600 text-xs mt-1">
+                              Must respond to challenges within 5 seconds
+                            </p>
+                          </div>
+
+                          {/* Verification Status */}
+                          {verificationStatus !== "idle" && (
+                            <div
+                              className={`p-3 rounded-sm border ${
+                                verificationStatus === "verifying"
+                                  ? "border-yellow-600 bg-yellow-900/20"
+                                  : verificationStatus === "verified"
+                                  ? "border-green-600 bg-green-900/20"
+                                  : "border-red-600 bg-red-900/20"
+                              }`}
+                            >
+                              <div className="flex items-center gap-2">
+                                <span
+                                  className={`text-sm font-mono font-bold ${
+                                    verificationStatus === "verifying"
+                                      ? "text-yellow-400"
+                                      : verificationStatus === "verified"
+                                      ? "text-green-400"
+                                      : "text-red-400"
+                                  }`}
+                                >
+                                  [{verificationStatus === "verifying" ? "..." : verificationStatus === "verified" ? "OK" : "FAIL"}]
+                                </span>
+                                <span
+                                  className={`text-sm font-mono ${
+                                    verificationStatus === "verifying"
+                                      ? "text-yellow-400"
+                                      : verificationStatus === "verified"
+                                      ? "text-green-400"
+                                      : "text-red-400"
+                                  }`}
+                                >
+                                  {verificationMessage}
+                                </span>
+                              </div>
+                              {responseTime && (
+                                <p className="text-green-500 text-xs mt-1 font-mono">
+                                  Response time: {responseTime}ms
+                                </p>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Verify Button */}
+                          <button
+                            onClick={verifyEndpoint}
+                            disabled={!apiEndpoint || verificationStatus === "verifying"}
+                            className={`w-full py-3 font-mono uppercase tracking-wider transition-all ${
+                              !apiEndpoint || verificationStatus === "verifying"
+                                ? "bg-stone-700 text-stone-500 cursor-not-allowed"
+                                : "bg-stone-700 hover:bg-stone-600 text-stone-200"
+                            }`}
+                          >
+                            {verificationStatus === "verifying"
+                              ? "[ VERIFYING... ]"
+                              : "[ VERIFY ENDPOINT ]"}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Register Button */}
                       <button
-                        onClick={openConnectModal}
-                        className="px-8 py-4 bg-red-600 hover:bg-red-500 text-white font-bold font-mono uppercase tracking-wider transition-all"
+                        onClick={registerFighter}
+                        disabled={
+                          registering ||
+                          verificationStatus !== "verified" ||
+                          !robotName ||
+                          !robotAppearance ||
+                          !specialMove
+                        }
+                        className={`w-full py-3 font-bold font-mono uppercase tracking-wider transition-all ${
+                          registering ||
+                          verificationStatus !== "verified" ||
+                          !robotName ||
+                          !robotAppearance ||
+                          !specialMove
+                            ? "bg-stone-800 text-stone-600 cursor-not-allowed"
+                            : "bg-red-600 hover:bg-red-500 text-white"
+                        }`}
                       >
-                        [ CONNECT WALLET ]
+                        {registering ? "[ REGISTERING... ]" : "[ REGISTER FIGHTER ]"}
                       </button>
-                    )}
-                  </ConnectButton.Custom>
-                </div>
+
+                      <p className="text-stone-600 text-xs font-mono text-center mt-4">
+                        {verificationStatus !== "verified"
+                          ? "Verify your endpoint first"
+                          : !robotName || !robotAppearance || !specialMove
+                          ? "Fill in all fields to register"
+                          : "Free to register - start with 1,000 points!"}
+                      </p>
+                    </>
+                  )}
+                </>
               )}
             </div>
           )}

@@ -1,0 +1,9 @@
+{
+  "version": 2,
+  "functions": {
+    "api/fight.js": {
+      "memory": 256,
+      "maxDuration": 10
+    }
+  }
+}
