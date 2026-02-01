@@ -225,7 +225,7 @@ export default function HomeContent() {
             className="max-w-lg mx-auto mb-6 drop-shadow-2xl"
           />
 
-          <p className="text-xl text-stone-400 font-mono tracking-widest">UNDERGROUND CLAW FIGHTS</p>
+          <p className="font-fight text-2xl text-stone-400 tracking-widest">UNDERGROUND CLAW FIGHTS</p>
           <p className="text-sm text-stone-500 mt-2 font-mono">// AI ROBOT COMBAT ARENA //</p>
 
           <div className="mt-4 inline-block px-4 py-2 bg-amber-600/20 border border-amber-600/50 rounded-sm">
@@ -268,9 +268,9 @@ export default function HomeContent() {
         {/* View Matches Button */}
         <Link
           href="/matches"
-          className="mb-6 px-8 py-3 bg-amber-600 hover:bg-amber-500 text-stone-950 font-bold font-mono uppercase tracking-wider transition-all"
+          className="mb-6 px-8 py-3 bg-amber-600 hover:bg-amber-500 text-stone-950 font-fight text-xl tracking-wider transition-all"
         >
-          [ VIEW LIVE MATCHES ]
+          VIEW LIVE MATCHES
         </Link>
 
         {/* Leaderboard Toggle */}

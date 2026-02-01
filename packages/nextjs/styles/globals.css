@@ -2,6 +2,15 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Most Wazted - Graffiti/Street style font for fight announcements */
+@font-face {
+  font-family: 'MostWazted';
+  src: url('/fonts/Mostwasted.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   --foreground-rgb: 214, 211, 209;
   --background-start-rgb: 12, 10, 9;
@@ -32,5 +41,20 @@ body {
   }
   .input {
     @apply bg-stone-950 border border-stone-700 rounded px-3 py-2 text-stone-200 focus:outline-none focus:border-amber-600;
+  }
+
+  /* Fight announcement text - use for ROUND 1, KO, FIGHT, VS, WINNER, etc. */
+  .font-fight {
+    font-family: 'MostWazted', sans-serif;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  /* Glowing fight text variant */
+  .font-fight-glow {
+    font-family: 'MostWazted', sans-serif;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    text-shadow: 0 0 10px rgba(217, 119, 6, 0.8), 0 0 20px rgba(217, 119, 6, 0.4);
   }
 }

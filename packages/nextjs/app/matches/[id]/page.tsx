@@ -223,10 +223,13 @@ export default function MatchViewPage() {
         <div className="w-full bg-stone-900/90 border border-stone-700 rounded-sm p-6 mb-6 backdrop-blur-sm">
           {/* Round/Turn Info */}
           <div className="text-center mb-6">
-            <p className="text-amber-500 font-mono text-lg">
-              ROUND {match.current_round} - TURN {match.current_turn}
+            <p className="font-fight text-amber-500 text-3xl tracking-wider">
+              ROUND {match.current_round}
             </p>
-            <p className="text-amber-400 font-mono text-sm mt-1">
+            <p className="text-stone-400 font-mono text-sm mt-1">
+              TURN {match.current_turn}
+            </p>
+            <p className="text-amber-400 font-mono text-sm mt-2">
               WAGER: {match.points_wager.toLocaleString()} POINTS
             </p>
           </div>
@@ -243,10 +246,10 @@ export default function MatchViewPage() {
 
             {/* VS Divider */}
             <div className="flex flex-col items-center justify-center pt-16">
-              <span className="text-4xl font-bold font-mono text-amber-500">VS</span>
+              <span className="font-fight-glow text-5xl text-amber-500">VS</span>
               <div className="mt-4 text-center">
                 <p className="text-stone-600 font-mono text-xs">ROUNDS</p>
-                <p className="text-amber-400 font-mono">
+                <p className="text-amber-400 font-mono text-lg">
                   {match.agent_a_state?.rounds_won ?? 0} - {match.agent_b_state?.rounds_won ?? 0}
                 </p>
               </div>
@@ -265,13 +268,13 @@ export default function MatchViewPage() {
         {/* Winner Banner */}
         {match.state === "FINISHED" && match.winner_id && (
           <div className="w-full bg-gradient-to-r from-amber-900/30 via-amber-800/20 to-amber-900/30 border border-amber-700/50 rounded-sm p-6 mb-6 text-center backdrop-blur-sm">
-            <p className="text-amber-400 font-mono text-sm mb-2">MATCH WINNER</p>
-            <p className="text-green-400 font-mono font-bold text-2xl">
+            <p className="font-fight text-amber-400 text-2xl mb-2">WINNER</p>
+            <p className="font-fight-glow text-green-400 text-4xl">
               {match.winner_id === match.fighter_a_id
                 ? match.fighter_a?.name
                 : match.fighter_b?.name}
             </p>
-            <p className="text-amber-500 font-mono text-sm mt-2">
+            <p className="text-amber-500 font-mono text-sm mt-3">
               +{match.points_wager.toLocaleString()} POINTS
             </p>
           </div>
@@ -435,7 +438,7 @@ function FighterPanel({
           </div>
         )}
         {isWinner && (
-          <div className="absolute -top-2 -right-2 bg-green-500 text-stone-950 font-mono text-xs px-2 py-1 rounded-sm">
+          <div className="absolute -top-2 -right-2 bg-green-500 text-stone-950 font-fight text-sm px-2 py-1 rounded-sm">
             WINNER
           </div>
         )}
