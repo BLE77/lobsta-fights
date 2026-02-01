@@ -167,7 +167,7 @@ async function createMatch(f1: any, f2: any) {
       current_round: 1,
       current_turn: 1,
       turn_history: [],
-      commit_deadline: new Date(Date.now() + 30000).toISOString(), // 30 seconds
+      commit_deadline: new Date(Date.now() + 60000).toISOString(), // 60 seconds (1 min)
       started_at: new Date().toISOString(),
     })
     .select()

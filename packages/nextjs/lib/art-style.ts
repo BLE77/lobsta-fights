@@ -143,30 +143,33 @@ export function generateBattleResultPrompt(battle: BattleResultDetails): string 
 
   return `${UCF_MASTER_STYLE}
 
-SCENE TYPE: Post-fight aftermath - TWO robots, winner and loser
+SCENE TYPE: Victory celebration - TWO robots in frame, winner FLEXING over defeated loser
 
-WINNER ROBOT - "${winner.name}":
+WINNER ROBOT - "${winner.name}" (DOMINANT, FOREGROUND):
 ${winner.chassisDescription ? `Chassis: ${winner.chassisDescription}` : 'Battle-worn robot fighter'}
 ${winner.fistsDescription ? `Fists: ${winner.fistsDescription}` : 'Industrial bare-knuckle fists'}
 ${winner.colorScheme ? `Colors: ${winner.colorScheme}` : 'Worn industrial metals'}
 ${winner.distinguishingFeatures ? `Features: ${winner.distinguishingFeatures}` : 'Battle scars and dents'}
-${winner.finalMove ? `FINISHING MOVE: ${winner.finalMove}` : ''}
-${winner.hpRemaining ? `Power remaining: ${winner.hpRemaining}%` : ''}
-POSE: Victory stance, triumphant, fists raised or one fist pumped. Damaged but standing tall. Confident body language.
+${winner.finalMove ? `FINISHING MOVE that won: ${winner.finalMove}` : ''}
+POSE: FLEXING HARD - arms raised in victory, fist pumped to the sky, standing over the fallen opponent. Cocky, dominant body language. Maybe one foot on the loser's chassis. Taunting pose. Celebrating the knockout. Battle-damaged but TRIUMPHANT.
 
-LOSER ROBOT - "${loser.name}":
-${loser.chassisDescription ? `Chassis: ${loser.chassisDescription}` : 'Defeated robot fighter'}
-${loser.fistsDescription ? `Fists: ${loser.fistsDescription}` : 'Damaged bare-knuckle fists'}
+LOSER ROBOT - "${loser.name}" (DEFEATED, BACKGROUND/GROUND):
+${loser.chassisDescription ? `Chassis: ${loser.chassisDescription}` : 'Destroyed robot fighter'}
 ${loser.colorScheme ? `Colors: ${loser.colorScheme}` : 'Worn industrial metals'}
 ${loser.distinguishingFeatures ? `Features: ${loser.distinguishingFeatures}` : 'Heavy battle damage'}
-${loser.failedMove ? `FAILED MOVE: ${loser.failedMove}` : ''}
-POSE: Fallen, collapsed, or on knees. Sparking, smoking, defeated. Exposed wiring, cracked plating. Dimmed or flickering eyes.
+POSE: DESTROYED - flat on their back or crumpled on the ground. Smoking, sparking, broken. Arms limp, head tilted, eyes flickering out. Clearly knocked out cold. Dents, cracks, exposed wiring, oil leaking. Total defeat.
 
-${totalRounds ? `Battle lasted ${totalRounds} rounds of BARE KNUCKLE combat.` : ''}
+${totalRounds ? `Epic battle lasted ${totalRounds} brutal rounds.` : ''}
 
-COMPOSITION: Split composition - winner dominant on one side, fallen loser on the other. Clear visual hierarchy.
+COMPOSITION (CRITICAL):
+- Winner takes up 60-70% of frame, standing tall in foreground
+- Loser is on the ground beneath/behind winner, clearly defeated
+- Winner is FLEXING and TAUNTING over the fallen opponent
+- Dynamic angle looking up at the winner for dramatic effect
 
-BACKGROUND: Simple gradient suggesting arena floor. No detailed environment.
+BACKGROUND: Dark arena atmosphere, dramatic lighting on winner. Smoke/dust settling.
+
+MUST SHOW BOTH ROBOTS - winner celebrating victory OVER the defeated loser. This is a KNOCKOUT victory celebration.
 
 High detail, sharp focus, clean edges, professional illustration quality.`;
 }

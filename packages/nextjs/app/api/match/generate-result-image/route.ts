@@ -110,7 +110,7 @@ export async function POST(req: NextRequest) {
           prompt: prompt,
           negative_prompt: UCF_NEGATIVE_PROMPT,
           num_outputs: 1,
-          aspect_ratio: "16:9", // Widescreen for battle scenes
+          aspect_ratio: "3:4", // Portrait to show full robot bodies
           output_format: "png",
           output_quality: 90,
         },

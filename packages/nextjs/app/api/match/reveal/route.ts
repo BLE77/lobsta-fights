@@ -281,7 +281,22 @@ export async function POST(request: Request) {
     };
 
     if (newState === "COMMIT_PHASE") {
-      matchUpdateData.commit_deadline = new Date(Date.now() + 30000).toISOString();
+      matchUpdateData.commit_deadline = new Date(Date.now() + 60000).toISOString(); // 60 seconds (1 min)
+    }
+
+    // Generate round-win image when a round ends (but match continues)
+    if (roundWinner && !matchWinner && process.env.REPLICATE_API_TOKEN) {
+      generateRoundWinImage(
+        match_id,
+        match.current_round,
+        roundWinner,
+        roundWinner === match.fighter_a_id ? match.fighter_b_id : match.fighter_a_id,
+        moveA,
+        moveB,
+        turnEntry
+      ).catch((err) => {
+        console.error("[Image] Error generating round win image:", err);
+      });
     }
 
     if (matchWinner) {
@@ -598,7 +613,7 @@ async function generateBattleResultImage(matchId: string): Promise<void> {
           prompt,
           negative_prompt: UCF_NEGATIVE_PROMPT,
           num_outputs: 1,
-          aspect_ratio: "16:9",
+          aspect_ratio: "3:4", // Portrait to show full robot bodies
           output_format: "png",
           output_quality: 90,
         },
@@ -636,13 +651,23 @@ async function generateBattleResultImage(matchId: string): Promise<void> {
         const status = await statusRes.json();
 
         if (status.status === "succeeded" && status.output?.[0]) {
-          // Save the image URL to the match
-          await supabase
-            .from("ucf_matches")
-            .update({ result_image_url: status.output[0] })
-            .eq("id", matchId);
+          const tempImageUrl = status.output[0];
+          console.log(`[Image] Battle image generated: ${tempImageUrl}`);
 
-          console.log(`[Image] Battle result image ready for match ${matchId}`);
+          // Store image permanently in Supabase Storage
+          const { storeBattleImage } = await import("../../../../lib/image-storage");
+          const permanentUrl = await storeBattleImage(matchId, tempImageUrl);
+
+          if (permanentUrl) {
+            console.log(`[Image] Battle result image stored permanently for match ${matchId}: ${permanentUrl}`);
+          } else {
+            // Fallback to temp URL if storage fails
+            console.error(`[Image] Failed to store permanently, using temp URL for match ${matchId}`);
+            await supabase
+              .from("ucf_matches")
+              .update({ result_image_url: tempImageUrl })
+              .eq("id", matchId);
+          }
           return;
         }
 
@@ -658,5 +683,166 @@ async function generateBattleResultImage(matchId: string): Promise<void> {
 
   } catch (err) {
     console.error("[Image] Error in generateBattleResultImage:", err);
+  }
+}
+
+/**
+ * Generate an image for a round win (non-blocking)
+ * Shows the round winner's finishing blow moment
+ */
+async function generateRoundWinImage(
+  matchId: string,
+  roundNumber: number,
+  winnerId: string,
+  loserId: string,
+  winnerMove: MoveType,
+  loserMove: MoveType,
+  turnEntry: any
+): Promise<void> {
+  const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
+  if (!REPLICATE_API_TOKEN) return;
+
+  try {
+    // Fetch fighter details
+    const { data: fighters } = await supabase
+      .from("ucf_fighters")
+      .select("id, name, robot_metadata")
+      .in("id", [winnerId, loserId]);
+
+    if (!fighters || fighters.length !== 2) return;
+
+    const winner = fighters.find((f) => f.id === winnerId);
+    const loser = fighters.find((f) => f.id === loserId);
+    if (!winner || !loser) return;
+
+    const winnerMeta = winner.robot_metadata || {};
+    const loserMeta = loser.robot_metadata || {};
+
+    // Build prompt for round-win moment
+    const { generateTurnActionPrompt, UCF_NEGATIVE_PROMPT } = await import("../../../../lib/art-style");
+
+    // Create a dynamic scene description based on the winning move
+    const moveDescriptions: Record<string, string> = {
+      HIGH_STRIKE: "delivering a devastating knockout punch to the head",
+      MID_STRIKE: "landing a crushing body blow that folds the opponent",
+      LOW_STRIKE: "sweeping the legs out and dropping the opponent",
+      SPECIAL: "unleashing a devastating special attack with full power",
+      CATCH: "catching and slamming the opponent to the ground",
+      GUARD_HIGH: "countering with a vicious headshot after blocking",
+      GUARD_MID: "punishing with a body shot after a perfect block",
+      GUARD_LOW: "retaliating low after blocking the opponent's attack",
+      DODGE: "evading and delivering a counter-strike",
+    };
+
+    const actionDesc = moveDescriptions[winnerMove] || "defeating the opponent with a powerful strike";
+
+    const prompt = `A stylized grotesque robot battle scene inspired by adult animation aesthetics.
+
+SCENE: Round ${roundNumber} finish - The winning robot "${winner.name}" is ${actionDesc}.
+
+WINNER ROBOT - "${winner.name}":
+${winnerMeta.chassis_description ? `Chassis: ${winnerMeta.chassis_description}` : 'Battle-worn robot fighter'}
+${winnerMeta.fists_description ? `Fists: ${winnerMeta.fists_description}` : 'Industrial bare-knuckle fists'}
+${winnerMeta.color_scheme ? `Colors: ${winnerMeta.color_scheme}` : 'Worn industrial metals'}
+POSE: Mid-action victory moment, ${winnerMove} landing, powerful and dominant.
+
+LOSER ROBOT - "${loser.name}":
+${loserMeta.chassis_description ? `Chassis: ${loserMeta.chassis_description}` : 'Damaged robot fighter'}
+${loserMeta.color_scheme ? `Colors: ${loserMeta.color_scheme}` : 'Worn industrial metals'}
+POSE: Being hit, staggering, sparking, about to fall. Their failed ${loserMove} leaving them exposed.
+
+STYLE: Dark adult animation, editorial caricature, grotesque cartoon. MeatCanyon-inspired but polished.
+Exaggerated proportions, worn battle-scarred robots, hand-inked look.
+Muted industrial colors, no neon, no glossy sci-fi.
+
+BACKGROUND: Simple arena floor gradient, motion blur suggesting impact.
+
+High detail, sharp focus, clean edges, professional illustration quality.`;
+
+    // Start image generation
+    const response = await fetch("https://api.replicate.com/v1/predictions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${REPLICATE_API_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        version: "5599ed30703defd1d160a25a63321b4dec97101d98b4674bcc56e41f62f35637",
+        input: {
+          prompt,
+          negative_prompt: UCF_NEGATIVE_PROMPT,
+          num_outputs: 1,
+          aspect_ratio: "3:4", // Portrait to show full robot bodies
+          output_format: "png",
+          output_quality: 90,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      console.error(`[Image] Failed to start round ${roundNumber} image generation`);
+      return;
+    }
+
+    const prediction = await response.json();
+    console.log(`[Image] Started round ${roundNumber} win image for match ${matchId}: ${prediction.id}`);
+
+    // Poll for completion and store result
+    let attempts = 0;
+    const maxAttempts = 30;
+
+    const pollForResult = async () => {
+      while (attempts < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        attempts++;
+
+        const statusRes = await fetch(
+          `https://api.replicate.com/v1/predictions/${prediction.id}`,
+          { headers: { "Authorization": `Bearer ${REPLICATE_API_TOKEN}` } }
+        );
+
+        if (!statusRes.ok) continue;
+
+        const status = await statusRes.json();
+
+        if (status.status === "succeeded" && status.output?.[0]) {
+          // Get current round_images array and append
+          const { data: currentMatch } = await supabase
+            .from("ucf_matches")
+            .select("round_images")
+            .eq("id", matchId)
+            .single();
+
+          const roundImages = currentMatch?.round_images || [];
+          roundImages.push({
+            round: roundNumber,
+            winner_id: winnerId,
+            winner_name: winner.name,
+            loser_name: loser.name,
+            winning_move: winnerMove,
+            image_url: status.output[0],
+            generated_at: new Date().toISOString(),
+          });
+
+          await supabase
+            .from("ucf_matches")
+            .update({ round_images: roundImages })
+            .eq("id", matchId);
+
+          console.log(`[Image] Round ${roundNumber} win image ready for match ${matchId}`);
+          return;
+        }
+
+        if (status.status === "failed") {
+          console.error(`[Image] Round image failed for match ${matchId}:`, status.error);
+          return;
+        }
+      }
+    };
+
+    pollForResult().catch(console.error);
+
+  } catch (err) {
+    console.error(`[Image] Error generating round ${roundNumber} win image:`, err);
   }
 }

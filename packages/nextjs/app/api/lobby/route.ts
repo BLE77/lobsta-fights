@@ -69,7 +69,7 @@ export async function POST(request: Request) {
           fighter_b_id: fighterId,
           state: "COMMIT_PHASE",
           points_wager: pointsWager,
-          commit_deadline: new Date(Date.now() + 30000).toISOString(), // 30 seconds
+          commit_deadline: new Date(Date.now() + 60000).toISOString(), // 60 seconds (1 min)
           started_at: new Date().toISOString(),
         })
         .select()

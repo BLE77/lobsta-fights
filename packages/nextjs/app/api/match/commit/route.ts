@@ -92,7 +92,7 @@ export async function POST(request: Request) {
     if (otherHasCommitted) {
       // Both committed - transition to REVEAL_PHASE
       updateData.state = "REVEAL_PHASE";
-      updateData.reveal_deadline = new Date(Date.now() + 30000).toISOString(); // 30 seconds to reveal
+      updateData.reveal_deadline = new Date(Date.now() + 60000).toISOString(); // 60 seconds to reveal (1 min)
     }
 
     const { data: updatedMatch, error: updateError } = await supabase

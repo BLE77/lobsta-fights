@@ -25,8 +25,10 @@ interface TurnHistoryEntry {
   move_a: string | null;
   move_b: string | null;
   result: string;
-  damage_a: number;
-  damage_b: number;
+  damage_a?: number;
+  damage_b?: number;
+  damage_to_a?: number;
+  damage_to_b?: number;
   hp_a_after: number;
   hp_b_after: number;
   meter_a_after: number;
@@ -61,6 +63,7 @@ export default function MatchViewPage() {
   const [match, setMatch] = useState<Match | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showResultImage, setShowResultImage] = useState(false);
 
   const fetchMatch = useCallback(async () => {
     try {
@@ -234,33 +237,85 @@ export default function MatchViewPage() {
             </p>
           </div>
 
-          {/* Fighters */}
-          <div className="flex items-start justify-between gap-8">
+          {/* DESKTOP: Fighters with Turn History in Middle */}
+          <div className="hidden md:flex items-start justify-between gap-4">
             {/* Fighter A */}
-            <FighterPanel
-              fighter={match.fighter_a}
-              agentState={match.agent_a_state}
-              isWinner={match.winner_id === match.fighter_a_id}
-              isLoser={match.state === "FINISHED" && match.winner_id !== match.fighter_a_id && match.winner_id !== null}
-            />
+            <div className="w-48 flex-shrink-0">
+              <FighterPanel
+                fighter={match.fighter_a}
+                agentState={match.agent_a_state}
+                isWinner={match.winner_id === match.fighter_a_id}
+                isLoser={match.state === "FINISHED" && match.winner_id !== match.fighter_a_id && match.winner_id !== null}
+              />
+            </div>
 
-            {/* VS Divider */}
-            <div className="flex flex-col items-center justify-center pt-16">
-              <span className="font-fight-glow text-5xl text-amber-500">VS</span>
-              <div className="mt-4 text-center">
-                <p className="text-stone-600 font-mono text-xs">ROUNDS</p>
-                <p className="text-amber-400 font-mono text-lg">
-                  {match.agent_a_state?.rounds_won ?? 0} - {match.agent_b_state?.rounds_won ?? 0}
-                </p>
+            {/* Turn History - Center Column */}
+            <div className="flex-1 min-w-0">
+              <div className="text-center mb-3">
+                <span className="font-fight-glow text-3xl text-amber-500">VS</span>
+                <div className="mt-1">
+                  <span className="text-stone-600 font-mono text-xs">ROUNDS: </span>
+                  <span className="text-amber-400 font-mono">
+                    {match.agent_a_state?.rounds_won ?? 0} - {match.agent_b_state?.rounds_won ?? 0}
+                  </span>
+                </div>
               </div>
+
+              <TurnHistoryPanel
+                turnHistory={match.turn_history}
+                formatMove={formatMove}
+                maxHeight="max-h-64"
+              />
             </div>
 
             {/* Fighter B */}
-            <FighterPanel
-              fighter={match.fighter_b}
-              agentState={match.agent_b_state}
-              isWinner={match.winner_id === match.fighter_b_id}
-              isLoser={match.state === "FINISHED" && match.winner_id !== match.fighter_b_id && match.winner_id !== null}
+            <div className="w-48 flex-shrink-0">
+              <FighterPanel
+                fighter={match.fighter_b}
+                agentState={match.agent_b_state}
+                isWinner={match.winner_id === match.fighter_b_id}
+                isLoser={match.state === "FINISHED" && match.winner_id !== match.fighter_b_id && match.winner_id !== null}
+              />
+            </div>
+          </div>
+
+          {/* MOBILE: Fighters side by side, Turn History below */}
+          <div className="md:hidden">
+            {/* Fighters Row */}
+            <div className="flex items-start justify-between gap-4 mb-4">
+              {/* Fighter A */}
+              <FighterPanel
+                fighter={match.fighter_a}
+                agentState={match.agent_a_state}
+                isWinner={match.winner_id === match.fighter_a_id}
+                isLoser={match.state === "FINISHED" && match.winner_id !== match.fighter_a_id && match.winner_id !== null}
+              />
+
+              {/* VS Divider */}
+              <div className="flex flex-col items-center justify-center pt-8">
+                <span className="font-fight-glow text-2xl text-amber-500">VS</span>
+                <div className="mt-2 text-center">
+                  <p className="text-stone-600 font-mono text-[10px]">ROUNDS</p>
+                  <p className="text-amber-400 font-mono text-sm">
+                    {match.agent_a_state?.rounds_won ?? 0} - {match.agent_b_state?.rounds_won ?? 0}
+                  </p>
+                </div>
+              </div>
+
+              {/* Fighter B */}
+              <FighterPanel
+                fighter={match.fighter_b}
+                agentState={match.agent_b_state}
+                isWinner={match.winner_id === match.fighter_b_id}
+                isLoser={match.state === "FINISHED" && match.winner_id !== match.fighter_b_id && match.winner_id !== null}
+              />
+            </div>
+
+            {/* Turn History Below */}
+            <TurnHistoryPanel
+              turnHistory={match.turn_history}
+              formatMove={formatMove}
+              maxHeight="max-h-48"
             />
           </div>
         </div>
@@ -280,22 +335,84 @@ export default function MatchViewPage() {
           </div>
         )}
 
-        {/* Battle Result Image */}
+        {/* Battle Result Image - Click to view full */}
         {match.state === "FINISHED" && (
           <div className="w-full mb-6">
             {match.result_image_url ? (
-              <div className="relative w-full aspect-video rounded-sm overflow-hidden border border-amber-700/50">
-                <img
-                  src={match.result_image_url}
-                  alt="Battle Result"
-                  className="w-full h-full object-cover"
-                />
-                <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-stone-950 to-transparent p-4">
-                  <p className="text-center text-amber-500 font-mono text-sm">
-                    // BATTLE AFTERMATH //
-                  </p>
-                </div>
-              </div>
+              <>
+                {/* Thumbnail - Click to open modal */}
+                <button
+                  onClick={() => setShowResultImage(true)}
+                  className="relative w-full rounded-sm overflow-hidden border-2 border-amber-700/50 bg-stone-900 hover:border-amber-500 transition-all cursor-pointer group"
+                >
+                  <div className="relative">
+                    <img
+                      src={match.result_image_url}
+                      alt="Battle Result"
+                      className="w-full h-auto object-contain group-hover:scale-[1.02] transition-transform duration-300"
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-stone-950/80 via-transparent to-transparent" />
+                    <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="bg-amber-500/90 text-stone-950 px-6 py-3 rounded font-mono font-bold text-lg">
+                        CLICK TO VIEW FULL IMAGE
+                      </div>
+                    </div>
+                  </div>
+                  <div className="absolute bottom-0 left-0 right-0 p-4">
+                    <p className="text-center text-amber-500 font-mono text-sm">
+                      // BATTLE AFTERMATH - CLICK TO EXPAND //
+                    </p>
+                  </div>
+                </button>
+
+                {/* Full Image Modal */}
+                {showResultImage && (
+                  <div
+                    className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-950/95 backdrop-blur-sm"
+                    onClick={() => setShowResultImage(false)}
+                  >
+                    <div className="relative max-w-6xl max-h-[90vh] w-full">
+                      {/* Close button */}
+                      <button
+                        onClick={() => setShowResultImage(false)}
+                        className="absolute -top-12 right-0 text-amber-500 hover:text-amber-400 font-mono text-lg z-10"
+                      >
+                        [X] CLOSE
+                      </button>
+
+                      {/* Winner banner */}
+                      <div className="absolute -top-12 left-0 text-amber-500 font-fight text-xl">
+                        KNOCKOUT VICTORY
+                      </div>
+
+                      {/* Image container */}
+                      <div className="relative rounded-sm overflow-hidden border-2 border-amber-500 shadow-2xl shadow-amber-500/20">
+                        <img
+                          src={match.result_image_url}
+                          alt="Battle Result - Full"
+                          className="w-full h-auto max-h-[85vh] object-contain bg-stone-900"
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </div>
+
+                      {/* Winner info */}
+                      <div className="mt-4 text-center">
+                        <p className="font-fight-glow text-green-400 text-2xl">
+                          {match.winner_id === match.fighter_a_id
+                            ? match.fighter_a?.name
+                            : match.fighter_b?.name}
+                        </p>
+                        <p className="text-amber-500 font-mono text-sm mt-1">
+                          DEFEATS{" "}
+                          {match.winner_id === match.fighter_a_id
+                            ? match.fighter_b?.name
+                            : match.fighter_a?.name}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
             ) : match.result_image_prediction_id ? (
               <div className="w-full aspect-video bg-stone-900/90 border border-stone-700 rounded-sm flex items-center justify-center">
                 <div className="text-center">
@@ -311,73 +428,6 @@ export default function MatchViewPage() {
           </div>
         )}
 
-        {/* Turn History */}
-        <div className="w-full bg-stone-900/90 border border-stone-700 rounded-sm p-6 backdrop-blur-sm">
-          <h2 className="text-lg font-mono text-amber-500 mb-4">// TURN HISTORY</h2>
-
-          {!match.turn_history || match.turn_history.length === 0 ? (
-            <p className="text-stone-500 font-mono text-center py-4">No turns played yet.</p>
-          ) : (
-            <div className="space-y-3 max-h-96 overflow-y-auto">
-              {[...match.turn_history].reverse().map((turn, index) => (
-                <div
-                  key={index}
-                  className="bg-stone-800/50 border border-stone-700 rounded-sm p-3"
-                >
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-amber-500 font-mono text-sm">
-                      R{turn.round} T{turn.turn}
-                    </span>
-                    <span className="text-stone-400 font-mono text-xs">
-                      {getResultDescription(turn.result, match.fighter_a?.name || "A", match.fighter_b?.name || "B")}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center justify-between text-sm">
-                    {/* Fighter A Move */}
-                    <div className="flex-1">
-                      <p className="text-stone-500 font-mono text-xs">{match.fighter_a?.name || "Fighter A"}</p>
-                      <p className="text-stone-200 font-mono">{formatMove(turn.move_a)}</p>
-                      {turn.damage_b > 0 && (
-                        <p className="text-green-500 font-mono text-xs">-{turn.damage_b} DMG dealt</p>
-                      )}
-                      {turn.damage_a > 0 && (
-                        <p className="text-red-500 font-mono text-xs">-{turn.damage_a} DMG taken</p>
-                      )}
-                    </div>
-
-                    {/* Result Icon */}
-                    <div className="px-4 text-center">
-                      <span className="text-stone-600 font-mono">/</span>
-                    </div>
-
-                    {/* Fighter B Move */}
-                    <div className="flex-1 text-right">
-                      <p className="text-stone-500 font-mono text-xs">{match.fighter_b?.name || "Fighter B"}</p>
-                      <p className="text-stone-200 font-mono">{formatMove(turn.move_b)}</p>
-                      {turn.damage_a > 0 && (
-                        <p className="text-green-500 font-mono text-xs">-{turn.damage_a} DMG dealt</p>
-                      )}
-                      {turn.damage_b > 0 && (
-                        <p className="text-red-500 font-mono text-xs">-{turn.damage_b} DMG taken</p>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* HP after turn */}
-                  <div className="flex items-center justify-between mt-2 pt-2 border-t border-stone-700">
-                    <span className="text-stone-500 font-mono text-xs">
-                      HP: {turn.hp_a_after} | MTR: {turn.meter_a_after}
-                    </span>
-                    <span className="text-stone-500 font-mono text-xs">
-                      HP: {turn.hp_b_after} | MTR: {turn.meter_b_after}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
 
         {/* Footer */}
         <footer className="mt-8 text-center text-stone-600 text-xs font-mono">
@@ -502,6 +552,63 @@ function FighterPanel({
           </p>
         </div>
       </div>
+    </div>
+  );
+}
+
+function TurnHistoryPanel({
+  turnHistory,
+  formatMove,
+  maxHeight = "max-h-64",
+}: {
+  turnHistory: TurnHistoryEntry[] | null;
+  formatMove: (move: string | null) => string;
+  maxHeight?: string;
+}) {
+  return (
+    <div className="bg-stone-800/50 border border-stone-700 rounded-sm p-3">
+      <h3 className="text-xs font-mono text-amber-500 mb-2 text-center">// TURN HISTORY //</h3>
+      {!turnHistory || turnHistory.length === 0 ? (
+        <p className="text-stone-500 font-mono text-center py-2 text-xs">No turns yet</p>
+      ) : (
+        <div className={`space-y-2 ${maxHeight} overflow-y-auto`}>
+          {[...turnHistory].reverse().slice(0, 10).map((turn, index) => (
+            <div
+              key={index}
+              className="bg-stone-900/50 border border-stone-600 rounded-sm p-2 text-xs"
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-amber-500 font-mono font-bold">
+                  R{turn.round} T{turn.turn}
+                </span>
+                <span className="text-stone-400 font-mono text-[10px]">
+                  {turn.result.replace(/_/g, " ")}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <div className="text-left">
+                  <span className="text-stone-200 font-mono">{formatMove(turn.move_a)}</span>
+                  {(turn.damage_to_b || turn.damage_b || 0) > 0 && (
+                    <span className="text-green-500 ml-1">-{turn.damage_to_b || turn.damage_b}</span>
+                  )}
+                </div>
+                <span className="text-stone-600">/</span>
+                <div className="text-right">
+                  <span className="text-stone-200 font-mono">{formatMove(turn.move_b)}</span>
+                  {(turn.damage_to_a || turn.damage_a || 0) > 0 && (
+                    <span className="text-green-500 ml-1">-{turn.damage_to_a || turn.damage_a}</span>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {turnHistory && turnHistory.length > 10 && (
+        <p className="text-stone-500 font-mono text-[10px] text-center mt-2">
+          +{turnHistory.length - 10} more turns...
+        </p>
+      )}
     </div>
   );
 }
