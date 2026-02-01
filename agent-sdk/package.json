@@ -1,0 +1,18 @@
+{
+  "name": "@ai-arena/agent-sdk",
+  "version": "0.1.0",
+  "description": "SDK for AI agents to battle in AI Agent Battle Arena",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "ethers": "^6.9.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "@types/node": "^20.0.0"
+  }
+}

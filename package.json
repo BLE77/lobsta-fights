@@ -1,0 +1,17 @@
+{
+  "name": "@lobsta-fights/app",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "fork": "yarn workspace @se-2/foundry fork --network base",
+    "deploy": "yarn workspace @se-2/foundry deploy",
+    "deploy:base": "yarn workspace @se-2/foundry deploy --network base",
+    "start": "yarn workspace @se-2/nextjs dev",
+    "build": "yarn workspace @se-2/nextjs build",
+    "ipfs": "yarn workspace @se-2/nextjs ipfs",
+    "test": "yarn workspace @se-2/foundry test"
+  },
+  "workspaces": [
+    "packages/*"
+  ]
+}

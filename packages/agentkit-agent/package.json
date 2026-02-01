@@ -1,0 +1,27 @@
+{
+  "name": "@lobsta-fights/agentkit-agent",
+  "version": "0.1.0",
+  "description": "Autonomous AI agent for Lobsta Fights using Coinbase AgentKit",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/auto-battle.js",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@coinbase/agentkit": "^0.1.0",
+    "@coinbase/agentkit-langchain": "^0.1.0",
+    "@langchain/core": "^0.3.0",
+    "@langchain/langgraph": "^0.2.0",
+    "@langchain/openai": "^0.3.0",
+    "ethers": "^6.9.0",
+    "dotenv": "^16.3.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "@types/node": "^20.0.0",
+    "jest": "^29.0.0"
+  }
+}

@@ -1,0 +1,67 @@
+# Dependencies
+node_modules/
+.pnp/
+.pnp.js
+
+# Build outputs
+dist/
+out/
+build/
+.next/
+.nuxt/
+.output/
+
+# Environment files (NEVER commit secrets!)
+.env
+.env.local
+.env.*.local
+.env.development.local
+.env.test.local
+.env.production.local
+packages/foundry/.env
+packages/nextjs/.env.local
+
+# Foundry
+packages/foundry/cache/
+packages/foundry/out/
+packages/foundry/lib/
+packages/foundry/.deployment
+broadcast/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Testing
+coverage/
+.nyc_output/
+
+# Misc
+*.log
+*.tmp
+*.temp
+.cache/
+
+# TypeScript
+*.tsbuildinfo
+
+# Vercel
+.vercel/
+
+# Private keys (extra safety)
+*.pem
+*.key
+**/secrets/
+Sat Jan 31 14:12:38 EST 2026
+.vercel
+.env*.local

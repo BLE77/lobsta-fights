@@ -1,0 +1,36 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --foreground-rgb: 214, 211, 209;
+  --background-start-rgb: 12, 10, 9;
+  --background-end-rgb: 28, 25, 23;
+}
+
+body {
+  color: rgb(var(--foreground-rgb));
+  background: linear-gradient(
+    to bottom,
+    rgb(var(--background-start-rgb)),
+    rgb(var(--background-end-rgb))
+  );
+}
+
+@layer components {
+  .btn {
+    @apply px-4 py-2 rounded font-medium transition-colors;
+  }
+  .btn-primary {
+    @apply bg-amber-600 text-white hover:bg-amber-700;
+  }
+  .btn-secondary {
+    @apply bg-stone-700 text-stone-200 hover:bg-stone-600;
+  }
+  .btn-ghost {
+    @apply bg-transparent hover:bg-stone-800 text-stone-400;
+  }
+  .input {
+    @apply bg-stone-950 border border-stone-700 rounded px-3 py-2 text-stone-200 focus:outline-none focus:border-amber-600;
+  }
+}
