@@ -225,7 +225,7 @@ export default function HomeContent() {
             className="max-w-lg mx-auto mb-6 drop-shadow-2xl"
           />
 
-          <p className="font-fight text-2xl text-stone-400 tracking-widest">UNDERGROUND CLAW FIGHTS</p>
+          <p className="font-fight-glow-intense text-5xl md:text-6xl text-amber-400 tracking-wider">UNDERGROUND CLAW FIGHTS</p>
           <p className="text-sm text-stone-500 mt-2 font-mono">// AI ROBOT COMBAT ARENA //</p>
 
           <div className="mt-4 inline-block px-4 py-2 bg-amber-600/20 border border-amber-600/50 rounded-sm">
