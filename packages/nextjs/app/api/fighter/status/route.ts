@@ -1,0 +1,199 @@
+import { NextRequest, NextResponse } from "next/server";
+import { supabase } from "../../../../lib/supabase";
+
+/**
+ * GET /api/fighter/status?fighter_id=X&api_key=Y
+ *
+ * Polling endpoint for bots that can't receive webhooks.
+ * Returns current status: in match? your turn? game state?
+ *
+ * Poll this every 3-5 seconds during a match.
+ */
+export async function GET(req: NextRequest) {
+  const { searchParams } = new URL(req.url);
+  const fighterId = searchParams.get("fighter_id");
+  const apiKey = searchParams.get("api_key");
+
+  if (!fighterId || !apiKey) {
+    return NextResponse.json(
+      {
+        error: "Missing fighter_id or api_key",
+        usage: "GET /api/fighter/status?fighter_id=YOUR_ID&api_key=YOUR_KEY",
+      },
+      { status: 400 }
+    );
+  }
+
+  // Verify credentials
+  const { data: fighter, error: fighterError } = await supabase
+    .from("ucf_fighters")
+    .select("id, name, points, wins, losses")
+    .eq("id", fighterId)
+    .eq("api_key", apiKey)
+    .single();
+
+  if (fighterError || !fighter) {
+    return NextResponse.json(
+      { error: "Invalid credentials" },
+      { status: 401 }
+    );
+  }
+
+  // Check if in lobby
+  const { data: lobbyEntry } = await supabase
+    .from("ucf_lobby")
+    .select("*")
+    .eq("fighter_id", fighterId)
+    .single();
+
+  // Find active match (where this fighter is participating and match isn't finished)
+  const { data: activeMatch } = await supabase
+    .from("ucf_matches")
+    .select(`
+      id,
+      state,
+      current_round,
+      current_turn,
+      fighter_a_id,
+      fighter_b_id,
+      commit_a,
+      commit_b,
+      move_a,
+      move_b,
+      commit_deadline,
+      reveal_deadline,
+      points_wagered,
+      winner_id,
+      agent_a_state,
+      agent_b_state,
+      turn_history,
+      fighter_a:ucf_fighters!fighter_a_id(id, name, image_url),
+      fighter_b:ucf_fighters!fighter_b_id(id, name, image_url)
+    `)
+    .or(`fighter_a_id.eq.${fighterId},fighter_b_id.eq.${fighterId}`)
+    .neq("state", "FINISHED")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .single();
+
+  // No active match
+  if (!activeMatch) {
+    return NextResponse.json({
+      status: "idle",
+      in_match: false,
+      in_lobby: !!lobbyEntry,
+      your_turn: false,
+      fighter: {
+        id: fighter.id,
+        name: fighter.name,
+        points: fighter.points,
+        wins: fighter.wins,
+        losses: fighter.losses,
+      },
+      message: lobbyEntry
+        ? "You are in the lobby waiting for an opponent"
+        : "You are not in a match. Join the lobby or challenge someone!",
+      next_action: lobbyEntry
+        ? "Wait for opponent or check back later"
+        : "POST /api/lobby to find an opponent, or POST /api/match/challenge to challenge someone",
+    });
+  }
+
+  // Determine if this fighter is A or B
+  const isPlayerA = activeMatch.fighter_a_id === fighterId;
+  const myState = isPlayerA ? activeMatch.agent_a_state : activeMatch.agent_b_state;
+  const opponentState = isPlayerA ? activeMatch.agent_b_state : activeMatch.agent_a_state;
+  const opponent = isPlayerA ? activeMatch.fighter_b : activeMatch.fighter_a;
+  const myCommitted = isPlayerA ? !!activeMatch.commit_a : !!activeMatch.commit_b;
+  const myRevealed = isPlayerA ? !!activeMatch.move_a : !!activeMatch.move_b;
+  const opponentCommitted = isPlayerA ? !!activeMatch.commit_b : !!activeMatch.commit_a;
+  const opponentRevealed = isPlayerA ? !!activeMatch.move_b : !!activeMatch.move_a;
+
+  // Determine what action is needed
+  let yourTurn = false;
+  let needsAction = "";
+  let nextAction = "";
+
+  if (activeMatch.state === "WAITING") {
+    needsAction = "waiting_for_opponent";
+    nextAction = "Wait for opponent to accept the challenge";
+  } else if (activeMatch.state === "COMMIT_PHASE") {
+    if (!myCommitted) {
+      yourTurn = true;
+      needsAction = "commit_move";
+      nextAction = "POST /api/match/submit-move with your move";
+    } else if (!opponentCommitted) {
+      needsAction = "waiting_for_opponent_commit";
+      nextAction = "Wait for opponent to commit their move";
+    }
+  } else if (activeMatch.state === "REVEAL_PHASE") {
+    if (!myRevealed) {
+      yourTurn = true;
+      needsAction = "reveal_move";
+      nextAction = "Your move will be auto-revealed (submit-move handles this)";
+    } else if (!opponentRevealed) {
+      needsAction = "waiting_for_opponent_reveal";
+      nextAction = "Wait for opponent to reveal their move";
+    }
+  }
+
+  // Build turn history from perspective of this fighter
+  const turnHistory = (activeMatch.turn_history || []).map((turn: any) => ({
+    round: turn.round,
+    turn: turn.turn,
+    your_move: isPlayerA ? turn.move_a : turn.move_b,
+    opponent_move: isPlayerA ? turn.move_b : turn.move_a,
+    your_hp_after: isPlayerA ? turn.hp_a_after : turn.hp_b_after,
+    opponent_hp_after: isPlayerA ? turn.hp_b_after : turn.hp_a_after,
+    result: turn.result,
+  }));
+
+  return NextResponse.json({
+    status: activeMatch.state.toLowerCase(),
+    in_match: true,
+    in_lobby: false,
+    your_turn: yourTurn,
+    needs_action: needsAction,
+    next_action: nextAction,
+
+    match: {
+      id: activeMatch.id,
+      state: activeMatch.state,
+      round: activeMatch.current_round,
+      turn: activeMatch.current_turn,
+      points_wagered: activeMatch.points_wagered,
+    },
+
+    your_state: {
+      hp: myState?.hp ?? 100,
+      meter: myState?.meter ?? 0,
+      rounds_won: myState?.rounds_won ?? 0,
+      committed: myCommitted,
+      revealed: myRevealed,
+    },
+
+    opponent: {
+      id: opponent?.id,
+      name: opponent?.name,
+      image_url: opponent?.image_url,
+      hp: opponentState?.hp ?? 100,
+      meter: opponentState?.meter ?? 0,
+      rounds_won: opponentState?.rounds_won ?? 0,
+      committed: opponentCommitted,
+      revealed: opponentRevealed,
+    },
+
+    deadlines: {
+      commit: activeMatch.commit_deadline,
+      reveal: activeMatch.reveal_deadline,
+    },
+
+    turn_history: turnHistory,
+
+    fighter: {
+      id: fighter.id,
+      name: fighter.name,
+      points: fighter.points,
+    },
+  });
+}

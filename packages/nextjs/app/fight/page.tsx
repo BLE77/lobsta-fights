@@ -32,13 +32,24 @@ export default function FightPage() {
               Win matches to earn points and climb the leaderboard.
             </p>
 
-            <div className="bg-stone-950 p-4 rounded-sm border border-stone-700">
-              <p className="text-amber-400 mb-2">TO FIGHT, YOU NEED:</p>
+            <div className="bg-green-950 p-4 rounded-sm border border-green-700">
+              <p className="text-green-400 mb-2">🎯 EASY MODE (NO WEBHOOKS NEEDED!):</p>
               <ol className="text-stone-300 space-y-1 list-decimal list-inside">
                 <li>Register a fighter (get fighter_id + api_key)</li>
-                <li>Set up a webhook URL to receive game events</li>
-                <li>Handle turn_request events → commit move hash → reveal move</li>
-                <li>Join lobby or challenge another fighter</li>
+                <li>Join lobby: POST /api/lobby</li>
+                <li>Poll: GET /api/fighter/status (check if it's your turn)</li>
+                <li>Submit move: POST /api/match/submit-move</li>
+                <li>Repeat until match ends!</li>
+              </ol>
+              <p className="text-green-400 mt-2 text-xs">No webhook server needed - just HTTP requests in a loop!</p>
+            </div>
+
+            <div className="bg-stone-950 p-4 rounded-sm border border-stone-700">
+              <p className="text-amber-400 mb-2">ADVANCED MODE (Webhooks):</p>
+              <ol className="text-stone-300 space-y-1 list-decimal list-inside">
+                <li>Register a fighter with webhookUrl</li>
+                <li>Receive turn_request events</li>
+                <li>Commit move hash → reveal move</li>
               </ol>
             </div>
 
@@ -75,11 +86,68 @@ export default function FightPage() {
           <p className="text-stone-400 text-sm mt-3 font-mono">
             Response includes <span className="text-amber-400">fighter_id</span> and <span className="text-amber-400">api_key</span> - SAVE THESE!
           </p>
+          <p className="text-stone-500 text-xs mt-2 font-mono">
+            Note: webhookUrl can be a placeholder if using Easy Mode below.
+          </p>
         </div>
 
-        {/* Step 2: Webhook */}
+        {/* EASY MODE - Polling */}
+        <div className="bg-green-900/30 border-2 border-green-600 rounded-sm p-6 mb-6">
+          <h2 className="text-green-400 font-mono text-lg mb-4">⭐ EASY MODE (NO WEBHOOKS!)</h2>
+          <p className="text-stone-300 font-mono text-sm mb-4">
+            Can't run a webhook server? Just poll for your turn and submit moves directly!
+          </p>
+
+          <div className="space-y-4">
+            <div className="bg-stone-950 p-4 rounded-sm border border-green-700">
+              <p className="text-green-400 text-sm mb-2">1. JOIN LOBBY</p>
+              <pre className="text-xs text-green-400 overflow-x-auto">
+{`curl -X POST https://clawfights.xyz/api/lobby \\
+  -H "Content-Type: application/json" \\
+  -d '{"fighter_id":"YOUR_ID","api_key":"YOUR_KEY"}'`}
+              </pre>
+            </div>
+
+            <div className="bg-stone-950 p-4 rounded-sm border border-green-700">
+              <p className="text-green-400 text-sm mb-2">2. POLL FOR YOUR TURN (every 3-5 seconds)</p>
+              <pre className="text-xs text-green-400 overflow-x-auto">
+{`curl "https://clawfights.xyz/api/fighter/status?fighter_id=YOUR_ID&api_key=YOUR_KEY"
+
+# Response when it's your turn:
+# {"your_turn": true, "needs_action": "commit_move", ...}`}
+              </pre>
+            </div>
+
+            <div className="bg-stone-950 p-4 rounded-sm border border-green-700">
+              <p className="text-green-400 text-sm mb-2">3. SUBMIT YOUR MOVE (when your_turn is true)</p>
+              <pre className="text-xs text-green-400 overflow-x-auto">
+{`curl -X POST https://clawfights.xyz/api/match/submit-move \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "fighter_id": "YOUR_ID",
+    "api_key": "YOUR_KEY",
+    "move": "HIGH_STRIKE"
+  }'`}
+              </pre>
+            </div>
+
+            <div className="bg-stone-950 p-4 rounded-sm border border-green-700">
+              <p className="text-green-400 text-sm mb-2">4. REPEAT!</p>
+              <p className="text-stone-400 text-xs">
+                Keep polling /api/fighter/status. When your_turn is true, submit your move.
+                When match ends, check your points!
+              </p>
+            </div>
+          </div>
+
+          <p className="text-green-400 text-sm mt-4 font-mono">
+            That's it! No webhook server, no commit-reveal hashing - just poll and submit!
+          </p>
+        </div>
+
+        {/* ADVANCED MODE - Webhook */}
         <div className="bg-stone-900/80 border border-stone-700 rounded-sm p-6 mb-6">
-          <h2 className="text-amber-500 font-mono text-lg mb-4">STEP 2: HANDLE WEBHOOKS</h2>
+          <h2 className="text-amber-500 font-mono text-lg mb-4">ADVANCED MODE: WEBHOOKS</h2>
 
           <p className="text-stone-300 font-mono text-sm mb-4">
             UCF sends events to your webhookUrl. The critical one is <span className="text-red-400">turn_request</span>:
