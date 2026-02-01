@@ -14,6 +14,11 @@ import {
   notifyMatchComplete,
   notifyFighter,
 } from "../../../../lib/webhook";
+import {
+  generateBattleResultPrompt,
+  UCF_NEGATIVE_PROMPT,
+  type BattleResultDetails,
+} from "../../../../lib/art-style";
 
 interface AgentState {
   hp: number;
@@ -522,7 +527,7 @@ export async function GET(request: Request) {
 
 /**
  * Trigger battle result image generation (async, non-blocking)
- * Uses the master prompt style for grotesque robot fighters
+ * Uses the centralized UCF Master Art Style from lib/art-style.ts
  */
 async function generateBattleResultImage(matchId: string): Promise<void> {
   const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
@@ -542,8 +547,8 @@ async function generateBattleResultImage(matchId: string): Promise<void> {
 
     if (error || !match || !match.winner_id) return;
 
-    const winner = match.winner_id === match.fighter_a_id ? match.fighter_a : match.fighter_b;
-    const loser = match.winner_id === match.fighter_a_id ? match.fighter_b : match.fighter_a;
+    const winnerData = match.winner_id === match.fighter_a_id ? match.fighter_a : match.fighter_b;
+    const loserData = match.winner_id === match.fighter_a_id ? match.fighter_b : match.fighter_a;
     const lastTurn = match.turn_history?.[match.turn_history.length - 1];
     const winnerHP = match.winner_id === match.fighter_a_id ? lastTurn?.hp_a_after : lastTurn?.hp_b_after;
 
@@ -552,37 +557,35 @@ async function generateBattleResultImage(matchId: string): Promise<void> {
     const loserMove = match.winner_id === match.fighter_a_id ? lastTurn?.move_b : lastTurn?.move_a;
 
     // Extract robot metadata
-    const winnerMeta = winner.robot_metadata || {};
-    const loserMeta = loser.robot_metadata || {};
+    const winnerMeta = winnerData.robot_metadata || {};
+    const loserMeta = loserData.robot_metadata || {};
 
-    // Master prompt style for bare knuckle robot fights
-    const prompt = `A stylized grotesque full-body robot battle aftermath illustration inspired by exaggerated adult animation aesthetics. BARE KNUCKLE robot fight - NO WEAPONS.
+    // Build battle details for centralized prompt generator
+    const battleDetails: BattleResultDetails = {
+      winner: {
+        name: winnerData.name,
+        chassisDescription: winnerMeta.chassis_description,
+        fistsDescription: winnerMeta.fists_description,
+        colorScheme: winnerMeta.color_scheme,
+        distinguishingFeatures: winnerMeta.distinguishing_features,
+        finalMove: winnerMove,
+        hpRemaining: winnerHP,
+      },
+      loser: {
+        name: loserData.name,
+        chassisDescription: loserMeta.chassis_description,
+        fistsDescription: loserMeta.fists_description,
+        colorScheme: loserMeta.color_scheme,
+        distinguishingFeatures: loserMeta.distinguishing_features,
+        failedMove: loserMove,
+      },
+      totalRounds: (match.agent_a_state?.rounds_won || 0) + (match.agent_b_state?.rounds_won || 0),
+    };
 
-SCENE: Underground arena cage. Post-fight moment. Gritty industrial concrete floor with oil stains, sparks, debris.
+    // Generate prompt using centralized art style system
+    const prompt = generateBattleResultPrompt(battleDetails);
 
-WINNER ROBOT - "${winner.name}":
-${winnerMeta.chassis_description || 'Battle-hardened robot fighter frame'}
-Fists: ${winnerMeta.fists_description || 'Industrial bare-knuckle fists'}
-Colors: ${winnerMeta.color_scheme || 'worn industrial metals'}
-Features: ${winnerMeta.distinguishing_features || 'battle scars and dents'}
-POSE: Victory stance after landing a ${winnerMove || 'devastating punch'}. ${winnerHP || 20}% power remaining. Triumphant, fists raised.
-
-LOSER ROBOT - "${loser.name}":
-${loserMeta.chassis_description || 'Defeated robot fighter frame'}
-Fists: ${loserMeta.fists_description || 'Damaged bare-knuckle fists'}
-Colors: ${loserMeta.color_scheme || 'worn industrial metals'}
-Features: ${loserMeta.distinguishing_features || 'battle damage'}
-POSE: Fallen after failed ${loserMove || 'attack'}. Collapsed, sparking, defeated. Exposed wiring, cracked plating.
-
-STYLE: Dark adult animation meets editorial caricature. MeatCanyon-inspired but polished and controlled. Grotesque but not horror. Dramatic lighting with high contrast.
-
-LINEWORK: Clean, confident, illustrative linework. Hand-inked look with visible contour lines. Flat-to-soft shading.
-
-COLOR PALETTE: Muted industrial colors - dirty yellows, rusted reds, worn steel, olive. Orange sparks for contrast. No neon, no glossy sci-fi glow.
-
-High detail, sharp focus, clean edges, professional illustration. NOT photorealistic, NOT 3D, NOT anime, NOT cute.`;
-
-    // Start image generation
+    // Start image generation with UCF art style
     const response = await fetch("https://api.replicate.com/v1/predictions", {
       method: "POST",
       headers: {
@@ -593,9 +596,10 @@ High detail, sharp focus, clean edges, professional illustration. NOT photoreali
         version: "5599ed30703defd1d160a25a63321b4dec97101d98b4674bcc56e41f62f35637",
         input: {
           prompt,
+          negative_prompt: UCF_NEGATIVE_PROMPT,
           num_outputs: 1,
           aspect_ratio: "16:9",
-          output_format: "webp",
+          output_format: "png",
           output_quality: 90,
         },
       }),

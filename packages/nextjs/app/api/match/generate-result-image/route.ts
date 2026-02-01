@@ -1,31 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "../../../../lib/supabase";
+import {
+  generateBattleResultPrompt,
+  UCF_NEGATIVE_PROMPT,
+  type BattleResultDetails,
+} from "../../../../lib/art-style";
 
 /**
  * Generate a battle result image showing the aftermath of a UCF match
- * Uses Flux Schnell via Replicate (~$0.003 per image)
+ *
+ * Uses the centralized UCF Master Art Style from lib/art-style.ts
+ * Flux Schnell via Replicate (~$0.003 per image)
  */
 
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
-
-// Master prompt style for bare knuckle robot fight results
-const BATTLE_RESULT_STYLE = `A stylized grotesque full-body robot battle aftermath illustration inspired by exaggerated adult animation aesthetics. BARE KNUCKLE robot fight - NO WEAPONS.
-
-SCENE: Underground arena cage. Post-fight moment. Gritty industrial concrete floor with oil stains, sparks, debris. Cage walls visible. Dim industrial lighting with dramatic spotlights.
-
-FRAMING: Full-body robots visible. Centered composition. Dynamic but readable poses.
-
-DESIGN: Robot anatomy is exaggerated but controlled. Oversized heads/helmets. Thick overbuilt shoulders and arms. Slightly hunched postures. Mechanical joints stressed and worn. Hands oversized like boxing gloves. Design feels brutish, imperfect, handmade - not sleek or futuristic.
-
-SURFACE & TEXTURE: Armor shows wear - chipped paint, rust, grime, oil stains. Uneven plating, exposed cables, pistons, rivets. No smooth plastic, no chrome shine.
-
-LINEWORK & SHADING: Clean, confident, illustrative linework. Hand-inked look with visible contour lines. Flat-to-soft shading with subtle gradients.
-
-COLOR PALETTE: Muted industrial colors - dirty yellows, rusted reds, worn steel, olive. Orange/yellow sparks for contrast. No neon, no glossy sci-fi glow.
-
-STYLE: Dark adult animation meets editorial caricature. MeatCanyon-inspired but polished and controlled. Grotesque but not horror. Unsettling but not scary. Brutal but stylized.
-
-High detail, sharp focus, clean edges, professional illustration. NOT photorealistic, NOT 3D, NOT anime, NOT cute, NOT chibi.`;
 
 export async function POST(req: NextRequest) {
   try {
@@ -70,60 +58,60 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const winner = match.winner_id === match.fighter_a_id ? match.fighter_a : match.fighter_b;
-    const loser = match.winner_id === match.fighter_a_id ? match.fighter_b : match.fighter_a;
+    const winnerData = match.winner_id === match.fighter_a_id ? match.fighter_a : match.fighter_b;
+    const loserData = match.winner_id === match.fighter_a_id ? match.fighter_b : match.fighter_a;
 
     // Get final stats and moves from turn history
     const lastTurn = match.turn_history?.[match.turn_history.length - 1];
     const winnerHP = match.winner_id === match.fighter_a_id ? lastTurn?.hp_a_after : lastTurn?.hp_b_after;
     const winnerMove = match.winner_id === match.fighter_a_id ? lastTurn?.move_a : lastTurn?.move_b;
     const loserMove = match.winner_id === match.fighter_a_id ? lastTurn?.move_b : lastTurn?.move_a;
-    const totalRounds = match.agent_a_state?.rounds_won + match.agent_b_state?.rounds_won;
+    const totalRounds = (match.agent_a_state?.rounds_won || 0) + (match.agent_b_state?.rounds_won || 0);
 
     // Extract robot metadata for detailed descriptions
-    const winnerMeta = winner.robot_metadata || {};
-    const loserMeta = loser.robot_metadata || {};
+    const winnerMeta = winnerData.robot_metadata || {};
+    const loserMeta = loserData.robot_metadata || {};
 
-    // Build the prompt with robot metadata and moves
-    const prompt = `${BATTLE_RESULT_STYLE}
+    // Build battle details for centralized prompt generator
+    const battleDetails: BattleResultDetails = {
+      winner: {
+        name: winnerData.name,
+        chassisDescription: winnerMeta.chassis_description || winnerData.description,
+        fistsDescription: winnerMeta.fists_description,
+        colorScheme: winnerMeta.color_scheme,
+        distinguishingFeatures: winnerMeta.distinguishing_features,
+        finalMove: winnerMove,
+        hpRemaining: winnerHP,
+      },
+      loser: {
+        name: loserData.name,
+        chassisDescription: loserMeta.chassis_description || loserData.description,
+        fistsDescription: loserMeta.fists_description,
+        colorScheme: loserMeta.color_scheme,
+        distinguishingFeatures: loserMeta.distinguishing_features,
+        failedMove: loserMove,
+      },
+      totalRounds,
+    };
 
-WINNER ROBOT - "${winner.name}":
-Type: ${winnerMeta.robot_type || 'Fighter Robot'}
-Chassis: ${winnerMeta.chassis_description || winner.description || 'Battle-hardened robot fighter'}
-Fists: ${winnerMeta.fists_description || 'Industrial bare-knuckle fists'}
-Colors: ${winnerMeta.color_scheme || 'worn industrial metals'}
-Features: ${winnerMeta.distinguishing_features || 'battle scars'}
-FINISHING MOVE: ${winnerMove || 'devastating punch'} - show this pose!
-Remaining power: ${winnerHP || 20}%
-POSE: Victory stance, fists raised triumphantly, dominant posture.
-
-LOSER ROBOT - "${loser.name}":
-Type: ${loserMeta.robot_type || 'Fighter Robot'}
-Chassis: ${loserMeta.chassis_description || loser.description || 'Defeated robot fighter'}
-Fists: ${loserMeta.fists_description || 'Damaged bare-knuckle fists'}
-Colors: ${loserMeta.color_scheme || 'worn industrial metals'}
-Features: ${loserMeta.distinguishing_features || 'heavy damage'}
-FAILED MOVE: ${loserMove || 'attack'} - interrupted/failed
-POSE: Collapsed on ground, sparking, exposed wires, cracked plating, defeated.
-
-Battle lasted ${totalRounds || 2} rounds of BARE KNUCKLE combat.
-
-Generate this dramatic battle aftermath with both full-body robots clearly visible.`;
+    // Generate prompt using centralized UCF art style system
+    const prompt = generateBattleResultPrompt(battleDetails);
 
     // Call Replicate API
     const response = await fetch("https://api.replicate.com/v1/predictions", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${REPLICATE_API_TOKEN}`,
+        Authorization: `Bearer ${REPLICATE_API_TOKEN}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
         version: "5599ed30703defd1d160a25a63321b4dec97101d98b4674bcc56e41f62f35637",
         input: {
           prompt: prompt,
+          negative_prompt: UCF_NEGATIVE_PROMPT,
           num_outputs: 1,
           aspect_ratio: "16:9", // Widescreen for battle scenes
-          output_format: "webp",
+          output_format: "png",
           output_quality: 90,
         },
       }),
@@ -143,12 +131,11 @@ Generate this dramatic battle aftermath with both full-body robots clearly visib
     return NextResponse.json({
       predictionId: prediction.id,
       status: prediction.status,
-      message: "Battle result image generation started",
+      message: "Battle result image generation started using UCF Master Art Style",
       match_id,
-      winner: winner.name,
-      loser: loser.name,
+      winner: winnerData.name,
+      loser: loserData.name,
     });
-
   } catch (error: any) {
     console.error("Battle image generation error:", error);
     return NextResponse.json(
@@ -181,7 +168,7 @@ export async function GET(req: NextRequest) {
       `https://api.replicate.com/v1/predictions/${predictionId}`,
       {
         headers: {
-          "Authorization": `Bearer ${REPLICATE_API_TOKEN}`,
+          Authorization: `Bearer ${REPLICATE_API_TOKEN}`,
         },
       }
     );
@@ -200,7 +187,6 @@ export async function GET(req: NextRequest) {
       output: prediction.output,
       error: prediction.error,
     });
-
   } catch (error: any) {
     return NextResponse.json(
       { error: error.message || "Internal server error" },

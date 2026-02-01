@@ -1,64 +1,74 @@
 import { NextRequest, NextResponse } from "next/server";
+import {
+  generateFighterPortraitPrompt,
+  UCF_NEGATIVE_PROMPT,
+  buildReplicateRequest,
+  type FighterDetails,
+} from "../../../../lib/art-style";
 
-// Generate robot fighter image using Flux via Replicate
-// Flux Schnell is fast and cheap (~$0.003 per image)
+/**
+ * Generate robot fighter image using the UCF Master Art Style
+ *
+ * Uses Flux Schnell via Replicate (~$0.003 per image)
+ * All images follow the centralized art style defined in lib/art-style.ts
+ */
 
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
-
-// Master style prompt for UCF robot fighters
-const STYLE_PROMPT = `A stylized grotesque full-body robot character illustration inspired by exaggerated adult animation aesthetics. The robot is fictional, designed as a combat/fighting machine with a distinct personality.
-
-FRAMING: Full-body robot visible from head to feet. Centered composition. No cropping of limbs. Dynamic but readable pose (boxing stance, guard up, leaning forward, mid-motion).
-
-DESIGN & PROPORTIONS: Robot anatomy is exaggerated but controlled. Oversized head or helmet relative to body. Thick, overbuilt shoulders and arms. Slightly hunched posture for menace and personality. Mechanical joints visibly stressed, worn, or asymmetrical. Hands oversized like boxing gloves or industrial tools. Legs sturdy, compact, slightly bowed or uneven. Design feels brutish, imperfect, and handmade, not sleek or futuristic.
-
-FACE/HEAD: Expressive robotic "face" or mask. Heavy-lidded or glowing eyes with attitude (tired, angry, smug, unhinged). Visible dents, scratches, bolts, seams, cracked plating. Head tilt or expression that gives character.
-
-SURFACE & TEXTURE: Armor shows wear: chipped paint, rust, grime, oil stains. Uneven plating, exposed cables, pistons, rivets. Texture feels used, not factory-fresh. No smooth plastic, no chrome shine.
-
-LINEWORK & SHADING: Clean, confident, illustrative linework. Hand-inked look with visible contour lines. Flat-to-soft shading with subtle gradients. No painterly smears, no blur, no sketchiness.
-
-COLOR PALETTE: Muted industrial colors: dirty yellows, rusted reds, worn steel, olive, off-white. Slight warmth overall. No neon, no glossy sci-fi glow. Lighting is readable and grounded.
-
-STYLE: Dark adult animation meets editorial caricature meets modern grotesque cartoon. MeatCanyon-inspired but more polished, consistent, and controlled. Unsettling but not horror. Humorous but intimidating.
-
-BACKGROUND: Simple neutral gradient or transparent background. No environment, no arena, no crowd.
-
-High detail, sharp focus, clean edges, professional illustration quality. NOT photorealistic, NOT 3D, NOT anime, NOT cute, NOT chibi, NOT sleek sci-fi.`;
 
 export async function POST(req: NextRequest) {
   try {
     if (!REPLICATE_API_TOKEN) {
       return NextResponse.json(
-        { error: "Image generation not configured" },
+        { error: "Image generation not configured. Add REPLICATE_API_TOKEN to environment." },
         { status: 500 }
       );
     }
 
-    const { robotName, appearance, specialMove } = await req.json();
+    const body = await req.json();
+    const {
+      robotName,
+      appearance,
+      specialMove,
+      // New structured fields (preferred)
+      robotType,
+      chassisDescription,
+      fistsDescription,
+      colorScheme,
+      distinguishingFeatures,
+      personality,
+      fightingStyle,
+    } = body;
 
-    if (!appearance) {
+    // Build fighter details from either new structured format or legacy format
+    const fighterDetails: FighterDetails = {
+      name: robotName || "Unknown Fighter",
+      robotType: robotType,
+      chassisDescription: chassisDescription || appearance, // fallback to legacy 'appearance'
+      fistsDescription: fistsDescription,
+      colorScheme: colorScheme,
+      distinguishingFeatures: distinguishingFeatures,
+      personality: personality,
+      fightingStyle: fightingStyle,
+    };
+
+    if (!fighterDetails.chassisDescription) {
       return NextResponse.json(
-        { error: "Missing robot appearance description" },
+        {
+          error: "Missing robot description",
+          hint: "Provide 'chassisDescription' or 'appearance' field",
+        },
         { status: 400 }
       );
     }
 
-    // Combine fighter details with master style prompt
-    const prompt = `${STYLE_PROMPT}
+    // Generate prompt using centralized art style system
+    const prompt = generateFighterPortraitPrompt(fighterDetails);
 
-CHARACTER DETAILS:
-Robot Name: "${robotName || 'Unknown Fighter'}"
-Appearance: ${appearance}
-${specialMove ? `Signature Move: ${specialMove}` : ''}
-
-Generate this specific robot fighter with all the style guidelines above.`;
-
-    // Call Replicate API with Flux Schnell (fast + cheap)
+    // Call Replicate API with Flux Schnell
     const response = await fetch("https://api.replicate.com/v1/predictions", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${REPLICATE_API_TOKEN}`,
+        Authorization: `Bearer ${REPLICATE_API_TOKEN}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -66,9 +76,10 @@ Generate this specific robot fighter with all the style guidelines above.`;
         version: "5599ed30703defd1d160a25a63321b4dec97101d98b4674bcc56e41f62f35637",
         input: {
           prompt: prompt,
+          negative_prompt: UCF_NEGATIVE_PROMPT,
           num_outputs: 1,
           aspect_ratio: "1:1",
-          output_format: "webp",
+          output_format: "png",
           output_quality: 90,
         },
       }),
@@ -85,13 +96,11 @@ Generate this specific robot fighter with all the style guidelines above.`;
 
     const prediction = await response.json();
 
-    // Return the prediction ID - client can poll for result
     return NextResponse.json({
       predictionId: prediction.id,
       status: prediction.status,
-      message: "Image generation started",
+      message: "Image generation started using UCF Master Art Style",
     });
-
   } catch (error: any) {
     console.error("Image generation error:", error);
     return NextResponse.json(
@@ -124,7 +133,7 @@ export async function GET(req: NextRequest) {
       `https://api.replicate.com/v1/predictions/${predictionId}`,
       {
         headers: {
-          "Authorization": `Bearer ${REPLICATE_API_TOKEN}`,
+          Authorization: `Bearer ${REPLICATE_API_TOKEN}`,
         },
       }
     );
@@ -140,10 +149,9 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       status: prediction.status,
-      output: prediction.output, // Array of image URLs when complete
+      output: prediction.output,
       error: prediction.error,
     });
-
   } catch (error: any) {
     return NextResponse.json(
       { error: error.message || "Internal server error" },
