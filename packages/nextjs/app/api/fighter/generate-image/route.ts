@@ -9,7 +9,7 @@ import {
 /**
  * Generate robot fighter image using the UCF Master Art Style
  *
- * Uses Flux Schnell via Replicate (~$0.003 per image)
+ * Uses Flux 1.1 Pro via Replicate (~$0.04 per image) - HIGH QUALITY
  * All images follow the centralized art style defined in lib/art-style.ts
  */
 
@@ -64,23 +64,22 @@ export async function POST(req: NextRequest) {
     // Generate prompt using centralized art style system
     const prompt = generateFighterPortraitPrompt(fighterDetails);
 
-    // Call Replicate API with Flux Schnell
-    const response = await fetch("https://api.replicate.com/v1/predictions", {
+    // Call Replicate API with Flux 1.1 Pro - HIGH QUALITY model
+    const response = await fetch("https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro/predictions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${REPLICATE_API_TOKEN}`,
         "Content-Type": "application/json",
+        "Prefer": "wait", // Wait for result instead of polling
       },
       body: JSON.stringify({
-        // Flux Schnell - fast generation, good quality, cheap
-        version: "5599ed30703defd1d160a25a63321b4dec97101d98b4674bcc56e41f62f35637",
         input: {
           prompt: prompt,
-          negative_prompt: UCF_NEGATIVE_PROMPT,
-          num_outputs: 1,
           aspect_ratio: "1:1",
           output_format: "png",
-          output_quality: 90,
+          output_quality: 100,
+          safety_tolerance: 5, // Allow creative content
+          prompt_upsampling: true, // Enhance prompt for better results
         },
       }),
     });

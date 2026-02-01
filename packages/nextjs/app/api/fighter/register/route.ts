@@ -483,7 +483,7 @@ async function generateFighterImage(fighterId: string, robotMetadata: any): Prom
     const { generateFighterPortraitPrompt, UCF_NEGATIVE_PROMPT } = await import("../../../../lib/art-style");
 
     const fighterDetails = {
-      name: robotMetadata.signature_move || "Fighter",
+      name: fighterName,
       robotType: robotMetadata.robot_type,
       chassisDescription: robotMetadata.chassis_description,
       fistsDescription: robotMetadata.fists_description,
@@ -496,22 +496,21 @@ async function generateFighterImage(fighterId: string, robotMetadata: any): Prom
     const prompt = generateFighterPortraitPrompt(fighterDetails);
     console.log(`[Image] Prompt for ${fighterId}: ${prompt.substring(0, 100)}...`);
 
-    // Start image generation
-    const response = await fetch("https://api.replicate.com/v1/predictions", {
+    // Start image generation with Flux 1.1 Pro - HIGH QUALITY
+    const response = await fetch("https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro/predictions", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${REPLICATE_API_TOKEN}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        version: "5599ed30703defd1d160a25a63321b4dec97101d98b4674bcc56e41f62f35637",
         input: {
           prompt,
-          negative_prompt: UCF_NEGATIVE_PROMPT,
-          num_outputs: 1,
           aspect_ratio: "1:1",
           output_format: "png",
-          output_quality: 90,
+          output_quality: 100,
+          safety_tolerance: 5,
+          prompt_upsampling: true,
         },
       }),
     });

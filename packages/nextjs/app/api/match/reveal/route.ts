@@ -600,22 +600,21 @@ async function generateBattleResultImage(matchId: string): Promise<void> {
     // Generate prompt using centralized art style system
     const prompt = generateBattleResultPrompt(battleDetails);
 
-    // Start image generation with UCF art style
-    const response = await fetch("https://api.replicate.com/v1/predictions", {
+    // Start image generation with Flux 1.1 Pro - HIGH QUALITY
+    const response = await fetch("https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro/predictions", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${REPLICATE_API_TOKEN}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        version: "5599ed30703defd1d160a25a63321b4dec97101d98b4674bcc56e41f62f35637",
         input: {
           prompt,
-          negative_prompt: UCF_NEGATIVE_PROMPT,
-          num_outputs: 1,
           aspect_ratio: "3:4", // Portrait to show full robot bodies
           output_format: "png",
-          output_quality: 90,
+          output_quality: 100,
+          safety_tolerance: 5,
+          prompt_upsampling: true,
         },
       }),
     });
@@ -753,28 +752,27 @@ POSE: Being hit, staggering, sparking, about to fall. Their failed ${loserMove} 
 
 STYLE: Dark adult animation, editorial caricature, grotesque cartoon. MeatCanyon-inspired but polished.
 Exaggerated proportions, worn battle-scarred robots, hand-inked look.
-Muted industrial colors, no neon, no glossy sci-fi.
+Bold vibrant colors with dramatic lighting. Neon accents and glowing elements.
 
-BACKGROUND: Simple arena floor gradient, motion blur suggesting impact.
+BACKGROUND: Dark arena with dramatic spotlights and atmospheric effects.
 
-High detail, sharp focus, clean edges, professional illustration quality.`;
+QUALITY: Masterpiece, best quality, highly detailed, sharp focus, professional fighting game art, 8k resolution.`;
 
-    // Start image generation
-    const response = await fetch("https://api.replicate.com/v1/predictions", {
+    // Start image generation with Flux 1.1 Pro - HIGH QUALITY
+    const response = await fetch("https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro/predictions", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${REPLICATE_API_TOKEN}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        version: "5599ed30703defd1d160a25a63321b4dec97101d98b4674bcc56e41f62f35637",
         input: {
           prompt,
-          negative_prompt: UCF_NEGATIVE_PROMPT,
-          num_outputs: 1,
           aspect_ratio: "3:4", // Portrait to show full robot bodies
           output_format: "png",
-          output_quality: 90,
+          output_quality: 100,
+          safety_tolerance: 5,
+          prompt_upsampling: true,
         },
       }),
     });

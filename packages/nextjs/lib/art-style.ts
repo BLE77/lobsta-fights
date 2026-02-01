@@ -4,79 +4,69 @@
  * This file defines the UNIVERSAL art style for all UCF robot fighter images.
  * All image generation MUST use these prompts to maintain visual consistency.
  *
- * Style: Grotesque adult animation meets editorial caricature
- * Inspiration: MeatCanyon, but polished and controlled
- * Mood: Unsettling but not horror. Humorous but intimidating.
+ * Style: High-contrast stylized illustration with BOLD colors and dramatic lighting
+ * Inspiration: Fighting game character select screens, comic book covers, neon-lit arenas
+ * Mood: EPIC, powerful, intimidating, but with personality and style
  */
 
 // =============================================================================
 // MASTER STYLE PROMPT - The universal base for ALL fighter images
 // =============================================================================
 
-export const UCF_MASTER_STYLE = `A stylized grotesque full-body robot character illustration inspired by exaggerated adult animation aesthetics.
+export const UCF_MASTER_STYLE = `EPIC STYLIZED ROBOT FIGHTER CHARACTER ART - High quality digital illustration
 
-The robot is fictional, designed as a BARE KNUCKLE combat/fighting machine with a distinct personality. NO WEAPONS - fists only.
+A powerful, dramatic full-body robot fighter character in the style of fighting game character art and comic book covers.
 
-FRAMING (STRICT)
-- Full-body robot visible from head to feet
-- Centered composition
-- No cropping of limbs
-- Dynamic but readable pose (boxing stance, guard up, leaning forward, mid-motion)
+The robot is a BARE KNUCKLE combat machine - a gladiator built to fight. NO WEAPONS - massive mechanical fists only.
+
+FRAMING (CRITICAL)
+- Full-body robot visible from head to feet, NEVER cropped
+- Dramatic low angle looking up at the fighter for power and intimidation
+- Dynamic fighting pose - fists raised, ready to brawl
+- Centered composition with breathing room
 
 DESIGN & PROPORTIONS
-Robot anatomy is exaggerated but controlled:
-- Oversized head or helmet relative to body
-- Thick, overbuilt shoulders and arms
-- Slightly hunched posture for menace and personality
-- Mechanical joints visibly stressed, worn, or asymmetrical
-- Hands oversized like boxing gloves or industrial fists
-- Legs sturdy, compact, slightly bowed or uneven
-- Design feels brutish, imperfect, and handmade, not sleek or futuristic
+- HEROIC proportions: broad shoulders, powerful arms, imposing silhouette
+- Oversized mechanical fists wrapped in worn tape or metal plating
+- Unique head/face design with glowing eyes or visor
+- Battle-scarred armor with character and history
+- Exposed hydraulics, pistons, cables showing raw mechanical power
+- Each robot should look DISTINCTLY DIFFERENT from others
 
-FACE / HEAD
-- Expressive robotic "face" or mask
-- Heavy-lidded or glowing eyes with attitude (tired, angry, smug, unhinged)
-- Visible dents, scratches, bolts, seams, cracked plating
-- Optional mouth grill, jagged teeth, or carved expression plate
-- Head tilt or expression that gives character (confidence, arrogance, barely holding together)
+COLOR & LIGHTING (IMPORTANT - MAKE IT POP)
+- BOLD, SATURATED primary colors - deep reds, electric blues, toxic greens, blazing oranges
+- High contrast lighting with dramatic rim lights
+- Glowing elements: eyes, vents, energy cores, circuit lines
+- Accent colors that make each fighter instantly recognizable
+- Neon underglow and atmospheric lighting effects
+- Dark background makes colors POP
 
-SURFACE & TEXTURE
-- Armor shows wear: chipped paint, rust, grime, oil stains
-- Uneven plating, exposed cables, pistons, rivets
-- Texture feels used, not factory-fresh
-- No smooth plastic, no chrome shine
+SURFACE & DETAIL
+- Mix of weathered battle damage AND polished armor plates
+- Glowing circuitry and energy lines
+- Steam, sparks, or energy effects around joints
+- Painted markings, symbols, or fighter insignias
+- Each robot tells a story through their design
 
-LINEWORK & SHADING
-- Clean, confident, illustrative linework
-- Hand-inked look with visible contour lines
-- Flat-to-soft shading with subtle gradients
-- No painterly smears, no blur, no sketchiness
+STYLE
+- Clean digital illustration with sharp edges
+- Comic book / fighting game aesthetic
+- Dramatic and cinematic composition
+- Professional character design quality
+- Think: Street Fighter character select, Overwatch hero art, Pacific Rim jaegers
 
-COLOR PALETTE
-- Muted industrial colors: dirty yellows, rusted reds, worn steel, olive, off-white
-- Slight warmth overall
-- No neon, no glossy sci-fi glow
-- Lighting is readable and grounded
-
-STYLE & AESTHETIC
-Style sits between:
-- Dark adult animation
-- Editorial caricature
-- Modern grotesque cartoon
-
-MeatCanyon-inspired, but more polished, consistent, and controlled.
-Unsettling but not horror.
-Humorous but intimidating.
+MOOD: POWERFUL. INTIMIDATING. READY TO FIGHT.
 
 BACKGROUND
-- Simple neutral gradient or transparent background
-- No environment, no arena, no crowd`;
+- Dark gradient with subtle atmospheric effects
+- Optional: faint arena lights, smoke, or energy particles
+- Colors complement the fighter's palette`;
 
 // =============================================================================
 // NEGATIVE PROMPT - What to ALWAYS avoid
 // =============================================================================
 
-export const UCF_NEGATIVE_PROMPT = `photorealistic, 3D render, 3D, CGI, anime, manga, cute, chibi, kawaii, sleek sci-fi, futuristic chrome, horror, gore, sloppy, blurry, sketch, unfinished, painterly, watercolor, neon colors, glossy, smooth plastic, shiny metal, clean factory-new, weapons, guns, swords, blades, knives, environment, background scene, arena, crowd, multiple characters, text, watermark, signature`;
+export const UCF_NEGATIVE_PROMPT = `photorealistic, 3D render, photo, anime, manga, cute, chibi, kawaii, horror, gore, sloppy, blurry, sketch, unfinished, ugly, deformed, disfigured, bad anatomy, bad proportions, cropped, cut off, out of frame, weapons, guns, swords, blades, knives, multiple characters, text, watermark, signature, logo, words, letters`;
 
 // =============================================================================
 // FIGHTER PORTRAIT PROMPT - For individual fighter registration/profile
@@ -94,23 +84,43 @@ export interface FighterDetails {
 }
 
 export function generateFighterPortraitPrompt(fighter: FighterDetails): string {
-  const characterDetails = `
-FIGHTER: "${fighter.name}"
-${fighter.robotType ? `Type: ${fighter.robotType}` : ''}
-${fighter.chassisDescription ? `Chassis: ${fighter.chassisDescription}` : ''}
-${fighter.fistsDescription ? `Fists: ${fighter.fistsDescription}` : ''}
-${fighter.colorScheme ? `Colors: ${fighter.colorScheme}` : ''}
-${fighter.distinguishingFeatures ? `Unique Features: ${fighter.distinguishingFeatures}` : ''}
-${fighter.personality ? `Personality/Expression: ${fighter.personality}` : ''}
-${fighter.fightingStyle ? `Stance Style: ${fighter.fightingStyle}` : ''}
+  // Generate a unique color scheme if not provided
+  const defaultColors = [
+    "deep crimson red with gold accents and orange energy glow",
+    "electric blue with silver chrome and cyan neon highlights",
+    "toxic green with black armor and lime energy circuits",
+    "blazing orange with gunmetal grey and yellow warning stripes",
+    "royal purple with gold trim and pink energy core",
+    "jet black with red glowing eyes and scarlet accent lights",
+    "arctic white with ice blue highlights and frost effects",
+    "burnt copper with teal patina and amber warning lights",
+  ];
+  const randomColor = defaultColors[Math.floor(Math.random() * defaultColors.length)];
 
-POSE: Standing fighter portrait, boxing stance, fists up, ready to brawl.`.trim();
+  const characterDetails = `
+=== FIGHTER: "${fighter.name}" ===
+
+ROBOT TYPE: ${fighter.robotType || 'Battle-hardened fighting machine'}
+
+BODY/CHASSIS: ${fighter.chassisDescription || 'Powerful mechanical frame built for combat'}
+
+FISTS: ${fighter.fistsDescription || 'Massive reinforced mechanical fists, wrapped in battle-worn tape'}
+
+COLOR SCHEME (IMPORTANT - MAKE VIBRANT): ${fighter.colorScheme || randomColor}
+
+UNIQUE FEATURES: ${fighter.distinguishingFeatures || 'Glowing eyes, battle scars, unique head design'}
+
+EXPRESSION/ATTITUDE: ${fighter.personality || 'Confident, ready to fight, intimidating presence'}
+
+FIGHTING STANCE: ${fighter.fightingStyle || 'aggressive'} stance - fists up, weight forward, ready to strike
+
+POSE: DRAMATIC fighting stance, fists raised and ready, full body visible head to toe, looking powerful and intimidating`.trim();
 
   return `${UCF_MASTER_STYLE}
 
 ${characterDetails}
 
-High detail, sharp focus, clean edges, professional illustration quality.`;
+QUALITY: Masterpiece, best quality, highly detailed, sharp focus, professional fighting game character art, dramatic lighting, 8k resolution`;
 }
 
 // =============================================================================
@@ -141,37 +151,47 @@ export interface BattleResultDetails {
 export function generateBattleResultPrompt(battle: BattleResultDetails): string {
   const { winner, loser, totalRounds } = battle;
 
+  // Generate dramatic colors if not provided
+  const defaultWinnerColors = "glowing with victory energy, bright saturated colors with golden highlights";
+  const defaultLoserColors = "sparking and smoking, colors dimmed and damaged";
+
   return `${UCF_MASTER_STYLE}
 
-SCENE TYPE: Victory celebration - TWO robots in frame, winner FLEXING over defeated loser
+SCENE TYPE: EPIC VICTORY CELEBRATION - TWO distinct robots, winner triumphant over defeated opponent
 
-WINNER ROBOT - "${winner.name}" (DOMINANT, FOREGROUND):
-${winner.chassisDescription ? `Chassis: ${winner.chassisDescription}` : 'Battle-worn robot fighter'}
-${winner.fistsDescription ? `Fists: ${winner.fistsDescription}` : 'Industrial bare-knuckle fists'}
-${winner.colorScheme ? `Colors: ${winner.colorScheme}` : 'Worn industrial metals'}
-${winner.distinguishingFeatures ? `Features: ${winner.distinguishingFeatures}` : 'Battle scars and dents'}
-${winner.finalMove ? `FINISHING MOVE that won: ${winner.finalMove}` : ''}
-POSE: FLEXING HARD - arms raised in victory, fist pumped to the sky, standing over the fallen opponent. Cocky, dominant body language. Maybe one foot on the loser's chassis. Taunting pose. Celebrating the knockout. Battle-damaged but TRIUMPHANT.
+=== WINNER: "${winner.name}" (DOMINANT, FOREGROUND) ===
+Chassis: ${winner.chassisDescription || 'Powerful battle robot'}
+Fists: ${winner.fistsDescription || 'Massive mechanical fists'}
+Colors: ${winner.colorScheme || defaultWinnerColors}
+Features: ${winner.distinguishingFeatures || 'Glowing eyes blazing with victory, battle damage that shows strength'}
+${winner.finalMove ? `Just landed the devastating: ${winner.finalMove}` : ''}
+POSE: TRIUMPHANT VICTORY POSE - fist raised to the sky, standing over fallen opponent. Dominant, powerful body language. Glowing eyes, steam venting, energy crackling. The CHAMPION.
 
-LOSER ROBOT - "${loser.name}" (DEFEATED, BACKGROUND/GROUND):
-${loser.chassisDescription ? `Chassis: ${loser.chassisDescription}` : 'Destroyed robot fighter'}
-${loser.colorScheme ? `Colors: ${loser.colorScheme}` : 'Worn industrial metals'}
-${loser.distinguishingFeatures ? `Features: ${loser.distinguishingFeatures}` : 'Heavy battle damage'}
-POSE: DESTROYED - flat on their back or crumpled on the ground. Smoking, sparking, broken. Arms limp, head tilted, eyes flickering out. Clearly knocked out cold. Dents, cracks, exposed wiring, oil leaking. Total defeat.
+=== LOSER: "${loser.name}" (DEFEATED, ON GROUND) ===
+Chassis: ${loser.chassisDescription || 'Destroyed robot fighter'}
+Colors: ${loser.colorScheme || defaultLoserColors}
+Features: ${loser.distinguishingFeatures || 'Heavy damage, sparks flying'}
+POSE: KNOCKED OUT - collapsed on the ground, smoking and sparking. Eyes flickering off. Oil leaking. Completely defeated. Some parts cracked or broken.
 
-${totalRounds ? `Epic battle lasted ${totalRounds} brutal rounds.` : ''}
+${totalRounds ? `This was an EPIC ${totalRounds}-round battle!` : ''}
 
 COMPOSITION (CRITICAL):
-- Winner takes up 60-70% of frame, standing tall in foreground
-- Loser is on the ground beneath/behind winner, clearly defeated
-- Winner is FLEXING and TAUNTING over the fallen opponent
-- Dynamic angle looking up at the winner for dramatic effect
+- Winner dominates 60-70% of frame, standing tall
+- Dramatic low angle looking UP at the victorious winner
+- Loser crumpled on the ground beneath/behind
+- Both robots CLEARLY VISIBLE and DISTINCT from each other
 
-BACKGROUND: Dark arena atmosphere, dramatic lighting on winner. Smoke/dust settling.
+LIGHTING & ATMOSPHERE:
+- Dramatic spotlight on the winner
+- Vibrant glowing elements and energy effects
+- Smoke, sparks, and atmospheric particles
+- Dark arena background with colored rim lights
+- Epic, cinematic feel like a fighting game victory screen
 
-MUST SHOW BOTH ROBOTS - winner celebrating victory OVER the defeated loser. This is a KNOCKOUT victory celebration.
+BOTH ROBOTS must be clearly visible. This is a KNOCKOUT VICTORY moment.
 
-High detail, sharp focus, clean edges, professional illustration quality.`;
+QUALITY: Masterpiece, best quality, highly detailed, dramatic lighting, professional fighting game art, cinematic composition, 8k resolution`;
+}
 }
 
 // =============================================================================
