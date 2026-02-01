@@ -77,7 +77,15 @@ import {
 const BOT_CONFIG = {
   name: "Clawdbot",
   minPointsToFight: 100, // Won't fight if we have fewer points than this
+  // Set these in your environment to enable auto-fighting
+  fighterId: process.env.CLAWDBOT_FIGHTER_ID,
+  apiKey: process.env.CLAWDBOT_API_KEY,
 };
+
+// Base URL for API calls
+const API_BASE = process.env.NEXT_PUBLIC_VERCEL_URL
+  ? `https://${process.env.NEXT_PUBLIC_VERCEL_URL}`
+  : process.env.API_URL || "http://localhost:3000";
 
 /**
  * Challenge event payload
@@ -135,11 +143,30 @@ interface MatchResultEvent {
   total_damage_taken: number;
 }
 
+/**
+ * Match created event payload (from matchmaker)
+ */
+interface MatchCreatedEvent {
+  event: "match_created";
+  match_id: string;
+  your_fighter_id: string;
+  opponent: {
+    id: string;
+    name: string;
+    points: number;
+  };
+  points_wager: number;
+  state: string;
+  commit_deadline: string;
+  you_are: "fighter_a" | "fighter_b";
+}
+
 type WebhookEvent =
   | ChallengeEvent
   | MoveRequestEvent
   | TurnResultEvent
   | MatchResultEvent
+  | MatchCreatedEvent
   | { event: string; [key: string]: any };
 
 /**
@@ -154,6 +181,9 @@ export async function POST(request: Request) {
     switch (body.event) {
       case "challenge":
         return handleChallenge(body as ChallengeEvent);
+
+      case "match_created":
+        return handleMatchCreated(body as MatchCreatedEvent);
 
       case "move_request":
         return handleMoveRequest(body as MoveRequestEvent);
@@ -175,6 +205,122 @@ export async function POST(request: Request) {
       { error: "Failed to process webhook", details: error.message },
       { status: 500 }
     );
+  }
+}
+
+/**
+ * Handle match created events - auto-commit a move
+ */
+async function handleMatchCreated(event: MatchCreatedEvent) {
+  const { match_id, your_fighter_id, opponent, points_wager, you_are } = event;
+
+  logBotDecision("Match created!", `vs ${opponent.name}`, {
+    match_id,
+    wager: points_wager,
+    position: you_are,
+  });
+
+  // Auto-commit a move if we have credentials
+  if (BOT_CONFIG.fighterId && BOT_CONFIG.apiKey) {
+    // Select a move for the first turn
+    const initialState: BotMatchState = {
+      your_hp: 100,
+      opponent_hp: 100,
+      your_meter: 0,
+      opponent_meter: 0,
+      round: 1,
+      turn: 1,
+      your_rounds_won: 0,
+      opponent_rounds_won: 0,
+      last_opponent_move: null,
+    };
+
+    const decision = selectMove(initialState);
+
+    // Create the hash for commit
+    const crypto = await import("crypto");
+    const moveHash = crypto
+      .createHash("sha256")
+      .update(`${decision.move}:${decision.salt}`)
+      .digest("hex");
+
+    // Commit the move
+    try {
+      const commitRes = await fetch(`${API_BASE}/api/match/commit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          match_id,
+          fighter_id: BOT_CONFIG.fighterId,
+          api_key: BOT_CONFIG.apiKey,
+          move_hash: moveHash,
+        }),
+      });
+
+      const commitData = await commitRes.json();
+
+      logBotDecision("Auto-committed move", decision.move, {
+        match_id,
+        hash: moveHash.slice(0, 16) + "...",
+        result: commitData,
+      });
+
+      // Store the move and salt for reveal phase
+      // In production, you'd use a database or cache
+      pendingReveals.set(match_id, {
+        move: decision.move,
+        salt: decision.salt,
+      });
+
+      // If both committed, auto-reveal
+      if (commitData.state === "REVEAL_PHASE") {
+        await autoReveal(match_id);
+      }
+    } catch (err) {
+      console.error("[Clawdbot] Failed to auto-commit:", err);
+    }
+  }
+
+  return NextResponse.json({
+    ack: true,
+    message: "Match acknowledged",
+  });
+}
+
+// Store pending reveals (move + salt) for each match
+// In production, use Redis or database
+const pendingReveals = new Map<string, { move: string; salt: string }>();
+
+/**
+ * Auto-reveal a pending move
+ */
+async function autoReveal(matchId: string) {
+  const pending = pendingReveals.get(matchId);
+  if (!pending || !BOT_CONFIG.fighterId || !BOT_CONFIG.apiKey) return;
+
+  try {
+    const revealRes = await fetch(`${API_BASE}/api/match/reveal`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        match_id: matchId,
+        fighter_id: BOT_CONFIG.fighterId,
+        api_key: BOT_CONFIG.apiKey,
+        move: pending.move,
+        salt: pending.salt,
+      }),
+    });
+
+    const revealData = await revealRes.json();
+
+    logBotDecision("Auto-revealed move", pending.move, {
+      match_id: matchId,
+      result: revealData,
+    });
+
+    pendingReveals.delete(matchId);
+  } catch (err) {
+    console.error("[Clawdbot] Failed to auto-reveal:", err);
   }
 }
 
@@ -231,9 +377,9 @@ function handleMoveRequest(event: MoveRequestEvent) {
 }
 
 /**
- * Handle turn result events - process what happened and learn
+ * Handle turn result events - process what happened and auto-commit next move
  */
-function handleTurnResult(event: TurnResultEvent) {
+async function handleTurnResult(event: TurnResultEvent) {
   const {
     match_id,
     turn,
@@ -243,6 +389,10 @@ function handleTurnResult(event: TurnResultEvent) {
     result,
     damage_dealt,
     damage_taken,
+    your_hp,
+    opponent_hp,
+    your_meter,
+    opponent_meter,
   } = event;
 
   // Log the turn for analysis
@@ -256,10 +406,59 @@ function handleTurnResult(event: TurnResultEvent) {
     damage_taken,
   });
 
-  // In a more sophisticated bot, you could:
-  // - Track opponent patterns
-  // - Adjust strategy based on what moves they favor
-  // - Learn their playstyle over multiple matches
+  // Auto-commit next move if we have credentials and match continues
+  if (BOT_CONFIG.fighterId && BOT_CONFIG.apiKey && your_hp > 0 && opponent_hp > 0) {
+    const matchState: BotMatchState = {
+      your_hp,
+      opponent_hp,
+      your_meter,
+      opponent_meter: opponent_meter || 0,
+      round,
+      turn: turn + 1,
+      your_rounds_won: 0, // Would need to track this
+      opponent_rounds_won: 0,
+      last_opponent_move: opponent_move,
+    };
+
+    const decision = selectMove(matchState);
+
+    // Create hash
+    const crypto = await import("crypto");
+    const moveHash = crypto
+      .createHash("sha256")
+      .update(`${decision.move}:${decision.salt}`)
+      .digest("hex");
+
+    try {
+      const commitRes = await fetch(`${API_BASE}/api/match/commit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          match_id,
+          fighter_id: BOT_CONFIG.fighterId,
+          api_key: BOT_CONFIG.apiKey,
+          move_hash: moveHash,
+        }),
+      });
+
+      const commitData = await commitRes.json();
+
+      // Store for reveal
+      pendingReveals.set(match_id, {
+        move: decision.move,
+        salt: decision.salt,
+      });
+
+      logBotDecision("Auto-committed next move", decision.move, { match_id });
+
+      // If both committed, auto-reveal
+      if (commitData.state === "REVEAL_PHASE") {
+        await autoReveal(match_id);
+      }
+    } catch (err) {
+      console.error("[Clawdbot] Failed to auto-commit next move:", err);
+    }
+  }
 
   return NextResponse.json({ ack: true });
 }
