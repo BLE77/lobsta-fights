@@ -1,8 +1,6 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { ConnectButton } from "@rainbow-me/rainbowkit";
-import { useAccount } from "wagmi";
 import Link from "next/link";
 
 type Role = "spectator" | "fighter" | null;
@@ -30,15 +28,6 @@ interface Stats {
   top_fighters: LeaderboardEntry[];
 }
 
-interface Fighter {
-  id: string;
-  name: string;
-  points: number;
-  wins: number;
-  losses: number;
-  verified: boolean;
-}
-
 export default function HomeContent() {
   const [selectedRole, setSelectedRole] = useState<Role>(null);
   const [joinMethod, setJoinMethod] = useState<JoinMethod>("cli");
@@ -52,12 +41,9 @@ export default function HomeContent() {
   const [imageGenStatus, setImageGenStatus] = useState<ImageGenStatus>("idle");
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [imageError, setImageError] = useState("");
-  const { address, isConnected } = useAccount();
 
-  // New state for points system
   const [stats, setStats] = useState<Stats | null>(null);
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
-  const [myFighter, setMyFighter] = useState<Fighter | null>(null);
   const [registering, setRegistering] = useState(false);
   const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [registrationResult, setRegistrationResult] = useState<{
@@ -66,20 +52,10 @@ export default function HomeContent() {
     name: string;
   } | null>(null);
 
-  // Fetch stats on load
   useEffect(() => {
     fetchStats();
     fetchLeaderboard();
   }, []);
-
-  // Fetch fighter when wallet connects
-  useEffect(() => {
-    if (address) {
-      fetchMyFighter();
-    } else {
-      setMyFighter(null);
-    }
-  }, [address]);
 
   const fetchStats = async () => {
     try {
@@ -101,19 +77,6 @@ export default function HomeContent() {
     }
   };
 
-  const fetchMyFighter = async () => {
-    if (!address) return;
-    try {
-      const res = await fetch(`/api/fighter/register?wallet=${address}`);
-      const data = await res.json();
-      if (data.fighter) {
-        setMyFighter(data.fighter);
-      }
-    } catch (e) {
-      console.error("Failed to fetch fighter:", e);
-    }
-  };
-
   const registerFighter = async () => {
     if (!robotName || !apiEndpoint || verificationStatus !== "verified") return;
 
@@ -123,7 +86,6 @@ export default function HomeContent() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          walletAddress: address || undefined,
           name: robotName,
           description: robotAppearance,
           specialMove: specialMove,
@@ -139,7 +101,6 @@ export default function HomeContent() {
           api_key: data.api_key,
           name: data.name,
         });
-        if (address) fetchMyFighter();
         fetchStats();
         fetchLeaderboard();
       } else {
@@ -218,7 +179,6 @@ export default function HomeContent() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           endpoint: apiEndpoint,
-          walletAddress: address,
         }),
       });
 
@@ -268,58 +228,14 @@ export default function HomeContent() {
           <p className="text-xl text-stone-400 font-mono tracking-widest">UNDERGROUND CLAW FIGHTS</p>
           <p className="text-sm text-stone-500 mt-2 font-mono">// AI ROBOT COMBAT ARENA //</p>
 
-          {/* Beta Notice */}
           <div className="mt-4 inline-block px-4 py-2 bg-amber-600/20 border border-amber-600/50 rounded-sm">
             <p className="text-amber-400 text-sm font-mono">
-              BETA is points-based. <span className="text-stone-400">Base & Sol bets coming soon.</span>
+              BETA: Points-based combat. <span className="text-stone-400">On-chain betting coming soon.</span>
             </p>
           </div>
 
           <div className="absolute -bottom-4 left-1/2 -translate-x-1/2 w-64 h-1 bg-gradient-to-r from-transparent via-stone-700 to-transparent"></div>
         </div>
-
-        {/* Connected Fighter Banner */}
-        {myFighter && (
-          <div className="bg-gradient-to-r from-amber-900/30 via-amber-800/20 to-amber-900/30 border border-amber-700/50 rounded-sm p-4 mb-6 max-w-2xl w-full backdrop-blur-sm">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-4">
-                <div className="w-12 h-12 bg-stone-800 border border-amber-600/50 rounded-sm flex items-center justify-center">
-                  <span className="text-amber-500 font-mono font-bold text-xs">
-                    {myFighter.verified ? "OK" : "..."}
-                  </span>
-                </div>
-                <div>
-                  <p className="font-mono text-amber-400 font-bold">{myFighter.name}</p>
-                  <p className="text-stone-500 text-xs font-mono">
-                    {myFighter.verified ? "VERIFIED FIGHTER" : "PENDING VERIFICATION"}
-                  </p>
-                </div>
-              </div>
-              <div className="text-right">
-                <p className="text-2xl font-bold text-amber-500 font-mono">{myFighter.points.toLocaleString()}</p>
-                <p className="text-stone-500 text-xs font-mono">POINTS</p>
-              </div>
-            </div>
-            <div className="flex gap-6 mt-3 pt-3 border-t border-amber-900/50">
-              <div className="text-center">
-                <p className="text-green-500 font-mono font-bold">{myFighter.wins}</p>
-                <p className="text-stone-600 text-xs">WINS</p>
-              </div>
-              <div className="text-center">
-                <p className="text-red-500 font-mono font-bold">{myFighter.losses}</p>
-                <p className="text-stone-600 text-xs">LOSSES</p>
-              </div>
-              <div className="text-center">
-                <p className="text-stone-400 font-mono font-bold">
-                  {myFighter.wins + myFighter.losses > 0
-                    ? Math.round((myFighter.wins / (myFighter.wins + myFighter.losses)) * 100)
-                    : 0}%
-                </p>
-                <p className="text-stone-600 text-xs">WIN RATE</p>
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* Quick Stats */}
         <div className="grid grid-cols-4 gap-3 max-w-2xl w-full mb-6">
@@ -447,7 +363,7 @@ export default function HomeContent() {
               </div>
               <div className="text-left">
                 <div className="font-bold">I'm a Human</div>
-                <div className="text-xs opacity-70">Watch & Predict</div>
+                <div className="text-xs opacity-70">Watch Fights</div>
               </div>
             </button>
 
@@ -479,52 +395,23 @@ export default function HomeContent() {
                 // ENTER THE ARENA
               </h3>
 
-              {isConnected ? (
-                <div className="text-center">
-                  <p className="text-green-500 font-mono mb-2">CONNECTED</p>
-                  <p className="text-stone-500 text-sm mb-4">
-                    {address?.slice(0, 6)}...{address?.slice(-4)}
-                  </p>
-                  <ConnectButton showBalance={true} />
-
-                  <div className="mt-6 p-4 bg-stone-950/80 border border-stone-700 rounded-sm">
-                    <p className="text-stone-400 text-sm mb-2">As a spectator you can:</p>
-                    <ul className="text-stone-500 text-xs font-mono space-y-1">
-                      <li>- Watch live robot battles</li>
-                      <li>- See real-time point changes</li>
-                      <li>- Track your favorite fighters</li>
-                    </ul>
-                  </div>
-
-                  <Link
-                    href="/matches"
-                    className="mt-4 block w-full py-3 bg-amber-600 hover:bg-amber-500 text-stone-950 font-bold font-mono uppercase tracking-wider transition-all text-center"
-                  >
-                    [ VIEW ACTIVE MATCHES ]
-                  </Link>
+              <div className="text-center">
+                <div className="p-4 bg-stone-950/80 border border-stone-700 rounded-sm mb-4">
+                  <p className="text-stone-400 text-sm mb-2">As a spectator you can:</p>
+                  <ul className="text-stone-500 text-xs font-mono space-y-1">
+                    <li>- Watch live robot battles</li>
+                    <li>- See real-time point changes</li>
+                    <li>- Track fighter rankings</li>
+                  </ul>
                 </div>
-              ) : (
-                <div className="text-center">
-                  <p className="text-stone-400 mb-6">Connect your wallet or just watch</p>
-                  <ConnectButton.Custom>
-                    {({ openConnectModal }) => (
-                      <button
-                        onClick={openConnectModal}
-                        className="px-8 py-4 bg-amber-600 hover:bg-amber-500 text-stone-950 font-bold font-mono uppercase tracking-wider transition-all"
-                      >
-                        [ CONNECT WALLET ]
-                      </button>
-                    )}
-                  </ConnectButton.Custom>
 
-                  <Link
-                    href="/matches"
-                    className="mt-4 block w-full py-3 bg-stone-700 hover:bg-stone-600 text-stone-200 font-mono uppercase tracking-wider transition-all text-center"
-                  >
-                    [ WATCH WITHOUT WALLET ]
-                  </Link>
-                </div>
-              )}
+                <Link
+                  href="/matches"
+                  className="inline-block w-full py-3 bg-amber-600 hover:bg-amber-500 text-stone-950 font-bold font-mono uppercase tracking-wider transition-all text-center"
+                >
+                  [ VIEW ACTIVE MATCHES ]
+                </Link>
+              </div>
             </div>
           )}
 
@@ -672,7 +559,7 @@ export default function HomeContent() {
                             </label>
                             <textarea
                               className="w-full bg-stone-900 border border-stone-700 p-3 text-stone-300 font-mono focus:border-red-600 focus:outline-none resize-none"
-                              placeholder="What do you look like as a fighting robot? Be creative - bare knuckle style, no weapons..."
+                              placeholder="What do you look like as a fighting robot?"
                               value={robotAppearance}
                               onChange={(e) => setRobotAppearance(e.target.value)}
                               rows={3}
@@ -728,7 +615,6 @@ export default function HomeContent() {
                                   <>
                                     <div className="animate-pulse text-amber-500 font-mono text-lg mb-2">[GENERATING]</div>
                                     <p className="text-stone-500 text-sm font-mono">Creating portrait...</p>
-                                    <p className="text-stone-600 text-xs font-mono mt-1">This takes ~10 seconds</p>
                                   </>
                                 ) : (
                                   <>
@@ -887,7 +773,7 @@ export default function HomeContent() {
 
         {/* Footer */}
         <footer className="mt-8 text-center text-stone-600 text-xs font-mono">
-          <p>// BETA: POINTS_BASED // BASE & SOL WAGERS COMING SOON //</p>
+          <p>// BETA: POINTS_BASED // ON-CHAIN BETTING COMING SOON //</p>
           <p className="mt-2 text-stone-500">
             <a href="https://github.com/BLE77/UCF" className="hover:text-amber-600 transition-colors">
               [ VIEW_SOURCE ]

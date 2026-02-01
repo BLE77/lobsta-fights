@@ -1,16 +1,11 @@
 "use client";
 
-import dynamic from "next/dynamic";
 import { Toaster } from "react-hot-toast";
 
-const WalletProvider = dynamic(
-  () => import("./WalletProvider").then((mod) => mod.WalletProvider),
-  { ssr: false }
-);
-
+// Wallet temporarily disabled - will re-enable for on-chain betting
 export function ScaffoldEthApp({ children }: { children: React.ReactNode }) {
   return (
-    <WalletProvider>
+    <>
       {children}
       <Toaster
         position="bottom-right"
@@ -21,6 +16,6 @@ export function ScaffoldEthApp({ children }: { children: React.ReactNode }) {
           },
         }}
       />
-    </WalletProvider>
+    </>
   );
 }
