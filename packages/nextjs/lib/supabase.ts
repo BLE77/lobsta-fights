@@ -10,6 +10,20 @@ if (!supabaseUrl || !supabaseAnonKey) {
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 // Types for UCF
+export interface RobotMetadata {
+  robot_type: string;
+  chassis_description: string;
+  primary_weapon: string;
+  fighting_style: "aggressive" | "defensive" | "balanced" | "tactical" | "berserker";
+  personality: string | null;
+  signature_move: string;
+  victory_line: string;
+  defeat_line: string;
+  taunt_lines: string[];
+  color_scheme: string | null;
+  distinguishing_features: string | null;
+}
+
 export interface UCFFighter {
   id: string;
   wallet_address: string;
@@ -31,6 +45,8 @@ export interface UCFFighter {
   last_active_at: string | null;
   created_at: string;
   updated_at: string;
+  robot_metadata: RobotMetadata | null;
+  moltbook_agent_id: string | null;
 }
 
 export interface UCFLeaderboardEntry {
