@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "../../../../lib/supabase";
 
+// Version: 2 - Fixed query to find active matches
+
 /**
  * GET /api/fighter/status?fighter_id=X&api_key=Y
  *
