@@ -127,6 +127,17 @@ export async function POST(req: NextRequest) {
 
     const prediction = await response.json();
 
+    // Store prediction ID
+    await supabase
+      .from("ucf_matches")
+      .update({ result_image_prediction_id: prediction.id })
+      .eq("id", match_id);
+
+    // Poll for result in background (non-blocking)
+    pollAndStoreImage(prediction.id, match_id).catch((err) => {
+      console.error("[Image] Error polling for result:", err);
+    });
+
     return NextResponse.json({
       predictionId: prediction.id,
       status: prediction.status,
@@ -142,6 +153,62 @@ export async function POST(req: NextRequest) {
       { status: 500 }
     );
   }
+}
+
+/**
+ * Poll for image generation result and store it
+ */
+async function pollAndStoreImage(predictionId: string, matchId: string): Promise<void> {
+  let attempts = 0;
+  const maxAttempts = 30;
+
+  while (attempts < maxAttempts) {
+    await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds
+    attempts++;
+
+    const statusRes = await fetch(
+      `https://api.replicate.com/v1/predictions/${predictionId}`,
+      { headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` } }
+    );
+
+    if (!statusRes.ok) continue;
+
+    const status = await statusRes.json();
+
+    if (status.status === "succeeded" && status.output?.[0]) {
+      const tempImageUrl = status.output[0];
+      console.log(`[Image] Battle image generated for match ${matchId}: ${tempImageUrl}`);
+
+      // Store image permanently in Supabase Storage
+      try {
+        const { storeBattleImage } = await import("../../../../lib/image-storage");
+        const permanentUrl = await storeBattleImage(matchId, tempImageUrl);
+
+        if (permanentUrl) {
+          console.log(`[Image] Battle result image stored permanently for match ${matchId}`);
+        } else {
+          // Fallback to temp URL if storage fails
+          await supabase
+            .from("ucf_matches")
+            .update({ result_image_url: tempImageUrl })
+            .eq("id", matchId);
+        }
+      } catch (e) {
+        // Fallback to temp URL
+        await supabase
+          .from("ucf_matches")
+          .update({ result_image_url: tempImageUrl })
+          .eq("id", matchId);
+      }
+      return;
+    }
+
+    if (status.status === "failed") {
+      console.error(`[Image] Generation failed for match ${matchId}:`, status.error);
+      return;
+    }
+  }
+  console.log(`[Image] Polling timed out for match ${matchId}`);
 }
 
 // GET endpoint to check prediction status
