@@ -155,42 +155,72 @@ export function generateBattleResultPrompt(battle: BattleResultDetails): string 
   const defaultWinnerColors = "glowing with victory energy, bright saturated colors with golden highlights";
   const defaultLoserColors = "sparking and smoking, colors dimmed and damaged";
 
-  return `${UCF_MASTER_STYLE}
+  return `EPIC ROBOT BOXING VICTORY SCENE - Professional fighting game victory screen art
 
-SCENE TYPE: EPIC VICTORY CELEBRATION - TWO distinct robots, winner triumphant over defeated opponent
+SETTING: UNDERGROUND ROBOT BOXING ARENA (CRITICAL - THIS IS THE BACKGROUND)
+- Gritty, industrial underground fight club arena
+- Worn boxing ring with frayed ropes and blood-stained canvas
+- Chain-link cage surrounding the ring
+- Harsh overhead spotlights cutting through smoke and steam
+- Neon signs and graffiti on concrete walls: "UCF", "UNDERGROUND CLAW FIGHTS"
+- Crowd silhouettes in darkness, cheering
+- Sparks, debris, and oil splatter on the ring floor
+- Atmosphere: smoky, gritty, intense - like an illegal underground robot fight club
 
-=== WINNER: "${winner.name}" (DOMINANT, FOREGROUND) ===
-Chassis: ${winner.chassisDescription || 'Powerful battle robot'}
-Fists: ${winner.fistsDescription || 'Massive mechanical fists'}
-Colors: ${winner.colorScheme || defaultWinnerColors}
-Features: ${winner.distinguishingFeatures || 'Glowing eyes blazing with victory, battle damage that shows strength'}
-${winner.finalMove ? `Just landed the devastating: ${winner.finalMove}` : ''}
-POSE: TRIUMPHANT VICTORY POSE - fist raised to the sky, standing over fallen opponent. Dominant, powerful body language. Glowing eyes, steam venting, energy crackling. The CHAMPION.
+=== WINNER: "${winner.name}" - THE CHAMPION (CENTER FRAME, DOMINANT) ===
+Robot Design:
+- Chassis: ${winner.chassisDescription || 'Powerful humanoid battle robot with heavy armor plating'}
+- Fists: ${winner.fistsDescription || 'Massive reinforced mechanical fists, dented from combat'}
+- Colors: ${winner.colorScheme || defaultWinnerColors}
+- Unique Features: ${winner.distinguishingFeatures || 'Glowing eyes, battle scars, distinctive head design'}
+${winner.finalMove ? `- Final winning move was: ${winner.finalMove}` : ''}
 
-=== LOSER: "${loser.name}" (DEFEATED, ON GROUND) ===
-Chassis: ${loser.chassisDescription || 'Destroyed robot fighter'}
-Colors: ${loser.colorScheme || defaultLoserColors}
-Features: ${loser.distinguishingFeatures || 'Heavy damage, sparks flying'}
-POSE: KNOCKED OUT - collapsed on the ground, smoking and sparking. Eyes flickering off. Oil leaking. Completely defeated. Some parts cracked or broken.
+WINNER POSE (CRITICAL - VICTORY CELEBRATION):
+- Standing TALL in CENTER of boxing ring
+- ONE FIST RAISED HIGH TO THE SKY in triumph
+- Other fist clenched at side or beating chest
+- Head tilted back in victorious roar
+- Glowing eyes blazing bright with victory
+- Steam venting from joints, sparks crackling
+- Battle damage that shows they EARNED this win
+- Body language: DOMINANT, POWERFUL, CHAMPION
 
-${totalRounds ? `This was an EPIC ${totalRounds}-round battle!` : ''}
+=== LOSER: "${loser.name}" - KNOCKED OUT (ON THE CANVAS) ===
+Robot Design:
+- Chassis: ${loser.chassisDescription || 'Defeated battle robot, heavily damaged'}
+- Colors: ${loser.colorScheme || defaultLoserColors}
+- Features: ${loser.distinguishingFeatures || 'Cracked armor, sparking circuits'}
+
+LOSER POSE (ON THE GROUND):
+- Collapsed/crumpled on the boxing ring canvas
+- Face down or on their back, clearly KNOCKED OUT
+- Eyes flickering/dimmed/offline
+- Oil and hydraulic fluid leaking
+- Smoke rising from damaged components
+- Some armor plates cracked or fallen off
+- Completely defeated, not getting back up
+
+${totalRounds ? `EPIC ${totalRounds}-ROUND BATTLE that ended in a devastating knockout!` : 'KNOCKOUT VICTORY!'}
 
 COMPOSITION (CRITICAL):
-- Winner dominates 60-70% of frame, standing tall
-- Dramatic low angle looking UP at the victorious winner
-- Loser crumpled on the ground beneath/behind
-- Both robots CLEARLY VISIBLE and DISTINCT from each other
+- Winner standing TALL in CENTER, taking up 60% of frame
+- Loser on the canvas at winner's feet
+- Low camera angle looking UP at the champion
+- Boxing ring ropes and corner posts visible
+- Arena atmosphere: smoke, spotlights, crowd shadows
+- Both robots must be CLEARLY DISTINCT - different colors, different designs
 
-LIGHTING & ATMOSPHERE:
-- Dramatic spotlight on the winner
-- Vibrant glowing elements and energy effects
-- Smoke, sparks, and atmospheric particles
-- Dark arena background with colored rim lights
-- Epic, cinematic feel like a fighting game victory screen
+LIGHTING:
+- Harsh spotlight from above on the winner
+- Dramatic rim lighting in winner's colors
+- Neon glow from arena signs (red, blue, green)
+- Smoke catching the light beams
+- Winner's glowing elements (eyes, core) blazing bright
+- Loser's lights dimmed/flickering
 
-BOTH ROBOTS must be clearly visible. This is a KNOCKOUT VICTORY moment.
+STYLE: Comic book / fighting game victory screen. Bold colors, high contrast, dramatic and epic. Clean digital illustration, not photorealistic.
 
-QUALITY: Masterpiece, best quality, highly detailed, dramatic lighting, professional fighting game art, cinematic composition, 8k resolution`;
+QUALITY: Masterpiece, best quality, highly detailed, sharp focus, professional fighting game art, dramatic cinematic lighting, 8k resolution`;
 }
 
 // =============================================================================
