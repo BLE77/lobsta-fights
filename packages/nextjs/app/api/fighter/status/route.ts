@@ -62,7 +62,7 @@ export async function GET(req: NextRequest) {
       move_b,
       commit_deadline,
       reveal_deadline,
-      points_wagered,
+      points_wager,
       winner_id,
       agent_a_state,
       agent_b_state,
@@ -161,7 +161,7 @@ export async function GET(req: NextRequest) {
       state: activeMatch.state,
       round: activeMatch.current_round,
       turn: activeMatch.current_turn,
-      points_wagered: activeMatch.points_wagered,
+      points_wagered: activeMatch.points_wager,
     },
 
     your_state: {
