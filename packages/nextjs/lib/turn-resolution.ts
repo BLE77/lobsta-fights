@@ -183,6 +183,15 @@ export async function resolveTurn(matchId: string): Promise<TurnResolutionResult
     if (completeError) {
       console.error("Error completing match:", completeError);
     }
+
+    // Trigger battle result image generation (non-blocking)
+    if (process.env.REPLICATE_API_TOKEN) {
+      import("./battle-image").then(({ generateBattleResultImage }) => {
+        generateBattleResultImage(matchId).catch((err) => {
+          console.error("[Image] Error generating battle result image:", err);
+        });
+      });
+    }
   }
 
   // Update the match
