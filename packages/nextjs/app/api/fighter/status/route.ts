@@ -47,34 +47,40 @@ export async function GET(req: NextRequest) {
     .single();
 
   // Find active match (where this fighter is participating and match isn't finished)
-  const { data: activeMatch } = await supabase
+  // First, find the match with a simpler query
+  const { data: matches, error: matchError } = await supabase
     .from("ucf_matches")
-    .select(`
-      id,
-      state,
-      current_round,
-      current_turn,
-      fighter_a_id,
-      fighter_b_id,
-      commit_a,
-      commit_b,
-      move_a,
-      move_b,
-      commit_deadline,
-      reveal_deadline,
-      points_wager,
-      winner_id,
-      agent_a_state,
-      agent_b_state,
-      turn_history,
-      fighter_a:ucf_fighters!fighter_a_id(id, name, image_url),
-      fighter_b:ucf_fighters!fighter_b_id(id, name, image_url)
-    `)
+    .select("*")
     .or(`fighter_a_id.eq.${fighterId},fighter_b_id.eq.${fighterId}`)
     .neq("state", "FINISHED")
     .order("created_at", { ascending: false })
-    .limit(1)
-    .single();
+    .limit(1);
+
+  if (matchError) {
+    console.error("Match query error:", matchError);
+  }
+
+  const activeMatch = matches?.[0];
+
+  // If we found a match, fetch the fighter details separately
+  let fighterA = null;
+  let fighterB = null;
+  if (activeMatch) {
+    const [aResult, bResult] = await Promise.all([
+      supabase
+        .from("ucf_fighters")
+        .select("id, name, image_url")
+        .eq("id", activeMatch.fighter_a_id)
+        .single(),
+      supabase
+        .from("ucf_fighters")
+        .select("id, name, image_url")
+        .eq("id", activeMatch.fighter_b_id)
+        .single(),
+    ]);
+    fighterA = aResult.data;
+    fighterB = bResult.data;
+  }
 
   // No active match
   if (!activeMatch) {
@@ -103,7 +109,7 @@ export async function GET(req: NextRequest) {
   const isPlayerA = activeMatch.fighter_a_id === fighterId;
   const myState = isPlayerA ? activeMatch.agent_a_state : activeMatch.agent_b_state;
   const opponentState = isPlayerA ? activeMatch.agent_b_state : activeMatch.agent_a_state;
-  const opponent = isPlayerA ? activeMatch.fighter_b : activeMatch.fighter_a;
+  const opponent = isPlayerA ? fighterB : fighterA;
   const myCommitted = isPlayerA ? !!activeMatch.commit_a : !!activeMatch.commit_b;
   const myRevealed = isPlayerA ? !!activeMatch.move_a : !!activeMatch.move_b;
   const opponentCommitted = isPlayerA ? !!activeMatch.commit_b : !!activeMatch.commit_a;
