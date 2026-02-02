@@ -287,33 +287,21 @@ async function autoReveal(
     .update(updateFields)
     .eq("id", matchId);
 
-  // Check if both revealed - if so, trigger turn resolution
+  // Check if both revealed - if so, trigger turn resolution directly
   const { data: match } = await supabase
     .from("ucf_matches")
-    .select("move_a, move_b")
+    .select("move_a, move_b, state")
     .eq("id", matchId)
     .single();
 
-  if (match?.move_a && match?.move_b) {
-    // Both revealed - call the reveal endpoint to process the turn
-    // We do this by making an internal call
+  if (match?.move_a && match?.move_b && match.state === "REVEAL_PHASE") {
+    // Both revealed - resolve the turn directly using shared utility
     try {
-      const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || process.env.VERCEL_URL
-        ? `https://${process.env.VERCEL_URL}`
-        : "http://localhost:3000";
-
-      await fetch(`${baseUrl}/api/match/reveal`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          match_id: matchId,
-          fighter_id: fighterId,
-          api_key: "INTERNAL_TRIGGER", // Special key to trigger resolution
-          move: move,
-          salt: salt,
-          _internal: true,
-        }),
-      });
+      const { resolveTurn } = await import("../../../../lib/turn-resolution");
+      const result = await resolveTurn(matchId);
+      if (!result.success) {
+        console.error("Turn resolution failed:", result.error);
+      }
     } catch (e) {
       console.error("Failed to trigger turn resolution:", e);
     }
