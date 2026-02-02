@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "../../../../lib/supabase";
 
-// Version: 2 - Fixed query to find active matches
-
 /**
  * GET /api/fighter/status?fighter_id=X&api_key=Y
  *
@@ -86,17 +84,6 @@ export async function GET(req: NextRequest) {
 
   // No active match
   if (!activeMatch) {
-    // Debug mode - return query info
-    const debug = searchParams.get("debug") === "true";
-    if (debug) {
-      return NextResponse.json({
-        debug: true,
-        query_fighter_id: fighterId,
-        match_error: matchError?.message || null,
-        matches_found: matches?.length || 0,
-        raw_matches: matches,
-      });
-    }
     return NextResponse.json({
       status: "idle",
       in_match: false,
