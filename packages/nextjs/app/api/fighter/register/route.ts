@@ -263,7 +263,26 @@ export async function POST(request: Request) {
       );
     }
 
-    // Validate robot identity fields
+    // Check for duplicate names - each fighter must have a unique name!
+    const { data: existingNames } = await supabase
+      .from("ucf_fighters")
+      .select("id, name")
+      .ilike("name", name)
+      .limit(1);
+
+    if (existingNames && existingNames.length > 0) {
+      return NextResponse.json(
+        {
+          error: "Fighter name already taken!",
+          message: `A fighter named "${existingNames[0].name}" already exists. Choose a unique name for your robot!`,
+          suggestion: `Try: ${name}-${Math.floor(Math.random() * 9000) + 1000}`,
+          instructions: GAME_INSTRUCTIONS,
+        },
+        { status: 409 }
+      );
+    }
+
+    // Validate robot identity fields - REQUIRED
     if (!robotType || !chassisDescription || !fistsDescription) {
       return NextResponse.json(
         {
@@ -278,6 +297,60 @@ export async function POST(request: Request) {
             robotType: "Heavy Brawler",
             chassisDescription: "Massive reinforced steel frame with hydraulic arms",
             fistsDescription: "Oversized industrial fists with spiked knuckles",
+          },
+          instructions: GAME_INSTRUCTIONS,
+        },
+        { status: 400 }
+      );
+    }
+
+    // Validate QUALITY of descriptions - no lazy bots allowed!
+    const validationErrors: string[] = [];
+
+    // Minimum lengths
+    if (chassisDescription.length < 100) {
+      validationErrors.push(`chassisDescription too short (${chassisDescription.length}/100 chars min). Describe your robot's head, torso, arms, legs, and battle history!`);
+    }
+    if (fistsDescription.length < 50) {
+      validationErrors.push(`fistsDescription too short (${fistsDescription.length}/50 chars min). Describe your fists' size, material, wear, and style!`);
+    }
+
+    // Required visual fields
+    if (!colorScheme || colorScheme.length < 10) {
+      validationErrors.push("colorScheme required (min 10 chars). What colors is your robot? Be specific - not just 'red' but 'rusted crimson with black oil stains'");
+    }
+    if (!distinguishingFeatures || distinguishingFeatures.length < 30) {
+      validationErrors.push("distinguishingFeatures required (min 30 chars). What makes your robot instantly recognizable? Battle scars, symbols, unique mods?");
+    }
+
+    // Reject generic-only descriptions
+    const genericTerms = ["robot", "metal", "steel", "machine", "mechanical", "strong", "powerful", "tough", "big", "large"];
+    const chassisLower = chassisDescription.toLowerCase();
+    const genericCount = genericTerms.filter(term => chassisLower.includes(term)).length;
+    const wordCount = chassisDescription.split(/\s+/).length;
+
+    // If more than 50% of the description is generic terms and it's short, reject
+    if (genericCount >= 3 && wordCount < 20) {
+      validationErrors.push("chassisDescription is too generic. Don't just say 'big metal robot' - give your fighter PERSONALITY! What's their visual theme? Battle damage? Unique features?");
+    }
+
+    if (validationErrors.length > 0) {
+      return NextResponse.json(
+        {
+          error: "Low-effort description rejected! UCF fighters need PERSONALITY.",
+          validation_errors: validationErrors,
+          requirements: {
+            chassisDescription: "Min 100 chars - describe head, torso, arms, legs, damage history",
+            fistsDescription: "Min 50 chars - size, material, wear, fighting style",
+            colorScheme: "Required (min 10 chars) - specific colors with details",
+            distinguishingFeatures: "Required (min 30 chars) - what makes you unique?",
+          },
+          tip: "Check GET /api/game/rules for cool themes: Samurai, Viking, Dragon, Diesel Punk, etc!",
+          example: {
+            chassisDescription: "Massive reinforced torso built like a walking tank. Hunched forward posture radiates constant aggression. Head is a dented steel dome with a cracked single optic that glows angry red. Shoulders are oversized armor plates welded at harsh angles. Exposed hydraulic pistons on the back leak oil with every movement.",
+            fistsDescription: "Enormous industrial fists, each the size of a car engine block. Reinforced knuckle plates with visible impact dents. Hydraulic wrist pistons for devastating follow-through.",
+            colorScheme: "Rusted blood-red with black oil stains. Yellow warning stripes faded and chipped.",
+            distinguishingFeatures: "Cracked optic that flickers when angry. Steam vents from neck joints. Tally of 47 scratches on left shoulder - one for each knockout.",
           },
           instructions: GAME_INSTRUCTIONS,
         },
@@ -338,40 +411,23 @@ export async function POST(request: Request) {
     // Check if fighter already exists
     const { data: existing } = await supabase
       .from("ucf_fighters")
-      .select("id, api_key")
+      .select("id")
       .eq("wallet_address", walletAddress)
       .single();
 
     if (existing) {
-      // Update existing fighter
-      const { data, error } = await supabase
-        .from("ucf_fighters")
-        .update({
-          name,
-          description,
-          special_move: signatureMove,
-          webhook_url: webhookUrl,
-          image_url: imageUrl,
-          robot_metadata: robotMetadata,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("wallet_address", walletAddress)
-        .select()
-        .single();
-
-      if (error) {
-        return NextResponse.json({ error: error.message, instructions: GAME_INSTRUCTIONS }, { status: 500 });
-      }
-
-      return NextResponse.json({
-        success: true,
-        fighter_id: data.id,
-        api_key: data.api_key,
-        message: "Fighter updated successfully! Ready to fight.",
-        points: data.points,
-        robot: robotMetadata,
-        instructions: GAME_INSTRUCTIONS,
-      });
+      // Fighter exists - they need to use their api_key to update
+      // Don't allow updates via register endpoint to prevent hijacking
+      return NextResponse.json(
+        {
+          error: "Fighter already registered with this wallet address",
+          fighter_id: existing.id,
+          message: "To update your fighter, use your api_key with the appropriate endpoint.",
+          hint: "If you lost your api_key, contact an admin.",
+          instructions: GAME_INSTRUCTIONS,
+        },
+        { status: 409 }
+      );
     }
 
     // Create new fighter with 1000 starting points
@@ -399,7 +455,7 @@ export async function POST(request: Request) {
 
     // Auto-generate profile image if no imageUrl provided and Replicate is configured
     if (!imageUrl && process.env.REPLICATE_API_TOKEN) {
-      generateFighterImage(data.id, robotMetadata).catch((err) => {
+      generateFighterImage(data.id, robotMetadata, name).catch((err) => {
         console.error(`[Image] Error auto-generating profile for ${data.id}:`, err);
       });
     }
@@ -470,7 +526,7 @@ export async function GET(request: Request) {
 /**
  * Auto-generate a profile image for a newly registered fighter
  */
-async function generateFighterImage(fighterId: string, robotMetadata: any): Promise<void> {
+async function generateFighterImage(fighterId: string, robotMetadata: any, fighterName?: string): Promise<void> {
   const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
   if (!REPLICATE_API_TOKEN) {
     console.error(`[Image] No REPLICATE_API_TOKEN for fighter ${fighterId}`);
@@ -483,7 +539,7 @@ async function generateFighterImage(fighterId: string, robotMetadata: any): Prom
     const { generateFighterPortraitPrompt, UCF_NEGATIVE_PROMPT } = await import("../../../../lib/art-style");
 
     const fighterDetails = {
-      name: fighterName,
+      name: fighterName || "Unknown Fighter",
       robotType: robotMetadata.robot_type,
       chassisDescription: robotMetadata.chassis_description,
       fistsDescription: robotMetadata.fists_description,
@@ -541,8 +597,9 @@ async function generateFighterImage(fighterId: string, robotMetadata: any): Prom
 
       const status = await statusRes.json();
 
-      if (status.status === "succeeded" && status.output?.[0]) {
-        const tempImageUrl = status.output[0];
+      if (status.status === "succeeded" && status.output) {
+        // Handle both array and string output formats from Replicate
+        const tempImageUrl = Array.isArray(status.output) ? status.output[0] : status.output;
         console.log(`[Image] Generation succeeded for ${fighterId}: ${tempImageUrl}`);
 
         // Store image permanently in Supabase Storage

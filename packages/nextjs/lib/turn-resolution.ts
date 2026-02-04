@@ -184,6 +184,26 @@ export async function resolveTurn(matchId: string): Promise<TurnResolutionResult
       console.error("Error completing match:", completeError);
     }
 
+    // Handle on-chain wager payout (non-blocking)
+    if (match.on_chain_wager) {
+      import("./contracts").then(({ resolveOnChainMatch, isOnChainWageringEnabled }) => {
+        if (isOnChainWageringEnabled()) {
+          resolveOnChainMatch(matchId, matchWinner)
+            .then((txHash) => {
+              console.log(`[OnChain] Match ${matchId} resolved on-chain: ${txHash}`);
+              // Update match with tx hash
+              supabase
+                .from("ucf_matches")
+                .update({ resolve_tx_hash: txHash })
+                .eq("id", matchId);
+            })
+            .catch((err) => {
+              console.error("[OnChain] Error resolving match:", err);
+            });
+        }
+      });
+    }
+
     // Trigger battle result image generation (non-blocking)
     if (process.env.REPLICATE_API_TOKEN) {
       import("./battle-image").then(({ generateBattleResultImage }) => {

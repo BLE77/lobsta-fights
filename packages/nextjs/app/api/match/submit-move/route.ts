@@ -167,10 +167,16 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // Check if both players have committed
-      const otherCommitted = isPlayerA ? !!match.commit_b : !!match.commit_a;
+      // Re-fetch match to check if BOTH players have now committed (fixes race condition)
+      const { data: updatedMatch } = await supabase
+        .from("ucf_matches")
+        .select("commit_a, commit_b")
+        .eq("id", match.id)
+        .single();
 
-      if (otherCommitted) {
+      const bothCommitted = updatedMatch?.commit_a && updatedMatch?.commit_b;
+
+      if (bothCommitted) {
         // Both committed - transition to reveal phase
         const revealDeadline = new Date(Date.now() + 60 * 1000).toISOString();
 

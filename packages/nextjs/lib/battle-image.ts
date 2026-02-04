@@ -124,8 +124,9 @@ export async function generateBattleResultImage(matchId: string): Promise<void> 
 
         const status = await statusRes.json();
 
-        if (status.status === "succeeded" && status.output?.[0]) {
-          const tempImageUrl = status.output[0];
+        if (status.status === "succeeded" && status.output) {
+          // Handle both array and string output formats from Replicate
+          const tempImageUrl = Array.isArray(status.output) ? status.output[0] : status.output;
           console.log(`[Image] Battle image generated: ${tempImageUrl}`);
 
           // Store image permanently in Supabase Storage

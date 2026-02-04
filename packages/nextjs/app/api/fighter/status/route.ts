@@ -189,6 +189,29 @@ export async function GET(req: NextRequest) {
       revealed: opponentRevealed,
     },
 
+    // Timing info
+    timing: {
+      match_started_at: activeMatch.started_at,
+      match_duration_seconds: activeMatch.started_at
+        ? Math.floor((Date.now() - new Date(activeMatch.started_at).getTime()) / 1000)
+        : 0,
+      current_deadline: activeMatch.state === "COMMIT_PHASE"
+        ? activeMatch.commit_deadline
+        : activeMatch.reveal_deadline,
+      seconds_remaining: (() => {
+        const deadline = activeMatch.state === "COMMIT_PHASE"
+          ? activeMatch.commit_deadline
+          : activeMatch.reveal_deadline;
+        if (!deadline) return null;
+        const remaining = Math.floor((new Date(deadline).getTime() - Date.now()) / 1000);
+        return Math.max(0, remaining);
+      })(),
+      phase_timeout_seconds: 60,
+      missed_turns: isPlayerA ? (activeMatch.missed_turns_a || 0) : (activeMatch.missed_turns_b || 0),
+      max_missed_turns_before_forfeit: 3,
+    },
+
+    // Legacy deadlines format for backwards compatibility
     deadlines: {
       commit: activeMatch.commit_deadline,
       reveal: activeMatch.reveal_deadline,

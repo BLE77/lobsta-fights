@@ -4,6 +4,10 @@
     {
       "path": "/api/matchmaker/run",
       "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/process-matches",
+      "schedule": "* * * * *"
     }
   ]
 }

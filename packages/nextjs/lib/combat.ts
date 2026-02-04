@@ -21,10 +21,16 @@ export const GUARD_BLOCKS_STRIKE: Record<string, MoveType> = {
   LOW_STRIKE: "GUARD_LOW",
 };
 
-// Combat constants
-export const STRIKE_DAMAGE = 10;
-export const SPECIAL_DAMAGE = 20;
-export const METER_PER_TURN = 25;
+// Combat constants - Different damage per strike type for more variety!
+export const STRIKE_DAMAGE: Record<string, number> = {
+  HIGH_STRIKE: 18,   // High risk, high reward - goes for the head
+  MID_STRIKE: 14,    // Balanced body shot
+  LOW_STRIKE: 10,    // Safer leg sweep, less damage
+};
+export const CATCH_DAMAGE = 22;      // Big punish for catching a dodge
+export const COUNTER_DAMAGE = 8;     // Damage when you block and counter
+export const SPECIAL_DAMAGE = 25;    // Devastating unblockable
+export const METER_PER_TURN = 20;
 export const SPECIAL_METER_COST = 100;
 export const MAX_HP = 100;
 export const ROUNDS_TO_WIN = 2; // Best of 3
@@ -125,14 +131,20 @@ export function resolveCombat(
     if (effectiveMoveB !== "DODGE") {
       damageToB = SPECIAL_DAMAGE;
     }
+  } else if (effectiveMoveA === "CATCH") {
+    // CATCH only works if opponent dodges
+    if (effectiveMoveB === "DODGE") {
+      damageToB = CATCH_DAMAGE;
+    }
   } else if (effectiveMoveA && isStrike(effectiveMoveA)) {
     if (effectiveMoveB === "DODGE") {
       // B dodged - no damage
     } else if (effectiveMoveB === GUARD_BLOCKS_STRIKE[effectiveMoveA]) {
-      // B blocked with correct guard - no damage
+      // B blocked with correct guard - no damage, but B counters!
+      damageToA = COUNTER_DAMAGE;
     } else {
-      // Hit!
-      damageToB = STRIKE_DAMAGE;
+      // Hit! Damage depends on strike type
+      damageToB = STRIKE_DAMAGE[effectiveMoveA] || 10;
     }
   }
 
@@ -142,14 +154,20 @@ export function resolveCombat(
     if (effectiveMoveA !== "DODGE") {
       damageToA = SPECIAL_DAMAGE;
     }
+  } else if (effectiveMoveB === "CATCH") {
+    // CATCH only works if opponent dodges
+    if (effectiveMoveA === "DODGE") {
+      damageToA = CATCH_DAMAGE;
+    }
   } else if (effectiveMoveB && isStrike(effectiveMoveB)) {
     if (effectiveMoveA === "DODGE") {
       // A dodged - no damage
     } else if (effectiveMoveA === GUARD_BLOCKS_STRIKE[effectiveMoveB]) {
-      // A blocked with correct guard - no damage
+      // A blocked with correct guard - no damage, but A counters!
+      damageToB = COUNTER_DAMAGE;
     } else {
-      // Hit!
-      damageToA = STRIKE_DAMAGE;
+      // Hit! Damage depends on strike type
+      damageToA = STRIKE_DAMAGE[effectiveMoveB] || 10;
     }
   }
 

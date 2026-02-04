@@ -1,6 +1,14 @@
 import { NextResponse } from "next/server";
 import { supabase } from "../../../lib/supabase";
 
+export interface MatchTiming {
+  match_started_at: string | null;
+  match_duration_seconds: number;
+  current_deadline: string | null;
+  seconds_remaining: number | null;
+  phase_timeout_seconds: number;
+}
+
 export interface MatchWithFighters {
   id: string;
   state: "WAITING" | "COMMIT_PHASE" | "REVEAL_PHASE" | "FINISHED";
@@ -18,6 +26,9 @@ export interface MatchWithFighters {
   finished_at: string | null;
   result_image_url: string | null;
   result_image_prediction_id: string | null;
+  commit_deadline: string | null;
+  reveal_deadline: string | null;
+  timing?: MatchTiming;
   fighter_a: {
     id: string;
     name: string;
@@ -34,6 +45,33 @@ export interface MatchWithFighters {
     wins: number;
     losses: number;
   } | null;
+}
+
+/**
+ * Compute timing info for a match
+ */
+function computeTiming(match: any): MatchTiming {
+  const now = Date.now();
+  const startedAt = match.started_at ? new Date(match.started_at).getTime() : null;
+  const currentDeadline = match.state === "COMMIT_PHASE"
+    ? match.commit_deadline
+    : match.state === "REVEAL_PHASE"
+    ? match.reveal_deadline
+    : null;
+
+  let secondsRemaining: number | null = null;
+  if (currentDeadline) {
+    const remaining = Math.floor((new Date(currentDeadline).getTime() - now) / 1000);
+    secondsRemaining = Math.max(0, remaining);
+  }
+
+  return {
+    match_started_at: match.started_at,
+    match_duration_seconds: startedAt ? Math.floor((now - startedAt) / 1000) : 0,
+    current_deadline: currentDeadline,
+    seconds_remaining: secondsRemaining,
+    phase_timeout_seconds: 60,
+  };
 }
 
 export async function GET(request: Request) {
@@ -68,6 +106,7 @@ export async function GET(request: Request) {
         ...match,
         fighter_a: fighterA,
         fighter_b: fighterB,
+        timing: computeTiming(match),
       } as MatchWithFighters,
     });
   }
@@ -110,11 +149,12 @@ export async function GET(request: Request) {
 
   const fighterMap = new Map(fighters?.map((f) => [f.id, f]) || []);
 
-  // Join fighters to matches
+  // Join fighters to matches and add timing info
   const matchesWithFighters: MatchWithFighters[] = matches.map((m) => ({
     ...m,
     fighter_a: fighterMap.get(m.fighter_a_id) || null,
     fighter_b: fighterMap.get(m.fighter_b_id) || null,
+    timing: computeTiming(m),
   }));
 
   return NextResponse.json({

@@ -19,6 +19,12 @@ export async function storeImagePermanently(
   path: string // e.g., "fighters/abc123.png" or "battles/xyz789.png"
 ): Promise<string | null> {
   try {
+    // Validate URL before attempting to download
+    if (!tempUrl || tempUrl.length < 10 || !tempUrl.startsWith("http")) {
+      console.error(`[ImageStorage] Invalid URL received: "${tempUrl}" - skipping storage`);
+      return null;
+    }
+
     console.log(`[ImageStorage] Downloading from: ${tempUrl}`);
 
     // Download the image
