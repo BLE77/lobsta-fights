@@ -6,6 +6,8 @@ import { supabase } from "../../../../lib/supabase";
  *
  * Returns recent match history for a fighter.
  * Useful for bots to track their win/loss history and retrieve missed results.
+ *
+ * This is a static route - takes priority over the [id] dynamic route.
  */
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
