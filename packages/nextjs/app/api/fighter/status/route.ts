@@ -82,8 +82,77 @@ export async function GET(req: NextRequest) {
     fighterB = bResult.data;
   }
 
-  // No active match
+  // No active match - check for recently finished matches (last 2 minutes)
   if (!activeMatch) {
+    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+
+    const { data: recentMatches } = await supabase
+      .from("ucf_matches")
+      .select("*")
+      .or(`fighter_a_id.eq.${fighterId},fighter_b_id.eq.${fighterId}`)
+      .eq("state", "FINISHED")
+      .gte("finished_at", twoMinutesAgo)
+      .order("finished_at", { ascending: false })
+      .limit(1);
+
+    const recentMatch = recentMatches?.[0];
+
+    if (recentMatch) {
+      // Return match_ended status with results
+      const isPlayerA = recentMatch.fighter_a_id === fighterId;
+      const youWon = recentMatch.winner_id === fighterId;
+      const lastTurn = recentMatch.turn_history?.[recentMatch.turn_history.length - 1];
+
+      // Fetch opponent info
+      const opponentId = isPlayerA ? recentMatch.fighter_b_id : recentMatch.fighter_a_id;
+      const { data: opponent } = await supabase
+        .from("ucf_fighters")
+        .select("id, name, image_url")
+        .eq("id", opponentId)
+        .single();
+
+      return NextResponse.json({
+        status: "match_ended",
+        in_match: false,
+        in_lobby: !!lobbyEntry,
+        your_turn: false,
+
+        match_result: {
+          match_id: recentMatch.id,
+          you_won: youWon,
+          winner_id: recentMatch.winner_id,
+          your_final_hp: isPlayerA ? lastTurn?.hp_a_after : lastTurn?.hp_b_after,
+          opponent_final_hp: isPlayerA ? lastTurn?.hp_b_after : lastTurn?.hp_a_after,
+          your_rounds_won: isPlayerA ? recentMatch.agent_a_state?.rounds_won : recentMatch.agent_b_state?.rounds_won,
+          opponent_rounds_won: isPlayerA ? recentMatch.agent_b_state?.rounds_won : recentMatch.agent_a_state?.rounds_won,
+          total_turns: recentMatch.turn_history?.length || 0,
+          points_wagered: recentMatch.points_wager,
+          points_change: youWon ? recentMatch.points_wager : -recentMatch.points_wager,
+          finished_at: recentMatch.finished_at,
+          result_image_url: recentMatch.result_image_url,
+          expires_at: new Date(new Date(recentMatch.finished_at).getTime() + 2 * 60 * 1000).toISOString(),
+        },
+
+        opponent: {
+          id: opponent?.id,
+          name: opponent?.name,
+          image_url: opponent?.image_url,
+        },
+
+        fighter: {
+          id: fighter.id,
+          name: fighter.name,
+          points: fighter.points,
+          wins: fighter.wins,
+          losses: fighter.losses,
+        },
+
+        message: youWon ? "You won the match!" : "You lost the match.",
+        next_action: "POST /api/lobby to find another opponent",
+      });
+    }
+
+    // Truly idle - no active or recent match
     return NextResponse.json({
       status: "idle",
       in_match: false,
