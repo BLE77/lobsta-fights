@@ -54,6 +54,8 @@ interface Match {
   fighter_b: FighterInfo | null;
   result_image_url: string | null;
   result_image_prediction_id: string | null;
+  commit_deadline: string | null;
+  reveal_deadline: string | null;
 }
 
 export default function MatchViewPage() {
@@ -219,6 +221,14 @@ export default function MatchViewPage() {
             <span className="text-stone-500 font-mono text-xs ml-4">
               Auto-refreshing every 2s
             </span>
+          )}
+
+          {/* Countdown Timer */}
+          {isActive && (match.state === "COMMIT_PHASE" || match.state === "REVEAL_PHASE") && (
+            <CountdownTimer
+              deadline={match.state === "COMMIT_PHASE" ? match.commit_deadline : match.reveal_deadline}
+              phase={match.state}
+            />
           )}
         </div>
 
@@ -609,6 +619,83 @@ function TurnHistoryPanel({
           +{turnHistory.length - 10} more turns...
         </p>
       )}
+    </div>
+  );
+}
+
+function CountdownTimer({
+  deadline,
+  phase,
+}: {
+  deadline: string | null;
+  phase: "COMMIT_PHASE" | "REVEAL_PHASE";
+}) {
+  const [timeLeft, setTimeLeft] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!deadline) {
+      setTimeLeft(null);
+      return;
+    }
+
+    const updateTimer = () => {
+      const now = Date.now();
+      const deadlineTime = new Date(deadline).getTime();
+      const remaining = Math.max(0, Math.floor((deadlineTime - now) / 1000));
+      setTimeLeft(remaining);
+    };
+
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
+
+    return () => clearInterval(interval);
+  }, [deadline]);
+
+  if (timeLeft === null) return null;
+
+  const minutes = Math.floor(timeLeft / 60);
+  const seconds = timeLeft % 60;
+  const isUrgent = timeLeft <= 10;
+  const isExpired = timeLeft === 0;
+
+  const phaseText = phase === "COMMIT_PHASE" ? "COMMIT" : "REVEAL";
+
+  return (
+    <div className="mt-3">
+      <div
+        className={`inline-block px-4 py-2 rounded-sm font-mono ${
+          isExpired
+            ? "bg-red-900/50 border border-red-700"
+            : isUrgent
+            ? "bg-red-900/30 border border-red-700 animate-pulse"
+            : "bg-stone-800/50 border border-stone-600"
+        }`}
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-stone-400 text-xs">TIME TO {phaseText}:</span>
+          <span
+            className={`text-xl font-bold ${
+              isExpired
+                ? "text-red-500"
+                : isUrgent
+                ? "text-red-400"
+                : "text-amber-400"
+            }`}
+          >
+            {isExpired ? "00:00" : `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`}
+          </span>
+        </div>
+        {isExpired && (
+          <p className="text-red-400 text-xs mt-1">
+            Random move will be assigned...
+          </p>
+        )}
+        {!isExpired && isUrgent && (
+          <p className="text-red-400 text-xs mt-1 animate-pulse">
+            Hurry! Random move incoming!
+          </p>
+        )}
+      </div>
     </div>
   );
 }
