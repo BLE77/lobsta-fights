@@ -35,10 +35,10 @@ interface Match {
   id: string;
   state: string;
   winner_id: string | null;
-  points_wagered: number;
+  points_wager: number;
   result_image_url: string | null;
   created_at: string;
-  finished_at: string;
+  finished_at: string | null;
   fighter_a: { id: string; name: string; image_url: string | null };
   fighter_b: { id: string; name: string; image_url: string | null };
 }
@@ -243,6 +243,7 @@ export default function FighterProfilePage() {
             <div className="space-y-3">
               {matches.map((match) => {
                 const isWinner = match.winner_id === fighter.id;
+                const isDraw = match.winner_id === null;
                 const opponent =
                   match.fighter_a.id === fighter.id ? match.fighter_b : match.fighter_a;
 
@@ -251,20 +252,24 @@ export default function FighterProfilePage() {
                     key={match.id}
                     href={`/matches/${match.id}`}
                     className={`flex items-center gap-4 p-3 rounded-sm border transition-all hover:bg-stone-800/50 ${
-                      isWinner
-                        ? "bg-green-900/20 border-green-800/50"
-                        : "bg-red-900/20 border-red-800/50"
+                      isDraw
+                        ? "bg-stone-800/20 border-stone-700/50"
+                        : isWinner
+                          ? "bg-green-900/20 border-green-800/50"
+                          : "bg-red-900/20 border-red-800/50"
                     }`}
                   >
                     {/* Result Badge */}
                     <div
                       className={`w-16 text-center font-mono font-bold text-sm py-1 rounded-sm ${
-                        isWinner
-                          ? "bg-green-600 text-white"
-                          : "bg-red-600 text-white"
+                        isDraw
+                          ? "bg-stone-600 text-white"
+                          : isWinner
+                            ? "bg-green-600 text-white"
+                            : "bg-red-600 text-white"
                       }`}
                     >
-                      {isWinner ? "WIN" : "LOSS"}
+                      {isDraw ? "DRAW" : isWinner ? "WIN" : "LOSS"}
                     </div>
 
                     {/* Opponent */}
@@ -288,17 +293,21 @@ export default function FighterProfilePage() {
                     <div className="text-right">
                       <div
                         className={`font-mono font-bold ${
-                          isWinner ? "text-green-400" : "text-red-400"
+                          isDraw
+                            ? "text-stone-400"
+                            : isWinner
+                              ? "text-green-400"
+                              : "text-red-400"
                         }`}
                       >
-                        {isWinner ? "+" : "-"}{match.points_wagered || 100}
+                        {isDraw ? "0" : `${isWinner ? "+" : "-"}${match.points_wager || 100}`}
                       </div>
                       <div className="text-xs text-stone-600">points</div>
                     </div>
 
                     {/* Date */}
                     <div className="text-stone-500 text-xs font-mono hidden md:block">
-                      {new Date(match.finished_at).toLocaleDateString()}
+                      {match.finished_at ? new Date(match.finished_at).toLocaleDateString() : "N/A"}
                     </div>
                   </Link>
                 );

@@ -49,7 +49,7 @@ export async function GET(
       id,
       state,
       winner_id,
-      points_wagered,
+      points_wager,
       result_image_url,
       created_at,
       finished_at,
