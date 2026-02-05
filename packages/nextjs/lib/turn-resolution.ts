@@ -175,13 +175,18 @@ export async function resolveTurn(matchId: string): Promise<TurnResolutionResult
     matchUpdateData.finished_at = new Date().toISOString();
 
     // Call the complete_ucf_match function to handle points transfer
-    const { error: completeError } = await supabase.rpc("complete_ucf_match", {
+    // This function is now idempotent - safe to call multiple times
+    const { data: completeResult, error: completeError } = await supabase.rpc("complete_ucf_match", {
       p_match_id: matchId,
       p_winner_id: matchWinner,
     });
 
     if (completeError) {
       console.error("Error completing match:", completeError);
+    } else if (completeResult?.already_processed) {
+      console.log(`[Match] Match ${matchId} already processed - skipping duplicate points transfer`);
+    } else if (completeResult?.success) {
+      console.log(`[Match] Match ${matchId} completed: ${completeResult.points_transferred} points transferred`);
     }
 
     // Handle on-chain wager payout (non-blocking)
@@ -204,13 +209,47 @@ export async function resolveTurn(matchId: string): Promise<TurnResolutionResult
       });
     }
 
-    // Trigger battle result image generation (non-blocking)
-    if (process.env.REPLICATE_API_TOKEN) {
-      import("./battle-image").then(({ generateBattleResultImage }) => {
-        generateBattleResultImage(matchId).catch((err) => {
-          console.error("[Image] Error generating battle result image:", err);
+    // Use winner's pre-generated victory pose instead of generating new battle images
+    // This saves on image generation costs - victory poses are created at registration
+    // IMPORTANT: Only set image if not already set (idempotency)
+    if (!match.result_image_url) {
+      supabase
+        .from("ucf_fighters")
+        .select("victory_pose_url, image_url")
+        .eq("id", matchWinner)
+        .single()
+        .then(({ data: winner, error: winnerError }) => {
+          if (winnerError) {
+            console.error("[Image] Error fetching winner's images:", winnerError);
+            return;
+          }
+
+          // Priority: victory_pose_url > image_url (profile) > nothing
+          const imageToUse = winner?.victory_pose_url || winner?.image_url;
+
+          if (imageToUse) {
+            // Use the pre-generated image (victory pose or profile as fallback)
+            supabase
+              .from("ucf_matches")
+              .update({ result_image_url: imageToUse })
+              .eq("id", matchId)
+              .then(({ error: updateErr }) => {
+                if (updateErr) {
+                  console.error("[Image] Error setting result image:", updateErr);
+                } else {
+                  const imageType = winner?.victory_pose_url ? "victory pose" : "profile image";
+                  console.log(`[Image] Match ${matchId} using winner's ${imageType}: ${imageToUse}`);
+                }
+              });
+          } else {
+            // No images at all - this shouldn't happen for properly registered fighters
+            console.warn(`[Image] Winner ${matchWinner} has no images, match ${matchId} will have no result image`);
+            // NOTE: We do NOT generate images here anymore to save costs
+            // Victory poses should be generated at registration time
+          }
         });
-      });
+    } else {
+      console.log(`[Image] Match ${matchId} already has result image, skipping`);
     }
   }
 

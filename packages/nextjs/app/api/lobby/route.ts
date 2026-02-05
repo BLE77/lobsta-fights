@@ -61,6 +61,40 @@ export async function POST(request: Request) {
       });
 
     if (opponentId) {
+      // Anti-farming check: verify these fighters can match
+      const { data: canMatch, error: canMatchError } = await supabase
+        .rpc("can_fighters_match", {
+          p_fighter_a: opponentId,
+          p_fighter_b: fighterId,
+        });
+
+      if (canMatchError) {
+        console.error("[Lobby] Error checking match eligibility:", canMatchError);
+      }
+
+      if (canMatch === false) {
+        // These fighters have battled too recently or too many times today
+        // Remove opponent from lobby (they'll have to find someone else)
+        // and put this fighter in lobby instead
+        console.log(`[Lobby] Anti-farming: ${fighterId} cannot match with ${opponentId} - cooldown or daily limit`);
+
+        // Join lobby instead
+        await supabase
+          .from("ucf_lobby")
+          .upsert({
+            fighter_id: fighterId,
+            points_wager: pointsWager,
+            min_opponent_points: Math.max(0, fighter.points - 500),
+            max_opponent_points: fighter.points + 500,
+          });
+
+        return NextResponse.json({
+          status: "waiting",
+          message: `Found opponent but anti-farming cooldown active. Waiting for different opponent.`,
+          points_wager: pointsWager,
+        });
+      }
+
       // Found an opponent - create match!
       const { data: match, error: matchError } = await supabase
         .from("ucf_matches")

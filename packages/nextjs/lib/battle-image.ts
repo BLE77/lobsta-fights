@@ -32,6 +32,12 @@ export async function generateBattleResultImage(matchId: string): Promise<void> 
       return;
     }
 
+    // IDEMPOTENCY CHECK: Don't regenerate if image already exists
+    if (match.result_image_url) {
+      console.log(`[Image] Match ${matchId} already has result image, skipping generation`);
+      return;
+    }
+
     const winnerData = match.winner_id === match.fighter_a_id ? match.fighter_a : match.fighter_b;
     const loserData = match.winner_id === match.fighter_a_id ? match.fighter_b : match.fighter_a;
     const lastTurn = match.turn_history?.[match.turn_history.length - 1];

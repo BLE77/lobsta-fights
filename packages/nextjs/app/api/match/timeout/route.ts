@@ -305,8 +305,8 @@ async function forfeitMatch(
 ): Promise<any> {
   console.log(`[Timeout] Match ${match.id}: ${reason}`);
 
-  // End the match
-  await supabase
+  // ATOMIC: Only update if match hasn't been processed yet
+  const { data: updated, error: updateErr } = await supabase
     .from("ucf_matches")
     .update({
       state: "FINISHED",
@@ -314,13 +314,30 @@ async function forfeitMatch(
       finished_at: new Date().toISOString(),
       forfeit_reason: reason,
     })
-    .eq("id", match.id);
+    .eq("id", match.id)
+    .is("winner_id", null)
+    .is("points_transferred", false)
+    .select();
+
+  // If no rows updated, match was already processed
+  if (!updated || updated.length === 0) {
+    console.log(`[Timeout] Match ${match.id} already processed, skipping forfeit`);
+    return {
+      match_id: match.id,
+      action: "skipped",
+      reason: "already_processed",
+    };
+  }
 
   // Call the complete_ucf_match function to handle points transfer
-  await supabase.rpc("complete_ucf_match", {
+  const { data: completeResult } = await supabase.rpc("complete_ucf_match", {
     p_match_id: match.id,
     p_winner_id: winnerId,
   });
+
+  if (completeResult?.already_processed) {
+    console.log(`[Timeout] Match ${match.id} points already transferred`);
+  }
 
   // Notify fighters
   await notifyForfeit(match, winnerId, loserId, reason);
@@ -336,136 +353,23 @@ async function forfeitMatch(
 
 /**
  * Trigger combat resolution for a match where both moves are now revealed
+ * Uses the shared resolveTurn function which has proper idempotency checks
  */
 async function triggerCombatResolution(matchId: string): Promise<boolean> {
   try {
-    // Fetch the updated match
-    const { data: match } = await supabase
-      .from("ucf_matches")
-      .select("*")
-      .eq("id", matchId)
-      .single();
+    // Use the shared, idempotent turn resolution function
+    const { resolveTurn } = await import("../../../../lib/turn-resolution");
 
-    if (!match || !match.move_a || !match.move_b) {
+    const result = await resolveTurn(matchId);
+
+    if (result.success) {
+      console.log(`[Timeout] Combat resolved for match ${matchId} via shared resolveTurn`);
+      return true;
+    } else {
+      // Not an error - match may have already been processed
+      console.log(`[Timeout] resolveTurn for ${matchId}: ${result.error}`);
       return false;
     }
-
-    // Import combat resolution
-    const { resolveCombat, METER_PER_TURN, MAX_HP, ROUNDS_TO_WIN } = await import("../../../../lib/combat");
-
-    const moveA = match.move_a as MoveType;
-    const moveB = match.move_b as MoveType;
-
-    let agentA = { ...match.agent_a_state };
-    let agentB = { ...match.agent_b_state };
-
-    // Add meter
-    agentA.meter = Math.min(agentA.meter + METER_PER_TURN, 100);
-    agentB.meter = Math.min(agentB.meter + METER_PER_TURN, 100);
-
-    // Resolve combat
-    const { damageToA, damageToB, result, meterUsedA, meterUsedB } = resolveCombat(
-      moveA, moveB, agentA.meter, agentB.meter
-    );
-
-    // Apply damage
-    agentA.hp = Math.max(0, agentA.hp - damageToA);
-    agentB.hp = Math.max(0, agentB.hp - damageToB);
-    agentA.meter -= meterUsedA;
-    agentB.meter -= meterUsedB;
-
-    // Create turn history entry
-    const turnEntry = {
-      round: match.current_round,
-      turn: match.current_turn,
-      move_a: moveA,
-      move_b: moveB,
-      result,
-      damage_to_a: damageToA,
-      damage_to_b: damageToB,
-      hp_a_after: agentA.hp,
-      hp_b_after: agentB.hp,
-      meter_a_after: agentA.meter,
-      meter_b_after: agentB.meter,
-      auto_resolved: true, // Flag that this was auto-resolved due to timeout
-    };
-
-    const turnHistory = [...(match.turn_history || []), turnEntry];
-
-    // Check for round/match end
-    let newRound = match.current_round;
-    let newTurn = match.current_turn + 1;
-    let newState = "COMMIT_PHASE";
-    let matchWinner = null;
-
-    if (agentA.hp <= 0 || agentB.hp <= 0) {
-      if (agentA.hp <= 0 && agentB.hp > 0) {
-        agentB.rounds_won += 1;
-      } else if (agentB.hp <= 0 && agentA.hp > 0) {
-        agentA.rounds_won += 1;
-      }
-
-      if (agentA.rounds_won >= ROUNDS_TO_WIN) {
-        matchWinner = match.fighter_a_id;
-        newState = "FINISHED";
-      } else if (agentB.rounds_won >= ROUNDS_TO_WIN) {
-        matchWinner = match.fighter_b_id;
-        newState = "FINISHED";
-      } else {
-        // New round
-        newRound += 1;
-        newTurn = 1;
-        agentA.hp = MAX_HP;
-        agentB.hp = MAX_HP;
-        agentA.meter = 0;
-        agentB.meter = 0;
-      }
-    }
-
-    // Update match
-    const updateData: Record<string, any> = {
-      agent_a_state: agentA,
-      agent_b_state: agentB,
-      current_round: newRound,
-      current_turn: newTurn,
-      turn_history: turnHistory,
-      state: newState,
-      // Clear for next turn
-      commit_a: null,
-      commit_b: null,
-      move_a: null,
-      move_b: null,
-      salt_a: null,
-      salt_b: null,
-      auto_move_a: null,
-      auto_move_b: null,
-      auto_salt_a: null,
-      auto_salt_b: null,
-    };
-
-    if (newState === "COMMIT_PHASE") {
-      updateData.commit_deadline = new Date(Date.now() + 60000).toISOString(); // 60 seconds (1 min)
-    }
-
-    if (matchWinner) {
-      updateData.winner_id = matchWinner;
-      updateData.finished_at = new Date().toISOString();
-
-      // Complete the match
-      await supabase.rpc("complete_ucf_match", {
-        p_match_id: matchId,
-        p_winner_id: matchWinner,
-      });
-    }
-
-    await supabase
-      .from("ucf_matches")
-      .update(updateData)
-      .eq("id", matchId);
-
-    console.log(`[Timeout] Combat resolved for match ${matchId}: ${result}`);
-    return true;
-
   } catch (err) {
     console.error(`[Timeout] Error resolving combat for ${matchId}:`, err);
     return false;

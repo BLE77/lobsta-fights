@@ -124,6 +124,75 @@ QUALITY: Masterpiece, best quality, highly detailed, sharp focus, professional f
 }
 
 // =============================================================================
+// VICTORY POSE PROMPT - Generated once at registration, reused for all wins
+// =============================================================================
+
+export function generateVictoryPosePrompt(fighter: FighterDetails): string {
+  // Generate a unique color scheme if not provided
+  const defaultColors = [
+    "deep crimson red with gold accents and orange energy glow",
+    "electric blue with silver chrome and cyan neon highlights",
+    "toxic green with black armor and lime energy circuits",
+    "blazing orange with gunmetal grey and yellow warning stripes",
+    "royal purple with gold trim and pink energy core",
+    "jet black with red glowing eyes and scarlet accent lights",
+    "arctic white with ice blue highlights and frost effects",
+    "burnt copper with teal patina and amber warning lights",
+  ];
+  const randomColor = defaultColors[Math.floor(Math.random() * defaultColors.length)];
+
+  return `EPIC ROBOT BOXING VICTORY CELEBRATION - Professional fighting game victory screen art
+
+SETTING: UNDERGROUND ROBOT BOXING ARENA (CRITICAL - THIS IS THE BACKGROUND)
+- Gritty, industrial underground fight club arena
+- Worn boxing ring with frayed ropes and battle-stained canvas
+- Chain-link cage surrounding the ring
+- Harsh overhead spotlights cutting through smoke and steam
+- Neon signs and graffiti on concrete walls: "UCF", "UNDERGROUND CLAW FIGHTS"
+- Crowd silhouettes in darkness, cheering
+- Sparks and debris on the ring floor
+- Atmosphere: smoky, gritty, intense - like an illegal underground robot fight club
+
+=== CHAMPION: "${fighter.name}" - VICTORY POSE (CENTER FRAME, DOMINANT) ===
+Robot Design:
+- Robot Type: ${fighter.robotType || 'Battle-hardened fighting machine'}
+- Chassis: ${fighter.chassisDescription || 'Powerful humanoid battle robot with heavy armor plating'}
+- Fists: ${fighter.fistsDescription || 'Massive reinforced mechanical fists, wrapped in battle-worn tape'}
+- Colors: ${fighter.colorScheme || randomColor}
+- Unique Features: ${fighter.distinguishingFeatures || 'Glowing eyes, battle scars, distinctive head design'}
+- Expression: ${fighter.personality || 'Confident, victorious, intimidating presence'}
+
+VICTORY POSE (CRITICAL - TRIUMPHANT CELEBRATION):
+- Standing TALL in CENTER of boxing ring, FULL BODY visible head to toe
+- ONE FIST RAISED HIGH TO THE SKY in triumph
+- Other fist clenched at side or beating chest
+- Head tilted back in victorious roar
+- Glowing eyes blazing bright with victory
+- Steam venting from joints, sparks crackling with energy
+- Battle damage visible - dents, scratches that show they EARNED victories
+- Body language: DOMINANT, POWERFUL, CHAMPION
+- Fighter takes up 70% of the frame - this is THEIR moment
+
+COMPOSITION (CRITICAL):
+- Single fighter ONLY - no other robots or characters
+- Winner standing TALL in CENTER
+- Low camera angle looking UP at the champion
+- Boxing ring ropes and corner posts visible
+- Arena atmosphere: smoke, spotlights, crowd shadows
+
+LIGHTING:
+- Harsh spotlight from above on the champion
+- Dramatic rim lighting in the fighter's colors
+- Neon glow from arena signs (red, blue, green)
+- Smoke catching the light beams
+- All glowing elements (eyes, core, vents) blazing bright at maximum intensity
+
+STYLE: Comic book / fighting game victory screen. Bold colors, high contrast, dramatic and epic. Clean digital illustration, not photorealistic.
+
+QUALITY: Masterpiece, best quality, highly detailed, sharp focus, professional fighting game character art, dramatic cinematic lighting, 8k resolution`;
+}
+
+// =============================================================================
 // BATTLE RESULT PROMPT - For post-match aftermath images
 // =============================================================================
 

@@ -121,6 +121,31 @@ export async function POST(request: Request) {
       );
     }
 
+    // Anti-farming check: prevent same fighters from battling too frequently
+    const { data: canMatch, error: canMatchError } = await supabase
+      .rpc("can_fighters_match", {
+        p_fighter_a: challenger_id,
+        p_fighter_b: opponent_id,
+      });
+
+    if (canMatchError) {
+      console.error("[Challenge] Error checking match eligibility:", canMatchError);
+      return NextResponse.json(
+        { error: "Failed to check match eligibility" },
+        { status: 500 }
+      );
+    }
+
+    if (canMatch === false) {
+      return NextResponse.json(
+        {
+          error: "Anti-farming protection: These fighters have battled too recently or too many times today. Try again later or challenge a different opponent.",
+          cooldown_active: true
+        },
+        { status: 429 }
+      );
+    }
+
     // Verify opponent has a webhook URL
     if (!opponent.webhook_url) {
       return NextResponse.json(

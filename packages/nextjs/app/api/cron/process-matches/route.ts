@@ -36,17 +36,21 @@ export async function GET(req: NextRequest) {
 
   try {
     // 1. Find matches stuck in COMMIT_PHASE where both have committed
+    // CRITICAL: Filter for winner_id IS NULL to avoid processing already-finished matches
     const { data: stuckCommits } = await supabase
       .from("ucf_matches")
       .select("id, pending_move_a, pending_move_b, pending_salt_a, pending_salt_b")
       .eq("state", "COMMIT_PHASE")
+      .is("winner_id", null)
+      .is("points_transferred", false)
       .not("commit_a", "is", null)
       .not("commit_b", "is", null);
 
     for (const match of stuckCommits || []) {
       try {
         // Advance to reveal phase and set moves
-        await supabase
+        // ATOMIC: Only update if still in COMMIT_PHASE with no winner
+        const { data: updated, error: updateErr } = await supabase
           .from("ucf_matches")
           .update({
             state: "REVEAL_PHASE",
@@ -56,21 +60,31 @@ export async function GET(req: NextRequest) {
             salt_b: match.pending_salt_b,
             reveal_deadline: new Date(Date.now() + 60000).toISOString(),
           })
-          .eq("id", match.id);
+          .eq("id", match.id)
+          .eq("state", "COMMIT_PHASE")
+          .is("winner_id", null)
+          .select();
 
-        results.advanced_to_reveal++;
-        results.processed++;
-        console.log(`[Cron] Advanced match ${match.id} to REVEAL_PHASE`);
+        if (updated && updated.length > 0) {
+          results.advanced_to_reveal++;
+          results.processed++;
+          console.log(`[Cron] Advanced match ${match.id} to REVEAL_PHASE`);
+        } else {
+          console.log(`[Cron] Match ${match.id} already processed by another handler`);
+        }
       } catch (err: any) {
         results.errors.push(`Advance ${match.id}: ${err.message}`);
       }
     }
 
     // 2. Find matches in REVEAL_PHASE where both moves are set -> resolve
+    // CRITICAL: Filter for winner_id IS NULL and points_transferred = false
     const { data: readyToResolve } = await supabase
       .from("ucf_matches")
       .select("id")
       .eq("state", "REVEAL_PHASE")
+      .is("winner_id", null)
+      .is("points_transferred", false)
       .not("move_a", "is", null)
       .not("move_b", "is", null);
 
@@ -90,10 +104,13 @@ export async function GET(req: NextRequest) {
     }
 
     // 3. Process timeouts - call the existing timeout endpoint logic
+    // CRITICAL: Only check for matches that aren't already processed
     const { data: timedOut } = await supabase
       .from("ucf_matches")
       .select("id, state, commit_deadline, reveal_deadline")
       .neq("state", "FINISHED")
+      .is("winner_id", null)
+      .is("points_transferred", false)
       .or(`commit_deadline.lt.${new Date().toISOString()},reveal_deadline.lt.${new Date().toISOString()}`);
 
     if (timedOut && timedOut.length > 0) {

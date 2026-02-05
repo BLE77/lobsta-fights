@@ -284,20 +284,8 @@ export async function POST(request: Request) {
       matchUpdateData.commit_deadline = new Date(Date.now() + 60000).toISOString(); // 60 seconds (1 min)
     }
 
-    // Generate round-win image when a round ends (but match continues)
-    if (roundWinner && !matchWinner && process.env.REPLICATE_API_TOKEN) {
-      generateRoundWinImage(
-        match_id,
-        match.current_round,
-        roundWinner,
-        roundWinner === match.fighter_a_id ? match.fighter_b_id : match.fighter_a_id,
-        moveA,
-        moveB,
-        turnEntry
-      ).catch((err) => {
-        console.error("[Image] Error generating round win image:", err);
-      });
-    }
+    // NOTE: Round win images REMOVED to save costs
+    // We no longer generate images per round - only victory pose at match end
 
     if (matchWinner) {
       matchUpdateData.winner_id = matchWinner;
@@ -314,12 +302,10 @@ export async function POST(request: Request) {
         // Continue anyway, the match result is more important
       }
 
-      // Trigger battle result image generation (non-blocking)
-      if (process.env.REPLICATE_API_TOKEN) {
-        generateBattleResultImage(match_id).catch((err) => {
-          console.error("[Image] Error generating battle result image:", err);
-        });
-      }
+      // NOTE: Battle result image generation REMOVED
+      // The winner's pre-generated victory_pose_url is used instead
+      // This is handled by turn-resolution.ts when it calls complete_ucf_match
+      // Cost savings: $0.04-0.12 per match
     }
 
     const { data: updatedMatch, error: updateError } = await supabase
@@ -561,6 +547,12 @@ async function generateBattleResultImage(matchId: string): Promise<void> {
       .single();
 
     if (error || !match || !match.winner_id) return;
+
+    // IDEMPOTENCY CHECK: Don't regenerate if image already exists
+    if (match.result_image_url) {
+      console.log(`[Image] Match ${matchId} already has result image, skipping generation`);
+      return;
+    }
 
     const winnerData = match.winner_id === match.fighter_a_id ? match.fighter_a : match.fighter_b;
     const loserData = match.winner_id === match.fighter_a_id ? match.fighter_b : match.fighter_a;
