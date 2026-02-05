@@ -72,11 +72,11 @@ export async function POST(request: Request) {
         console.error("[Lobby] Error checking match eligibility:", canMatchError);
       }
 
-      if (canMatch === false) {
+      if (canMatch && canMatch.can_match === false) {
         // These fighters have battled too recently or too many times today
         // Remove opponent from lobby (they'll have to find someone else)
         // and put this fighter in lobby instead
-        console.log(`[Lobby] Anti-farming: ${fighterId} cannot match with ${opponentId} - cooldown or daily limit`);
+        console.log(`[Lobby] Anti-farming: ${fighterId} cannot match with ${opponentId} - ${canMatch.reason}`);
 
         // Join lobby instead
         await supabase

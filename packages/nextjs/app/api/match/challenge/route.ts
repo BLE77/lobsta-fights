@@ -136,11 +136,14 @@ export async function POST(request: Request) {
       );
     }
 
-    if (canMatch === false) {
+    if (canMatch && canMatch.can_match === false) {
       return NextResponse.json(
         {
-          error: "Anti-farming protection: These fighters have battled too recently or too many times today. Try again later or challenge a different opponent.",
-          cooldown_active: true
+          error: `Anti-farming protection: ${canMatch.reason || "These fighters have battled too recently or too many times today."}`,
+          cooldown_active: true,
+          matches_today: canMatch.matches_today,
+          limit: canMatch.limit,
+          cooldown_ends: canMatch.cooldown_ends,
         },
         { status: 429 }
       );

@@ -88,27 +88,39 @@ export async function POST(request: Request) {
         // Check compatibility
         const compatible = isCompatible(fighter1, fighter2);
 
-        if (compatible) {
-          // Create match!
-          const match = await createMatch(fighter1, fighter2);
+        if (!compatible) continue;
 
-          if (match) {
-            matchesCreated.push(match);
-            matchedFighterIds.add(fighter1.fighter_id);
-            matchedFighterIds.add(fighter2.fighter_id);
+        // Anti-farming check: prevent same fighters from battling too frequently
+        const { data: canMatch } = await supabase
+          .rpc("can_fighters_match", {
+            p_fighter_a: fighter1.fighter_id,
+            p_fighter_b: fighter2.fighter_id,
+          });
 
-            // Remove both from lobby
-            await supabase
-              .from("ucf_lobby")
-              .delete()
-              .in("fighter_id", [fighter1.fighter_id, fighter2.fighter_id]);
-
-            // Notify both fighters via webhook
-            await notifyFighters(fighter1, fighter2, match);
-          }
-
-          break; // Move to next fighter1
+        if (canMatch && canMatch.can_match === false) {
+          console.log(`[Matchmaker] Anti-farming: ${fighter1.fighter_id} vs ${fighter2.fighter_id} blocked - ${canMatch.reason}`);
+          continue; // Try next potential opponent
         }
+
+        // Create match!
+        const match = await createMatch(fighter1, fighter2);
+
+        if (match) {
+          matchesCreated.push(match);
+          matchedFighterIds.add(fighter1.fighter_id);
+          matchedFighterIds.add(fighter2.fighter_id);
+
+          // Remove both from lobby
+          await supabase
+            .from("ucf_lobby")
+            .delete()
+            .in("fighter_id", [fighter1.fighter_id, fighter2.fighter_id]);
+
+          // Notify both fighters via webhook
+          await notifyFighters(fighter1, fighter2, match);
+        }
+
+        break; // Move to next fighter1
       }
     }
 

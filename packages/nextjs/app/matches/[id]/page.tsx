@@ -66,6 +66,8 @@ export default function MatchViewPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showResultImage, setShowResultImage] = useState(false);
+  const [lastProgressAt, setLastProgressAt] = useState<number>(Date.now());
+  const [lastTurnCount, setLastTurnCount] = useState<number>(0);
 
   const fetchMatch = useCallback(async () => {
     try {
@@ -79,6 +81,13 @@ export default function MatchViewPage() {
 
       setMatch(data.match);
       setError(null);
+
+      // Track progress for stuck detection
+      const currentTurnCount = data.match?.turn_history?.length || 0;
+      if (currentTurnCount !== lastTurnCount || data.match?.state === "FINISHED") {
+        setLastProgressAt(Date.now());
+        setLastTurnCount(currentTurnCount);
+      }
     } catch (e) {
       console.error("Failed to fetch match:", e);
       setError("Failed to load match");
@@ -231,6 +240,9 @@ export default function MatchViewPage() {
             />
           )}
         </div>
+
+        {/* Stuck Match Warning */}
+        {isActive && <StuckMatchWarning lastProgressAt={lastProgressAt} />}
 
         {/* Match Info */}
         <div className="w-full bg-stone-900/90 border border-stone-700 rounded-sm p-6 mb-6 backdrop-blur-sm">
@@ -619,6 +631,35 @@ function TurnHistoryPanel({
           +{turnHistory.length - 10} more turns...
         </p>
       )}
+    </div>
+  );
+}
+
+function StuckMatchWarning({ lastProgressAt }: { lastProgressAt: number }) {
+  const [minutesStuck, setMinutesStuck] = useState(0);
+
+  useEffect(() => {
+    const update = () => {
+      const elapsed = Math.floor((Date.now() - lastProgressAt) / 60000);
+      setMinutesStuck(elapsed);
+    };
+    update();
+    const interval = setInterval(update, 10000);
+    return () => clearInterval(interval);
+  }, [lastProgressAt]);
+
+  if (minutesStuck < 3) return null;
+
+  return (
+    <div className="w-full bg-amber-900/30 border border-amber-700/50 rounded-sm p-3 mb-6 text-center">
+      <p className="text-amber-400 font-mono text-sm font-bold">
+        MATCH IDLE FOR {minutesStuck} MINUTE{minutesStuck !== 1 ? "S" : ""}
+      </p>
+      <p className="text-stone-400 font-mono text-xs mt-1">
+        {minutesStuck >= 5
+          ? "This match may be stuck. The server will auto-resolve it shortly."
+          : "Waiting for fighters to submit moves..."}
+      </p>
     </div>
   );
 }
