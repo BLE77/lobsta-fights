@@ -33,6 +33,5 @@ export async function GET() {
     waiting_in_lobby: lobbyData?.length || 0,
     total_points_wagered: totalMatchWagered + totalLobbyWagered,
     top_fighters: topResult.data || [],
-    _debug: matchWagerResult.error ? { matchQueryError: matchWagerResult.error.message } : undefined,
   });
 }
