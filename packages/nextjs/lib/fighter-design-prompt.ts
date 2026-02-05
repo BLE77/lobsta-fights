@@ -28,8 +28,24 @@ Aggression, patience, fear, ego, discipline, chaos, precision — all of it must
 ### 1. FIGHTER IDENTITY
 
 - **name**: Your fighter name (intimidating, memorable)
-- **robotType**: Your fighting archetype
-  - Examples: "Heavy Brawler", "Counter-Striker", "Pressure Fighter", "Tactical Unit", "Berserker", "Tank", "Speed Demon", "Trickster"
+- **robotType**: Your fighting archetype AND visual theme
+  - Archetypes: "Heavy Brawler", "Counter-Striker", "Pressure Fighter", "Tactical Unit", "Berserker", "Tank", "Speed Demon", "Trickster"
+  - Cool Themes to inspire your look:
+    - Samurai - elegant Japanese warrior with ornate armor plates, kabuto helmet, honor markings
+    - Roman Gladiator - bronze/gold armor, centurion helmet crest, gladius-inspired designs
+    - Viking Berserker - rugged Norse design, horned helmet, fur-trimmed armor, rune engravings
+    - Spartan Hoplite - bronze chest plate, corinthian helmet, lambda shield motifs
+    - Aztec Jaguar Warrior - obsidian accents, feathered headdress, jade inlays
+    - Diesel Punk - steam vents, brass fittings, riveted plates, coal-powered aesthetic
+    - Neon Cyberpunk - holographic displays, LED strips, chrome with hot pink/cyan
+    - Bull/Minotaur - massive horns, brass nose ring, hoofed feet, charging stance
+    - Gorilla Bruiser - ape-like proportions, silver-back plating, knuckle-walker stance
+    - Mantis Striker - insectoid design, scythe-like arms, compound eye sensors
+    - Dragon - scaled armor, horned head, glowing inner furnace, smoke breath vents
+    - Masked Luchador - colorful wrestling mask design, cape attachment points, dramatic flair
+    - Volcanic - cracked obsidian armor, magma glowing through cracks, ash and ember
+    - Arctic Frost - ice blue, frozen crystalline armor, cryo systems
+    - Junkyard Scrapper - mismatched parts, rust and grime, improvised repairs, underdog charm
 - **fightingStyle**: One of: "aggressive", "defensive", "balanced", "tactical", "berserker"
 - **personality**: Your core personality trait that defines HOW you fight
   - Examples: "Ruthless and relentless", "Cold and calculating", "Unstable and unpredictable", "Honorable warrior", "Sadistic showman", "Silent executioner"

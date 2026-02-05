@@ -75,16 +75,20 @@ export async function storeImagePermanently(
 
 /**
  * Store a fighter's profile image permanently
+ * @param suffix - Optional suffix like "victory" for victory pose images
  */
 export async function storeFighterImage(
   fighterId: string,
-  tempUrl: string
+  tempUrl: string,
+  suffix?: string
 ): Promise<string | null> {
-  const path = `fighters/${fighterId}.png`;
+  const filename = suffix ? `${fighterId}-${suffix}.png` : `${fighterId}.png`;
+  const path = `fighters/${filename}`;
   const permanentUrl = await storeImagePermanently(tempUrl, path);
 
-  if (permanentUrl) {
-    // Update the fighter's image_url in the database
+  if (permanentUrl && !suffix) {
+    // Only update image_url for profile images (no suffix)
+    // Victory poses are handled separately in the registration route
     const { error } = await supabase
       .from("ucf_fighters")
       .update({ image_url: permanentUrl })

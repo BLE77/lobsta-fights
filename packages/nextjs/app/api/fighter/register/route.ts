@@ -453,10 +453,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: error.message, instructions: GAME_INSTRUCTIONS }, { status: 500 });
     }
 
-    // Auto-generate profile image if no imageUrl provided and Replicate is configured
+    // Auto-generate profile image AND victory pose if no imageUrl provided and Replicate is configured
     if (!imageUrl && process.env.REPLICATE_API_TOKEN) {
-      generateFighterImage(data.id, robotMetadata, name).catch((err) => {
-        console.error(`[Image] Error auto-generating profile for ${data.id}:`, err);
+      // Generate both images in parallel
+      Promise.all([
+        generateFighterImage(data.id, robotMetadata, name),
+        generateVictoryPoseImage(data.id, robotMetadata, name),
+      ]).catch((err) => {
+        console.error(`[Image] Error auto-generating images for ${data.id}:`, err);
       });
     }
 
@@ -633,5 +637,129 @@ async function generateFighterImage(fighterId: string, robotMetadata: any, fight
     console.error(`[Image] Profile generation timeout for fighter ${fighterId} after ${maxAttempts} attempts`);
   } catch (err) {
     console.error(`[Image] Error generating profile for ${fighterId}:`, err);
+  }
+}
+
+/**
+ * Auto-generate a victory pose image for a newly registered fighter
+ * This image is reused every time the fighter wins instead of generating new battle images
+ */
+async function generateVictoryPoseImage(fighterId: string, robotMetadata: any, fighterName?: string): Promise<void> {
+  const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
+  if (!REPLICATE_API_TOKEN) {
+    console.error(`[Image] No REPLICATE_API_TOKEN for victory pose ${fighterId}`);
+    return;
+  }
+
+  console.log(`[Image] Starting victory pose generation for fighter ${fighterId}...`);
+
+  try {
+    const { generateVictoryPosePrompt } = await import("../../../../lib/art-style");
+
+    const fighterDetails = {
+      name: fighterName || "Unknown Fighter",
+      robotType: robotMetadata.robot_type,
+      chassisDescription: robotMetadata.chassis_description,
+      fistsDescription: robotMetadata.fists_description,
+      colorScheme: robotMetadata.color_scheme,
+      distinguishingFeatures: robotMetadata.distinguishing_features,
+      personality: robotMetadata.personality,
+      fightingStyle: robotMetadata.fighting_style,
+    };
+
+    const prompt = generateVictoryPosePrompt(fighterDetails);
+    console.log(`[Image] Victory pose prompt for ${fighterId}: ${prompt.substring(0, 100)}...`);
+
+    // Start image generation with Flux 1.1 Pro - HIGH QUALITY
+    const response = await fetch("https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro/predictions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${REPLICATE_API_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        input: {
+          prompt,
+          aspect_ratio: "1:1",
+          output_format: "png",
+          output_quality: 100,
+          safety_tolerance: 5,
+          prompt_upsampling: true,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[Image] Failed to start victory pose for fighter ${fighterId}: ${response.status} - ${errorText}`);
+      return;
+    }
+
+    const prediction = await response.json();
+    console.log(`[Image] Started victory pose for fighter ${fighterId}: ${prediction.id}`);
+
+    // Poll for completion
+    let attempts = 0;
+    const maxAttempts = 30;
+
+    while (attempts < maxAttempts) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      attempts++;
+
+      const statusRes = await fetch(
+        `https://api.replicate.com/v1/predictions/${prediction.id}`,
+        { headers: { "Authorization": `Bearer ${REPLICATE_API_TOKEN}` } }
+      );
+
+      if (!statusRes.ok) continue;
+
+      const status = await statusRes.json();
+
+      if (status.status === "succeeded" && status.output) {
+        // Handle both array and string output formats from Replicate
+        const tempImageUrl = Array.isArray(status.output) ? status.output[0] : status.output;
+        console.log(`[Image] Victory pose generation succeeded for ${fighterId}: ${tempImageUrl}`);
+
+        // Store image permanently in Supabase Storage
+        const { storeFighterImage } = await import("../../../../lib/image-storage");
+        const permanentUrl = await storeFighterImage(fighterId, tempImageUrl, "victory");
+
+        if (permanentUrl) {
+          // Update fighter with victory pose URL
+          const { error: updateError } = await supabase
+            .from("ucf_fighters")
+            .update({ victory_pose_url: permanentUrl })
+            .eq("id", fighterId);
+
+          if (updateError) {
+            console.error(`[Image] Failed to save victory pose URL:`, updateError);
+          } else {
+            console.log(`[Image] Victory pose stored permanently for fighter ${fighterId}: ${permanentUrl}`);
+          }
+        } else {
+          // Fallback to temp URL if storage fails
+          console.error(`[Image] Failed to store victory pose permanently, using temp URL for ${fighterId}`);
+          const { error: updateError } = await supabase
+            .from("ucf_fighters")
+            .update({ victory_pose_url: tempImageUrl })
+            .eq("id", fighterId);
+          if (updateError) {
+            console.error(`[Image] Failed to save temp victory pose URL:`, updateError);
+          }
+        }
+        return;
+      }
+
+      if (status.status === "failed") {
+        console.error(`[Image] Victory pose generation failed for fighter ${fighterId}:`, status.error);
+        return;
+      }
+
+      console.log(`[Image] Attempt ${attempts}: Victory pose status for ${fighterId} = ${status.status}`);
+    }
+
+    console.error(`[Image] Victory pose generation timeout for fighter ${fighterId} after ${maxAttempts} attempts`);
+  } catch (err) {
+    console.error(`[Image] Error generating victory pose for ${fighterId}:`, err);
   }
 }

@@ -201,10 +201,23 @@ async function handleCommitTimeout(match: any): Promise<any> {
   updateData.state = "REVEAL_PHASE";
   updateData.reveal_deadline = new Date(Date.now() + 60000).toISOString(); // 60 seconds (1 min)
 
-  await supabase
+  const { data: updated, error: updateError } = await supabase
     .from("ucf_matches")
     .update(updateData)
-    .eq("id", match.id);
+    .eq("id", match.id)
+    .select();
+
+  if (updateError) {
+    console.error(`[Timeout] COMMIT update failed for match ${match.id}:`, updateError);
+    throw new Error(`Failed to update match: ${updateError.message}`);
+  }
+
+  if (!updated || updated.length === 0) {
+    console.error(`[Timeout] COMMIT update returned no rows for match ${match.id}`);
+    throw new Error(`Update returned no rows - match may have been modified concurrently`);
+  }
+
+  console.log(`[Timeout] Match ${match.id}: commit timeout handled, transitioned to REVEAL_PHASE`);
 
   return {
     match_id: match.id,
@@ -276,11 +289,23 @@ async function handleRevealTimeout(match: any): Promise<any> {
   }
 
   // Now trigger combat resolution by calling the reveal endpoint internally
-  // Or we can just update and let the next poll handle it
-  await supabase
+  const { data: updated, error: updateError } = await supabase
     .from("ucf_matches")
     .update(updateData)
-    .eq("id", match.id);
+    .eq("id", match.id)
+    .select();
+
+  if (updateError) {
+    console.error(`[Timeout] REVEAL update failed for match ${match.id}:`, updateError);
+    throw new Error(`Failed to update match moves: ${updateError.message}`);
+  }
+
+  if (!updated || updated.length === 0) {
+    console.error(`[Timeout] REVEAL update returned no rows for match ${match.id}`);
+    throw new Error(`Update returned no rows - match may have been modified concurrently`);
+  }
+
+  console.log(`[Timeout] Match ${match.id}: reveal timeout handled, moves set: move_a=${updated[0].move_a}, move_b=${updated[0].move_b}`);
 
   // Trigger combat resolution
   const resolveResult = await triggerCombatResolution(match.id);
