@@ -1,26 +1,48 @@
 import { createClient } from "@supabase/supabase-js";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+// Lazy-initialized clients to avoid throwing at import time (breaks Next.js page data collection)
+let _supabase: ReturnType<typeof createClient> | null = null;
+let _supabaseAdmin: ReturnType<typeof createClient> | null = null;
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error("Missing Supabase environment variables: NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY");
+function getSupabaseUrl() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  if (!url) throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL");
+  return url;
+}
+
+function getSupabaseAnonKey() {
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!key) throw new Error("Missing NEXT_PUBLIC_SUPABASE_ANON_KEY");
+  return key;
 }
 
 // Regular client for most operations (uses anon key with RLS)
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+export const supabase = new Proxy({} as ReturnType<typeof createClient>, {
+  get(_, prop) {
+    if (!_supabase) {
+      _supabase = createClient(getSupabaseUrl(), getSupabaseAnonKey());
+    }
+    return (_supabase as any)[prop];
+  },
+});
 
 // Admin client for server-side operations like storage uploads (bypasses RLS)
 // Only available on server-side where SUPABASE_SERVICE_ROLE_KEY is set
-export const supabaseAdmin = supabaseServiceRoleKey
-  ? createClient(supabaseUrl, supabaseServiceRoleKey, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false
+export const supabaseAdmin = new Proxy({} as ReturnType<typeof createClient> | null, {
+  get(_, prop) {
+    if (_supabaseAdmin === null) {
+      const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+      if (serviceRoleKey) {
+        _supabaseAdmin = createClient(getSupabaseUrl(), serviceRoleKey, {
+          auth: { autoRefreshToken: false, persistSession: false },
+        });
+      } else {
+        return undefined;
       }
-    })
-  : null;
+    }
+    return (_supabaseAdmin as any)[prop];
+  },
+}) as ReturnType<typeof createClient> | null;
 
 // Types for UCF
 export interface RobotMetadata {
