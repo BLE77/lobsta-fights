@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin, supabase } from "../../../../../lib/supabase";
 
+export const dynamic = "force-dynamic";
+
 const BUCKET_NAME = "images";
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 

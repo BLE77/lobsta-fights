@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { generateTrainingImages, TRAINING_IMAGE_PROMPTS } from "../../../../../lib/lora-training";
 import { storeImagePermanently } from "../../../../../lib/image-storage";
 
+export const dynamic = "force-dynamic";
+
 /**
  * POST /api/admin/lora/generate-training-images
  *

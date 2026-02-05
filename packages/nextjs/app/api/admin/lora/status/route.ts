@@ -3,6 +3,8 @@ import { UCF_LORA_MODEL_VERSION, UCF_TRIGGER_WORD } from "../../../../../lib/lor
 import { getModelInfo } from "../../../../../lib/image-generator";
 import { supabase } from "../../../../../lib/supabase";
 
+export const dynamic = "force-dynamic";
+
 /**
  * GET /api/admin/lora/status
  *

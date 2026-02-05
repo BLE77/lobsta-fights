@@ -3,6 +3,8 @@ import { supabase } from "../../../../lib/supabase";
 import { generateVictoryPosePrompt } from "../../../../lib/art-style";
 import { storeImagePermanently } from "../../../../lib/image-storage";
 
+export const dynamic = "force-dynamic";
+
 /**
  * POST /api/admin/generate-victory-poses
  *
