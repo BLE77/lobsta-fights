@@ -55,6 +55,15 @@ export default function HomeContent() {
   useEffect(() => {
     fetchStats();
     fetchLeaderboard();
+
+    // Auto-refresh stats every 15 seconds for live data
+    const statsInterval = setInterval(fetchStats, 15000);
+    const leaderboardInterval = setInterval(fetchLeaderboard, 30000);
+
+    return () => {
+      clearInterval(statsInterval);
+      clearInterval(leaderboardInterval);
+    };
   }, []);
 
   const fetchStats = async () => {
@@ -239,7 +248,13 @@ export default function HomeContent() {
 
         {/* Quick Stats */}
         <div className="grid grid-cols-4 gap-3 max-w-2xl w-full mb-6">
-          <div className="bg-stone-900/70 border border-stone-800 p-3 text-center backdrop-blur-sm">
+          <div className="bg-stone-900/70 border border-stone-800 p-3 text-center backdrop-blur-sm relative">
+            <div className="absolute top-1.5 right-1.5 flex items-center gap-1">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+              </span>
+            </div>
             <div className="text-xl font-bold text-amber-500 font-mono">
               {stats?.active_matches || 0}
             </div>
