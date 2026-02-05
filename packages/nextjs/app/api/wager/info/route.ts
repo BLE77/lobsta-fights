@@ -8,6 +8,8 @@ import {
   getChainInfo,
 } from "../../../../lib/contracts";
 
+export const dynamic = "force-dynamic";
+
 /**
  * GET /api/wager/info
  *

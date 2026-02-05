@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { supabase } from "../../../../lib/supabase";
 import { sendChallenge, notifyFighter } from "../../../../lib/webhook";
 
+export const dynamic = "force-dynamic";
+
 /**
  * POST /api/match/challenge
  * Challenge another fighter to a match

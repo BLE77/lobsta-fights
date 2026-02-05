@@ -4,6 +4,8 @@ import { supabase } from "../../../../lib/supabase";
 import { MoveType } from "../../../../lib/types";
 import { VALID_MOVES, generateSalt, createMoveHash } from "../../../../lib/combat";
 
+export const dynamic = "force-dynamic";
+
 /**
  * Anti-Grief Timeout Handler
  *

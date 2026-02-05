@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { supabase } from "../../../lib/supabase";
 
+export const dynamic = "force-dynamic";
+
 export interface MatchTiming {
   match_started_at: string | null;
   match_duration_seconds: number;

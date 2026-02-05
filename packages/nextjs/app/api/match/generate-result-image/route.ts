@@ -6,6 +6,8 @@ import {
   type BattleResultDetails,
 } from "../../../../lib/art-style";
 
+export const dynamic = "force-dynamic";
+
 /**
  * Generate a battle result image showing the aftermath of a UCF match
  *

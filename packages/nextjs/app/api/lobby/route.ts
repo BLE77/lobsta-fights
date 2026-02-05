@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { supabase } from "../../../lib/supabase";
 
+export const dynamic = "force-dynamic";
+
 // Join the lobby / Find a match
 export async function POST(request: Request) {
   try {

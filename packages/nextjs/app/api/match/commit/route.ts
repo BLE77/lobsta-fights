@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { supabase } from "../../../../lib/supabase";
 
+export const dynamic = "force-dynamic";
+
 /**
  * POST /api/match/commit
  * Submit an encrypted move commitment for a match turn

@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { supabase } from "../../../../lib/supabase";
 
+export const dynamic = "force-dynamic";
+
 /**
  * POST /api/match/create
  * Start a new UCF match between two fighters

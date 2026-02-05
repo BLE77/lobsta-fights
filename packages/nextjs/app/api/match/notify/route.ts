@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { supabase } from "../../../../lib/supabase";
 import { notifyBothFighters, notifyMatchComplete, notifyFighter } from "../../../../lib/webhook";
 
+export const dynamic = "force-dynamic";
+
 /**
  * POST /api/match/notify
  * Internal endpoint to notify fighters about match events

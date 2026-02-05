@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "../../../../lib/supabase";
 
+export const dynamic = "force-dynamic";
+
 /**
  * GET /api/fighter/matches?fighter_id=X&api_key=Y&limit=10
  *

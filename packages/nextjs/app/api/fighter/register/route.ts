@@ -3,6 +3,8 @@ import { supabase } from "../../../../lib/supabase";
 import { verifyMoltbookIdentity, isMoltbookEnabled } from "../../../../lib/moltbook";
 import { AI_FIGHTER_DESIGN_PROMPT, FIGHTER_DESIGN_HINT, REGISTRATION_EXAMPLE } from "../../../../lib/fighter-design-prompt";
 
+export const dynamic = "force-dynamic";
+
 /**
  * UCF Fighter Registration API
  *

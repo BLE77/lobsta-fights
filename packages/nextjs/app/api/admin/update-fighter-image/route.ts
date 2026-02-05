@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { supabase } from "../../../../lib/supabase";
 
+export const dynamic = "force-dynamic";
+
 /**
  * POST /api/admin/update-fighter-image
  * Update a fighter's image URL (admin only)

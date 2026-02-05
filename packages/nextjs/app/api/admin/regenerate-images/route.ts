@@ -3,6 +3,8 @@ import { supabase } from "../../../../lib/supabase";
 import { generateFighterPortraitPrompt } from "../../../../lib/art-style";
 import { storeFighterImage } from "../../../../lib/image-storage";
 
+export const dynamic = "force-dynamic";
+
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
 const ADMIN_SECRET = process.env.ADMIN_SECRET;
 

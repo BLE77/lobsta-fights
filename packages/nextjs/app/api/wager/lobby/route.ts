@@ -9,6 +9,8 @@ import {
 } from "../../../../lib/contracts";
 import { parseEther } from "viem";
 
+export const dynamic = "force-dynamic";
+
 /**
  * POST /api/wager/lobby
  *

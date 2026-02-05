@@ -20,6 +20,8 @@ import {
   type BattleResultDetails,
 } from "../../../../lib/art-style";
 
+export const dynamic = "force-dynamic";
+
 interface AgentState {
   hp: number;
   meter: number;
