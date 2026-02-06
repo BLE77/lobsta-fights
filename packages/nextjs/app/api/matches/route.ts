@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { supabase } from "../../../lib/supabase";
+import { freshSupabase } from "../../../lib/supabase";
 
 export const dynamic = "force-dynamic";
 
@@ -79,6 +79,7 @@ function computeTiming(match: any): MatchTiming {
 }
 
 export async function GET(request: Request) {
+  const supabase = freshSupabase();
   const { searchParams } = new URL(request.url);
   const status = searchParams.get("status") || "all"; // active, finished, all
   const limit = parseInt(searchParams.get("limit") || "50");

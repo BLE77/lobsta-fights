@@ -16,7 +16,15 @@ function getSupabaseAnonKey() {
   return key;
 }
 
+// Fresh client for API routes - creates new instance per call to avoid stale data
+// in Vercel serverless functions where module-level state persists across requests
+export function freshSupabase() {
+  return createClient(getSupabaseUrl(), getSupabaseAnonKey());
+}
+
 // Regular client for most operations (uses anon key with RLS)
+// WARNING: This client persists across Vercel function invocations and may return
+// stale data. Use freshSupabase() in API routes that need accurate counts/lists.
 export const supabase = new Proxy({} as ReturnType<typeof createClient>, {
   get(_, prop) {
     if (!_supabase) {
