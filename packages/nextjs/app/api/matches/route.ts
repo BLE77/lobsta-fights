@@ -38,6 +38,7 @@ export interface MatchWithFighters {
     points: number;
     wins: number;
     losses: number;
+    rank: number;
   } | null;
   fighter_b: {
     id: string;
@@ -46,6 +47,7 @@ export interface MatchWithFighters {
     points: number;
     wins: number;
     losses: number;
+    rank: number;
   } | null;
 }
 
@@ -94,10 +96,10 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "Match not found" }, { status: 404 });
     }
 
-    // Fetch fighters
+    // Fetch fighters with rank
     const { data: fighters } = await supabase
-      .from("ucf_fighters")
-      .select("id, name, image_url, points, wins, losses")
+      .from("ucf_leaderboard")
+      .select("id, name, image_url, points, wins, losses, rank")
       .in("id", [match.fighter_a_id, match.fighter_b_id]);
 
     const fighterA = fighters?.find((f) => f.id === match.fighter_a_id) || null;
@@ -143,10 +145,10 @@ export async function GET(request: Request) {
     if (m.fighter_b_id) fighterIds.add(m.fighter_b_id);
   });
 
-  // Fetch all fighters
+  // Fetch all fighters with rank from leaderboard
   const { data: fighters } = await supabase
-    .from("ucf_fighters")
-    .select("id, name, image_url, points, wins, losses")
+    .from("ucf_leaderboard")
+    .select("id, name, image_url, points, wins, losses, rank")
     .in("id", Array.from(fighterIds));
 
   const fighterMap = new Map(fighters?.map((f) => [f.id, f]) || []);

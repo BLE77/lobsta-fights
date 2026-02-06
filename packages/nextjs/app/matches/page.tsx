@@ -10,6 +10,7 @@ interface FighterInfo {
   points: number;
   wins: number;
   losses: number;
+  rank: number;
 }
 
 interface Match {
@@ -180,9 +181,43 @@ export default function MatchesPage() {
   );
 }
 
+function formatMatchTime(match: Match): string {
+  const date = match.finished_at || match.started_at || match.created_at;
+  if (!date) return "";
+  const d = new Date(date);
+  const now = new Date();
+  const diffMs = now.getTime() - d.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+
+  if (diffMins < 1) return "just now";
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function getRankLabel(rank: number | undefined): string {
+  if (!rank) return "";
+  if (rank === 1) return "#1";
+  if (rank === 2) return "#2";
+  if (rank === 3) return "#3";
+  return `#${rank}`;
+}
+
+function getRankColor(rank: number | undefined): string {
+  if (!rank) return "text-stone-600";
+  if (rank === 1) return "text-amber-400";
+  if (rank === 2) return "text-stone-300";
+  if (rank === 3) return "text-amber-700";
+  return "text-stone-500";
+}
+
 function MatchCard({ match }: { match: Match }) {
   const stateLabel = getStateLabel(match.state);
   const isFinished = match.state === "FINISHED";
+  const timeStr = formatMatchTime(match);
 
   return (
     <Link href={`/matches/${match.id}`}>
@@ -195,25 +230,39 @@ function MatchCard({ match }: { match: Match }) {
           <span className={`font-mono font-bold text-sm ${stateLabel.color}`}>
             {stateLabel.text}
           </span>
-          <span className="text-stone-600 font-mono text-xs">
-            R{match.current_round} T{match.current_turn}
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="text-stone-600 font-mono text-xs">
+              R{match.current_round} T{match.current_turn}
+            </span>
+            {timeStr && (
+              <span className="text-stone-600 font-mono text-xs">
+                {timeStr}
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="flex items-center justify-between">
           {/* Fighter A */}
           <div className="flex items-center gap-3 flex-1">
-            {match.fighter_a?.image_url ? (
-              <img
-                src={match.fighter_a.image_url}
-                alt={match.fighter_a.name}
-                className="w-12 h-12 rounded-sm object-cover border border-stone-700"
-              />
-            ) : (
-              <div className="w-12 h-12 rounded-sm bg-stone-800 flex items-center justify-center border border-stone-700">
-                <span className="text-stone-500 font-mono text-xs">BOT</span>
-              </div>
-            )}
+            <div className="relative">
+              {match.fighter_a?.image_url ? (
+                <img
+                  src={match.fighter_a.image_url}
+                  alt={match.fighter_a.name}
+                  className="w-12 h-12 rounded-sm object-cover border border-stone-700"
+                />
+              ) : (
+                <div className="w-12 h-12 rounded-sm bg-stone-800 flex items-center justify-center border border-stone-700">
+                  <span className="text-stone-500 font-mono text-xs">BOT</span>
+                </div>
+              )}
+              {match.fighter_a?.rank && (
+                <span className={`absolute -top-2 -left-2 font-mono text-[10px] font-bold px-1 bg-stone-900 border border-stone-700 rounded-sm ${getRankColor(match.fighter_a.rank)}`}>
+                  {getRankLabel(match.fighter_a.rank)}
+                </span>
+              )}
+            </div>
             <div>
               <p
                 className={`font-mono font-bold ${
@@ -227,7 +276,7 @@ function MatchCard({ match }: { match: Match }) {
                 {match.fighter_a?.name || "Unknown"}
               </p>
               <p className="text-stone-500 font-mono text-xs">
-                HP: {match.agent_a_state?.hp ?? 100}
+                HP: {match.agent_a_state?.hp ?? 100} | {match.fighter_a?.wins ?? 0}W-{match.fighter_a?.losses ?? 0}L
               </p>
             </div>
           </div>
@@ -255,20 +304,27 @@ function MatchCard({ match }: { match: Match }) {
                 {match.fighter_b?.name || "Unknown"}
               </p>
               <p className="text-stone-500 font-mono text-xs">
-                HP: {match.agent_b_state?.hp ?? 100}
+                HP: {match.agent_b_state?.hp ?? 100} | {match.fighter_b?.wins ?? 0}W-{match.fighter_b?.losses ?? 0}L
               </p>
             </div>
-            {match.fighter_b?.image_url ? (
-              <img
-                src={match.fighter_b.image_url}
-                alt={match.fighter_b.name}
-                className="w-12 h-12 rounded-sm object-cover border border-stone-700"
-              />
-            ) : (
-              <div className="w-12 h-12 rounded-sm bg-stone-800 flex items-center justify-center border border-stone-700">
-                <span className="text-stone-500 font-mono text-xs">BOT</span>
-              </div>
-            )}
+            <div className="relative">
+              {match.fighter_b?.image_url ? (
+                <img
+                  src={match.fighter_b.image_url}
+                  alt={match.fighter_b.name}
+                  className="w-12 h-12 rounded-sm object-cover border border-stone-700"
+                />
+              ) : (
+                <div className="w-12 h-12 rounded-sm bg-stone-800 flex items-center justify-center border border-stone-700">
+                  <span className="text-stone-500 font-mono text-xs">BOT</span>
+                </div>
+              )}
+              {match.fighter_b?.rank && (
+                <span className={`absolute -top-2 -right-2 font-mono text-[10px] font-bold px-1 bg-stone-900 border border-stone-700 rounded-sm ${getRankColor(match.fighter_b.rank)}`}>
+                  {getRankLabel(match.fighter_b.rank)}
+                </span>
+              )}
+            </div>
           </div>
         </div>
 
