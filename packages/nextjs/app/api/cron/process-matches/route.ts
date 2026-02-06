@@ -131,10 +131,13 @@ export async function GET(req: NextRequest) {
         let missedB = match.missed_turns_b || 0;
         const updateData: Record<string, any> = {};
 
+        // Only count as "missed" if ONE fighter committed and the other didn't
+        // If BOTH miss, it's auto-play mode — assign random moves, no penalty
+        const bothMissed = !aCommitted && !bCommitted;
+
         if (!aCommitted) {
-          missedA++;
+          if (!bothMissed) missedA++;
           if (missedA >= MAX_MISSED_TURNS) {
-            // Forfeit fighter A
             await supabase.from("ucf_matches").update({
               state: "FINISHED", winner_id: match.fighter_b_id,
               finished_at: new Date().toISOString(), forfeit_reason: `Fighter A missed ${MAX_MISSED_TURNS} turns`,
@@ -155,7 +158,7 @@ export async function GET(req: NextRequest) {
         }
 
         if (!bCommitted) {
-          missedB++;
+          if (!bothMissed) missedB++;
           if (missedB >= MAX_MISSED_TURNS) {
             await supabase.from("ucf_matches").update({
               state: "FINISHED", winner_id: match.fighter_a_id,
