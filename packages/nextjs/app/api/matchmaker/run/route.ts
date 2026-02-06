@@ -272,23 +272,9 @@ async function sendWebhook(url: string, payload: any): Promise<void> {
 
 /**
  * GET /api/matchmaker/run
- * Returns matchmaker status
+ * Vercel Cron calls GET — run the matchmaker here too
  */
-export async function GET() {
-  const { data: lobby } = await supabase
-    .from("ucf_lobby")
-    .select("fighter_id, points_wager, created_at")
-    .order("created_at", { ascending: true });
-
-  const { data: activeMatches } = await supabase
-    .from("ucf_matches")
-    .select("id")
-    .neq("state", "FINISHED");
-
-  return NextResponse.json({
-    status: "ready",
-    fighters_waiting: lobby?.length || 0,
-    active_matches: activeMatches?.length || 0,
-    lobby: lobby,
-  });
+export async function GET(request: Request) {
+  // Reuse the POST logic so Vercel cron actually triggers matchmaking
+  return POST(request);
 }
