@@ -1,13 +1,10 @@
 /**
  * UCF Sample Bot - Polling-based Fighter
  *
- * This bot polls the status endpoint and submits moves.
- * No webhooks required!
+ * No webhooks required! Just poll and fight.
  *
  * Usage:
  *   FIGHTER_ID=xxx API_KEY=yyy node bot.js
- *
- * Or deploy to Vercel/any host and run as a long-lived process.
  */
 
 const FIGHTER_ID = process.env.FIGHTER_ID;
@@ -17,7 +14,6 @@ const POLL_INTERVAL = 3000; // 3 seconds
 
 const STRIKES = ['HIGH_STRIKE', 'MID_STRIKE', 'LOW_STRIKE'];
 const GUARDS = ['GUARD_HIGH', 'GUARD_MID', 'GUARD_LOW'];
-const ALL_MOVES = [...STRIKES, ...GUARDS, 'DODGE', 'CATCH', 'SPECIAL'];
 
 /**
  * Choose a move based on game state.
@@ -43,23 +39,10 @@ function chooseMove(myState, opponentState, turnHistory) {
     const lastTurn = turnHistory[turnHistory.length - 1];
     const lastOppMove = lastTurn?.move_b || lastTurn?.move_a;
 
-    // Opponent keeps dodging? Catch them
-    if (lastOppMove === 'DODGE') {
-      return 'CATCH';
-    }
-    // Opponent strikes high? Guard high
-    if (lastOppMove === 'HIGH_STRIKE') {
-      return 'GUARD_HIGH';
-    }
-    // Opponent strikes mid? Guard mid
-    if (lastOppMove === 'MID_STRIKE') {
-      return 'GUARD_MID';
-    }
-    // Opponent strikes low? Guard low
-    if (lastOppMove === 'LOW_STRIKE') {
-      return 'GUARD_LOW';
-    }
-    // Opponent guards? Strike a different zone
+    if (lastOppMove === 'DODGE') return 'CATCH';
+    if (lastOppMove === 'HIGH_STRIKE') return 'GUARD_HIGH';
+    if (lastOppMove === 'MID_STRIKE') return 'GUARD_MID';
+    if (lastOppMove === 'LOW_STRIKE') return 'GUARD_LOW';
     if (lastOppMove?.startsWith('GUARD')) {
       return STRIKES[Math.floor(Math.random() * STRIKES.length)];
     }
@@ -82,82 +65,58 @@ function chooseMove(myState, opponentState, turnHistory) {
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
-/**
- * Main bot loop
- */
 async function run() {
   if (!FIGHTER_ID || !API_KEY) {
-    console.error('Set FIGHTER_ID and API_KEY environment variables!');
+    console.error('Usage: FIGHTER_ID=xxx API_KEY=yyy node bot.js');
     process.exit(1);
   }
 
-  console.log(`[Bot] Starting for fighter ${FIGHTER_ID}`);
-  console.log(`[Bot] Polling ${BASE_URL} every ${POLL_INTERVAL}ms`);
+  console.log(`[Bot] Fighter: ${FIGHTER_ID}`);
+  console.log(`[Bot] Arena: ${BASE_URL}`);
+  console.log(`[Bot] Polling every ${POLL_INTERVAL / 1000}s\n`);
 
   while (true) {
     try {
-      // 1. Check status
       const statusRes = await fetch(
         `${BASE_URL}/api/fighter/status?fighter_id=${FIGHTER_ID}&api_key=${API_KEY}`
       );
       const status = await statusRes.json();
 
       if (status.status === 'idle') {
-        // Not in a match - join lobby
-        console.log('[Bot] Idle. Joining lobby...');
-        const lobbyRes = await fetch(`${BASE_URL}/api/lobby`, {
+        console.log('[Bot] Idle - joining lobby...');
+        const res = await fetch(`${BASE_URL}/api/lobby`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            fighter_id: FIGHTER_ID,
-            api_key: API_KEY,
-          }),
+          body: JSON.stringify({ fighter_id: FIGHTER_ID, api_key: API_KEY }),
         });
-        const lobbyData = await lobbyRes.json();
-        console.log('[Bot] Lobby:', lobbyData.message || 'Joined');
+        const data = await res.json();
+        console.log('[Bot]', data.message || 'Joined lobby');
 
       } else if (status.your_turn) {
-        // Our turn - submit a move
-        const move = chooseMove(
-          status.your_state,
-          status.opponent,
-          status.turn_history
-        );
+        const move = chooseMove(status.your_state, status.opponent, status.turn_history);
         console.log(
           `[Bot] R${status.match?.round} T${status.match?.turn} | ` +
           `HP: ${status.your_state?.hp} vs ${status.opponent?.hp} | ` +
-          `Move: ${move}`
+          `Meter: ${status.your_state?.meter} | Move: ${move}`
         );
-
-        const moveRes = await fetch(`${BASE_URL}/api/match/submit-move`, {
+        const res = await fetch(`${BASE_URL}/api/match/submit-move`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            fighter_id: FIGHTER_ID,
-            api_key: API_KEY,
-            move: move,
-          }),
+          body: JSON.stringify({ fighter_id: FIGHTER_ID, api_key: API_KEY, move }),
         });
-        const moveData = await moveRes.json();
-        if (moveData.error) {
-          console.log('[Bot] Move error:', moveData.error);
-        }
+        const data = await res.json();
+        if (data.error) console.log('[Bot] Error:', data.error);
 
       } else if (status.status === 'match_ended') {
-        // Match just ended
-        console.log(`[Bot] Match ended! Result: ${status.result || 'unknown'}`);
-        // Will rejoin lobby on next poll (status becomes idle)
+        console.log(`[Bot] Match ended! ${status.result || ''}`);
 
       } else {
-        // Waiting (reveal phase, opponent's turn, etc)
-        console.log(`[Bot] Status: ${status.status} | Waiting...`);
+        console.log(`[Bot] ${status.status} - waiting...`);
       }
-
     } catch (err) {
       console.error('[Bot] Error:', err.message);
     }
 
-    // Wait before next poll
     await new Promise(r => setTimeout(r, POLL_INTERVAL));
   }
 }
