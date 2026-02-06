@@ -34,5 +34,11 @@ export async function GET() {
     waiting_in_lobby: lobbyData?.length || 0,
     total_points_wagered: totalMatchWagered + totalLobbyWagered,
     top_fighters: topResult.data || [],
+    _v: 2,
+    _debug: {
+      active_data_length: activeResult.data?.length ?? "null",
+      active_error: activeResult.error?.message || null,
+      lobby_data_length: lobbyData?.length ?? "null",
+    },
   });
 }
