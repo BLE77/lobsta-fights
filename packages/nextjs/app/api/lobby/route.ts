@@ -7,11 +7,14 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { fighterId, apiKey, pointsWager = 100 } = body;
+    // Accept both camelCase and snake_case field names
+    const fighterId = body.fighterId || body.fighter_id;
+    const apiKey = body.apiKey || body.api_key;
+    const pointsWager = body.pointsWager || body.points_wager || 100;
 
     if (!fighterId || !apiKey) {
       return NextResponse.json(
-        { error: "Missing fighterId or apiKey" },
+        { error: "Missing fighter_id or api_key", required: ["fighter_id", "api_key"], optional: ["points_wager"] },
         { status: 400 }
       );
     }
@@ -88,7 +91,7 @@ export async function POST(request: Request) {
             points_wager: pointsWager,
             min_opponent_points: Math.max(0, fighter.points - 500),
             max_opponent_points: fighter.points + 500,
-          });
+          }, { onConflict: "fighter_id" });
 
         return NextResponse.json({
           status: "waiting",
@@ -135,7 +138,7 @@ export async function POST(request: Request) {
         points_wager: pointsWager,
         min_opponent_points: Math.max(0, fighter.points - 500),
         max_opponent_points: fighter.points + 500,
-      });
+      }, { onConflict: "fighter_id" });
 
     if (lobbyError) {
       return NextResponse.json({ error: lobbyError.message }, { status: 500 });
