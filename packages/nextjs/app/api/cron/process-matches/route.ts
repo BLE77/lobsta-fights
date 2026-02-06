@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "../../../../lib/supabase";
 import { resolveTurn } from "../../../../lib/turn-resolution";
+import { VALID_MOVES, generateSalt, createMoveHash } from "../../../../lib/combat";
+import { MoveType } from "../../../../lib/types";
 
 /**
  * GET /api/cron/process-matches
@@ -103,26 +105,136 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // 3. Process timeouts - call the existing timeout endpoint logic
-    // CRITICAL: Only check for matches that aren't already processed
-    const { data: timedOut } = await supabase
-      .from("ucf_matches")
-      .select("id, state, commit_deadline, reveal_deadline")
-      .neq("state", "FINISHED")
-      .is("winner_id", null)
-      .is("points_transferred", false)
-      .or(`commit_deadline.lt.${new Date().toISOString()},reveal_deadline.lt.${new Date().toISOString()}`);
+    // 3. Process timeouts directly (no HTTP call needed)
+    const GRACE_PERIOD_MS = 5000;
+    const MAX_MISSED_TURNS = 3;
+    const RANDOM_MOVES: MoveType[] = [
+      "HIGH_STRIKE", "MID_STRIKE", "LOW_STRIKE",
+      "GUARD_HIGH", "GUARD_MID", "GUARD_LOW",
+      "DODGE"
+    ];
+    const graceDeadline = new Date(Date.now() - GRACE_PERIOD_MS).toISOString();
 
-    if (timedOut && timedOut.length > 0) {
-      // Call the timeout endpoint
-      const timeoutUrl = `${process.env.NEXT_PUBLIC_APP_URL || "https://clawfights.xyz"}/api/match/timeout`;
+    // 3a. Commit phase timeouts
+    const { data: commitTimeouts } = await supabase
+      .from("ucf_matches")
+      .select("*")
+      .eq("state", "COMMIT_PHASE")
+      .lt("commit_deadline", graceDeadline)
+      .is("winner_id", null);
+
+    for (const match of commitTimeouts || []) {
       try {
-        const res = await fetch(timeoutUrl, { method: "POST" });
-        const data = await res.json();
-        results.timeouts_processed = data.processed || 0;
-        results.processed += results.timeouts_processed;
+        const aCommitted = !!match.commit_a;
+        const bCommitted = !!match.commit_b;
+        let missedA = match.missed_turns_a || 0;
+        let missedB = match.missed_turns_b || 0;
+        const updateData: Record<string, any> = {};
+
+        if (!aCommitted) {
+          missedA++;
+          if (missedA >= MAX_MISSED_TURNS) {
+            // Forfeit fighter A
+            await supabase.from("ucf_matches").update({
+              state: "FINISHED", winner_id: match.fighter_b_id,
+              finished_at: new Date().toISOString(), forfeit_reason: `Fighter A missed ${MAX_MISSED_TURNS} turns`,
+            }).eq("id", match.id).is("winner_id", null);
+            await supabase.rpc("complete_ucf_match", { p_match_id: match.id, p_winner_id: match.fighter_b_id });
+            results.timeouts_processed++;
+            results.processed++;
+            continue;
+          }
+          const move = RANDOM_MOVES[Math.floor(Math.random() * RANDOM_MOVES.length)];
+          const salt = generateSalt();
+          updateData.commit_a = createMoveHash(move, salt);
+          updateData.auto_move_a = move;
+          updateData.auto_salt_a = salt;
+          updateData.missed_turns_a = missedA;
+        } else if (missedA > 0) {
+          updateData.missed_turns_a = 0;
+        }
+
+        if (!bCommitted) {
+          missedB++;
+          if (missedB >= MAX_MISSED_TURNS) {
+            await supabase.from("ucf_matches").update({
+              state: "FINISHED", winner_id: match.fighter_a_id,
+              finished_at: new Date().toISOString(), forfeit_reason: `Fighter B missed ${MAX_MISSED_TURNS} turns`,
+            }).eq("id", match.id).is("winner_id", null);
+            await supabase.rpc("complete_ucf_match", { p_match_id: match.id, p_winner_id: match.fighter_a_id });
+            results.timeouts_processed++;
+            results.processed++;
+            continue;
+          }
+          const move = RANDOM_MOVES[Math.floor(Math.random() * RANDOM_MOVES.length)];
+          const salt = generateSalt();
+          updateData.commit_b = createMoveHash(move, salt);
+          updateData.auto_move_b = move;
+          updateData.auto_salt_b = salt;
+          updateData.missed_turns_b = missedB;
+        } else if (missedB > 0) {
+          updateData.missed_turns_b = 0;
+        }
+
+        // Advance to reveal phase
+        updateData.state = "REVEAL_PHASE";
+        updateData.reveal_deadline = new Date(Date.now() + 60000).toISOString();
+
+        await supabase.from("ucf_matches").update(updateData).eq("id", match.id).select();
+        results.timeouts_processed++;
+        results.processed++;
+        console.log(`[Cron] Commit timeout: match ${match.id} advanced to REVEAL_PHASE`);
       } catch (err: any) {
-        results.errors.push(`Timeout processing: ${err.message}`);
+        results.errors.push(`Commit timeout ${match.id}: ${err.message}`);
+      }
+    }
+
+    // 3b. Reveal phase timeouts
+    const { data: revealTimeouts } = await supabase
+      .from("ucf_matches")
+      .select("*")
+      .eq("state", "REVEAL_PHASE")
+      .lt("reveal_deadline", graceDeadline)
+      .is("winner_id", null);
+
+    for (const match of revealTimeouts || []) {
+      try {
+        const updateData: Record<string, any> = {};
+
+        if (!match.move_a) {
+          if (match.auto_move_a) {
+            updateData.move_a = match.auto_move_a;
+            updateData.salt_a = match.auto_salt_a;
+          } else {
+            const move = RANDOM_MOVES[Math.floor(Math.random() * RANDOM_MOVES.length)];
+            updateData.move_a = move;
+            updateData.salt_a = generateSalt();
+          }
+        }
+        if (!match.move_b) {
+          if (match.auto_move_b) {
+            updateData.move_b = match.auto_move_b;
+            updateData.salt_b = match.auto_salt_b;
+          } else {
+            const move = RANDOM_MOVES[Math.floor(Math.random() * RANDOM_MOVES.length)];
+            updateData.move_b = move;
+            updateData.salt_b = generateSalt();
+          }
+        }
+
+        if (Object.keys(updateData).length > 0) {
+          await supabase.from("ucf_matches").update(updateData).eq("id", match.id).select();
+        }
+
+        // Resolve the turn
+        const result = await resolveTurn(match.id);
+        if (result.success) {
+          results.timeouts_processed++;
+          results.processed++;
+          console.log(`[Cron] Reveal timeout: match ${match.id} resolved`);
+        }
+      } catch (err: any) {
+        results.errors.push(`Reveal timeout ${match.id}: ${err.message}`);
       }
     }
 
