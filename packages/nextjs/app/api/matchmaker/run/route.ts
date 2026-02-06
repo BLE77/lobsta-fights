@@ -139,10 +139,26 @@ export async function POST(request: Request) {
   }
 }
 
+// Whitelisted fighters skip wager/point-range checks
+const WHITELISTED_FIGHTERS = new Set([
+  "56c6bbf8-47eb-4c66-95b8-dde361fb74ec", // THECLAWBOSS
+  "3815f1dd-0e4d-4674-a99c-42fc3b323e77", // IRON-TANK-9000
+  "00c29d7f-82eb-4bc6-b8ab-7b3d761551fc", // CHAOS-REAPER
+  "70b66f68-6245-4b8b-b68d-673a26128440", // ORACLE-UNIT-7
+  "36dd7d85-3050-44f2-bf92-d4f9014c41a5", // PHANTOM-STRIKER
+  "66757591-4e48-48dc-aafc-6f89eddf9607", // 7UPA-RING-LEADER
+  "8fdbdae0-92c9-466c-b3a5-6a912f95d795", // 7UPA-CLAW-MASTER
+]);
+
 /**
  * Check if two fighters are compatible for a match
  */
 function isCompatible(f1: any, f2: any): boolean {
+  // Whitelisted fighters always match each other (skip wager & range checks)
+  if (WHITELISTED_FIGHTERS.has(f1.fighter_id) && WHITELISTED_FIGHTERS.has(f2.fighter_id)) {
+    return true;
+  }
+
   // Must have same wager
   if (f1.points_wager !== f2.points_wager) return false;
 
@@ -175,7 +191,7 @@ async function createMatch(f1: any, f2: any) {
       fighter_a_id: f1.fighter_id, // First in lobby = fighter A
       fighter_b_id: f2.fighter_id,
       state: "COMMIT_PHASE",
-      points_wager: f1.points_wager,
+      points_wager: Math.min(f1.points_wager, f2.points_wager),
       agent_a_state: initialAgentState,
       agent_b_state: initialAgentState,
       current_round: 1,
