@@ -48,7 +48,9 @@ export default function MatchesPage() {
 
   const fetchMatches = async () => {
     try {
-      const res = await fetch(`/api/matches?status=${filter}&limit=50`);
+      const res = await fetch(`/api/matches?status=${filter}&limit=50&_t=${Date.now()}`, {
+        cache: "no-store",
+      });
       const data = await res.json();
       setMatches(data.matches || []);
     } catch (e) {
