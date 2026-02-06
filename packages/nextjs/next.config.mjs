@@ -10,6 +10,16 @@ const nextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
+  async headers() {
+    return [
+      {
+        source: "/api/:path*",
+        headers: [
+          { key: "Cache-Control", value: "no-store, no-cache, max-age=0, s-maxage=0" },
+        ],
+      },
+    ];
+  },
   webpack: (config) => {
     config.resolve.fallback = {
       fs: false,

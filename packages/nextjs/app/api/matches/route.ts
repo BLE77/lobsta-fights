@@ -106,7 +106,7 @@ export async function GET(request: Request) {
     const fighterA = fighters?.find((f) => f.id === match.fighter_a_id) || null;
     const fighterB = fighters?.find((f) => f.id === match.fighter_b_id) || null;
 
-    return NextResponse.json({
+    const resp = NextResponse.json({
       match: {
         ...match,
         fighter_a: fighterA,
@@ -114,6 +114,8 @@ export async function GET(request: Request) {
         timing: computeTiming(match),
       } as MatchWithFighters,
     });
+    resp.headers.set("Cache-Control", "no-store, no-cache, max-age=0, s-maxage=0");
+    return resp;
   }
 
   // Build query for multiple matches
@@ -136,7 +138,9 @@ export async function GET(request: Request) {
   }
 
   if (!matches || matches.length === 0) {
-    return NextResponse.json({ matches: [], count: 0 });
+    const emptyResp = NextResponse.json({ matches: [], count: 0 });
+    emptyResp.headers.set("Cache-Control", "no-store, no-cache, max-age=0, s-maxage=0");
+    return emptyResp;
   }
 
   // Get unique fighter IDs
@@ -162,8 +166,10 @@ export async function GET(request: Request) {
     timing: computeTiming(m),
   }));
 
-  return NextResponse.json({
+  const response = NextResponse.json({
     matches: matchesWithFighters,
     count: matchesWithFighters.length,
   });
+  response.headers.set("Cache-Control", "no-store, no-cache, max-age=0, s-maxage=0");
+  return response;
 }
