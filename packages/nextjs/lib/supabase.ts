@@ -15,19 +15,29 @@ function getSupabaseAnonKey() {
   return key;
 }
 
-// Fresh client for API routes - creates new instance per call to avoid stale data
-// in Vercel serverless functions where module-level state persists across requests
+// CRITICAL: Next.js App Router caches ALL fetch() responses by default.
+// The Supabase client uses fetch internally, so without cache: 'no-store',
+// queries return stale/cached data even with a new client instance.
+const noStoreFetch: typeof fetch = (input, init) =>
+  fetch(input, { ...init, cache: "no-store" });
+
+// Fresh client for API routes - creates new instance per call
+// with cache: 'no-store' to prevent Next.js fetch caching
 export function freshSupabase() {
-  return createClient(getSupabaseUrl(), getSupabaseAnonKey());
+  return createClient(getSupabaseUrl(), getSupabaseAnonKey(), {
+    global: { fetch: noStoreFetch },
+  });
 }
 
 // Regular client - creates a FRESH client on every .from()/.rpc() call
-// to avoid stale data from PostgREST query caching in Vercel serverless functions.
+// with cache: 'no-store' to prevent Next.js fetch caching.
 // The Proxy intercepts property access and delegates to a new client each time,
 // while still deferring client creation until first use (safe for Next.js build).
 export const supabase = new Proxy({} as ReturnType<typeof createClient>, {
   get(_, prop) {
-    const client = createClient(getSupabaseUrl(), getSupabaseAnonKey());
+    const client = createClient(getSupabaseUrl(), getSupabaseAnonKey(), {
+      global: { fetch: noStoreFetch },
+    });
     return (client as any)[prop];
   },
 });
@@ -41,6 +51,7 @@ export const supabaseAdmin = new Proxy({} as ReturnType<typeof createClient> | n
       if (serviceRoleKey) {
         _supabaseAdmin = createClient(getSupabaseUrl(), serviceRoleKey, {
           auth: { autoRefreshToken: false, persistSession: false },
+          global: { fetch: noStoreFetch },
         });
       } else {
         return undefined;
