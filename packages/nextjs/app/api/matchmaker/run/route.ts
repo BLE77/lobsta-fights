@@ -180,6 +180,7 @@ function isCompatible(f1: any, f2: any): boolean {
  * Create a match between two fighters
  */
 async function createMatch(f1: any, f2: any) {
+  const supabase = freshSupabase();
   const initialAgentState = {
     hp: 100,
     meter: 0,

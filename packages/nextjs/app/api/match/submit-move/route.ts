@@ -281,6 +281,7 @@ async function autoReveal(
   move: string,
   salt: string
 ) {
+  const supabase = freshSupabase();
   const updateFields = isPlayerA
     ? {
         move_a: move,

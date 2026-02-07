@@ -189,7 +189,6 @@ export async function GET(req: NextRequest) {
           .update(updateData)
           .eq("id", match.id)
           .eq("state", "COMMIT_PHASE")
-          .eq("current_turn", match.current_turn)
           .select();
         if (updated3a && updated3a.length > 0) {
           results.timeouts_processed++;
@@ -241,7 +240,6 @@ export async function GET(req: NextRequest) {
             .update(updateData)
             .eq("id", match.id)
             .eq("state", "REVEAL_PHASE")
-            .eq("current_turn", match.current_turn)
             .select();
           if (!updated3b || updated3b.length === 0) {
             console.log(`[Cron] Reveal timeout: match ${match.id} already handled`);

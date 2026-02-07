@@ -166,6 +166,10 @@ export async function resolveTurn(matchId: string): Promise<TurnResolutionResult
     pending_move_b: null,
     pending_salt_a: null,
     pending_salt_b: null,
+    auto_move_a: null,
+    auto_move_b: null,
+    auto_salt_a: null,
+    auto_salt_b: null,
   };
 
   if (newState === "COMMIT_PHASE") {
@@ -255,23 +259,21 @@ export async function resolveTurn(matchId: string): Promise<TurnResolutionResult
     }
   }
 
-  // Update the match (with guard to prevent race conditions from concurrent cron runs)
+  // Update the match
   const { data: updatedRows, error: updateError } = await supabase
     .from("ucf_matches")
     .update(matchUpdateData)
     .eq("id", matchId)
-    .eq("state", "REVEAL_PHASE")
-    .eq("current_turn", match.current_turn)
     .select();
 
   if (updateError) {
-    console.error("Error updating match:", updateError);
+    console.error(`[Turn Resolution] Error updating match ${matchId}:`, updateError);
     return { success: false, error: updateError.message };
   }
 
   if (!updatedRows || updatedRows.length === 0) {
-    console.log(`[Turn Resolution] Match ${matchId} already processed by another handler`);
-    return { success: false, error: "Match already processed by another handler" };
+    console.error(`[Turn Resolution] Match ${matchId} update returned 0 rows. State was: ${match.state}, turn: ${match.current_turn}`);
+    return { success: false, error: `Update returned 0 rows (state=${match.state}, turn=${match.current_turn})` };
   }
 
   console.log(`[Turn Resolution] Match ${matchId}: Turn ${match.current_turn} resolved. ${moveA} vs ${moveB} = ${result}`);
