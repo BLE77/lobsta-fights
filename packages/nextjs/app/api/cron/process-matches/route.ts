@@ -179,14 +179,23 @@ export async function GET(req: NextRequest) {
           updateData.missed_turns_b = 0;
         }
 
-        // Advance to reveal phase
+        // Advance to reveal phase (with guard to prevent race conditions)
         updateData.state = "REVEAL_PHASE";
         updateData.reveal_deadline = new Date(Date.now() + 60000).toISOString();
 
-        await supabase.from("ucf_matches").update(updateData).eq("id", match.id).select();
-        results.timeouts_processed++;
-        results.processed++;
-        console.log(`[Cron] Commit timeout: match ${match.id} advanced to REVEAL_PHASE`);
+        const { data: updated3a } = await supabase.from("ucf_matches")
+          .update(updateData)
+          .eq("id", match.id)
+          .eq("state", "COMMIT_PHASE")
+          .eq("current_turn", match.current_turn)
+          .select();
+        if (updated3a && updated3a.length > 0) {
+          results.timeouts_processed++;
+          results.processed++;
+          console.log(`[Cron] Commit timeout: match ${match.id} advanced to REVEAL_PHASE`);
+        } else {
+          console.log(`[Cron] Commit timeout: match ${match.id} already handled by another run`);
+        }
       } catch (err: any) {
         results.errors.push(`Commit timeout ${match.id}: ${err.message}`);
       }
@@ -226,7 +235,16 @@ export async function GET(req: NextRequest) {
         }
 
         if (Object.keys(updateData).length > 0) {
-          await supabase.from("ucf_matches").update(updateData).eq("id", match.id).select();
+          const { data: updated3b } = await supabase.from("ucf_matches")
+            .update(updateData)
+            .eq("id", match.id)
+            .eq("state", "REVEAL_PHASE")
+            .eq("current_turn", match.current_turn)
+            .select();
+          if (!updated3b || updated3b.length === 0) {
+            console.log(`[Cron] Reveal timeout: match ${match.id} already handled`);
+            continue;
+          }
         }
 
         // Resolve the turn
@@ -234,7 +252,10 @@ export async function GET(req: NextRequest) {
         if (result.success) {
           results.timeouts_processed++;
           results.processed++;
-          console.log(`[Cron] Reveal timeout: match ${match.id} resolved`);
+          console.log(`[Cron] Reveal timeout: match ${match.id} resolved - R${result.newRound}T${result.newTurn}`);
+        } else {
+          results.errors.push(`Reveal resolve ${match.id}: ${result.error}`);
+          console.log(`[Cron] Reveal timeout: match ${match.id} resolve FAILED: ${result.error}`);
         }
       } catch (err: any) {
         results.errors.push(`Reveal timeout ${match.id}: ${err.message}`);
