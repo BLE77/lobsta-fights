@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { supabase } from "../../../../lib/supabase";
+import { freshSupabase } from "../../../../lib/supabase";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +20,7 @@ const WEBHOOK_TIMEOUT = 5000; // 5 seconds
  * - Manual call
  */
 export async function POST(request: Request) {
+  const supabase = freshSupabase();
   try {
     // Optional: Verify cron secret for security
     const authHeader = request.headers.get("authorization");

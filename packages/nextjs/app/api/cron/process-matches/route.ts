@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "../../../../lib/supabase";
+import { freshSupabase } from "../../../../lib/supabase";
 import { resolveTurn } from "../../../../lib/turn-resolution";
 import { VALID_MOVES, generateSalt, createMoveHash } from "../../../../lib/combat";
 import { MoveType } from "../../../../lib/types";
@@ -27,6 +27,8 @@ export async function GET(req: NextRequest) {
     // Allow without auth for testing, but log it
     console.log("[Cron] No auth header, proceeding anyway");
   }
+
+  const supabase = freshSupabase();
 
   const results = {
     processed: 0,

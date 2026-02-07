@@ -1,4 +1,4 @@
-import { supabase } from "./supabase";
+import { freshSupabase } from "./supabase";
 import { MoveType, TurnResult } from "./types";
 import {
   METER_PER_TURN,
@@ -45,6 +45,8 @@ export interface TurnResolutionResult {
  * This is shared between the reveal endpoint and the submit-move auto-reveal.
  */
 export async function resolveTurn(matchId: string): Promise<TurnResolutionResult> {
+  const supabase = freshSupabase();
+
   // Fetch the match with current state
   const { data: match, error: matchError } = await supabase
     .from("ucf_matches")

@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
-import { supabase } from "../../../lib/supabase";
+import { freshSupabase } from "../../../lib/supabase";
 
 export const dynamic = "force-dynamic";
 
 // Join the lobby / Find a match
 export async function POST(request: Request) {
+  const supabase = freshSupabase();
   try {
     const body = await request.json();
     // Accept both camelCase and snake_case field names
@@ -156,6 +157,7 @@ export async function POST(request: Request) {
 
 // Get lobby status
 export async function GET(request: Request) {
+  const supabase = freshSupabase();
   const { searchParams } = new URL(request.url);
   const fighterId = searchParams.get("fighter_id");
 
@@ -196,6 +198,7 @@ export async function GET(request: Request) {
 
 // Leave the lobby
 export async function DELETE(request: Request) {
+  const supabase = freshSupabase();
   const { searchParams } = new URL(request.url);
   const fighterId = searchParams.get("fighter_id");
   const apiKey = searchParams.get("api_key");

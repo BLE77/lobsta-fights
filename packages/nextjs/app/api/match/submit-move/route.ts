@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "../../../../lib/supabase";
+import { freshSupabase } from "../../../../lib/supabase";
 import crypto from "crypto";
 
 export const dynamic = "force-dynamic";
@@ -26,6 +26,7 @@ const VALID_MOVES = [
 ];
 
 export async function POST(req: NextRequest) {
+  const supabase = freshSupabase();
   try {
     const body = await req.json();
     const { fighter_id, api_key, move, match_id } = body;
