@@ -118,26 +118,64 @@ export async function GET(request: Request) {
     return resp;
   }
 
-  // Build query for multiple matches
-  let query = supabase
-    .from("ucf_matches")
-    .select("*")
-    .order("created_at", { ascending: false })
-    .limit(limit);
+  // Always use explicit state filters to avoid PostgREST query caching.
+  // An unfiltered SELECT * query can return stale cached results from PostgREST.
+  // By splitting into two filtered queries we ensure fresh data for both.
+  let matches: any[] = [];
 
   if (status === "active") {
-    query = query.neq("state", "FINISHED");
+    const { data, error } = await supabase
+      .from("ucf_matches")
+      .select("*")
+      .neq("state", "FINISHED")
+      .order("created_at", { ascending: false })
+      .limit(limit);
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+    matches = data || [];
   } else if (status === "finished") {
-    query = query.eq("state", "FINISHED");
+    const { data, error } = await supabase
+      .from("ucf_matches")
+      .select("*")
+      .eq("state", "FINISHED")
+      .order("created_at", { ascending: false })
+      .limit(limit);
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+    matches = data || [];
+  } else {
+    // "all" - fetch active and finished separately then merge
+    const [activeResult, finishedResult] = await Promise.all([
+      supabase
+        .from("ucf_matches")
+        .select("*")
+        .neq("state", "FINISHED")
+        .order("created_at", { ascending: false })
+        .limit(limit),
+      supabase
+        .from("ucf_matches")
+        .select("*")
+        .eq("state", "FINISHED")
+        .order("created_at", { ascending: false })
+        .limit(limit),
+    ]);
+
+    if (activeResult.error) {
+      return NextResponse.json({ error: activeResult.error.message }, { status: 500 });
+    }
+    if (finishedResult.error) {
+      return NextResponse.json({ error: finishedResult.error.message }, { status: 500 });
+    }
+
+    // Merge: active first, then finished, respecting total limit
+    const activeMatches = activeResult.data || [];
+    const finishedMatches = finishedResult.data || [];
+    matches = [...activeMatches, ...finishedMatches].slice(0, limit);
   }
 
-  const { data: matches, error } = await query;
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
-
-  if (!matches || matches.length === 0) {
+  if (matches.length === 0) {
     const emptyResp = NextResponse.json({ matches: [], count: 0 });
     emptyResp.headers.set("Cache-Control", "no-store, no-cache, max-age=0, s-maxage=0");
     return emptyResp;

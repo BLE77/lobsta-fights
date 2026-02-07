@@ -17,7 +17,7 @@ export async function GET() {
     supabase.from("ucf_matches").select("id").neq("state", "FINISHED"),
     supabase.from("ucf_lobby").select("points_wager"),
     supabase.from("ucf_leaderboard").select("*").limit(3),
-    supabase.from("ucf_matches").select("points_wager"),
+    supabase.from("ucf_matches").select("points_wager").in("state", ["WAITING", "COMMIT_PHASE", "REVEAL_PHASE", "FINISHED"]),
   ]);
 
   const lobbyData = lobbyResult.data;
