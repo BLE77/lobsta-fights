@@ -1,7 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 
-// Lazy-initialized clients to avoid throwing at import time (breaks Next.js page data collection)
-let _supabase: ReturnType<typeof createClient> | null = null;
+// Lazy-initialized admin client to avoid throwing at import time (breaks Next.js page data collection)
 let _supabaseAdmin: ReturnType<typeof createClient> | null = null;
 
 function getSupabaseUrl() {
@@ -22,15 +21,14 @@ export function freshSupabase() {
   return createClient(getSupabaseUrl(), getSupabaseAnonKey());
 }
 
-// Regular client for most operations (uses anon key with RLS)
-// WARNING: This client persists across Vercel function invocations and may return
-// stale data. Use freshSupabase() in API routes that need accurate counts/lists.
+// Regular client - creates a FRESH client on every .from()/.rpc() call
+// to avoid stale data from PostgREST query caching in Vercel serverless functions.
+// The Proxy intercepts property access and delegates to a new client each time,
+// while still deferring client creation until first use (safe for Next.js build).
 export const supabase = new Proxy({} as ReturnType<typeof createClient>, {
   get(_, prop) {
-    if (!_supabase) {
-      _supabase = createClient(getSupabaseUrl(), getSupabaseAnonKey());
-    }
-    return (_supabase as any)[prop];
+    const client = createClient(getSupabaseUrl(), getSupabaseAnonKey());
+    return (client as any)[prop];
   },
 });
 
