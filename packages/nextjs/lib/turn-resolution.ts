@@ -7,6 +7,8 @@ import {
   resolveCombat,
 } from "./combat";
 
+const MAX_TURNS_PER_ROUND = 20;
+
 interface AgentState {
   hp: number;
   meter: number;
@@ -116,16 +118,33 @@ export async function resolveTurn(matchId: string): Promise<TurnResolutionResult
   let newTurn = match.current_turn + 1;
   let newState: string = "COMMIT_PHASE";
 
-  if (agentA.hp <= 0 || agentB.hp <= 0) {
-    // Round ended
-    if (agentA.hp <= 0 && agentB.hp <= 0) {
-      // Both KO'd at same time - no one wins the round (rare double KO)
-    } else if (agentA.hp <= 0) {
-      roundWinner = match.fighter_b_id;
-      agentB.rounds_won += 1;
+  // Check for round end: KO or max turns reached
+  const isKO = agentA.hp <= 0 || agentB.hp <= 0;
+  const isMaxTurns = match.current_turn >= MAX_TURNS_PER_ROUND && agentA.hp > 0 && agentB.hp > 0;
+
+  if (isKO || isMaxTurns) {
+    // Determine round winner
+    if (isKO) {
+      if (agentA.hp <= 0 && agentB.hp <= 0) {
+        // Both KO'd at same time - no one wins the round (rare double KO)
+      } else if (agentA.hp <= 0) {
+        roundWinner = match.fighter_b_id;
+        agentB.rounds_won += 1;
+      } else {
+        roundWinner = match.fighter_a_id;
+        agentA.rounds_won += 1;
+      }
     } else {
-      roundWinner = match.fighter_a_id;
-      agentA.rounds_won += 1;
+      // Max turns reached - higher HP wins the round
+      console.log(`[Turn Resolution] Match ${matchId}: Round ${match.current_round} hit ${MAX_TURNS_PER_ROUND} turn limit. HP: A=${agentA.hp} B=${agentB.hp}`);
+      if (agentA.hp > agentB.hp) {
+        roundWinner = match.fighter_a_id;
+        agentA.rounds_won += 1;
+      } else if (agentB.hp > agentA.hp) {
+        roundWinner = match.fighter_b_id;
+        agentB.rounds_won += 1;
+      }
+      // If HP tied, no one wins the round (like double KO)
     }
 
     // Check for match end
@@ -173,7 +192,7 @@ export async function resolveTurn(matchId: string): Promise<TurnResolutionResult
   };
 
   if (newState === "COMMIT_PHASE") {
-    matchUpdateData.commit_deadline = new Date(Date.now() + 60000).toISOString();
+    matchUpdateData.commit_deadline = new Date(Date.now() + 30000).toISOString(); // 30s
   }
 
   if (matchWinner) {

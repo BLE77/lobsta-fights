@@ -181,7 +181,7 @@ export async function POST(req: NextRequest) {
 
       if (bothCommitted) {
         // Both committed - transition to reveal phase
-        const revealDeadline = new Date(Date.now() + 60 * 1000).toISOString();
+        const revealDeadline = new Date(Date.now() + 30 * 1000).toISOString();
 
         await supabase
           .from("ucf_matches")

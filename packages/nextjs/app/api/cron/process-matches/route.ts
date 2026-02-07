@@ -62,7 +62,7 @@ export async function GET(req: NextRequest) {
             move_b: match.pending_move_b,
             salt_a: match.pending_salt_a,
             salt_b: match.pending_salt_b,
-            reveal_deadline: new Date(Date.now() + 60000).toISOString(),
+            reveal_deadline: new Date(Date.now() + 30000).toISOString(),
           })
           .eq("id", match.id)
           .eq("state", "COMMIT_PHASE")
@@ -110,10 +110,11 @@ export async function GET(req: NextRequest) {
     // 3. Process timeouts directly (no HTTP call needed)
     const GRACE_PERIOD_MS = 5000;
     const MAX_MISSED_TURNS = 3;
+    // Weighted toward strikes so auto-play matches deal damage and finish faster
     const RANDOM_MOVES: MoveType[] = [
       "HIGH_STRIKE", "MID_STRIKE", "LOW_STRIKE",
-      "GUARD_HIGH", "GUARD_MID", "GUARD_LOW",
-      "DODGE"
+      "HIGH_STRIKE", "MID_STRIKE", "LOW_STRIKE",
+      "GUARD_HIGH", "GUARD_MID", "DODGE"
     ];
     const graceDeadline = new Date(Date.now() - GRACE_PERIOD_MS).toISOString();
 
@@ -182,8 +183,9 @@ export async function GET(req: NextRequest) {
         }
 
         // Advance to reveal phase (with guard to prevent race conditions)
+        // Short 15s reveal deadline for timeout-assigned moves (auto-play)
         updateData.state = "REVEAL_PHASE";
-        updateData.reveal_deadline = new Date(Date.now() + 60000).toISOString();
+        updateData.reveal_deadline = new Date(Date.now() + 15000).toISOString();
 
         const { data: updated3a } = await supabase.from("ucf_matches")
           .update(updateData)
