@@ -5,13 +5,13 @@
  * permanently in Supabase Storage.
  */
 
-import { supabase, supabaseAdmin } from "./supabase";
+import { freshSupabase, supabase } from "./supabase";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const BUCKET_NAME = "images";
 
-// Use admin client for storage (bypasses RLS) or fall back to regular client
-const getStorageClient = () => supabaseAdmin || supabase;
+// Use fresh client for storage - images bucket allows public uploads
+const getStorageClient = () => freshSupabase();
 
 /**
  * Download an image from a URL and upload it to Supabase Storage
@@ -26,11 +26,6 @@ export async function storeImagePermanently(
     if (!tempUrl || tempUrl.length < 10 || !tempUrl.startsWith("http")) {
       console.error(`[ImageStorage] Invalid URL received: "${tempUrl}" - skipping storage`);
       return null;
-    }
-
-    // Check if admin client is available
-    if (!supabaseAdmin) {
-      console.warn(`[ImageStorage] SUPABASE_SERVICE_ROLE_KEY not set - storage upload may fail due to RLS`);
     }
 
     console.log(`[ImageStorage] Downloading from: ${tempUrl}`);
