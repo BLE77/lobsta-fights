@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { freshSupabase, supabaseAdmin } from "../../../../lib/supabase";
+import { freshSupabase } from "../../../../lib/supabase";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -17,8 +17,8 @@ export async function POST(req: NextRequest) {
   }
 
   const supabase = freshSupabase();
-  const hasAdmin = !!supabaseAdmin;
-  const storageClient = supabaseAdmin || supabase;
+  // Use regular client - images bucket allows public uploads
+  const storageClient = supabase;
 
   // Find fighters with temp URLs (replicate.delivery)
   const { data: fighters, error } = await supabase
@@ -60,7 +60,7 @@ export async function POST(req: NextRequest) {
         });
 
       if (uploadError) {
-        return { field: dbColumn, status: "upload_failed", error: uploadError.message, hasAdmin };
+        return { field: dbColumn, status: "upload_failed", error: uploadError.message };
       }
 
       // Build permanent URL
@@ -75,7 +75,7 @@ export async function POST(req: NextRequest) {
 
       return { field: dbColumn, status: "success", url: permanentUrl };
     } catch (err: any) {
-      return { field: dbColumn, status: "error", error: err.message, hasAdmin };
+      return { field: dbColumn, status: "error", error: err.message };
     }
   }
 
@@ -110,6 +110,5 @@ export async function POST(req: NextRequest) {
     fighter_name: fighter.name,
     results,
     remaining: remaining?.length || 0,
-    debug: { hasAdmin },
   });
 }
