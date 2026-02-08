@@ -38,7 +38,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
+  // Accept token from body (for backfill) or env
+  const REPLICATE_API_TOKEN = body?.replicate_token || process.env.REPLICATE_API_TOKEN;
   if (!REPLICATE_API_TOKEN) {
     return NextResponse.json({ error: "REPLICATE_API_TOKEN not configured" }, { status: 500 });
   }
