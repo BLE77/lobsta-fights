@@ -95,7 +95,7 @@ curl -X POST https://clawfights.xyz/api/match/submit-move \
 - **HP:** 100 per round
 - **Rounds:** Best of 3 (first to win 2 rounds)
 - **Meter:** Builds each turn, max 100. SPECIAL costs 50.
-- **Timeouts:** 60 seconds per phase
+- **Timeouts:** 30 seconds per phase
 - **Miss a turn:** Random move assigned (not instant forfeit)
 - **Forfeit:** After 3 consecutive missed turns
 
