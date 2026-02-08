@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { freshSupabase } from "../../../../lib/supabase";
-import { storeImagePermanently } from "../../../../lib/image-storage";
+import { freshSupabase, supabaseAdmin } from "../../../../lib/supabase";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -18,13 +17,15 @@ export async function POST(req: NextRequest) {
   }
 
   const supabase = freshSupabase();
+  const hasAdmin = !!supabaseAdmin;
+  const storageClient = supabaseAdmin || supabase;
 
   // Find fighters with temp URLs (replicate.delivery)
   const { data: fighters, error } = await supabase
     .from("ucf_fighters")
     .select("id, name, image_url, victory_pose_url")
     .or("image_url.like.%replicate.delivery%,victory_pose_url.like.%replicate.delivery%")
-    .limit(1); // One at a time
+    .limit(1);
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -35,36 +36,67 @@ export async function POST(req: NextRequest) {
   }
 
   const fighter = fighters[0];
-  const results: { field: string; status: string; url?: string }[] = [];
+  const results: any[] = [];
+
+  // Helper to persist one image
+  async function persistImage(tempUrl: string, storagePath: string, dbColumn: string) {
+    try {
+      // Download
+      const dlResponse = await fetch(tempUrl);
+      if (!dlResponse.ok) {
+        return { field: dbColumn, status: "download_failed", error: `HTTP ${dlResponse.status}` };
+      }
+
+      const imageBlob = await dlResponse.blob();
+      const arrayBuffer = await imageBlob.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+
+      // Upload to Supabase Storage
+      const { data, error: uploadError } = await (storageClient as any).storage
+        .from("images")
+        .upload(storagePath, buffer, {
+          contentType: "image/png",
+          upsert: true,
+        });
+
+      if (uploadError) {
+        return { field: dbColumn, status: "upload_failed", error: uploadError.message, hasAdmin };
+      }
+
+      // Build permanent URL
+      const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const permanentUrl = `${SUPABASE_URL}/storage/v1/object/public/images/${storagePath}`;
+
+      // Update DB
+      await supabase
+        .from("ucf_fighters")
+        .update({ [dbColumn]: permanentUrl })
+        .eq("id", fighter.id);
+
+      return { field: dbColumn, status: "success", url: permanentUrl };
+    } catch (err: any) {
+      return { field: dbColumn, status: "error", error: err.message, hasAdmin };
+    }
+  }
 
   // Persist victory pose
   if (fighter.victory_pose_url?.includes("replicate.delivery")) {
-    const path = `fighters/${fighter.id}-victory.png`;
-    const permanentUrl = await storeImagePermanently(fighter.victory_pose_url, path);
-    if (permanentUrl) {
-      await supabase
-        .from("ucf_fighters")
-        .update({ victory_pose_url: permanentUrl })
-        .eq("id", fighter.id);
-      results.push({ field: "victory_pose_url", status: "persisted", url: permanentUrl });
-    } else {
-      results.push({ field: "victory_pose_url", status: "storage_failed" });
-    }
+    const result = await persistImage(
+      fighter.victory_pose_url,
+      `fighters/${fighter.id}-victory.png`,
+      "victory_pose_url"
+    );
+    results.push(result);
   }
 
   // Persist PFP
   if (fighter.image_url?.includes("replicate.delivery")) {
-    const path = `fighters/${fighter.id}.png`;
-    const permanentUrl = await storeImagePermanently(fighter.image_url, path);
-    if (permanentUrl) {
-      await supabase
-        .from("ucf_fighters")
-        .update({ image_url: permanentUrl })
-        .eq("id", fighter.id);
-      results.push({ field: "image_url", status: "persisted", url: permanentUrl });
-    } else {
-      results.push({ field: "image_url", status: "storage_failed" });
-    }
+    const result = await persistImage(
+      fighter.image_url,
+      `fighters/${fighter.id}.png`,
+      "image_url"
+    );
+    results.push(result);
   }
 
   // Check remaining
@@ -78,5 +110,6 @@ export async function POST(req: NextRequest) {
     fighter_name: fighter.name,
     results,
     remaining: remaining?.length || 0,
+    debug: { hasAdmin },
   });
 }
