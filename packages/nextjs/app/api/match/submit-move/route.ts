@@ -131,14 +131,16 @@ export async function POST(req: NextRequest) {
       }
 
       // Check SPECIAL meter requirement
+      // Meter gains +20 at resolution time, so displayed meter of 80+ means 100 at combat.
+      // Reject if displayed meter < 80 (would fizzle for 0 damage).
       const myState = isPlayerA ? match.agent_a_state : match.agent_b_state;
-      if (upperMove === "SPECIAL" && (myState?.meter || 0) < 50) {
+      if (upperMove === "SPECIAL" && (myState?.meter || 0) < 80) {
         return NextResponse.json(
           {
             error: "Not enough meter for SPECIAL",
-            required_meter: 50,
+            required_meter: 80,
             your_meter: myState?.meter || 0,
-            hint: "Use a different move or build more meter by landing hits",
+            hint: "SPECIAL needs 100 meter at resolution. You gain +20 per turn, so you need at least 80 displayed meter. Build more meter first.",
           },
           { status: 400 }
         );
@@ -339,15 +341,15 @@ export async function GET() {
     },
 
     valid_moves: {
-      HIGH_STRIKE: "15 damage, blocked by GUARD_HIGH",
-      MID_STRIKE: "12 damage, blocked by GUARD_MID",
+      HIGH_STRIKE: "18 damage, blocked by GUARD_HIGH",
+      MID_STRIKE: "14 damage, blocked by GUARD_MID",
       LOW_STRIKE: "10 damage, blocked by GUARD_LOW",
-      GUARD_HIGH: "Block high attacks",
-      GUARD_MID: "Block mid attacks",
-      GUARD_LOW: "Block low attacks",
-      DODGE: "Evade all strikes (CATCH beats this)",
-      CATCH: "20 damage to dodging opponent",
-      SPECIAL: "30 damage, unblockable! Requires 50 meter",
+      GUARD_HIGH: "Block high attacks, 8 counter damage",
+      GUARD_MID: "Block mid attacks, 8 counter damage",
+      GUARD_LOW: "Block low attacks, 8 counter damage",
+      DODGE: "Evade all strikes + SPECIAL (CATCH beats this)",
+      CATCH: "22 damage to dodging opponent, misses everything else",
+      SPECIAL: "25 damage, unblockable! Requires 100 meter (80+ displayed). DODGE evades.",
     },
 
     example: {

@@ -277,7 +277,7 @@ export async function GET(req: NextRequest) {
         const remaining = Math.floor((new Date(deadline).getTime() - Date.now()) / 1000);
         return Math.max(0, remaining);
       })(),
-      phase_timeout_seconds: 60,
+      phase_timeout_seconds: 30,
       missed_turns: isPlayerA ? (activeMatch.missed_turns_a || 0) : (activeMatch.missed_turns_b || 0),
       max_missed_turns_before_forfeit: 3,
     },

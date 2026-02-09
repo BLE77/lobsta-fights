@@ -25,12 +25,13 @@ function chooseMove(myState, opponentState, turnHistory) {
   const oppHp = opponentState?.hp ?? 100;
 
   // Finisher: SPECIAL when opponent is low and we have meter
-  if (myMeter >= 50 && oppHp <= 30) {
+  // SPECIAL needs 100 meter at resolution. +20 is added before combat, so 80+ displayed = works.
+  if (myMeter >= 80 && oppHp <= 30) {
     return 'SPECIAL';
   }
 
   // Use SPECIAL when we have meter and are healthy
-  if (myMeter >= 50 && myHp > 50) {
+  if (myMeter >= 80 && myHp > 50) {
     return 'SPECIAL';
   }
 
