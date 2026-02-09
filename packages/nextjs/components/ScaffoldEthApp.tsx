@@ -1,12 +1,14 @@
 "use client";
 
 import { Toaster } from "react-hot-toast";
+import AudioToggle from "./AudioToggle";
 
 // Wallet temporarily disabled - will re-enable for on-chain betting
 export function ScaffoldEthApp({ children }: { children: React.ReactNode }) {
   return (
     <>
       {children}
+      <AudioToggle />
       <Toaster
         position="bottom-right"
         toastOptions={{

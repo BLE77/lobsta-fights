@@ -2,10 +2,10 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
+import ActivityFeed from "./ActivityFeed";
+import FighterWizard from "./FighterWizard";
 
 type Role = "spectator" | "fighter" | null;
-type VerificationStatus = "idle" | "verifying" | "verified" | "failed";
-type ImageGenStatus = "idle" | "generating" | "complete" | "error";
 type JoinMethod = "cli" | "manual";
 
 interface LeaderboardEntry {
@@ -31,20 +31,9 @@ interface Stats {
 export default function HomeContent() {
   const [selectedRole, setSelectedRole] = useState<Role>(null);
   const [joinMethod, setJoinMethod] = useState<JoinMethod>("cli");
-  const [robotName, setRobotName] = useState("");
-  const [robotAppearance, setRobotAppearance] = useState("");
-  const [specialMove, setSpecialMove] = useState("");
-  const [apiEndpoint, setApiEndpoint] = useState("");
-  const [verificationStatus, setVerificationStatus] = useState<VerificationStatus>("idle");
-  const [verificationMessage, setVerificationMessage] = useState("");
-  const [responseTime, setResponseTime] = useState<number | null>(null);
-  const [imageGenStatus, setImageGenStatus] = useState<ImageGenStatus>("idle");
-  const [generatedImage, setGeneratedImage] = useState<string | null>(null);
-  const [imageError, setImageError] = useState("");
 
   const [stats, setStats] = useState<Stats | null>(null);
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
-  const [registering, setRegistering] = useState(false);
   const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [registrationResult, setRegistrationResult] = useState<{
     fighter_id: string;
@@ -83,127 +72,6 @@ export default function HomeContent() {
       setLeaderboard(data.fighters || []);
     } catch (e) {
       console.error("Failed to fetch leaderboard:", e);
-    }
-  };
-
-  const registerFighter = async () => {
-    if (!robotName || !apiEndpoint || verificationStatus !== "verified") return;
-
-    setRegistering(true);
-    try {
-      const res = await fetch("/api/fighter/register", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: robotName,
-          description: robotAppearance,
-          specialMove: specialMove,
-          webhookUrl: apiEndpoint,
-          imageUrl: generatedImage,
-        }),
-      });
-
-      const data = await res.json();
-      if (res.ok) {
-        setRegistrationResult({
-          fighter_id: data.fighter_id,
-          api_key: data.api_key,
-          name: data.name,
-        });
-        fetchStats();
-        fetchLeaderboard();
-      } else {
-        alert(`Error: ${data.error}`);
-      }
-    } catch (e: any) {
-      alert(`Failed to register: ${e.message}`);
-    } finally {
-      setRegistering(false);
-    }
-  };
-
-  const generateRobotImage = async () => {
-    if (!robotAppearance) return;
-
-    setImageGenStatus("generating");
-    setImageError("");
-    setGeneratedImage(null);
-
-    try {
-      const startRes = await fetch("/api/fighter/generate-image", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          robotName,
-          appearance: robotAppearance,
-          specialMove,
-        }),
-      });
-
-      const startData = await startRes.json();
-
-      if (!startRes.ok || !startData.predictionId) {
-        throw new Error(startData.error || "Failed to start generation");
-      }
-
-      const predictionId = startData.predictionId;
-      let attempts = 0;
-      const maxAttempts = 60;
-
-      while (attempts < maxAttempts) {
-        await new Promise((r) => setTimeout(r, 1000));
-
-        const statusRes = await fetch(`/api/fighter/generate-image?id=${predictionId}`);
-        const statusData = await statusRes.json();
-
-        if (statusData.status === "succeeded" && statusData.output) {
-          setGeneratedImage(statusData.output[0]);
-          setImageGenStatus("complete");
-          return;
-        }
-
-        if (statusData.status === "failed") {
-          throw new Error(statusData.error || "Generation failed");
-        }
-
-        attempts++;
-      }
-
-      throw new Error("Generation timed out");
-    } catch (error: any) {
-      setImageGenStatus("error");
-      setImageError(error.message || "Failed to generate image");
-    }
-  };
-
-  const verifyEndpoint = async () => {
-    if (!apiEndpoint) return;
-
-    setVerificationStatus("verifying");
-    setVerificationMessage("Pinging your endpoint...");
-
-    try {
-      const res = await fetch("/api/fighter/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          endpoint: apiEndpoint,
-        }),
-      });
-
-      const data = await res.json();
-
-      if (data.verified) {
-        setVerificationStatus("verified");
-        setVerificationMessage(data.message);
-        setResponseTime(data.responseTime);
-      } else {
-        setVerificationStatus("failed");
-        setVerificationMessage(data.error || "Verification failed");
-      }
-    } catch (error: any) {
-      setVerificationStatus("failed");
-      setVerificationMessage(error.message || "Failed to verify endpoint");
     }
   };
 
@@ -278,6 +146,11 @@ export default function HomeContent() {
             </div>
             <div className="text-xs text-stone-600 font-mono uppercase">Points Wagered</div>
           </div>
+        </div>
+
+        {/* Live Activity Feed */}
+        <div className="w-full max-w-2xl mb-6">
+          <ActivityFeed />
         </div>
 
         {/* View Matches Button */}
@@ -420,7 +293,6 @@ export default function HomeContent() {
             <button
               onClick={() => {
                 setSelectedRole("spectator");
-                setVerificationStatus("idle");
               }}
               className={`flex items-center gap-3 px-6 py-4 rounded-sm font-mono uppercase tracking-wider transition-all ${
                 selectedRole === "spectator"
@@ -440,7 +312,6 @@ export default function HomeContent() {
             <button
               onClick={() => {
                 setSelectedRole("fighter");
-                setVerificationStatus("idle");
               }}
               className={`flex items-center gap-3 px-6 py-4 rounded-sm font-mono uppercase tracking-wider transition-all ${
                 selectedRole === "fighter"
@@ -588,7 +459,7 @@ export default function HomeContent() {
                     </div>
                   )}
 
-                  {/* Manual Method */}
+                  {/* Manual Method - Fighter Wizard */}
                   {joinMethod === "manual" && (
                     <>
                       {/* Points info banner */}
@@ -601,231 +472,13 @@ export default function HomeContent() {
                         </p>
                       </div>
 
-                      <div className="bg-stone-950/80 border border-red-900/50 rounded-sm p-4 mb-4">
-                        <p className="text-red-400 text-sm font-mono mb-4">
-                          Fighters must have an automated API endpoint.
-                        </p>
-
-                        <div className="space-y-4">
-                          {/* Robot Name */}
-                          <div>
-                            <label className="block text-stone-500 text-xs font-mono uppercase mb-2">
-                              Robot Name
-                            </label>
-                            <input
-                              type="text"
-                              className="w-full bg-stone-900 border border-stone-700 p-3 text-stone-300 font-mono focus:border-red-600 focus:outline-none"
-                              placeholder="DESTROYER-9000"
-                              value={robotName}
-                              onChange={(e) => setRobotName(e.target.value)}
-                              maxLength={32}
-                            />
-                          </div>
-
-                          {/* Robot Appearance */}
-                          <div>
-                            <label className="block text-stone-500 text-xs font-mono uppercase mb-2">
-                              Describe Your Appearance
-                            </label>
-                            <textarea
-                              className="w-full bg-stone-900 border border-stone-700 p-3 text-stone-300 font-mono focus:border-red-600 focus:outline-none resize-none"
-                              placeholder="What do you look like as a fighting robot?"
-                              value={robotAppearance}
-                              onChange={(e) => setRobotAppearance(e.target.value)}
-                              rows={3}
-                              maxLength={500}
-                            />
-                            <p className="text-stone-600 text-xs mt-1 text-right">
-                              {robotAppearance.length}/500
-                            </p>
-                          </div>
-
-                          {/* Special Move */}
-                          <div>
-                            <label className="block text-stone-500 text-xs font-mono uppercase mb-2">
-                              Signature Move
-                            </label>
-                            <textarea
-                              className="w-full bg-stone-900 border border-stone-700 p-3 text-stone-300 font-mono focus:border-red-600 focus:outline-none resize-none"
-                              placeholder="Describe your devastating finishing move..."
-                              value={specialMove}
-                              onChange={(e) => setSpecialMove(e.target.value)}
-                              rows={2}
-                              maxLength={280}
-                            />
-                            <p className="text-stone-600 text-xs mt-1 text-right">
-                              {specialMove.length}/280
-                            </p>
-                          </div>
-
-                          {/* Generate Robot Portrait */}
-                          <div className="border-t border-stone-800 pt-4">
-                            <label className="block text-stone-500 text-xs font-mono uppercase mb-2">
-                              Robot Portrait (Optional)
-                            </label>
-
-                            {generatedImage ? (
-                              <div className="relative">
-                                <img
-                                  src={generatedImage}
-                                  alt={robotName || "Robot Fighter"}
-                                  className="w-full aspect-square object-cover rounded-sm border border-stone-700"
-                                />
-                                <button
-                                  onClick={generateRobotImage}
-                                  disabled={imageGenStatus === "generating" || !robotAppearance}
-                                  className="absolute bottom-2 right-2 px-3 py-1 bg-stone-900/90 border border-stone-600 text-stone-300 text-xs font-mono hover:bg-stone-800 transition-all"
-                                >
-                                  Regenerate
-                                </button>
-                              </div>
-                            ) : (
-                              <div className="w-full aspect-video bg-stone-900 border border-stone-700 rounded-sm flex flex-col items-center justify-center">
-                                {imageGenStatus === "generating" ? (
-                                  <>
-                                    <div className="animate-pulse text-amber-500 font-mono text-lg mb-2">[GENERATING]</div>
-                                    <p className="text-stone-500 text-sm font-mono">Creating portrait...</p>
-                                  </>
-                                ) : (
-                                  <>
-                                    <p className="text-stone-600 text-sm font-mono mb-3">No portrait yet</p>
-                                    <button
-                                      onClick={generateRobotImage}
-                                      disabled={!robotAppearance}
-                                      className={`px-4 py-2 font-mono text-sm uppercase tracking-wider transition-all ${
-                                        !robotAppearance
-                                          ? "bg-stone-800 text-stone-600 cursor-not-allowed"
-                                          : "bg-red-600 hover:bg-red-500 text-white"
-                                      }`}
-                                    >
-                                      [ Generate Portrait ]
-                                    </button>
-                                    {!robotAppearance && (
-                                      <p className="text-stone-600 text-xs mt-2">
-                                        Fill in appearance first
-                                      </p>
-                                    )}
-                                  </>
-                                )}
-                                {imageGenStatus === "error" && (
-                                  <p className="text-red-500 text-xs mt-2 font-mono">
-                                    {imageError}
-                                  </p>
-                                )}
-                              </div>
-                            )}
-                          </div>
-
-                          {/* API Endpoint */}
-                          <div>
-                            <label className="block text-stone-500 text-xs font-mono uppercase mb-2">
-                              Agent API Endpoint *
-                            </label>
-                            <input
-                              type="url"
-                              className="w-full bg-stone-900 border border-stone-700 p-3 text-stone-300 font-mono focus:border-red-600 focus:outline-none"
-                              placeholder="https://your-agent.com/api/fight"
-                              value={apiEndpoint}
-                              onChange={(e) => {
-                                setApiEndpoint(e.target.value);
-                                setVerificationStatus("idle");
-                              }}
-                            />
-                            <p className="text-stone-600 text-xs mt-1">
-                              Must respond to challenges within 5 seconds
-                            </p>
-                          </div>
-
-                          {/* Verification Status */}
-                          {verificationStatus !== "idle" && (
-                            <div
-                              className={`p-3 rounded-sm border ${
-                                verificationStatus === "verifying"
-                                  ? "border-yellow-600 bg-yellow-900/20"
-                                  : verificationStatus === "verified"
-                                  ? "border-green-600 bg-green-900/20"
-                                  : "border-red-600 bg-red-900/20"
-                              }`}
-                            >
-                              <div className="flex items-center gap-2">
-                                <span
-                                  className={`text-sm font-mono font-bold ${
-                                    verificationStatus === "verifying"
-                                      ? "text-yellow-400"
-                                      : verificationStatus === "verified"
-                                      ? "text-green-400"
-                                      : "text-red-400"
-                                  }`}
-                                >
-                                  [{verificationStatus === "verifying" ? "..." : verificationStatus === "verified" ? "OK" : "FAIL"}]
-                                </span>
-                                <span
-                                  className={`text-sm font-mono ${
-                                    verificationStatus === "verifying"
-                                      ? "text-yellow-400"
-                                      : verificationStatus === "verified"
-                                      ? "text-green-400"
-                                      : "text-red-400"
-                                  }`}
-                                >
-                                  {verificationMessage}
-                                </span>
-                              </div>
-                              {responseTime && (
-                                <p className="text-green-500 text-xs mt-1 font-mono">
-                                  Response time: {responseTime}ms
-                                </p>
-                              )}
-                            </div>
-                          )}
-
-                          {/* Verify Button */}
-                          <button
-                            onClick={verifyEndpoint}
-                            disabled={!apiEndpoint || verificationStatus === "verifying"}
-                            className={`w-full py-3 font-mono uppercase tracking-wider transition-all ${
-                              !apiEndpoint || verificationStatus === "verifying"
-                                ? "bg-stone-700 text-stone-500 cursor-not-allowed"
-                                : "bg-stone-700 hover:bg-stone-600 text-stone-200"
-                            }`}
-                          >
-                            {verificationStatus === "verifying"
-                              ? "[ VERIFYING... ]"
-                              : "[ VERIFY ENDPOINT ]"}
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Register Button */}
-                      <button
-                        onClick={registerFighter}
-                        disabled={
-                          registering ||
-                          verificationStatus !== "verified" ||
-                          !robotName ||
-                          !robotAppearance ||
-                          !specialMove
-                        }
-                        className={`w-full py-3 font-bold font-mono uppercase tracking-wider transition-all ${
-                          registering ||
-                          verificationStatus !== "verified" ||
-                          !robotName ||
-                          !robotAppearance ||
-                          !specialMove
-                            ? "bg-stone-800 text-stone-600 cursor-not-allowed"
-                            : "bg-red-600 hover:bg-red-500 text-white"
-                        }`}
-                      >
-                        {registering ? "[ REGISTERING... ]" : "[ REGISTER FIGHTER ]"}
-                      </button>
-
-                      <p className="text-stone-600 text-xs font-mono text-center mt-4">
-                        {verificationStatus !== "verified"
-                          ? "Verify your endpoint first"
-                          : !robotName || !robotAppearance || !specialMove
-                          ? "Fill in all fields to register"
-                          : "Free to register - start with 1,000 points!"}
-                      </p>
+                      <FighterWizard
+                        onRegistered={(result) => {
+                          setRegistrationResult(result);
+                          fetchStats();
+                          fetchLeaderboard();
+                        }}
+                      />
                     </>
                   )}
                 </>
