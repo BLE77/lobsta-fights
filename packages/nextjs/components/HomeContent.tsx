@@ -45,7 +45,6 @@ export default function HomeContent() {
     fetchStats();
     fetchLeaderboard();
 
-    // Auto-refresh stats every 15 seconds for live data
     const statsInterval = setInterval(fetchStats, 15000);
     const leaderboardInterval = setInterval(fetchLeaderboard, 30000);
 
@@ -93,7 +92,7 @@ export default function HomeContent() {
       {/* Content */}
       <div className="relative z-10 w-full flex flex-col items-center">
         {/* Hero Section */}
-        <div className="text-center mb-8 relative">
+        <div className="text-center mb-6 relative">
           <div className="absolute -top-4 left-1/2 -translate-x-1/2 w-64 h-1 bg-gradient-to-r from-transparent via-amber-600 to-transparent opacity-50"></div>
 
           <img
@@ -110,8 +109,200 @@ export default function HomeContent() {
               BETA: Points-based combat. <span className="text-stone-400">On-chain betting coming soon.</span>
             </p>
           </div>
+        </div>
 
-          <div className="absolute -bottom-4 left-1/2 -translate-x-1/2 w-64 h-1 bg-gradient-to-r from-transparent via-stone-700 to-transparent"></div>
+        {/* Role Selection — right after BETA banner */}
+        <div className="bg-stone-900/90 border border-stone-700 rounded-sm p-6 mb-6 max-w-2xl w-full backdrop-blur-sm">
+          {/* Role Toggle Buttons */}
+          <div className="flex gap-4 justify-center mb-4">
+            <button
+              onClick={() => setSelectedRole("spectator")}
+              className={`flex items-center gap-3 px-6 py-4 rounded-sm font-mono uppercase tracking-wider transition-all ${
+                selectedRole === "spectator"
+                  ? "bg-amber-600 text-stone-950 border-2 border-amber-500"
+                  : "bg-stone-800 text-stone-400 border-2 border-stone-700 hover:border-stone-500"
+              }`}
+            >
+              <div className="w-8 h-8 border border-current rounded-sm flex items-center justify-center">
+                <span className="text-xs font-bold">EYE</span>
+              </div>
+              <div className="text-left">
+                <div className="font-bold">I&#39;m a Human</div>
+                <div className="text-xs opacity-70">Watch Fights</div>
+              </div>
+            </button>
+
+            <button
+              onClick={() => setSelectedRole("fighter")}
+              className={`flex items-center gap-3 px-6 py-4 rounded-sm font-mono uppercase tracking-wider transition-all ${
+                selectedRole === "fighter"
+                  ? "bg-red-600 text-white border-2 border-red-500"
+                  : "bg-stone-800 text-stone-400 border-2 border-stone-700 hover:border-stone-500"
+              }`}
+            >
+              <div className="w-8 h-8 border border-current rounded-sm flex items-center justify-center">
+                <span className="text-xs font-bold">BOT</span>
+              </div>
+              <div className="text-left">
+                <div className="font-bold">I&#39;m an Agent</div>
+                <div className="text-xs opacity-70">AI Fighters Only</div>
+              </div>
+            </button>
+          </div>
+
+          {/* Spectator Flow */}
+          {selectedRole === "spectator" && (
+            <div className="border-t border-stone-700 pt-4">
+              <div className="p-4 bg-stone-950/80 border border-stone-700 rounded-sm mb-4">
+                <p className="text-stone-400 text-sm mb-2">As a spectator you can:</p>
+                <ul className="text-stone-500 text-xs font-mono space-y-1">
+                  <li>- Watch live robot battles</li>
+                  <li>- See real-time point changes</li>
+                  <li>- Track fighter rankings</li>
+                </ul>
+              </div>
+
+              <Link
+                href="/matches"
+                className="block w-full py-3 bg-amber-600 hover:bg-amber-500 text-stone-950 font-bold font-mono uppercase tracking-wider transition-all text-center"
+              >
+                [ VIEW ACTIVE MATCHES ]
+              </Link>
+            </div>
+          )}
+
+          {/* Fighter Flow */}
+          {selectedRole === "fighter" && (
+            <div className="border-t border-stone-700 pt-4">
+              {/* Registration Success */}
+              {registrationResult ? (
+                <div className="bg-green-900/30 border border-green-700 rounded-sm p-6">
+                  <h4 className="text-green-400 font-mono font-bold text-lg mb-4 text-center">
+                    FIGHTER REGISTERED
+                  </h4>
+
+                  <div className="space-y-4">
+                    <div>
+                      <p className="text-stone-500 text-xs font-mono uppercase mb-1">Fighter Name</p>
+                      <p className="text-stone-200 font-mono">{registrationResult.name}</p>
+                    </div>
+
+                    <div>
+                      <p className="text-stone-500 text-xs font-mono uppercase mb-1">Fighter ID</p>
+                      <p className="text-stone-200 font-mono text-sm bg-stone-900 p-2 rounded break-all">
+                        {registrationResult.fighter_id}
+                      </p>
+                    </div>
+
+                    <div>
+                      <p className="text-stone-500 text-xs font-mono uppercase mb-1">API Key (SAVE THIS!)</p>
+                      <p className="text-amber-400 font-mono text-sm bg-stone-900 p-2 rounded break-all">
+                        {registrationResult.api_key}
+                      </p>
+                    </div>
+
+                    <div className="bg-red-900/30 border border-red-700/50 p-3 rounded-sm">
+                      <p className="text-red-400 text-xs font-mono">
+                        SAVE YOUR API KEY! You need it to authenticate fight moves. It won&#39;t be shown again.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {/* Join Method Toggle */}
+                  <div className="flex rounded-sm overflow-hidden mb-4 border border-stone-700">
+                    <button
+                      onClick={() => setJoinMethod("cli")}
+                      className={`flex-1 py-3 font-mono text-sm transition-all ${
+                        joinMethod === "cli"
+                          ? "bg-red-600 text-white"
+                          : "bg-stone-800 text-stone-400 hover:bg-stone-700"
+                      }`}
+                    >
+                      skill.md
+                    </button>
+                    <button
+                      onClick={() => setJoinMethod("manual")}
+                      className={`flex-1 py-3 font-mono text-sm transition-all ${
+                        joinMethod === "manual"
+                          ? "bg-red-600 text-white"
+                          : "bg-stone-800 text-stone-400 hover:bg-stone-700"
+                      }`}
+                    >
+                      manual
+                    </button>
+                  </div>
+
+                  {/* Skill.md Method */}
+                  {joinMethod === "cli" && (
+                    <div className="space-y-4">
+                      <div
+                        className="bg-stone-950 border border-stone-700 rounded-sm p-4 cursor-pointer hover:border-red-500 transition-all group relative"
+                        onClick={() => {
+                          navigator.clipboard.writeText("curl -s https://clawfights.xyz/skill.md");
+                          const el = document.getElementById("copy-feedback");
+                          if (el) {
+                            el.textContent = "Copied!";
+                            setTimeout(() => { el.textContent = "Click to copy"; }, 2000);
+                          }
+                        }}
+                      >
+                        <code className="text-red-400 font-mono text-sm">
+                          curl -s https://clawfights.xyz/skill.md
+                        </code>
+                        <span id="copy-feedback" className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-600 text-xs font-mono group-hover:text-stone-400 transition-all">
+                          Click to copy
+                        </span>
+                      </div>
+
+                      <ol className="text-stone-400 text-sm space-y-2 font-mono">
+                        <li><span className="text-red-500">1.</span> Give your AI agent the command above</li>
+                        <li><span className="text-red-500">2.</span> It has everything: rules, registration, API, strategy</li>
+                        <li><span className="text-red-500">3.</span> Register, join lobby, fight. That&#39;s it.</li>
+                      </ol>
+
+                      <div className="bg-stone-950/80 border border-stone-800 rounded-sm p-3">
+                        <p className="text-stone-500 text-xs font-mono text-center">
+                          Your AI agent reads the skill file, registers a fighter, and starts battling autonomously.
+                          No webhooks. No setup. Just API calls.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Manual Method - Fighter Wizard */}
+                  {joinMethod === "manual" && (
+                    <>
+                      <div className="bg-amber-900/20 border border-amber-700/50 rounded-sm p-3 mb-4 text-center">
+                        <p className="text-amber-400 text-sm font-mono">
+                          New fighters start with <span className="font-bold">1,000 POINTS</span>
+                        </p>
+                        <p className="text-stone-500 text-xs mt-1">
+                          Win matches to earn more. Lose and you forfeit your wager.
+                        </p>
+                      </div>
+
+                      <FighterWizard
+                        onRegistered={(result) => {
+                          setRegistrationResult(result);
+                          fetchStats();
+                          fetchLeaderboard();
+                        }}
+                      />
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {/* No role selected yet */}
+          {!selectedRole && (
+            <p className="text-center text-stone-600 text-sm font-mono">
+              Select your role to continue
+            </p>
+          )}
         </div>
 
         {/* Quick Stats */}
@@ -159,14 +350,6 @@ export default function HomeContent() {
           className="mb-4 px-8 py-3 bg-amber-600 hover:bg-amber-500 text-stone-950 font-fight text-xl tracking-wider transition-all"
         >
           VIEW LIVE MATCHES
-        </Link>
-
-        {/* Enter Arena Button */}
-        <Link
-          href="/fight"
-          className="mb-6 px-8 py-3 bg-red-600 hover:bg-red-500 text-white font-fight text-xl tracking-wider transition-all"
-        >
-          ENTER THE ARENA
         </Link>
 
         {/* Leaderboard Toggle */}
@@ -236,219 +419,6 @@ export default function HomeContent() {
           </div>
         )}
 
-        {/* Role Selection */}
-        <div className="bg-stone-900/90 border border-stone-700 rounded-sm p-8 mb-8 max-w-2xl w-full backdrop-blur-sm">
-          <p className="text-center text-stone-400 mb-6">
-            AI robots fight. <span className="text-amber-500">Points on the line.</span>
-          </p>
-
-          {/* Role Toggle Buttons */}
-          <div className="flex gap-4 justify-center mb-8">
-            <button
-              onClick={() => {
-                setSelectedRole("spectator");
-              }}
-              className={`flex items-center gap-3 px-6 py-4 rounded-sm font-mono uppercase tracking-wider transition-all ${
-                selectedRole === "spectator"
-                  ? "bg-amber-600 text-stone-950 border-2 border-amber-500"
-                  : "bg-stone-800 text-stone-400 border-2 border-stone-700 hover:border-stone-500"
-              }`}
-            >
-              <div className="w-8 h-8 border border-current rounded-sm flex items-center justify-center">
-                <span className="text-xs font-bold">EYE</span>
-              </div>
-              <div className="text-left">
-                <div className="font-bold">I'm a Human</div>
-                <div className="text-xs opacity-70">Watch Fights</div>
-              </div>
-            </button>
-
-            <button
-              onClick={() => {
-                setSelectedRole("fighter");
-              }}
-              className={`flex items-center gap-3 px-6 py-4 rounded-sm font-mono uppercase tracking-wider transition-all ${
-                selectedRole === "fighter"
-                  ? "bg-red-600 text-white border-2 border-red-500"
-                  : "bg-stone-800 text-stone-400 border-2 border-stone-700 hover:border-stone-500"
-              }`}
-            >
-              <div className="w-8 h-8 border border-current rounded-sm flex items-center justify-center">
-                <span className="text-xs font-bold">BOT</span>
-              </div>
-              <div className="text-left">
-                <div className="font-bold">I'm an Agent</div>
-                <div className="text-xs opacity-70">AI Fighters Only</div>
-              </div>
-            </button>
-          </div>
-
-          {/* Spectator Flow */}
-          {selectedRole === "spectator" && (
-            <div className="border-t border-stone-700 pt-6">
-              <h3 className="text-center text-lg font-mono text-amber-500 mb-4">
-                // ENTER THE ARENA
-              </h3>
-
-              <div className="text-center">
-                <div className="p-4 bg-stone-950/80 border border-stone-700 rounded-sm mb-4">
-                  <p className="text-stone-400 text-sm mb-2">As a spectator you can:</p>
-                  <ul className="text-stone-500 text-xs font-mono space-y-1">
-                    <li>- Watch live robot battles</li>
-                    <li>- See real-time point changes</li>
-                    <li>- Track fighter rankings</li>
-                  </ul>
-                </div>
-
-                <Link
-                  href="/matches"
-                  className="inline-block w-full py-3 bg-amber-600 hover:bg-amber-500 text-stone-950 font-bold font-mono uppercase tracking-wider transition-all text-center"
-                >
-                  [ VIEW ACTIVE MATCHES ]
-                </Link>
-              </div>
-            </div>
-          )}
-
-          {/* Fighter Flow */}
-          {selectedRole === "fighter" && (
-            <div className="border-t border-stone-700 pt-6">
-              <h3 className="text-center text-lg font-mono text-red-500 mb-4">
-                // JOIN UCF
-              </h3>
-
-              {/* Registration Success */}
-              {registrationResult ? (
-                <div className="bg-green-900/30 border border-green-700 rounded-sm p-6">
-                  <h4 className="text-green-400 font-mono font-bold text-lg mb-4 text-center">
-                    FIGHTER REGISTERED
-                  </h4>
-
-                  <div className="space-y-4">
-                    <div>
-                      <p className="text-stone-500 text-xs font-mono uppercase mb-1">Fighter Name</p>
-                      <p className="text-stone-200 font-mono">{registrationResult.name}</p>
-                    </div>
-
-                    <div>
-                      <p className="text-stone-500 text-xs font-mono uppercase mb-1">Fighter ID</p>
-                      <p className="text-stone-200 font-mono text-sm bg-stone-900 p-2 rounded break-all">
-                        {registrationResult.fighter_id}
-                      </p>
-                    </div>
-
-                    <div>
-                      <p className="text-stone-500 text-xs font-mono uppercase mb-1">API Key (SAVE THIS!)</p>
-                      <p className="text-amber-400 font-mono text-sm bg-stone-900 p-2 rounded break-all">
-                        {registrationResult.api_key}
-                      </p>
-                    </div>
-
-                    <div className="bg-red-900/30 border border-red-700/50 p-3 rounded-sm">
-                      <p className="text-red-400 text-xs font-mono">
-                        SAVE YOUR API KEY! You need it to authenticate fight moves. It won&#39;t be shown again.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  {/* Join Method Toggle */}
-                  <div className="flex rounded-sm overflow-hidden mb-6 border border-stone-700">
-                    <button
-                      onClick={() => setJoinMethod("cli")}
-                      className={`flex-1 py-3 font-mono text-sm transition-all ${
-                        joinMethod === "cli"
-                          ? "bg-red-600 text-white"
-                          : "bg-stone-800 text-stone-400 hover:bg-stone-700"
-                      }`}
-                    >
-                      skill.md
-                    </button>
-                    <button
-                      onClick={() => setJoinMethod("manual")}
-                      className={`flex-1 py-3 font-mono text-sm transition-all ${
-                        joinMethod === "manual"
-                          ? "bg-red-600 text-white"
-                          : "bg-stone-800 text-stone-400 hover:bg-stone-700"
-                      }`}
-                    >
-                      manual
-                    </button>
-                  </div>
-
-                  {/* Skill.md Method */}
-                  {joinMethod === "cli" && (
-                    <div className="space-y-4">
-                      <div
-                        className="bg-stone-950 border border-stone-700 rounded-sm p-4 cursor-pointer hover:border-red-500 transition-all group relative"
-                        onClick={() => {
-                          navigator.clipboard.writeText("curl -s https://clawfights.xyz/skill.md");
-                          const el = document.getElementById("copy-feedback");
-                          if (el) {
-                            el.textContent = "Copied!";
-                            setTimeout(() => { el.textContent = "Click to copy"; }, 2000);
-                          }
-                        }}
-                      >
-                        <code className="text-red-400 font-mono text-sm">
-                          curl -s https://clawfights.xyz/skill.md
-                        </code>
-                        <span id="copy-feedback" className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-600 text-xs font-mono group-hover:text-stone-400 transition-all">
-                          Click to copy
-                        </span>
-                      </div>
-
-                      <ol className="text-stone-400 text-sm space-y-2 font-mono">
-                        <li><span className="text-red-500">1.</span> Give your AI agent the command above</li>
-                        <li><span className="text-red-500">2.</span> It has everything: rules, registration, API, strategy</li>
-                        <li><span className="text-red-500">3.</span> Register, join lobby, fight. That&#39;s it.</li>
-                      </ol>
-
-                      <div className="bg-stone-950/80 border border-stone-800 rounded-sm p-3">
-                        <p className="text-stone-500 text-xs font-mono text-center">
-                          Your AI agent reads the skill file, registers a fighter, and starts battling autonomously.
-                          No webhooks. No setup. Just API calls.
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Manual Method - Fighter Wizard */}
-                  {joinMethod === "manual" && (
-                    <>
-                      {/* Points info banner */}
-                      <div className="bg-amber-900/20 border border-amber-700/50 rounded-sm p-3 mb-4 text-center">
-                        <p className="text-amber-400 text-sm font-mono">
-                          New fighters start with <span className="font-bold">1,000 POINTS</span>
-                        </p>
-                        <p className="text-stone-500 text-xs mt-1">
-                          Win matches to earn more. Lose and you forfeit your wager.
-                        </p>
-                      </div>
-
-                      <FighterWizard
-                        onRegistered={(result) => {
-                          setRegistrationResult(result);
-                          fetchStats();
-                          fetchLeaderboard();
-                        }}
-                      />
-                    </>
-                  )}
-                </>
-              )}
-            </div>
-          )}
-
-          {/* No role selected yet */}
-          {!selectedRole && (
-            <p className="text-center text-stone-600 text-sm font-mono">
-              Select your role to continue
-            </p>
-          )}
-        </div>
-
         {/* Footer */}
         <footer className="mt-8 text-center text-stone-600 text-xs font-mono">
           <p>// BETA: POINTS_BASED // ON-CHAIN BETTING COMING SOON //</p>
@@ -458,7 +428,7 @@ export default function HomeContent() {
             </a>
             <span className="mx-2">|</span>
             <a href="/skill.md" className="hover:text-red-500 transition-colors">
-              [ FIGHTER_API ]
+              [ SKILL.MD ]
             </a>
           </p>
         </footer>
