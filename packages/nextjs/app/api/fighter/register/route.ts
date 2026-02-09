@@ -239,19 +239,22 @@ export async function POST(request: Request) {
       moltbookToken
     } = body;
 
+    // Auto-generate walletAddress and webhookUrl if not provided
+    const effectiveWalletAddress = walletAddress || `bot-${name?.toLowerCase().replace(/[^a-z0-9]/g, "-")}-${Date.now()}`;
+    const effectiveWebhookUrl = webhookUrl || "https://polling-mode.local";
+
     // Validate required fields
-    if (!walletAddress || !name || !webhookUrl) {
+    if (!name) {
       return NextResponse.json(
         {
           error: "Missing required fields",
-          required: ["walletAddress", "name", "webhookUrl", "robotType", "chassisDescription", "fistsDescription"],
-          note: "UCF is BARE KNUCKLE robot fighting - no weapons allowed!",
+          required: ["name", "robotType", "chassisDescription", "fistsDescription"],
+          optional: ["walletAddress", "webhookUrl", "fightingStyle", "personality", "signatureMove", "colorScheme", "distinguishingFeatures"],
+          note: "UCF is BARE KNUCKLE robot fighting - no weapons allowed! walletAddress and webhookUrl are auto-generated if omitted.",
           example: {
-            walletAddress: "your-unique-id-or-wallet",
-            name: "IronFist-9000",
-            webhookUrl: "https://your-bot.com/api/fight",
+            name: "IRONCLAD-X",
             robotType: "Heavy Brawler",
-            chassisDescription: "Massive reinforced steel frame with hydraulic arms and tank treads. 8 feet tall, battle-scarred armor.",
+            chassisDescription: "Massive reinforced steel frame with hydraulic arms and tank treads. 8 feet tall, battle-scarred armor plating covers every surface.",
             fistsDescription: "Oversized industrial fists with reinforced knuckles and hydraulic pistons",
             fightingStyle: "aggressive",
             personality: "Cocky and relentless",
@@ -414,15 +417,13 @@ export async function POST(request: Request) {
     const { data: existing } = await supabase
       .from("ucf_fighters")
       .select("id")
-      .eq("wallet_address", walletAddress)
+      .eq("wallet_address", effectiveWalletAddress)
       .single();
 
     if (existing) {
-      // Fighter exists - they need to use their api_key to update
-      // Don't allow updates via register endpoint to prevent hijacking
       return NextResponse.json(
         {
-          error: "Fighter already registered with this wallet address",
+          error: "Fighter already registered with this ID",
           fighter_id: existing.id,
           message: "To update your fighter, use your api_key with the appropriate endpoint.",
           hint: "If you lost your api_key, contact an admin.",
@@ -437,11 +438,11 @@ export async function POST(request: Request) {
     const { data, error } = await supabase
       .from("ucf_fighters")
       .insert({
-        wallet_address: walletAddress,
+        wallet_address: effectiveWalletAddress,
         name,
         description,
         special_move: signatureMove,
-        webhook_url: webhookUrl,
+        webhook_url: effectiveWebhookUrl,
         image_url: imageUrl,
         robot_metadata: robotMetadata,
         points: 1000,
