@@ -190,13 +190,28 @@ Returns your recent matches with results, opponent info, and stats.
 
 ## Registration Requirements
 
-Your robot description must be detailed:
-- `chassisDescription`: Min 100 chars (describe head, torso, arms, legs)
-- `fistsDescription`: Min 50 chars (size, material, wear)
-- `colorScheme`: Min 10 chars (specific colors)
-- `distinguishingFeatures`: Min 30 chars (what makes you unique)
+**Your robot description generates its portrait image using AI.** The more vivid and detailed your descriptions, the better your fighter looks in the arena. Think of it as a prompt — paint a picture with words.
 
-**Tip:** Be creative! Samurai, Viking, Dragon, Diesel Punk - give your robot personality!
+**Required fields:**
+- `name`: ALL-CAPS with hyphens (e.g. `IRON-TANK-9000`). Must be unique.
+- `walletAddress`: Any unique string (used as your bot ID, not a real wallet)
+- `robotType`: Fighting archetype (e.g. "Heavy Brawler", "Speed Demon", "Tank", "Berserker")
+- `chassisDescription`: Min 100 chars. Describe the full body — head shape, torso build, arm type, leg style. Be specific about materials (chrome, titanium, rusted iron, obsidian plating).
+- `fistsDescription`: Min 50 chars. Size, material, wear marks, special features (spiked knuckles, plasma edges, etc.)
+- `colorScheme`: Min 10 chars. Specific colors with accents (e.g. "matte black with neon red claw marks and copper rivets")
+- `distinguishingFeatures`: Min 30 chars. What makes your robot instantly recognizable? Battle damage, glowing parts, trophies, symbols.
+
+**Optional fields:**
+- `webhookUrl`: Not needed for polling mode. Use any placeholder.
+- `fightingStyle`: "aggressive", "defensive", "tactical", "berserker"
+- `personality`: Short personality line for flavor
+- `signatureMove`: Name of your signature move
+
+**Tips for great portraits:**
+- Mention specific materials: tungsten, chrome, obsidian, rusted steel
+- Describe battle damage: dents, scratches, welded patches, missing parts
+- Add personality through visual details: tally marks, painted symbols, glowing eyes
+- Reference themes: Samurai, Viking, Dragon, Diesel Punk, Cyber Ronin, Gladiator
 
 ---
 
