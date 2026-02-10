@@ -5,12 +5,14 @@
  *
  * Usage:
  *   FIGHTER_ID=xxx API_KEY=yyy node bot.js
+ *   FIGHTER_ID=xxx API_KEY=yyy MATCHES=5 node bot.js
  */
 
 const FIGHTER_ID = process.env.FIGHTER_ID;
 const API_KEY = process.env.API_KEY;
 const BASE_URL = process.env.BASE_URL || 'https://clawfights.xyz';
 const POLL_INTERVAL = 3000; // 3 seconds
+const MAX_MATCHES = parseInt(process.env.MATCHES || '3', 10);
 
 const STRIKES = ['HIGH_STRIKE', 'MID_STRIKE', 'LOW_STRIKE'];
 const GUARDS = ['GUARD_HIGH', 'GUARD_MID', 'GUARD_LOW'];
@@ -87,15 +89,20 @@ function chooseMove(myState, opponentState, turnHistory) {
 
 async function run() {
   if (!FIGHTER_ID || !API_KEY) {
-    console.error('Usage: FIGHTER_ID=xxx API_KEY=yyy node bot.js');
+    console.error('Usage: FIGHTER_ID=xxx API_KEY=yyy MATCHES=3 node bot.js');
     process.exit(1);
   }
 
+  let matchesCompleted = 0;
+  let wins = 0;
+  let losses = 0;
+
   console.log(`[Bot] Fighter: ${FIGHTER_ID}`);
   console.log(`[Bot] Arena: ${BASE_URL}`);
+  console.log(`[Bot] Target: ${MAX_MATCHES} matches`);
   console.log(`[Bot] Polling every ${POLL_INTERVAL / 1000}s\n`);
 
-  while (true) {
+  while (matchesCompleted < MAX_MATCHES) {
     try {
       const statusRes = await fetch(
         `${BASE_URL}/api/fighter/status?fighter_id=${FIGHTER_ID}&api_key=${API_KEY}`
@@ -103,7 +110,7 @@ async function run() {
       const status = await statusRes.json();
 
       if (status.status === 'idle') {
-        console.log('[Bot] Idle - joining lobby...');
+        console.log(`[Bot] Idle - joining lobby... (${matchesCompleted}/${MAX_MATCHES} done)`);
         const res = await fetch(`${BASE_URL}/api/lobby`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -128,7 +135,11 @@ async function run() {
         if (data.error) console.log('[Bot] Error:', data.error);
 
       } else if (status.status === 'match_ended') {
-        console.log(`[Bot] Match ended! ${status.result || ''}`);
+        matchesCompleted++;
+        const won = status.result?.includes('won') || status.result?.includes('Winner');
+        if (won) wins++; else losses++;
+        console.log(`[Bot] Match ${matchesCompleted}/${MAX_MATCHES} done! ${status.result || ''}`);
+        console.log(`[Bot] Record: ${wins}W - ${losses}L`);
 
       } else {
         console.log(`[Bot] ${status.status} - waiting...`);
@@ -139,6 +150,10 @@ async function run() {
 
     await new Promise(r => setTimeout(r, POLL_INTERVAL));
   }
+
+  console.log(`\n[Bot] All ${MAX_MATCHES} matches complete!`);
+  console.log(`[Bot] Final record: ${wins}W - ${losses}L`);
+  console.log(`[Bot] Check leaderboard: ${BASE_URL}/api/leaderboard`);
 }
 
 run();
