@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { supabase } from "../../../../lib/supabase";
+import { supabase, freshSupabase } from "../../../../lib/supabase";
 
 export const dynamic = "force-dynamic";
 
@@ -126,7 +126,7 @@ export async function POST(request: Request) {
       rounds_won: 0,
     };
 
-    const { data: match, error: createError } = await supabase
+    const { data: match, error: createError } = await freshSupabase()
       .from("ucf_matches")
       .insert({
         fighter_a_id,

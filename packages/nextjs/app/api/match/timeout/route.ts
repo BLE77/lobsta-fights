@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import crypto from "crypto";
-import { supabase } from "../../../../lib/supabase";
+import { supabase, freshSupabase } from "../../../../lib/supabase";
 import { MoveType } from "../../../../lib/types";
 import { VALID_MOVES, generateSalt, createMoveHash } from "../../../../lib/combat";
 
@@ -203,7 +203,7 @@ async function handleCommitTimeout(match: any): Promise<any> {
   updateData.state = "REVEAL_PHASE";
   updateData.reveal_deadline = new Date(Date.now() + 60000).toISOString(); // 60 seconds (1 min)
 
-  const { data: updated, error: updateError } = await supabase
+  const { data: updated, error: updateError } = await freshSupabase()
     .from("ucf_matches")
     .update(updateData)
     .eq("id", match.id)
@@ -291,7 +291,7 @@ async function handleRevealTimeout(match: any): Promise<any> {
   }
 
   // Now trigger combat resolution by calling the reveal endpoint internally
-  const { data: updated, error: updateError } = await supabase
+  const { data: updated, error: updateError } = await freshSupabase()
     .from("ucf_matches")
     .update(updateData)
     .eq("id", match.id)
@@ -333,7 +333,7 @@ async function forfeitMatch(
   console.log(`[Timeout] Match ${match.id}: ${reason}`);
 
   // ATOMIC: Only update if match hasn't been processed yet
-  const { data: updated, error: updateErr } = await supabase
+  const { data: updated, error: updateErr } = await freshSupabase()
     .from("ucf_matches")
     .update({
       state: "FINISHED",
@@ -357,7 +357,7 @@ async function forfeitMatch(
   }
 
   // Call the complete_ucf_match function to handle points transfer
-  const { data: completeResult } = await supabase.rpc("complete_ucf_match", {
+  const { data: completeResult } = await freshSupabase().rpc("complete_ucf_match", {
     p_match_id: match.id,
     p_winner_id: winnerId,
   });

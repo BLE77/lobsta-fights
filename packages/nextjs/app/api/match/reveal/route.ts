@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { supabase } from "../../../../lib/supabase";
+import { supabase, freshSupabase } from "../../../../lib/supabase";
 import { MoveType, TurnResult } from "../../../../lib/types";
 import {
   VALID_MOVES,
@@ -161,7 +161,7 @@ export async function POST(request: Request) {
 
     if (!otherHasRevealed) {
       // Wait for opponent to reveal
-      const { error: updateError } = await supabase
+      const { error: updateError } = await freshSupabase()
         .from("ucf_matches")
         .update(updateData)
         .eq("id", match_id);
@@ -294,7 +294,7 @@ export async function POST(request: Request) {
       matchUpdateData.finished_at = new Date().toISOString();
 
       // Call the complete_ucf_match function to handle points transfer
-      const { error: completeError } = await supabase.rpc("complete_ucf_match", {
+      const { error: completeError } = await freshSupabase().rpc("complete_ucf_match", {
         p_match_id: match_id,
         p_winner_id: matchWinner,
       });
@@ -310,7 +310,7 @@ export async function POST(request: Request) {
       // Cost savings: $0.04-0.12 per match
     }
 
-    const { data: updatedMatch, error: updateError } = await supabase
+    const { data: updatedMatch, error: updateError } = await freshSupabase()
       .from("ucf_matches")
       .update(matchUpdateData)
       .eq("id", match_id)
@@ -538,7 +538,7 @@ async function generateBattleResultImage(matchId: string): Promise<void> {
 
   try {
     // Fetch match with fighter details including robot_metadata
-    const { data: match, error } = await supabase
+    const { data: match, error } = await freshSupabase()
       .from("ucf_matches")
       .select(`
         *,
@@ -618,7 +618,7 @@ async function generateBattleResultImage(matchId: string): Promise<void> {
     const prediction = await response.json();
 
     // Store the prediction ID so we can poll for the result
-    await supabase
+    await freshSupabase()
       .from("ucf_matches")
       .update({ result_image_prediction_id: prediction.id })
       .eq("id", matchId);
@@ -656,7 +656,7 @@ async function generateBattleResultImage(matchId: string): Promise<void> {
           } else {
             // Fallback to temp URL if storage fails
             console.error(`[Image] Failed to store permanently, using temp URL for match ${matchId}`);
-            await supabase
+            await freshSupabase()
               .from("ucf_matches")
               .update({ result_image_url: tempImageUrl })
               .eq("id", matchId);
@@ -697,7 +697,7 @@ async function generateRoundWinImage(
 
   try {
     // Fetch fighter details
-    const { data: fighters } = await supabase
+    const { data: fighters } = await freshSupabase()
       .from("ucf_fighters")
       .select("id, name, robot_metadata")
       .in("id", [winnerId, loserId]);
@@ -799,7 +799,7 @@ QUALITY: Masterpiece, best quality, highly detailed, sharp focus, professional f
 
         if (status.status === "succeeded" && status.output?.[0]) {
           // Get current round_images array and append
-          const { data: currentMatch } = await supabase
+          const { data: currentMatch } = await freshSupabase()
             .from("ucf_matches")
             .select("round_images")
             .eq("id", matchId)
@@ -816,7 +816,7 @@ QUALITY: Masterpiece, best quality, highly detailed, sharp focus, professional f
             generated_at: new Date().toISOString(),
           });
 
-          await supabase
+          await freshSupabase()
             .from("ucf_matches")
             .update({ round_images: roundImages })
             .eq("id", matchId);

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { supabase } from "../../../../lib/supabase";
+import { freshSupabase } from "../../../../lib/supabase";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +25,7 @@ export async function POST(request: Request) {
     }
 
     // Update fighter image
-    const { data, error } = await supabase
+    const { data, error } = await freshSupabase()
       .from("ucf_fighters")
       .update({ image_url })
       .eq("id", fighter_id)

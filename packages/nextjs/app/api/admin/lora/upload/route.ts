@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabaseAdmin, supabase } from "../../../../../lib/supabase";
+import { supabaseAdmin, freshSupabase } from "../../../../../lib/supabase";
 
 export const dynamic = "force-dynamic";
 
@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const storageClient = supabaseAdmin || supabase;
+    const storageClient = supabaseAdmin || freshSupabase();
     const uploadedUrls: string[] = [];
     const errors: string[] = [];
 
@@ -102,7 +102,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const storageClient = supabaseAdmin || supabase;
+  const storageClient = supabaseAdmin || freshSupabase();
 
   const { data: files, error } = await storageClient.storage
     .from(BUCKET_NAME)

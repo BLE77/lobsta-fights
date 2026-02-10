@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "../../../../lib/supabase";
+import { supabase, freshSupabase } from "../../../../lib/supabase";
 import {
   generateBattleResultPrompt,
   UCF_NEGATIVE_PROMPT,
@@ -130,7 +130,7 @@ export async function POST(req: NextRequest) {
     const prediction = await response.json();
 
     // Store prediction ID
-    await supabase
+    await freshSupabase()
       .from("ucf_matches")
       .update({ result_image_prediction_id: prediction.id })
       .eq("id", match_id);
@@ -190,14 +190,14 @@ async function pollAndStoreImage(predictionId: string, matchId: string): Promise
           console.log(`[Image] Battle result image stored permanently for match ${matchId}`);
         } else {
           // Fallback to temp URL if storage fails
-          await supabase
+          await freshSupabase()
             .from("ucf_matches")
             .update({ result_image_url: tempImageUrl })
             .eq("id", matchId);
         }
       } catch (e) {
         // Fallback to temp URL
-        await supabase
+        await freshSupabase()
           .from("ucf_matches")
           .update({ result_image_url: tempImageUrl })
           .eq("id", matchId);

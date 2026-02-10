@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { supabase } from "../../../../lib/supabase";
+import { supabase, freshSupabase } from "../../../../lib/supabase";
 import { verifyMoltbookIdentity, isMoltbookEnabled } from "../../../../lib/moltbook";
 import { AI_FIGHTER_DESIGN_PROMPT, FIGHTER_DESIGN_HINT, REGISTRATION_EXAMPLE } from "../../../../lib/fighter-design-prompt";
 
@@ -618,7 +618,7 @@ async function generateFighterImage(fighterId: string, robotMetadata: any, fight
         } else {
           // Fallback to temp URL if storage fails
           console.error(`[Image] Failed to store permanently, using temp URL for ${fighterId}`);
-          const { error: updateError } = await supabase
+          const { error: updateError } = await freshSupabase()
             .from("ucf_fighters")
             .update({ image_url: tempImageUrl })
             .eq("id", fighterId);
@@ -729,7 +729,7 @@ async function generateVictoryPoseImage(fighterId: string, robotMetadata: any, f
 
         if (permanentUrl) {
           // Update fighter with victory pose URL
-          const { error: updateError } = await supabase
+          const { error: updateError } = await freshSupabase()
             .from("ucf_fighters")
             .update({ victory_pose_url: permanentUrl })
             .eq("id", fighterId);
@@ -742,7 +742,7 @@ async function generateVictoryPoseImage(fighterId: string, robotMetadata: any, f
         } else {
           // Fallback to temp URL if storage fails
           console.error(`[Image] Failed to store victory pose permanently, using temp URL for ${fighterId}`);
-          const { error: updateError } = await supabase
+          const { error: updateError } = await freshSupabase()
             .from("ucf_fighters")
             .update({ victory_pose_url: tempImageUrl })
             .eq("id", fighterId);

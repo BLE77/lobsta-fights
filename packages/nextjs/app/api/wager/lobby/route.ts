@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { supabase } from "../../../../lib/supabase";
+import { supabase, freshSupabase } from "../../../../lib/supabase";
 import {
   getFighterBalance,
   getFighterWallet,
@@ -146,7 +146,7 @@ export async function POST(request: Request) {
       }
 
       // Create match in database first
-      const { data: match, error: matchError } = await supabase
+      const { data: match, error: matchError } = await freshSupabase()
         .from("ucf_matches")
         .insert({
           fighter_a_id: opponent.fighter_id,
@@ -175,13 +175,13 @@ export async function POST(request: Request) {
         );
 
         // Update match with tx hash
-        await supabase
+        await freshSupabase()
           .from("ucf_matches")
           .update({ create_tx_hash: txHash })
           .eq("id", match.id);
 
         // Remove opponent from lobby
-        await supabase.from("ucf_lobby").delete().eq("fighter_id", opponent.fighter_id);
+        await freshSupabase().from("ucf_lobby").delete().eq("fighter_id", opponent.fighter_id);
 
         return NextResponse.json({
           status: "matched",
@@ -195,7 +195,7 @@ export async function POST(request: Request) {
         });
       } catch (err: any) {
         // On-chain creation failed, cancel the match
-        await supabase.from("ucf_matches").delete().eq("id", match.id);
+        await freshSupabase().from("ucf_matches").delete().eq("id", match.id);
 
         return NextResponse.json(
           {
@@ -208,7 +208,7 @@ export async function POST(request: Request) {
     }
 
     // No opponent found - join lobby
-    const { error: lobbyError } = await supabase.from("ucf_lobby").upsert({
+    const { error: lobbyError } = await freshSupabase().from("ucf_lobby").upsert({
       fighter_id: fighterId,
       points_wager: -1, // Marker for on-chain wager
     });

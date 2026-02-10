@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { supabase } from "../../../../lib/supabase";
+import { supabase, freshSupabase } from "../../../../lib/supabase";
 
 export const dynamic = "force-dynamic";
 
@@ -97,7 +97,7 @@ export async function POST(request: Request) {
       updateData.reveal_deadline = new Date(Date.now() + 60000).toISOString(); // 60 seconds to reveal (1 min)
     }
 
-    const { data: updatedMatch, error: updateError } = await supabase
+    const { data: updatedMatch, error: updateError } = await freshSupabase()
       .from("ucf_matches")
       .update(updateData)
       .eq("id", match_id)
