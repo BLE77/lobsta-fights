@@ -5,7 +5,7 @@
  * permanently in Supabase Storage.
  */
 
-import { freshSupabase, supabase } from "./supabase";
+import { freshSupabase } from "./supabase";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const BUCKET_NAME = "images";
@@ -84,7 +84,9 @@ export async function storeFighterImage(
   if (permanentUrl && !suffix) {
     // Only update image_url for profile images (no suffix)
     // Victory poses are handled separately in the registration route
-    const { error } = await supabase
+    // Use freshSupabase() to avoid stale cached client on Vercel
+    const client = freshSupabase();
+    const { error } = await client
       .from("ucf_fighters")
       .update({ image_url: permanentUrl })
       .eq("id", fighterId);
@@ -109,7 +111,9 @@ export async function storeBattleImage(
 
   if (permanentUrl) {
     // Update the match's result_image_url in the database
-    const { error } = await supabase
+    // Use freshSupabase() to avoid stale cached client on Vercel
+    const client = freshSupabase();
+    const { error } = await client
       .from("ucf_matches")
       .update({ result_image_url: permanentUrl })
       .eq("id", matchId);
