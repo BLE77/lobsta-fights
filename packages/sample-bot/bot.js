@@ -16,53 +16,72 @@ const STRIKES = ['HIGH_STRIKE', 'MID_STRIKE', 'LOW_STRIKE'];
 const GUARDS = ['GUARD_HIGH', 'GUARD_MID', 'GUARD_LOW'];
 
 /**
- * Choose a move based on game state.
- * Customize this function for your strategy!
+ * Choose a move based on game state and opponent pattern analysis.
+ * Reads turn_history to counter opponent habits.
  */
 function chooseMove(myState, opponentState, turnHistory) {
   const myHp = myState?.hp ?? 100;
   const myMeter = myState?.meter ?? 0;
   const oppHp = opponentState?.hp ?? 100;
 
-  // Finisher: SPECIAL when opponent is low and we have meter
-  // SPECIAL needs 100 meter at resolution. +20 is added before combat, so 80+ displayed = works.
-  if (myMeter >= 80 && oppHp <= 30) {
+  // 1. SPECIAL finisher — highest priority when meter is ready
+  // SPECIAL needs 100 meter at resolution. +20 added before combat, so 80+ displayed = works.
+  if (myMeter >= 80) {
     return 'SPECIAL';
   }
 
-  // Use SPECIAL when we have meter and are healthy
-  if (myMeter >= 80 && myHp > 50) {
-    return 'SPECIAL';
-  }
+  // 2. Analyze opponent's recent moves (last 5 turns)
+  const recent = (turnHistory || []).slice(-5);
+  const oppMoves = recent.map(t => t.opponent_move).filter(Boolean);
 
-  // Counter opponent patterns from turn history
-  if (turnHistory && turnHistory.length > 0) {
-    const lastTurn = turnHistory[turnHistory.length - 1];
-    const lastOppMove = lastTurn?.move_b || lastTurn?.move_a;
+  if (oppMoves.length >= 2) {
+    const count = {};
+    for (const m of oppMoves) count[m] = (count[m] || 0) + 1;
 
-    if (lastOppMove === 'DODGE') return 'CATCH';
-    if (lastOppMove === 'HIGH_STRIKE') return 'GUARD_HIGH';
-    if (lastOppMove === 'MID_STRIKE') return 'GUARD_MID';
-    if (lastOppMove === 'LOW_STRIKE') return 'GUARD_LOW';
-    if (lastOppMove?.startsWith('GUARD')) {
-      return STRIKES[Math.floor(Math.random() * STRIKES.length)];
+    // Punish dodge spammers
+    if ((count['DODGE'] || 0) >= 2) return 'CATCH';
+
+    // Counter their most-used strike
+    const strikeCount = [
+      ['HIGH_STRIKE', count['HIGH_STRIKE'] || 0],
+      ['MID_STRIKE', count['MID_STRIKE'] || 0],
+      ['LOW_STRIKE', count['LOW_STRIKE'] || 0],
+    ].sort((a, b) => b[1] - a[1]);
+
+    if (strikeCount[0][1] >= 2) {
+      const counterMap = { HIGH_STRIKE: 'GUARD_HIGH', MID_STRIKE: 'GUARD_MID', LOW_STRIKE: 'GUARD_LOW' };
+      return counterMap[strikeCount[0][0]];
+    }
+
+    // Exploit guard-heavy opponents — strike a zone they're NOT guarding
+    const guardCount = (count['GUARD_HIGH'] || 0) + (count['GUARD_MID'] || 0) + (count['GUARD_LOW'] || 0);
+    if (guardCount >= 2) {
+      if (!count['GUARD_HIGH']) return 'HIGH_STRIKE';
+      if (!count['GUARD_MID']) return 'MID_STRIKE';
+      if (!count['GUARD_LOW']) return 'LOW_STRIKE';
     }
   }
 
-  // Low HP? Be defensive
+  // 3. Counter last move if no strong pattern yet
+  if (oppMoves.length > 0) {
+    const last = oppMoves[oppMoves.length - 1];
+    if (last === 'DODGE') return 'CATCH';
+    if (last === 'HIGH_STRIKE') return 'GUARD_HIGH';
+    if (last === 'MID_STRIKE') return 'GUARD_MID';
+    if (last === 'LOW_STRIKE') return 'GUARD_LOW';
+  }
+
+  // 4. HP-based decisions
+  if (oppHp <= 25) return 'HIGH_STRIKE'; // go for the kill
   if (myHp <= 30) {
     const defensive = [...GUARDS, 'DODGE'];
     return defensive[Math.floor(Math.random() * defensive.length)];
   }
 
-  // Default: mix up strikes with occasional dodge
-  const pool = [
-    'HIGH_STRIKE', 'HIGH_STRIKE',
-    'MID_STRIKE', 'MID_STRIKE',
-    'LOW_STRIKE',
-    'DODGE',
-    'CATCH',
-  ];
+  // 5. Default: aggressive mix-up, avoid repeating last move
+  const lastMyMove = (turnHistory || []).slice(-1)[0]?.your_move;
+  const pool = STRIKES.filter(s => s !== lastMyMove);
+  if (pool.length === 0) return STRIKES[Math.floor(Math.random() * STRIKES.length)];
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
