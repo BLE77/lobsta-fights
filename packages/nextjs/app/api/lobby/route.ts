@@ -101,6 +101,56 @@ export async function POST(request: Request) {
         });
       }
 
+      // ── Duplicate guard: check if either fighter is already in an active match ──
+      const { data: existingActive } = await supabase
+        .from("ucf_matches")
+        .select("id")
+        .neq("state", "FINISHED")
+        .or(
+          `fighter_a_id.in.(${opponentId},${fighterId}),fighter_b_id.in.(${opponentId},${fighterId})`
+        )
+        .limit(1)
+        .maybeSingle();
+
+      if (existingActive) {
+        console.log(
+          `[Lobby] DUPLICATE PREVENTED: fighter ${fighterId} or opponent ${opponentId} already in active match ${existingActive.id}`
+        );
+        return NextResponse.json({
+          status: "in_match",
+          match_id: existingActive.id,
+          message: "You or your opponent is already in an active match",
+        });
+      }
+
+      // Remove opponent from lobby FIRST to prevent the cron matchmaker
+      // from also matching them while we create the match
+      const { data: deletedRows } = await supabase
+        .from("ucf_lobby")
+        .delete()
+        .eq("fighter_id", opponentId)
+        .select("fighter_id");
+
+      if (!deletedRows || deletedRows.length === 0) {
+        // Opponent was already claimed by another matchmaker run
+        console.log(`[Lobby] Race: opponent ${opponentId} already removed from lobby`);
+        // Put this fighter in lobby instead
+        await supabase
+          .from("ucf_lobby")
+          .upsert({
+            fighter_id: fighterId,
+            points_wager: pointsWager,
+            min_opponent_points: Math.max(0, fighter.points - 500),
+            max_opponent_points: fighter.points + 500,
+          }, { onConflict: "fighter_id" });
+
+        return NextResponse.json({
+          status: "waiting",
+          message: "Opponent was matched by another process. Waiting for a new opponent.",
+          points_wager: pointsWager,
+        });
+      }
+
       // Found an opponent - create match!
       const { data: match, error: matchError } = await supabase
         .from("ucf_matches")
@@ -118,9 +168,6 @@ export async function POST(request: Request) {
       if (matchError) {
         return NextResponse.json({ error: matchError.message }, { status: 500 });
       }
-
-      // Remove opponent from lobby
-      await supabase.from("ucf_lobby").delete().eq("fighter_id", opponentId);
 
       return NextResponse.json({
         status: "matched",

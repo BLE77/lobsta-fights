@@ -105,7 +105,23 @@ export async function POST(request: Request) {
           continue; // Try next potential opponent
         }
 
-        // Create match!
+        // Remove both from lobby FIRST to prevent other matchmaker runs
+        // from seeing them and creating duplicate matches
+        const { data: deletedRows } = await supabase
+          .from("ucf_lobby")
+          .delete()
+          .in("fighter_id", [fighter1.fighter_id, fighter2.fighter_id])
+          .select("fighter_id");
+
+        // If we didn't delete both fighters, another matchmaker already claimed them
+        const deletedIds = new Set((deletedRows || []).map((r: any) => r.fighter_id));
+        if (!deletedIds.has(fighter1.fighter_id) || !deletedIds.has(fighter2.fighter_id)) {
+          console.log(`[Matchmaker] Lobby race: could not claim both fighters ${fighter1.fighter_id} & ${fighter2.fighter_id}, skipping`);
+          matchedFighterIds.add(fighter1.fighter_id);
+          matchedFighterIds.add(fighter2.fighter_id);
+          break;
+        }
+
         const match = await createMatch(fighter1, fighter2);
 
         if (match) {
@@ -113,14 +129,15 @@ export async function POST(request: Request) {
           matchedFighterIds.add(fighter1.fighter_id);
           matchedFighterIds.add(fighter2.fighter_id);
 
-          // Remove both from lobby
-          await supabase
-            .from("ucf_lobby")
-            .delete()
-            .in("fighter_id", [fighter1.fighter_id, fighter2.fighter_id]);
-
           // Notify both fighters via webhook
           await notifyFighters(fighter1, fighter2, match);
+        } else {
+          // Match creation failed (likely duplicate guard caught it).
+          // Fighters are already removed from lobby, which is fine —
+          // they can re-join if needed.
+          console.log(`[Matchmaker] Match creation failed for ${fighter1.fighter_id} vs ${fighter2.fighter_id}, fighters removed from lobby`);
+          matchedFighterIds.add(fighter1.fighter_id);
+          matchedFighterIds.add(fighter2.fighter_id);
         }
 
         break; // Move to next fighter1
@@ -177,10 +194,37 @@ function isCompatible(f1: any, f2: any): boolean {
 }
 
 /**
- * Create a match between two fighters
+ * Create a match between two fighters.
+ * Includes a database-level guard: refuses to create if either fighter
+ * is already in an active (non-FINISHED) match.
  */
 async function createMatch(f1: any, f2: any) {
   const supabase = freshSupabase();
+
+  // ── Duplicate guard: check if either fighter is already in an active match ──
+  const { data: existingMatch, error: checkError } = await supabase
+    .from("ucf_matches")
+    .select("id")
+    .neq("state", "FINISHED")
+    .or(
+      `fighter_a_id.in.(${f1.fighter_id},${f2.fighter_id}),fighter_b_id.in.(${f1.fighter_id},${f2.fighter_id})`
+    )
+    .limit(1)
+    .maybeSingle();
+
+  if (checkError) {
+    console.error("[Matchmaker] Error checking active matches:", checkError);
+    return null;
+  }
+
+  if (existingMatch) {
+    console.log(
+      `[Matchmaker] DUPLICATE PREVENTED: fighter ${f1.fighter_id} or ${f2.fighter_id} already in active match ${existingMatch.id}`
+    );
+    return null;
+  }
+
+  // ── Create the match ──
   const initialAgentState = {
     hp: 100,
     meter: 0,

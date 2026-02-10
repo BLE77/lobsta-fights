@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { supabase, freshSupabase } from "../../../../lib/supabase";
+import { freshSupabase } from "../../../../lib/supabase";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +14,7 @@ export const dynamic = "force-dynamic";
  * - Returns match_id
  */
 export async function POST(request: Request) {
+  const supabase = freshSupabase();
   try {
     const body = await request.json();
     const { fighter_a_id, fighter_b_id, points_wager } = body;
@@ -101,7 +102,7 @@ export async function POST(request: Request) {
       );
     }
 
-    // Check if either fighter is already in an active match
+    // ── Duplicate guard: check if either fighter is already in an active match ──
     const { data: activeMatches } = await supabase
       .from("ucf_matches")
       .select("id, fighter_a_id, fighter_b_id")
@@ -126,7 +127,7 @@ export async function POST(request: Request) {
       rounds_won: 0,
     };
 
-    const { data: match, error: createError } = await freshSupabase()
+    const { data: match, error: createError } = await supabase
       .from("ucf_matches")
       .insert({
         fighter_a_id,
@@ -193,7 +194,7 @@ export async function GET(request: Request) {
     );
   }
 
-  const { data: match, error } = await supabase
+  const { data: match, error } = await freshSupabase()
     .from("ucf_matches")
     .select(`
       *,
