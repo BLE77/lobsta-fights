@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getQueueManager } from "~~/lib/queue-manager";
 import { getOrchestrator } from "~~/lib/rumble-orchestrator";
+import { saveQueueFighter, removeQueueFighter } from "~~/lib/rumble-persistence";
 
 export const dynamic = "force-dynamic";
 
@@ -71,6 +72,9 @@ export async function POST(request: Request) {
       }
     }
 
+    // Persist to Supabase (fire-and-forget for state recovery)
+    saveQueueFighter(fighterId, "waiting", autoRequeue);
+
     const position = qm.getQueuePosition(fighterId);
     const estimatedWait = qm.getEstimatedWait(fighterId);
 
@@ -117,6 +121,9 @@ export async function DELETE(request: Request) {
         { status: 404 },
       );
     }
+
+    // Remove from Supabase persistence
+    removeQueueFighter(fighterId);
 
     return NextResponse.json({
       status: "removed",

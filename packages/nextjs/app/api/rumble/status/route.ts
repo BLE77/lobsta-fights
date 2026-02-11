@@ -1,60 +1,85 @@
 import { NextResponse } from "next/server";
-import { getOrchestrator } from "~~/lib/rumble-orchestrator";
-import { getQueueManager } from "~~/lib/queue-manager";
+import {
+  loadActiveRumbles,
+  loadQueueState,
+  getIchorShowerState,
+  getStats,
+  loadBetsForRumble,
+} from "~~/lib/rumble-persistence";
 
 export const dynamic = "force-dynamic";
 
 /**
  * GET /api/rumble/status
  *
- * Returns current state of all 3 Rumble slots:
- * - Which slot is betting/combat/payout/idle
- * - Fighter lineups for each active Rumble
- * - Current betting pools and odds
- * - Queue length and estimated wait
+ * Returns current state of all 3 Rumble slots + queue + stats.
+ * Reads directly from Supabase (source of truth) rather than in-memory
+ * orchestrator state, since serverless routes don't share memory.
  */
 export async function GET() {
   try {
-    const orchestrator = getOrchestrator();
-    const qm = getQueueManager();
+    // Load active rumbles from Supabase
+    const activeRumbles = await loadActiveRumbles();
+    const queueEntries = await loadQueueState();
+    const showerState = await getIchorShowerState();
+    const stats = await getStats();
 
-    const slots = orchestrator.getStatus();
+    // Build 3-slot view (slot 0, 1, 2)
+    const slotData = [];
+    for (let i = 0; i < 3; i++) {
+      const rumble = activeRumbles.find((r) => r.slot_index === i);
+      if (rumble) {
+        const fighters = rumble.fighters as Array<{ id: string; name: string }>;
+        // Load bets for odds calculation
+        const bets = await loadBetsForRumble(rumble.id);
+        const totalPool = bets.reduce((sum, b) => sum + Number(b.net_amount), 0);
 
-    const slotData = slots.map((slot) => {
-      const odds = orchestrator.getOdds(slot.slotIndex);
-      const combatState = orchestrator.getCombatState(slot.slotIndex);
+        const odds = fighters.map((f) => {
+          const fighterPool = bets
+            .filter((b) => b.fighter_id === f.id)
+            .reduce((sum, b) => sum + Number(b.net_amount), 0);
+          return {
+            fighter_id: f.id,
+            fighter_name: f.name,
+            pool: fighterPool,
+            odds: totalPool > 0 && fighterPool > 0 ? totalPool / fighterPool : 0,
+            percentage: totalPool > 0 ? (fighterPool / totalPool) * 100 : 0,
+          };
+        });
 
-      return {
-        slot_index: slot.slotIndex,
-        rumble_id: slot.rumbleId,
-        state: slot.state,
-        fighters: slot.fighters,
-        fighter_count: slot.fighters.length,
-        turn_count: slot.turnCount,
-        remaining_fighters: slot.remainingFighters,
-        betting_deadline: slot.bettingDeadline?.toISOString() ?? null,
-        odds,
-        combat: combatState
-          ? {
-              fighters: combatState.fighters.map((f) => ({
-                id: f.id,
-                hp: f.hp,
-                meter: f.meter,
-                total_damage_dealt: f.totalDamageDealt,
-                total_damage_taken: f.totalDamageTaken,
-                eliminated_on_turn: f.eliminatedOnTurn,
-              })),
-              turn_count: combatState.turns.length,
-            }
-          : null,
-      };
-    });
+        slotData.push({
+          slot_index: i,
+          rumble_id: rumble.id,
+          state: rumble.status,
+          fighters: fighters.map((f) => f.id),
+          fighter_count: fighters.length,
+          turn_count: 0,
+          remaining_fighters: fighters.length,
+          betting_deadline: null,
+          odds,
+          combat: null,
+        });
+      } else {
+        slotData.push({
+          slot_index: i,
+          rumble_id: null,
+          state: "idle",
+          fighters: [],
+          fighter_count: 0,
+          turn_count: 0,
+          remaining_fighters: 0,
+          betting_deadline: null,
+          odds: [],
+          combat: null,
+        });
+      }
+    }
 
     return NextResponse.json({
       slots: slotData,
-      queue_length: qm.getQueueLength(),
-      ichor_shower_pool: orchestrator.getIchorShowerPool(),
-      total_rumbles_completed: orchestrator.getTotalRumblesCompleted(),
+      queue_length: queueEntries.length,
+      ichor_shower_pool: showerState?.pool_amount ?? 0,
+      total_rumbles_completed: stats?.total_rumbles ?? 0,
       timestamp: new Date().toISOString(),
     });
   } catch (error: any) {

@@ -151,12 +151,29 @@ export function setIchorMint(mint: PublicKey): void {
   _ichorMint = mint;
 }
 
+/**
+ * Minimal wallet adapter that satisfies AnchorProvider's Wallet interface.
+ * Avoids relying on anchor.Wallet which has webpack resolution issues.
+ */
+class NodeWallet implements anchor.Wallet {
+  constructor(readonly payer: Keypair) {}
+  get publicKey() { return this.payer.publicKey; }
+  async signTransaction<T extends anchor.web3.Transaction | anchor.web3.VersionedTransaction>(tx: T): Promise<T> {
+    if ('sign' in tx) (tx as anchor.web3.Transaction).partialSign(this.payer);
+    return tx;
+  }
+  async signAllTransactions<T extends anchor.web3.Transaction | anchor.web3.VersionedTransaction>(txs: T[]): Promise<T[]> {
+    for (const tx of txs) { await this.signTransaction(tx); }
+    return txs;
+  }
+}
+
 function getProvider(
   connection?: Connection,
   wallet?: anchor.Wallet
 ): anchor.AnchorProvider {
   const conn = connection ?? getConnection();
-  const w = wallet ?? anchor.Wallet.local();
+  const w = wallet ?? new NodeWallet(Keypair.generate());
   return new anchor.AnchorProvider(conn, w, {
     commitment: "confirmed",
     preflightCommitment: "confirmed",
@@ -231,7 +248,7 @@ function getAdminKeypair(): Keypair | null {
 function getAdminProvider(connection?: Connection): anchor.AnchorProvider | null {
   const keypair = getAdminKeypair();
   if (!keypair) return null;
-  const wallet = new anchor.Wallet(keypair);
+  const wallet = new NodeWallet(keypair);
   return getProvider(connection, wallet);
 }
 
