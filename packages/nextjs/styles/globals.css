@@ -74,4 +74,30 @@ body {
       0 0 80px rgba(217, 119, 6, 0.5),
       0 2px 4px rgba(0, 0, 0, 0.8);
   }
+
+  /* Elimination flash animation for Rumble combat feed */
+  .animate-elimination {
+    animation: elimination-flash 0.6s ease-out;
+  }
+}
+
+@keyframes elimination-flash {
+  0% {
+    background-color: rgba(239, 68, 68, 0.4);
+    transform: translateX(-4px);
+  }
+  25% {
+    transform: translateX(4px);
+  }
+  50% {
+    background-color: rgba(239, 68, 68, 0.2);
+    transform: translateX(-2px);
+  }
+  75% {
+    transform: translateX(2px);
+  }
+  100% {
+    background-color: rgba(127, 29, 29, 0.15);
+    transform: translateX(0);
+  }
 }

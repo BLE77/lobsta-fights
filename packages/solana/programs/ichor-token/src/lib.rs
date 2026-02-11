@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Burn, Mint, MintTo, Token, TokenAccount, Transfer};
 
-declare_id!("11111111111111111111111111111111");
+declare_id!("8CHYSuh1Y3F83PyK95E3F1Uya6pgPk4m3vM3MF3mP5hg");
 
 /// ICHOR token decimals
 const ICHOR_DECIMALS: u8 = 9;
@@ -164,32 +164,61 @@ pub mod ichor_token {
         if triggered {
             let pool_amount = arena.ichor_shower_pool;
 
-            // Transfer tokens from shower vault to recipient.
+            // 90% to recipient, 10% burned
+            let recipient_amount = pool_amount
+                .checked_mul(90)
+                .ok_or(IchorError::MathOverflow)?
+                .checked_div(100)
+                .ok_or(IchorError::MathOverflow)?;
+            let burn_amount = pool_amount
+                .checked_sub(recipient_amount)
+                .ok_or(IchorError::MathOverflow)?;
+
             // The shower vault's authority is the arena_config PDA.
             let bump = &[arena.bump];
             let seeds: &[&[u8]] = &[ARENA_SEED, bump];
             let signer_seeds = &[seeds];
 
-            token::transfer(
-                CpiContext::new_with_signer(
-                    ctx.accounts.token_program.to_account_info(),
-                    Transfer {
-                        from: ctx.accounts.shower_vault.to_account_info(),
-                        to: ctx.accounts.recipient_token_account.to_account_info(),
-                        authority: ctx.accounts.arena_config.to_account_info(),
-                    },
-                    signer_seeds,
-                ),
-                pool_amount,
-            )?;
+            // Transfer 90% to recipient
+            if recipient_amount > 0 {
+                token::transfer(
+                    CpiContext::new_with_signer(
+                        ctx.accounts.token_program.to_account_info(),
+                        Transfer {
+                            from: ctx.accounts.shower_vault.to_account_info(),
+                            to: ctx.accounts.recipient_token_account.to_account_info(),
+                            authority: ctx.accounts.arena_config.to_account_info(),
+                        },
+                        signer_seeds,
+                    ),
+                    recipient_amount,
+                )?;
+            }
+
+            // Burn 10%
+            if burn_amount > 0 {
+                token::burn(
+                    CpiContext::new_with_signer(
+                        ctx.accounts.token_program.to_account_info(),
+                        Burn {
+                            mint: ctx.accounts.ichor_mint.to_account_info(),
+                            from: ctx.accounts.shower_vault.to_account_info(),
+                            authority: ctx.accounts.arena_config.to_account_info(),
+                        },
+                        signer_seeds,
+                    ),
+                    burn_amount,
+                )?;
+            }
 
             // Reset pool tracking
             arena.ichor_shower_pool = 0;
 
             msg!(
-                "ICHOR SHOWER TRIGGERED! Slot {} -> {} ICHOR distributed!",
+                "ICHOR SHOWER TRIGGERED! Slot {} -> {} ICHOR to recipient, {} ICHOR burned!",
                 slot,
-                pool_amount
+                recipient_amount,
+                burn_amount
             );
 
             emit!(IchorShowerEvent {
@@ -245,8 +274,10 @@ fn calculate_reward(rumbles_completed: u64) -> u64 {
         ONE_ICHOR / 2 // 0.5 ICHOR
     } else if rumbles_completed < HALVING_3 {
         ONE_ICHOR / 4 // 0.25 ICHOR
-    } else {
+    } else if rumbles_completed < 21_000_000 {
         ONE_ICHOR / 8 // 0.125 ICHOR
+    } else {
+        ONE_ICHOR / 16 // 0.0625 ICHOR
     }
 }
 

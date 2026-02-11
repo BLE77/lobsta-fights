@@ -1,0 +1,234 @@
+"use client";
+
+import BettingPanel from "./BettingPanel";
+import CombatFeed from "./CombatFeed";
+import FighterHP from "./FighterHP";
+import PayoutDisplay from "./PayoutDisplay";
+
+// ---------------------------------------------------------------------------
+// Types matching the API response shape (from api/rumble/status)
+// ---------------------------------------------------------------------------
+
+export interface SlotFighter {
+  id: string;
+  name: string;
+  hp: number;
+  maxHp: number;
+  imageUrl: string | null;
+  meter: number;
+  totalDamageDealt: number;
+  totalDamageTaken: number;
+  eliminatedOnTurn: number | null;
+  placement: number;
+}
+
+export interface SlotOdds {
+  fighterId: string;
+  fighterName: string;
+  imageUrl: string | null;
+  hp: number;
+  solDeployed: number;
+  betCount: number;
+  impliedProbability: number;
+  potentialReturn: number;
+}
+
+export interface SlotTurn {
+  turnNumber: number;
+  pairings: Array<{
+    fighterA: string;
+    fighterB: string;
+    fighterAName: string;
+    fighterBName: string;
+    moveA: string;
+    moveB: string;
+    damageToA: number;
+    damageToB: number;
+  }>;
+  eliminations: string[];
+  bye?: string;
+}
+
+export interface SlotPayout {
+  winnerBettorsPayout: number;
+  placeBettorsPayout: number;
+  showBettorsPayout: number;
+  treasuryVault: number;
+  totalPool: number;
+  ichorMined: number;
+  ichorShowerTriggered: boolean;
+  ichorShowerAmount?: number;
+}
+
+export interface SlotData {
+  slotIndex: number;
+  rumbleId: string;
+  state: "idle" | "betting" | "combat" | "payout";
+  fighters: SlotFighter[];
+  odds: SlotOdds[];
+  totalPool: number;
+  bettingDeadline: string | null;
+  currentTurn: number;
+  turns: SlotTurn[];
+  payout: SlotPayout | null;
+  fighterNames: Record<string, string>;
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
+interface RumbleSlotProps {
+  slot: SlotData;
+  onPlaceBet?: (slotIndex: number, fighterId: string, amount: number) => void;
+}
+
+function getStateLabel(state: SlotData["state"]): {
+  text: string;
+  color: string;
+  bgColor: string;
+  borderColor: string;
+} {
+  switch (state) {
+    case "idle":
+      return {
+        text: "IDLE",
+        color: "text-stone-500",
+        bgColor: "bg-stone-900/50",
+        borderColor: "border-stone-800",
+      };
+    case "betting":
+      return {
+        text: "BETTING",
+        color: "text-amber-400",
+        bgColor: "bg-amber-900/10",
+        borderColor: "border-amber-700/40",
+      };
+    case "combat":
+      return {
+        text: "COMBAT",
+        color: "text-red-400",
+        bgColor: "bg-red-900/10",
+        borderColor: "border-red-700/40",
+      };
+    case "payout":
+      return {
+        text: "PAYOUT",
+        color: "text-green-400",
+        bgColor: "bg-green-900/10",
+        borderColor: "border-green-700/40",
+      };
+  }
+}
+
+export default function RumbleSlot({ slot, onPlaceBet }: RumbleSlotProps) {
+  const label = getStateLabel(slot.state);
+
+  return (
+    <div
+      className={`${label.bgColor} border ${label.borderColor} rounded-sm backdrop-blur-sm overflow-hidden transition-all`}
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-2 border-b border-stone-800/50 bg-stone-950/50">
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-xs text-stone-600">
+            SLOT {slot.slotIndex + 1}
+          </span>
+          <span className={`font-mono text-xs font-bold ${label.color}`}>
+            [{label.text}]
+          </span>
+        </div>
+        <span className="font-mono text-[10px] text-stone-600 truncate max-w-[120px]">
+          {slot.rumbleId}
+        </span>
+      </div>
+
+      {/* Content */}
+      <div className="p-4">
+        {/* IDLE state */}
+        {slot.state === "idle" && (
+          <div className="flex items-center justify-center h-32">
+            <div className="text-center">
+              <p className="font-mono text-sm text-stone-600">
+                Waiting for fighters...
+              </p>
+              <p className="font-mono text-[10px] text-stone-700 mt-1">
+                Rumble starts when queue fills
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* BETTING state */}
+        {slot.state === "betting" && (
+          <BettingPanel
+            slotIndex={slot.slotIndex}
+            fighters={slot.odds}
+            totalPool={slot.totalPool}
+            deadline={slot.bettingDeadline}
+            onPlaceBet={onPlaceBet}
+          />
+        )}
+
+        {/* COMBAT state */}
+        {slot.state === "combat" && (
+          <div className="space-y-3">
+            {/* Alive fighters HP bars */}
+            <div className="space-y-0.5">
+              <p className="font-mono text-[10px] text-stone-500 uppercase mb-1">
+                Fighters ({slot.fighters.filter((f) => f.hp > 0).length} alive)
+              </p>
+              <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
+                {slot.fighters
+                  .sort((a, b) => {
+                    // Alive first, then by HP descending
+                    if (a.hp > 0 && b.hp <= 0) return -1;
+                    if (a.hp <= 0 && b.hp > 0) return 1;
+                    return b.hp - a.hp;
+                  })
+                  .map((f) => (
+                    <FighterHP
+                      key={f.id}
+                      name={f.name}
+                      hp={f.hp}
+                      maxHp={f.maxHp}
+                      imageUrl={f.imageUrl}
+                      isEliminated={f.hp <= 0}
+                      damageDealt={f.totalDamageDealt}
+                    />
+                  ))}
+              </div>
+            </div>
+
+            {/* Turn feed */}
+            <div className="border-t border-stone-800 pt-2">
+              <CombatFeed
+                turns={slot.turns}
+                currentTurn={slot.currentTurn}
+                fighterNames={slot.fighterNames}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* PAYOUT state */}
+        {slot.state === "payout" && slot.payout && (
+          <PayoutDisplay
+            placements={slot.fighters
+              .filter((f) => f.placement > 0)
+              .sort((a, b) => a.placement - b.placement)
+              .map((f) => ({
+                fighterId: f.id,
+                fighterName: f.name,
+                imageUrl: f.imageUrl,
+                placement: f.placement,
+                hp: f.hp,
+                damageDealt: f.totalDamageDealt,
+              }))}
+            payout={slot.payout}
+          />
+        )}
+      </div>
+    </div>
+  );
+}

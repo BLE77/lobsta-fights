@@ -1,11 +1,14 @@
+[toolchain]
+anchor_version = "0.32.1"
+
 [features]
-seeds = false
+resolution = true
 skip-lint = false
 
 [programs.devnet]
-ichor_token = "11111111111111111111111111111111"
-fighter_registry = "11111111111111111111111111111111"
-rumble_engine = "11111111111111111111111111111111"
+fighter_registry = "2hA6Jvj1yjP2Uj3qrJcsBeYA2R9xPM95mDKw1ncKVExa"
+ichor_token = "8CHYSuh1Y3F83PyK95E3F1Uya6pgPk4m3vM3MF3mP5hg"
+rumble_engine = "2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC"
 
 [registry]
 url = "https://api.apr.dev"

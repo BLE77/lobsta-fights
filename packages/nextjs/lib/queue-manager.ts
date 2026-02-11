@@ -1,6 +1,8 @@
 // Queue Manager - Manages the fighter queue and 3 staggered Rumble slots
 // See ICHOR_WHITEPAPER.md section 8 for design details.
 
+import type { RumbleResult } from "./rumble-engine";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -16,12 +18,6 @@ export interface RumbleSlot {
   bettingDeadline: Date | null;
   combatStartedAt: Date | null;
   rumbleResult: RumbleResult | null;
-}
-
-export interface RumbleResult {
-  placements: string[]; // fighter IDs ordered 1st, 2nd, 3rd, ...
-  eliminationOrder: string[]; // fighter IDs in order of elimination (first out first)
-  turnCount: number;
 }
 
 export interface QueueEntry {
@@ -301,10 +297,8 @@ export class RumbleQueueManager implements QueueManager {
 
   /** If queue has enough fighters and slot is idle, start betting. */
   private tryStartBetting(slot: RumbleSlot): void {
-    // We need at least 2 fighters to run a rumble, but prefer the full 12.
-    // To avoid stalling, allow starting with fewer than 12 if that's all
-    // we have -- but require a minimum of 2.
-    if (this.queue.length < 2) return;
+    // Require a minimum of 8 fighters to match rumble-engine's MIN_FIGHTERS.
+    if (this.queue.length < 8) return;
     this.startNextRumble(slot.slotIndex);
   }
 

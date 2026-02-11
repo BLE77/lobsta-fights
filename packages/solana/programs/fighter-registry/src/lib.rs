@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Burn, Mint, Token, TokenAccount};
 
-declare_id!("11111111111111111111111111111111");
+declare_id!("2hA6Jvj1yjP2Uj3qrJcsBeYA2R9xPM95mDKw1ncKVExa");
 
 /// 1 ICHOR in smallest unit (9 decimals)
 const ONE_ICHOR: u64 = 1_000_000_000;
@@ -44,6 +44,12 @@ pub mod fighter_registry {
         let wallet_state = &mut ctx.accounts.wallet_state;
         let fighter = &mut ctx.accounts.fighter;
         let config = &mut ctx.accounts.registry_config;
+
+        // Initialize wallet_state if this is the first fighter for this wallet
+        if wallet_state.fighter_count == 0 && wallet_state.authority == Pubkey::default() {
+            wallet_state.authority = ctx.accounts.authority.key();
+            wallet_state.bump = ctx.bumps.wallet_state;
+        }
 
         let fighter_index = wallet_state.fighter_count;
         require!(

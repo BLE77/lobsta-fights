@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 
-declare_id!("11111111111111111111111111111111");
+declare_id!("2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC");
 
 /// Maximum fighters per rumble
 const MAX_FIGHTERS: usize = 16;
@@ -197,14 +197,23 @@ pub mod rumble_engine {
             .checked_add(sponsorship_fee)
             .ok_or(RumbleError::MathOverflow)?;
 
-        // Initialize bettor account
+        // Initialize or accumulate bettor account
         let bettor_account = &mut ctx.accounts.bettor_account;
-        bettor_account.authority = ctx.accounts.bettor.key();
-        bettor_account.rumble_id = rumble_id;
-        bettor_account.fighter_index = fighter_index;
-        bettor_account.sol_deployed = net_bet;
-        bettor_account.claimed = false;
-        bettor_account.bump = ctx.bumps.bettor_account;
+        if bettor_account.authority == Pubkey::default() {
+            // First bet: initialize the account
+            bettor_account.authority = ctx.accounts.bettor.key();
+            bettor_account.rumble_id = rumble_id;
+            bettor_account.fighter_index = fighter_index;
+            bettor_account.sol_deployed = net_bet;
+            bettor_account.claimed = false;
+            bettor_account.bump = ctx.bumps.bettor_account;
+        } else {
+            // Additional bet on same fighter: accumulate
+            bettor_account.sol_deployed = bettor_account
+                .sol_deployed
+                .checked_add(net_bet)
+                .ok_or(RumbleError::MathOverflow)?;
+        }
 
         msg!(
             "Bet placed: {} lamports on fighter #{} in rumble {}. Net: {}, fee: {}, sponsor: {}",
@@ -459,6 +468,21 @@ pub mod rumble_engine {
     /// Fighter owner claims accumulated sponsorship revenue.
     /// Drains the sponsorship PDA balance to the fighter owner.
     pub fn claim_sponsorship_revenue(ctx: Context<ClaimSponsorship>) -> Result<()> {
+        // Verify that fighter_owner is the authority of the fighter account.
+        // The authority pubkey is stored at bytes 8..40 (after Anchor's 8-byte discriminator).
+        {
+            let fighter_data = ctx.accounts.fighter.try_borrow_data()?;
+            require!(fighter_data.len() >= 40, RumbleError::InvalidFighterAccount);
+            let authority_bytes: [u8; 32] = fighter_data[8..40]
+                .try_into()
+                .map_err(|_| error!(RumbleError::InvalidFighterAccount))?;
+            let fighter_authority = Pubkey::new_from_array(authority_bytes);
+            require!(
+                fighter_authority == ctx.accounts.fighter_owner.key(),
+                RumbleError::Unauthorized
+            );
+        }
+
         let sponsorship_info = ctx.accounts.sponsorship_account.to_account_info();
         let owner_info = ctx.accounts.fighter_owner.to_account_info();
 
@@ -511,6 +535,44 @@ pub mod rumble_engine {
             .ok_or(RumbleError::MathOverflow)?;
 
         msg!("Rumble {} completed", rumble.id);
+        Ok(())
+    }
+
+    /// Sweep remaining SOL from a completed Rumble's vault to the treasury.
+    /// Called by admin after all claims are processed.
+    pub fn sweep_treasury(ctx: Context<SweepTreasury>) -> Result<()> {
+        let rumble = &ctx.accounts.rumble;
+
+        require!(
+            rumble.state == RumbleState::Complete,
+            RumbleError::InvalidStateTransition
+        );
+
+        let vault_info = ctx.accounts.vault.to_account_info();
+        let treasury_info = ctx.accounts.treasury.to_account_info();
+
+        // Keep rent-exempt minimum in the vault
+        let rent = Rent::get()?;
+        let min_balance = rent.minimum_balance(0);
+        let available = vault_info
+            .lamports()
+            .checked_sub(min_balance)
+            .ok_or(RumbleError::InsufficientVaultFunds)?;
+
+        require!(available > 0, RumbleError::NothingToClaim);
+
+        **vault_info.try_borrow_mut_lamports()? = min_balance;
+        **treasury_info.try_borrow_mut_lamports()? = treasury_info
+            .lamports()
+            .checked_add(available)
+            .ok_or(RumbleError::MathOverflow)?;
+
+        msg!(
+            "Treasury sweep: {} lamports from rumble {} vault to treasury",
+            available,
+            rumble.id
+        );
+
         Ok(())
     }
 }
@@ -611,10 +673,10 @@ pub struct PlaceBet<'info> {
     pub sponsorship_account: SystemAccount<'info>,
 
     #[account(
-        init,
+        init_if_needed,
         payer = bettor,
         space = 8 + BettorAccount::INIT_SPACE,
-        seeds = [BETTOR_SEED, rumble_id.to_le_bytes().as_ref(), bettor.key().as_ref()],
+        seeds = [BETTOR_SEED, rumble_id.to_le_bytes().as_ref(), bettor.key().as_ref(), &[fighter_index]],
         bump
     )]
     pub bettor_account: Account<'info, BettorAccount>,
@@ -666,7 +728,7 @@ pub struct ClaimPayout<'info> {
 
     #[account(
         mut,
-        seeds = [BETTOR_SEED, rumble.id.to_le_bytes().as_ref(), bettor.key().as_ref()],
+        seeds = [BETTOR_SEED, rumble.id.to_le_bytes().as_ref(), bettor.key().as_ref(), &[bettor_account.fighter_index]],
         bump = bettor_account.bump,
         constraint = bettor_account.authority == bettor.key() @ RumbleError::Unauthorized,
         constraint = bettor_account.rumble_id == rumble.id @ RumbleError::InvalidRumble,
@@ -679,7 +741,8 @@ pub struct ClaimSponsorship<'info> {
     #[account(mut)]
     pub fighter_owner: Signer<'info>,
 
-    /// CHECK: The fighter pubkey, used to derive the sponsorship PDA.
+    /// CHECK: The fighter account. Authority is verified in the instruction handler
+    /// by reading bytes 8..40 (the authority pubkey after Anchor's 8-byte discriminator).
     pub fighter: AccountInfo<'info>,
 
     /// CHECK: Sponsorship PDA holding accumulated SOL.
@@ -689,6 +752,42 @@ pub struct ClaimSponsorship<'info> {
         bump
     )]
     pub sponsorship_account: SystemAccount<'info>,
+}
+
+#[derive(Accounts)]
+pub struct SweepTreasury<'info> {
+    #[account(
+        mut,
+        constraint = admin.key() == config.admin @ RumbleError::Unauthorized,
+    )]
+    pub admin: Signer<'info>,
+
+    #[account(
+        seeds = [CONFIG_SEED],
+        bump = config.bump,
+    )]
+    pub config: Account<'info, RumbleConfig>,
+
+    #[account(
+        seeds = [RUMBLE_SEED, rumble.id.to_le_bytes().as_ref()],
+        bump = rumble.bump,
+    )]
+    pub rumble: Account<'info, Rumble>,
+
+    /// CHECK: Vault PDA holding remaining SOL for this rumble.
+    #[account(
+        mut,
+        seeds = [VAULT_SEED, rumble.id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub vault: SystemAccount<'info>,
+
+    /// CHECK: Treasury address, must match config.
+    #[account(
+        mut,
+        constraint = treasury.key() == config.treasury @ RumbleError::InvalidTreasury,
+    )]
+    pub treasury: AccountInfo<'info>,
 }
 
 // ---------------------------------------------------------------------------
@@ -850,4 +949,7 @@ pub enum RumbleError {
 
     #[msg("Betting deadline must be in the future")]
     DeadlineInPast,
+
+    #[msg("Invalid fighter account data")]
+    InvalidFighterAccount,
 }

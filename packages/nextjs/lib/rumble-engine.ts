@@ -284,9 +284,14 @@ export function runRumble(
       currentPairingsSet.add(pairingKey(idA, idB));
     }
 
-    // Grant meter to all alive fighters (after combat resolution)
+    // Grant meter to fighters who participated in a pairing this turn (not bye fighters)
+    const pairedThisTurn = new Set<string>();
+    for (const p of turnPairings) {
+      pairedThisTurn.add(p.fighterA);
+      pairedThisTurn.add(p.fighterB);
+    }
     for (const f of fighters.values()) {
-      if (f.hp > 0) {
+      if (f.hp > 0 && pairedThisTurn.has(f.id)) {
         f.meter = Math.min(f.meter + METER_PER_TURN, SPECIAL_METER_COST);
       }
     }
