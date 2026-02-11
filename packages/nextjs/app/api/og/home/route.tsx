@@ -43,11 +43,39 @@ export async function GET() {
           backgroundColor: "#0c0a09",
           color: "#e7e5e4",
           fontFamily: "monospace",
-          padding: "48px",
+          padding: "40px",
+          position: "relative",
+          overflow: "hidden",
         }}
       >
+        {/* Background Overlay */}
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundImage: "linear-gradient(to bottom, rgba(12, 10, 9, 0.7), rgba(12, 10, 9, 0.9))",
+            zIndex: 1,
+          }}
+        />
+
+        {/* Hero Image as side element */}
+        <img
+          src="https://clawfights.xyz/hero-robots.png"
+          style={{
+            position: "absolute",
+            right: "-100px",
+            bottom: "-50px",
+            width: "800px",
+            opacity: 0.4,
+            zIndex: 0,
+          }}
+        />
+
         {/* Top: Title */}
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: "32px" }}>
+        <div style={{ display: "flex", flexDirection: "column", position: "relative", zIndex: 10, marginBottom: "32px" }}>
           <div style={{ fontSize: "64px", fontWeight: "bold", color: "#fbbf24", letterSpacing: "4px" }}>
             UNDERGROUND CLAW FIGHTS
           </div>
@@ -57,12 +85,12 @@ export async function GET() {
         </div>
 
         {/* Middle: Stats + Top Fighters */}
-        <div style={{ display: "flex", flex: 1, gap: "40px" }}>
+        <div style={{ display: "flex", flex: 1, gap: "40px", position: "relative", zIndex: 10 }}>
           {/* Left: Live Stats */}
           <div style={{ display: "flex", flexDirection: "column", gap: "16px", width: "320px" }}>
             <div style={{
               display: "flex", flexDirection: "column", padding: "20px",
-              backgroundColor: "#1c1917", border: "2px solid #d97706",
+              backgroundColor: "rgba(28, 25, 23, 0.8)", border: "2px solid #d97706",
             }}>
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <div style={{ width: "12px", height: "12px", borderRadius: "50%", backgroundColor: "#ef4444" }}></div>
@@ -77,14 +105,14 @@ export async function GET() {
             <div style={{ display: "flex", gap: "16px" }}>
               <div style={{
                 display: "flex", flexDirection: "column", flex: 1, padding: "16px",
-                backgroundColor: "#1c1917", border: "1px solid #44403c",
+                backgroundColor: "rgba(28, 25, 23, 0.8)", border: "1px solid #44403c",
               }}>
                 <div style={{ fontSize: "32px", fontWeight: "bold", color: "#fbbf24" }}>{totalFighters}</div>
                 <div style={{ fontSize: "12px", color: "#57534e" }}>Fighters</div>
               </div>
               <div style={{
                 display: "flex", flexDirection: "column", flex: 1, padding: "16px",
-                backgroundColor: "#1c1917", border: "1px solid #44403c",
+                backgroundColor: "rgba(28, 25, 23, 0.8)", border: "1px solid #44403c",
               }}>
                 <div style={{ fontSize: "32px", fontWeight: "bold", color: "#fbbf24" }}>{inLobby}</div>
                 <div style={{ fontSize: "12px", color: "#57534e" }}>In Queue</div>
@@ -95,7 +123,7 @@ export async function GET() {
           {/* Right: Top 3 Fighters */}
           <div style={{ display: "flex", flexDirection: "column", flex: 1, gap: "12px" }}>
             <div style={{ fontSize: "14px", color: "#78716c", textTransform: "uppercase", letterSpacing: "2px" }}>
-              Top Fighters
+              Top Rankings
             </div>
             {(topFighters || []).map((f, i) => (
               <div
@@ -103,7 +131,7 @@ export async function GET() {
                 style={{
                   display: "flex", alignItems: "center", gap: "16px",
                   padding: "12px 16px",
-                  backgroundColor: i === 0 ? "#451a03" : "#1c1917",
+                  backgroundColor: i === 0 ? "rgba(69, 26, 3, 0.8)" : "rgba(28, 25, 23, 0.8)",
                   border: i === 0 ? "2px solid #d97706" : "1px solid #44403c",
                 }}
               >
@@ -127,16 +155,16 @@ export async function GET() {
                 <div style={{ fontSize: "22px", fontWeight: "bold", color: "#d97706" }}>
                   {f.points?.toLocaleString()}
                 </div>
-                <div style={{ fontSize: "12px", color: "#57534e" }}>pts</div>
+                <div style={{ fontSize: "12px", color: "#57534e", marginLeft: "4px" }}>pts</div>
               </div>
             ))}
           </div>
         </div>
 
         {/* Bottom: URL */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "24px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "24px", position: "relative", zIndex: 10 }}>
           <div style={{ fontSize: "18px", color: "#57534e" }}>clawfights.xyz</div>
-          <div style={{ fontSize: "14px", color: "#78716c", padding: "4px 12px", backgroundColor: "#1c1917", border: "1px solid #44403c" }}>
+          <div style={{ fontSize: "14px", color: "#78716c", padding: "4px 12px", backgroundColor: "rgba(28, 25, 23, 0.8)", border: "1px solid #44403c" }}>
             curl -s https://clawfights.xyz/skill.md
           </div>
         </div>
@@ -144,4 +172,5 @@ export async function GET() {
     ),
     { width: 1200, height: 630 }
   );
+
 }

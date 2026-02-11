@@ -42,10 +42,16 @@ import * as persist from "./rumble-persistence";
 import {
   mintRumbleReward as mintRumbleRewardOnChain,
   checkIchorShower as checkIchorShowerOnChain,
+  createRumble as createRumbleOnChain,
   reportResult as reportResultOnChain,
   completeRumble as completeRumbleOnChain,
   sweepTreasury as sweepTreasuryOnChain,
+  updateFighterRecord as updateFighterRecordOnChain,
+  getIchorMint,
+  deriveArenaConfigPda,
 } from "./solana-programs";
+import { PublicKey } from "@solana/web3.js";
+import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -270,6 +276,47 @@ export class RumbleOrchestrator {
         fighters: [...slot.fighters],
         deadline: slot.bettingDeadline!,
       });
+
+      // On-chain: create rumble (best-effort, fire-and-forget)
+      this.createRumbleOnChain(slot).catch((err) => {
+        console.error(`[Orchestrator] On-chain createRumble failed for ${slot.id}:`, err);
+      });
+    }
+  }
+
+  /**
+   * Create a rumble on-chain when betting opens. Best-effort for devnet.
+   */
+  private async createRumbleOnChain(slot: RumbleSlot): Promise<void> {
+    const rumbleIdNum = parseInt(slot.id.replace(/\D/g, ""), 10);
+    if (isNaN(rumbleIdNum)) {
+      console.warn(`[Orchestrator] Cannot parse rumbleId "${slot.id}" for on-chain create`);
+      return;
+    }
+
+    // Convert fighter IDs to PublicKeys (only works if they're valid pubkeys)
+    const fighterPubkeys: PublicKey[] = [];
+    for (const fid of slot.fighters) {
+      try {
+        fighterPubkeys.push(new PublicKey(fid));
+      } catch {
+        // Fighter IDs are names, not pubkeys yet - skip on-chain creation
+        console.log(`[Orchestrator] Fighter "${fid}" is not a pubkey, skipping on-chain createRumble`);
+        return;
+      }
+    }
+
+    const deadline = slot.bettingDeadline
+      ? Math.floor(slot.bettingDeadline.getTime() / 1000)
+      : Math.floor(Date.now() / 1000) + 60;
+
+    try {
+      const sig = await createRumbleOnChain(rumbleIdNum, fighterPubkeys, deadline);
+      if (sig) {
+        console.log(`[Orchestrator] On-chain createRumble tx: ${sig}`);
+      }
+    } catch (err) {
+      console.error(`[Orchestrator] createRumbleOnChain error:`, err);
     }
   }
 
@@ -590,36 +637,106 @@ export class RumbleOrchestrator {
       result,
     });
 
-    // Fire-and-forget on-chain settlement (ICHOR minting + shower check)
-    this.settleOnChain(slot.id, winner).catch((err) => {
+    // Fire-and-forget on-chain settlement (report result, ICHOR minting, shower check)
+    this.settleOnChain(slot.id, winner, result.placements, state.fighters).catch((err) => {
       console.error(`[Orchestrator] On-chain settlement failed for ${slot.id}:`, err);
     });
   }
 
   /**
    * Settle a completed rumble on-chain:
-   * 1. Mint ICHOR reward to winner
-   * 2. Check for Ichor Shower trigger
+   * 1. Report result on-chain (placements)
+   * 2. Mint ICHOR reward to winner
+   * 3. Check for Ichor Shower trigger
+   * 4. Complete rumble on-chain
    *
-   * Runs in the background; failures are logged but do not block the
-   * off-chain payout flow.
+   * All calls are best-effort: failures are logged but do not block the
+   * off-chain payout flow. This is safe for devnet testing.
    */
-  private async settleOnChain(rumbleId: string, winnerId: string): Promise<void> {
+  private async settleOnChain(
+    rumbleId: string,
+    winnerId: string,
+    placements: Array<{ id: string; placement: number }>,
+    fighters: RumbleFighter[],
+  ): Promise<void> {
+    // Parse rumble ID as number for on-chain calls
+    const rumbleIdNum = parseInt(rumbleId.replace(/\D/g, ""), 10);
+    if (isNaN(rumbleIdNum)) {
+      console.warn(`[Orchestrator] Cannot parse rumbleId "${rumbleId}" as number, skipping on-chain`);
+      return;
+    }
+
+    // 1. Report result on-chain
     try {
-      // TODO: resolve winnerId -> winner's ICHOR token account (ATA) and
-      // the shower vault token account. These require the ICHOR mint to be
-      // set via NEXT_PUBLIC_ICHOR_MINT env var and the winner to have an ATA.
-      // For now, log intent. The full flow requires:
-      //   1. Look up winner's wallet from fighter registry
-      //   2. Derive or create the winner's ICHOR ATA
-      //   3. Derive or create the shower vault ATA (owned by ArenaConfig PDA)
-      //   4. Call mintRumbleRewardOnChain(winnerATA, showerVaultATA)
-      //   5. Call checkIchorShowerOnChain(winnerATA, showerVaultATA)
-      console.log(
-        `[Orchestrator] On-chain settle queued: rumble=${rumbleId}, winner=${winnerId}`
-      );
+      // Build placements array: placements[i] = placement of fighter at index i
+      const placementArray = placements.map((p) => p.placement);
+      const winnerIndex = placements.findIndex((p) => p.placement === 1);
+      if (winnerIndex >= 0) {
+        const sig = await reportResultOnChain(rumbleIdNum, placementArray, winnerIndex);
+        if (sig) {
+          console.log(`[Orchestrator] On-chain reportResult tx: ${sig}`);
+        }
+      }
     } catch (err) {
-      console.error(`[Orchestrator] settleOnChain error:`, err);
+      console.error(`[Orchestrator] On-chain reportResult failed:`, err);
+    }
+
+    // 2. Mint ICHOR reward to winner
+    try {
+      const ichorMint = getIchorMint();
+      // The winner needs an ICHOR ATA. Derive it from winnerId as a PublicKey.
+      // winnerId is a fighter name/id string - in production, look up the wallet.
+      // For now, try to parse winnerId as a pubkey (if fighters are registered on-chain)
+      let winnerWallet: PublicKey | null = null;
+      try {
+        winnerWallet = new PublicKey(winnerId);
+      } catch {
+        // winnerId is not a valid pubkey (it's a name); skip ICHOR minting
+        console.log(`[Orchestrator] winnerId "${winnerId}" is not a pubkey, skipping ICHOR mint`);
+      }
+
+      if (winnerWallet) {
+        const winnerAta = getAssociatedTokenAddressSync(ichorMint, winnerWallet);
+        const [arenaConfigPda] = deriveArenaConfigPda();
+        const showerVaultAta = getAssociatedTokenAddressSync(ichorMint, arenaConfigPda, true);
+
+        const sig = await mintRumbleRewardOnChain(winnerAta, showerVaultAta);
+        if (sig) {
+          console.log(`[Orchestrator] On-chain mintRumbleReward tx: ${sig}`);
+        }
+
+        // 3. Check Ichor Shower (uses same accounts)
+        try {
+          const showerSig = await checkIchorShowerOnChain(winnerAta, showerVaultAta);
+          if (showerSig) {
+            console.log(`[Orchestrator] On-chain checkIchorShower tx: ${showerSig}`);
+          }
+        } catch (err) {
+          console.error(`[Orchestrator] On-chain checkIchorShower failed:`, err);
+        }
+      }
+    } catch (err) {
+      console.error(`[Orchestrator] On-chain mintRumbleReward failed:`, err);
+    }
+
+    // 4. Complete rumble on-chain
+    try {
+      const sig = await completeRumbleOnChain(rumbleIdNum);
+      if (sig) {
+        console.log(`[Orchestrator] On-chain completeRumble tx: ${sig}`);
+      }
+    } catch (err) {
+      console.error(`[Orchestrator] On-chain completeRumble failed:`, err);
+    }
+
+    // 5. Sweep remaining vault SOL to treasury
+    try {
+      const sig = await sweepTreasuryOnChain(rumbleIdNum);
+      if (sig) {
+        console.log(`[Orchestrator] On-chain sweepTreasury tx: ${sig}`);
+      }
+    } catch (err) {
+      console.error(`[Orchestrator] On-chain sweepTreasury failed:`, err);
     }
   }
 

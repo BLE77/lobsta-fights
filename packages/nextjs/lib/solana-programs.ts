@@ -136,14 +136,14 @@ let _ichorMint: PublicKey | null = null;
 export function getIchorMint(): PublicKey {
   if (_ichorMint) return _ichorMint;
 
-  const envMint = process.env.NEXT_PUBLIC_ICHOR_MINT;
+  const envMint = process.env.NEXT_PUBLIC_ICHOR_TOKEN_MINT ?? process.env.NEXT_PUBLIC_ICHOR_MINT;
   if (envMint) {
     _ichorMint = new PublicKey(envMint);
     return _ichorMint;
   }
 
   throw new Error(
-    "ICHOR mint address not set. Set NEXT_PUBLIC_ICHOR_MINT env var."
+    "ICHOR mint address not set. Set NEXT_PUBLIC_ICHOR_TOKEN_MINT env var."
   );
 }
 
@@ -628,14 +628,19 @@ export async function buildClaimSponsorshipTx(
 
 /**
  * Complete a rumble (admin/server-side).
+ * Returns tx signature on success, null if admin keypair unavailable.
  */
 export async function completeRumble(
   rumbleId: number,
   connection?: Connection
-): Promise<string> {
+): Promise<string | null> {
   const provider = getAdminProvider(connection);
+  if (!provider) {
+    console.warn("[solana-programs] No admin keypair, skipping completeRumble");
+    return null;
+  }
   const program = getRumbleEngineProgram(provider);
-  const admin = getAdminKeypair();
+  const admin = getAdminKeypair()!;
 
   const [rumbleConfigPda] = deriveRumbleConfigPda();
   const [rumblePda] = deriveRumblePda(rumbleId);
@@ -654,14 +659,19 @@ export async function completeRumble(
 
 /**
  * Sweep remaining SOL from completed rumble vault to treasury (admin/server-side).
+ * Returns tx signature on success, null if admin keypair unavailable.
  */
 export async function sweepTreasury(
   rumbleId: number,
   connection?: Connection
-): Promise<string> {
+): Promise<string | null> {
   const provider = getAdminProvider(connection);
+  if (!provider) {
+    console.warn("[solana-programs] No admin keypair, skipping sweepTreasury");
+    return null;
+  }
   const program = getRumbleEngineProgram(provider);
-  const admin = getAdminKeypair();
+  const admin = getAdminKeypair()!;
 
   const [rumbleConfigPda] = deriveRumbleConfigPda();
   const [rumblePda] = deriveRumblePda(rumbleId);
@@ -681,6 +691,53 @@ export async function sweepTreasury(
       rumble: rumblePda,
       vault: vaultPda,
       treasury,
+    })
+    .rpc();
+
+  return tx;
+}
+
+// ---------------------------------------------------------------------------
+// Fighter Registry - Update Record (admin/server-side)
+// ---------------------------------------------------------------------------
+
+/**
+ * Update a fighter's combat record on-chain after a Rumble.
+ * Returns tx signature on success, null if admin keypair unavailable.
+ */
+export async function updateFighterRecord(
+  fighterPubkey: PublicKey,
+  wins: number,
+  losses: number,
+  damageDealt: number,
+  damageTaken: number,
+  ichorMined: number,
+  rumbleId: number,
+  connection?: Connection
+): Promise<string | null> {
+  const provider = getAdminProvider(connection);
+  if (!provider) {
+    console.warn("[solana-programs] No admin keypair, skipping updateFighterRecord");
+    return null;
+  }
+  const program = getFighterRegistryProgram(provider);
+  const admin = getAdminKeypair()!;
+
+  const [registryConfigPda] = deriveRegistryConfigPda();
+
+  const tx = await (program.methods as any)
+    .updateRecord(
+      new anchor.BN(wins),
+      new anchor.BN(losses),
+      new anchor.BN(damageDealt),
+      new anchor.BN(damageTaken),
+      new anchor.BN(ichorMined),
+      new anchor.BN(rumbleId)
+    )
+    .accounts({
+      authority: admin.publicKey,
+      registryConfig: registryConfigPda,
+      fighter: fighterPubkey,
     })
     .rpc();
 
