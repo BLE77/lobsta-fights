@@ -34,6 +34,8 @@ import {
   type FighterOdds,
 } from "./betting";
 
+import * as persist from "./rumble-persistence";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -241,6 +243,16 @@ export class RumbleOrchestrator {
       const pool = createBettingPool(slot.id);
       this.bettingPools.set(idx, pool);
 
+      // Persist: create rumble record and update queue fighter statuses
+      persist.createRumbleRecord({
+        id: slot.id,
+        slotIndex: idx,
+        fighters: slot.fighters.map((id) => ({ id, name: id })),
+      });
+      for (const fid of slot.fighters) {
+        persist.saveQueueFighter(fid, "in_combat");
+      }
+
       this.emit("betting_open", {
         slotIndex: idx,
         rumbleId: slot.id,
@@ -267,6 +279,20 @@ export class RumbleOrchestrator {
 
     // Also record in the queue manager's betting pool (for its own tracking)
     this.queueManager.placeBet(slotIndex, bettorId, solAmount);
+
+    // Persist: save bet to Supabase
+    const adminFee = solAmount * 0.01;
+    const sponsorFee = solAmount * 0.05;
+    const netAmount = solAmount - adminFee - sponsorFee;
+    persist.saveBet({
+      rumbleId: slot.id,
+      walletAddress: bettorId,
+      fighterId,
+      grossAmount: solAmount,
+      netAmount,
+      adminFee,
+      sponsorFee,
+    });
 
     return true;
   }
@@ -299,6 +325,9 @@ export class RumbleOrchestrator {
           odds: calculateOdds(pool),
         });
       }
+
+      // Persist: mark rumble as combat
+      persist.updateRumbleStatus(slot.id, "combat");
 
       this.emit("combat_started", {
         slotIndex: idx,
@@ -460,6 +489,9 @@ export class RumbleOrchestrator {
     state.turns.push(turn);
     state.previousPairings = currentPairingsSet;
 
+    // Persist: update turn log after each turn
+    persist.updateRumbleTurnLog(slot.id, state.turns, state.turns.length);
+
     // Emit events
     const remaining = state.fighters.filter((f) => f.hp > 0).length;
 
@@ -522,11 +554,23 @@ export class RumbleOrchestrator {
       totalTurns: state.turns.length,
     };
 
+    // Persist: complete rumble record with winner and placements
+    persist.completeRumbleRecord(
+      state.rumbleId,
+      winner,
+      result.placements,
+      state.turns,
+      state.turns.length,
+    );
+
     // Report result to queue manager (triggers payout transition on next advanceSlots)
     this.queueManager.reportResult(slot.slotIndex, {
-      placements: ranked.map((f) => f.id),
-      eliminationOrder: state.eliminationOrder,
-      turnCount: state.turns.length,
+      rumbleId: slot.id,
+      fighters: state.fighters,
+      turns: state.turns,
+      winner,
+      placements: ranked.map((f, i) => ({ id: f.id, placement: i + 1 })),
+      totalTurns: state.turns.length,
     });
 
     this.emit("rumble_complete", {
@@ -560,7 +604,7 @@ export class RumbleOrchestrator {
     const combatState = this.combatStates.get(slotIndex);
 
     // Build placements from the rumble result or combat state
-    let placements: string[] = [];
+    let placements: Array<{ id: string; placement: number }> = [];
     if (slot.rumbleResult) {
       placements = slot.rumbleResult.placements;
     } else if (combatState) {
@@ -569,7 +613,7 @@ export class RumbleOrchestrator {
         if (b.hp !== a.hp) return b.hp - a.hp;
         return b.totalDamageDealt - a.totalDamageDealt;
       });
-      placements = ranked.map((f) => f.id);
+      placements = ranked.map((f, i) => ({ id: f.id, placement: i + 1 }));
     }
 
     if (placements.length < 3) {
@@ -583,15 +627,19 @@ export class RumbleOrchestrator {
 
     // Calculate payouts if there's a betting pool with bets
     if (pool && pool.bets.length > 0) {
+      const placementIds = placements.map((p) => p.id);
       const payoutResult = calculatePayouts(
         pool,
-        placements,
+        placementIds,
         blockReward,
         this.ichorShowerPool,
       );
 
       // Accumulate ICHOR shower pool
       this.ichorShowerPool += payoutResult.ichorDistribution.showerPoolAccumulation;
+
+      // Persist: update ichor shower pool
+      persist.updateIchorShowerPool(this.ichorShowerPool);
 
       // Handle Ichor Shower
       if (payoutResult.ichorShowerTriggered && payoutResult.ichorShowerWinner) {
@@ -602,9 +650,30 @@ export class RumbleOrchestrator {
           amount: payoutResult.ichorShowerAmount ?? 0,
         });
 
+        // Persist: trigger ichor shower
+        persist.triggerIchorShower(
+          slot.id,
+          payoutResult.ichorShowerWinner,
+          payoutResult.ichorShowerAmount ?? 0,
+        );
+
         // Reset shower pool after payout
         this.ichorShowerPool = 0;
       }
+
+      // Persist: mark losing bets
+      const topThreeIds = new Set(placements.slice(0, 3).map((p) => p.id));
+      const losingFighterIds = placements
+        .filter((p) => !topThreeIds.has(p.id))
+        .map((p) => p.id);
+      persist.markLosingBets(slot.id, losingFighterIds);
+
+      // Persist: increment aggregate stats
+      persist.incrementStats(
+        pool.totalDeployed,
+        payoutResult.ichorDistribution.totalMined,
+        payoutResult.totalBurned,
+      );
 
       // Log payout summary
       const summary = summarizePayouts(payoutResult);
@@ -618,23 +687,33 @@ export class RumbleOrchestrator {
     } else {
       // No bets were placed; still emit payout_complete with minimal data
       console.log(`[Orchestrator] No bets for ${slot.id}, skipping SOL payout`);
+
+      // Persist: still increment rumble count even without bets
+      persist.incrementStats(0, 0, 0);
     }
 
     this.totalRumblesCompleted++;
 
     // Requeue fighters with autoRequeue
     const requeueSet = this.autoRequeueFighters.get(slotIndex);
-    if (requeueSet) {
-      for (const fighterId of slot.fighters) {
-        if (requeueSet.has(fighterId)) {
-          try {
-            this.queueManager.addToQueue(fighterId, true);
-          } catch {
-            // Fighter might already be in queue or another slot; ignore
-          }
+    for (const fighterId of slot.fighters) {
+      if (requeueSet?.has(fighterId)) {
+        try {
+          this.queueManager.addToQueue(fighterId, true);
+          // Persist: re-add to queue as waiting
+          persist.saveQueueFighter(fighterId, "waiting", true);
+        } catch {
+          // Fighter might already be in queue or another slot; ignore
         }
+      } else {
+        // Persist: remove from queue
+        persist.removeQueueFighter(fighterId);
       }
     }
+
+    // Persist: mark rumble as complete (status already set in finishCombat,
+    // but update payout status for safety)
+    persist.updateRumbleStatus(slot.id, "complete");
 
     this.cleanupSlot(slotIndex);
   }

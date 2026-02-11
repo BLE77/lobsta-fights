@@ -54,6 +54,7 @@ pub mod ichor_token {
     /// Distributes ICHOR to the winner, contributes to the Ichor Shower pool,
     /// and adds bonus shower emissions.
     pub fn mint_rumble_reward(ctx: Context<MintRumbleReward>) -> Result<()> {
+        let arena_info = ctx.accounts.arena_config.to_account_info();
         let arena = &mut ctx.accounts.arena_config;
 
         // Calculate reward based on halving schedule
@@ -94,7 +95,7 @@ pub mod ichor_token {
                     MintTo {
                         mint: ctx.accounts.ichor_mint.to_account_info(),
                         to: ctx.accounts.winner_token_account.to_account_info(),
-                        authority: ctx.accounts.arena_config.to_account_info(),
+                        authority: arena_info.clone(),
                     },
                     signer_seeds,
                 ),
@@ -110,7 +111,7 @@ pub mod ichor_token {
                     MintTo {
                         mint: ctx.accounts.ichor_mint.to_account_info(),
                         to: ctx.accounts.shower_vault.to_account_info(),
-                        authority: ctx.accounts.arena_config.to_account_info(),
+                        authority: arena_info.clone(),
                     },
                     signer_seeds,
                 ),
@@ -144,6 +145,7 @@ pub mod ichor_token {
     /// Uses the recent slot hash for pseudorandomness.
     /// If triggered, transfers the entire shower pool to the lucky recipient.
     pub fn check_ichor_shower(ctx: Context<CheckIchorShower>) -> Result<()> {
+        let arena_info = ctx.accounts.arena_config.to_account_info();
         let arena = &mut ctx.accounts.arena_config;
 
         require!(arena.ichor_shower_pool > 0, IchorError::EmptyShowerPool);
@@ -187,7 +189,7 @@ pub mod ichor_token {
                         Transfer {
                             from: ctx.accounts.shower_vault.to_account_info(),
                             to: ctx.accounts.recipient_token_account.to_account_info(),
-                            authority: ctx.accounts.arena_config.to_account_info(),
+                            authority: arena_info.clone(),
                         },
                         signer_seeds,
                     ),
@@ -203,7 +205,7 @@ pub mod ichor_token {
                         Burn {
                             mint: ctx.accounts.ichor_mint.to_account_info(),
                             from: ctx.accounts.shower_vault.to_account_info(),
-                            authority: ctx.accounts.arena_config.to_account_info(),
+                            authority: arena_info.clone(),
                         },
                         signer_seeds,
                     ),

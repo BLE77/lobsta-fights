@@ -287,7 +287,7 @@ export default function BetTransaction({
       )}
 
       {/* Processing signature */}
-      {txSignature && betState !== "done" && (
+      {txSignature && (
         <div className="text-gray-500 text-xs font-mono">
           tx: {txSignature.slice(0, 20)}...
         </div>

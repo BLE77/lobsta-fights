@@ -2,11 +2,11 @@
 
 import { Toaster } from "react-hot-toast";
 import AudioToggle from "./AudioToggle";
+import WalletProvider from "~~/app/providers/WalletProvider";
 
-// Wallet temporarily disabled - will re-enable for on-chain betting
 export function ScaffoldEthApp({ children }: { children: React.ReactNode }) {
   return (
-    <>
+    <WalletProvider>
       {children}
       <AudioToggle />
       <Toaster
@@ -18,6 +18,6 @@ export function ScaffoldEthApp({ children }: { children: React.ReactNode }) {
           },
         }}
       />
-    </>
+    </WalletProvider>
   );
 }
