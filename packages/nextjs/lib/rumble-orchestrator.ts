@@ -294,14 +294,20 @@ export class RumbleOrchestrator {
       return;
     }
 
-    // Convert fighter IDs to PublicKeys (only works if they're valid pubkeys)
+    // Resolve fighter names to wallet pubkeys via Supabase lookup
+    const walletMap = await persist.lookupFighterWallets(slot.fighters);
     const fighterPubkeys: PublicKey[] = [];
     for (const fid of slot.fighters) {
-      try {
-        fighterPubkeys.push(new PublicKey(fid));
-      } catch {
-        // Fighter IDs are names, not pubkeys yet - skip on-chain creation
-        console.log(`[Orchestrator] Fighter "${fid}" is not a pubkey, skipping on-chain createRumble`);
+      const walletAddr = walletMap.get(fid);
+      if (walletAddr) {
+        try {
+          fighterPubkeys.push(new PublicKey(walletAddr));
+        } catch {
+          console.warn(`[Orchestrator] Invalid wallet for "${fid}": ${walletAddr}`);
+          return;
+        }
+      } else {
+        console.log(`[Orchestrator] No wallet for "${fid}", skipping on-chain createRumble`);
         return;
       }
     }
@@ -684,15 +690,24 @@ export class RumbleOrchestrator {
     // 2. Mint ICHOR reward to winner
     try {
       const ichorMint = getIchorMint();
-      // The winner needs an ICHOR ATA. Derive it from winnerId as a PublicKey.
-      // winnerId is a fighter name/id string - in production, look up the wallet.
-      // For now, try to parse winnerId as a pubkey (if fighters are registered on-chain)
+      // Look up the winner's Solana wallet address from Supabase
       let winnerWallet: PublicKey | null = null;
       try {
         winnerWallet = new PublicKey(winnerId);
       } catch {
-        // winnerId is not a valid pubkey (it's a name); skip ICHOR minting
-        console.log(`[Orchestrator] winnerId "${winnerId}" is not a pubkey, skipping ICHOR mint`);
+        // winnerId is a fighter name, not a pubkey — look up from DB
+        const walletMap = await persist.lookupFighterWallets([winnerId]);
+        const walletAddr = walletMap.get(winnerId);
+        if (walletAddr) {
+          try {
+            winnerWallet = new PublicKey(walletAddr);
+            console.log(`[Orchestrator] Resolved "${winnerId}" → ${walletAddr}`);
+          } catch {
+            console.warn(`[Orchestrator] Invalid wallet for "${winnerId}": ${walletAddr}`);
+          }
+        } else {
+          console.log(`[Orchestrator] No wallet found for "${winnerId}", skipping ICHOR mint`);
+        }
       }
 
       if (winnerWallet) {

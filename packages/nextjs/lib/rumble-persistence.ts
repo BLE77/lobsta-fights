@@ -428,6 +428,37 @@ export async function incrementStats(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Fighter Wallet Lookup
+// ---------------------------------------------------------------------------
+
+/**
+ * Look up Solana wallet addresses for fighters by their name (used as fighter_id).
+ * Returns a map of fighter_id → wallet_address.
+ */
+export async function lookupFighterWallets(
+  fighterIds: string[],
+): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  if (fighterIds.length === 0) return result;
+  try {
+    const sb = freshServiceClient();
+    const { data, error } = await sb
+      .from("ucf_fighters")
+      .select("name, wallet_address")
+      .in("name", fighterIds);
+    if (error) throw error;
+    for (const row of data ?? []) {
+      if (row.wallet_address) {
+        result.set(row.name, row.wallet_address);
+      }
+    }
+  } catch (err) {
+    logError("lookupFighterWallets failed", err);
+  }
+  return result;
+}
+
 export async function getStats(): Promise<{
   total_rumbles: number;
   total_sol_wagered: number;
