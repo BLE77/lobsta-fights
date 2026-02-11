@@ -72,8 +72,8 @@ export async function POST(request: Request) {
       }
     }
 
-    // Persist to Supabase (fire-and-forget for state recovery)
-    saveQueueFighter(fighterId, "waiting", autoRequeue);
+    // Persist to Supabase (awaited so tick route recovery sees all fighters)
+    await saveQueueFighter(fighterId, "waiting", autoRequeue);
 
     const position = qm.getQueuePosition(fighterId);
     const estimatedWait = qm.getEstimatedWait(fighterId);
@@ -123,7 +123,7 @@ export async function DELETE(request: Request) {
     }
 
     // Remove from Supabase persistence
-    removeQueueFighter(fighterId);
+    await removeQueueFighter(fighterId);
 
     return NextResponse.json({
       status: "removed",

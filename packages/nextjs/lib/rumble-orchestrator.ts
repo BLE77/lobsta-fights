@@ -43,10 +43,12 @@ import {
   mintRumbleReward as mintRumbleRewardOnChain,
   checkIchorShower as checkIchorShowerOnChain,
   createRumble as createRumbleOnChain,
+  startCombat as startCombatOnChain,
   reportResult as reportResultOnChain,
   completeRumble as completeRumbleOnChain,
   sweepTreasury as sweepTreasuryOnChain,
   updateFighterRecord as updateFighterRecordOnChain,
+  ensureAta as ensureAtaOnChain,
   getIchorMint,
   deriveArenaConfigPda,
 } from "./solana-programs";
@@ -327,6 +329,23 @@ export class RumbleOrchestrator {
   }
 
   /**
+   * Transition a rumble on-chain from Betting to Combat. Best-effort for devnet.
+   */
+  private async startCombatOnChain(slot: RumbleSlot): Promise<void> {
+    const rumbleIdNum = parseInt(slot.id.replace(/\D/g, ""), 10);
+    if (isNaN(rumbleIdNum)) return;
+
+    try {
+      const sig = await startCombatOnChain(rumbleIdNum);
+      if (sig) {
+        console.log(`[Orchestrator] On-chain startCombat tx: ${sig}`);
+      }
+    } catch (err) {
+      console.error(`[Orchestrator] startCombatOnChain error:`, err);
+    }
+  }
+
+  /**
    * External API: place a bet on a fighter in a slot.
    */
   placeBet(slotIndex: number, bettorId: string, fighterId: string, solAmount: number): boolean {
@@ -392,6 +411,11 @@ export class RumbleOrchestrator {
 
       // Persist: mark rumble as combat
       persist.updateRumbleStatus(slot.id, "combat");
+
+      // On-chain: transition from Betting → Combat
+      this.startCombatOnChain(slot).catch((err) => {
+        console.error(`[Orchestrator] On-chain startCombat failed for ${slot.id}:`, err);
+      });
 
       this.emit("combat_started", {
         slotIndex: idx,
@@ -715,6 +739,20 @@ export class RumbleOrchestrator {
         const [arenaConfigPda] = deriveArenaConfigPda();
         const showerVaultAta = getAssociatedTokenAddressSync(ichorMint, arenaConfigPda, true);
 
+        // Ensure winner's ATA AND shower vault ATA exist before minting
+        try {
+          await ensureAtaOnChain(ichorMint, winnerWallet);
+          console.log(`[Orchestrator] Winner ATA ensured: ${winnerAta.toBase58()}`);
+        } catch (ataErr) {
+          console.warn(`[Orchestrator] Failed to create winner ATA:`, ataErr);
+        }
+        try {
+          await ensureAtaOnChain(ichorMint, arenaConfigPda, true);
+          console.log(`[Orchestrator] Shower vault ATA ensured: ${showerVaultAta.toBase58()}`);
+        } catch (ataErr) {
+          console.warn(`[Orchestrator] Failed to create shower vault ATA:`, ataErr);
+        }
+
         const sig = await mintRumbleRewardOnChain(winnerAta, showerVaultAta);
         if (sig) {
           console.log(`[Orchestrator] On-chain mintRumbleReward tx: ${sig}`);
@@ -910,10 +948,11 @@ export class RumbleOrchestrator {
 
   // ---- Cleanup -------------------------------------------------------------
 
-  private cleanupSlot(slotIndex: number, rumbleId?: string): void {
-    if (rumbleId) {
-      this.payoutProcessed.delete(rumbleId);
-    }
+  private cleanupSlot(slotIndex: number, _rumbleId?: string): void {
+    // NOTE: do NOT delete from payoutProcessed here — the QueueManager still
+    // shows the slot in payout state for PAYOUT_DURATION_MS. Deleting early
+    // causes handlePayoutPhase to re-run on every tick. The payout ID is
+    // cleaned up in handleSlotRecycled when the slot returns to idle.
     this.bettingPools.delete(slotIndex);
     this.combatStates.delete(slotIndex);
     this.autoRequeueFighters.delete(slotIndex);

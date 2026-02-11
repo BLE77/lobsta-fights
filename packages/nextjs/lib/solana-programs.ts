@@ -762,6 +762,61 @@ export async function updateFighterRecord(
 }
 
 // ---------------------------------------------------------------------------
+// ATA Helper — ensures a token account exists before minting
+// ---------------------------------------------------------------------------
+
+/**
+ * Create the Associated Token Account for `owner` + `mint` if it doesn't exist.
+ * Uses the admin keypair as payer. Returns the ATA address.
+ * Set `allowOwnerOffCurve` to true for PDA-owned ATAs (e.g. shower vault).
+ */
+export async function ensureAta(
+  mint: PublicKey,
+  owner: PublicKey,
+  allowOwnerOffCurve = false,
+  connection?: Connection
+): Promise<PublicKey | null> {
+  const admin = getAdminKeypair();
+  if (!admin) {
+    console.warn("[solana-programs] No admin keypair, cannot create ATA");
+    return null;
+  }
+  const conn = connection ?? getConnection();
+  const {
+    getAssociatedTokenAddressSync: getAta,
+    createAssociatedTokenAccountInstruction,
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+  } = await import("@solana/spl-token");
+
+  const ata = getAta(mint, owner, allowOwnerOffCurve);
+
+  // Check if already exists
+  const info = await conn.getAccountInfo(ata);
+  if (info) return ata;
+
+  // Create ATA
+  const ix = createAssociatedTokenAccountInstruction(
+    admin.publicKey,
+    ata,
+    owner,
+    mint,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+  );
+
+  const tx = new Transaction().add(ix);
+  tx.feePayer = admin.publicKey;
+  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+  tx.recentBlockhash = blockhash;
+  tx.lastValidBlockHeight = lastValidBlockHeight;
+  tx.partialSign(admin);
+
+  const sig = await conn.sendRawTransaction(tx.serialize());
+  await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+  return ata;
+}
+
+// ---------------------------------------------------------------------------
 // Read-only helpers (for frontend state queries)
 // ---------------------------------------------------------------------------
 
