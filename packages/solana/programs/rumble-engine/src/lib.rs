@@ -12,6 +12,7 @@ const VAULT_SEED: &[u8] = b"vault";
 const BETTOR_SEED: &[u8] = b"bettor";
 const CONFIG_SEED: &[u8] = b"rumble_config";
 const SPONSORSHIP_SEED: &[u8] = b"sponsorship";
+const FIGHTER_REGISTRY_PROGRAM_ID: Pubkey = pubkey!("2hA6Jvj1yjP2Uj3qrJcsBeYA2R9xPM95mDKw1ncKVExa");
 
 /// Fee basis points (out of 10_000)
 const ADMIN_FEE_BPS: u64 = 100; // 1%
@@ -208,6 +209,10 @@ pub mod rumble_engine {
             bettor_account.claimed = false;
             bettor_account.bump = ctx.bumps.bettor_account;
         } else {
+            require!(
+                bettor_account.authority == ctx.accounts.bettor.key(),
+                RumbleError::Unauthorized
+            );
             // Additional bet on same fighter: accumulate
             bettor_account.sol_deployed = bettor_account
                 .sol_deployed
@@ -236,7 +241,7 @@ pub mod rumble_engine {
         Ok(())
     }
 
-    /// Transition rumble from Betting to Active (combat).
+    /// Transition rumble from Betting to Combat.
     /// Only callable by admin after the betting deadline.
     pub fn start_combat(ctx: Context<AdminAction>) -> Result<()> {
         let rumble = &mut ctx.accounts.rumble;
@@ -252,7 +257,7 @@ pub mod rumble_engine {
             RumbleError::BettingNotEnded
         );
 
-        rumble.state = RumbleState::Active;
+        rumble.state = RumbleState::Combat;
         rumble.combat_started_at = clock.unix_timestamp;
 
         msg!(
@@ -281,7 +286,7 @@ pub mod rumble_engine {
         let rumble = &mut ctx.accounts.rumble;
 
         require!(
-            rumble.state == RumbleState::Active,
+            rumble.state == RumbleState::Combat,
             RumbleError::InvalidStateTransition
         );
 
@@ -303,8 +308,15 @@ pub mod rumble_engine {
 
         // Copy placements into fixed-size array
         let mut placement_arr = [0u8; MAX_FIGHTERS];
+        let mut seen_placements = vec![false; rumble.fighter_count as usize + 1];
         for (i, p) in placements.iter().enumerate() {
             require!(*p >= 1 && *p <= rumble.fighter_count, RumbleError::InvalidPlacement);
+            let placement_idx = *p as usize;
+            require!(
+                !seen_placements[placement_idx],
+                RumbleError::InvalidPlacement
+            );
+            seen_placements[placement_idx] = true;
             placement_arr[i] = *p;
         }
 
@@ -433,11 +445,15 @@ pub mod rumble_engine {
         if total_payout > 0 {
             let vault_info = ctx.accounts.vault.to_account_info();
             let bettor_info = ctx.accounts.bettor.to_account_info();
-
-            **vault_info.try_borrow_mut_lamports()? = vault_info
+            let rent = Rent::get()?;
+            let min_balance = rent.minimum_balance(vault_info.data_len());
+            let remaining = vault_info
                 .lamports()
                 .checked_sub(total_payout)
                 .ok_or(RumbleError::InsufficientVaultFunds)?;
+            require!(remaining >= min_balance, RumbleError::InsufficientVaultFunds);
+
+            **vault_info.try_borrow_mut_lamports()? = remaining;
             **bettor_info.try_borrow_mut_lamports()? = bettor_info
                 .lamports()
                 .checked_add(total_payout)
@@ -743,6 +759,9 @@ pub struct ClaimSponsorship<'info> {
 
     /// CHECK: The fighter account. Authority is verified in the instruction handler
     /// by reading bytes 8..40 (the authority pubkey after Anchor's 8-byte discriminator).
+    #[account(
+        constraint = fighter.owner == &FIGHTER_REGISTRY_PROGRAM_ID @ RumbleError::InvalidFighterAccount,
+    )]
     pub fighter: AccountInfo<'info>,
 
     /// CHECK: Sponsorship PDA holding accumulated SOL.
@@ -840,7 +859,7 @@ pub struct BettorAccount {
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]
 pub enum RumbleState {
     Betting,
-    Active,
+    Combat,
     Payout,
     Complete,
 }

@@ -45,8 +45,8 @@ pub mod fighter_registry {
         let fighter = &mut ctx.accounts.fighter;
         let config = &mut ctx.accounts.registry_config;
 
-        // Initialize wallet_state if this is the first fighter for this wallet
-        if wallet_state.fighter_count == 0 && wallet_state.authority == Pubkey::default() {
+        // Initialize wallet_state on first use
+        if wallet_state.authority == Pubkey::default() {
             wallet_state.authority = ctx.accounts.authority.key();
             wallet_state.bump = ctx.bumps.wallet_state;
         }

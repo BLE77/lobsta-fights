@@ -342,22 +342,12 @@ export async function markLosingBets(
 // Ichor Shower
 // ---------------------------------------------------------------------------
 
-export async function updateIchorShowerPool(amount: number): Promise<void> {
+export async function updateIchorShowerPool(poolIncrement: number): Promise<void> {
   try {
     const sb = freshServiceClient();
-    // There's a single row in ucf_ichor_shower. Update the first one.
-    const { data: rows, error: fetchErr } = await sb
-      .from("ucf_ichor_shower")
-      .select("id")
-      .limit(1)
-      .single();
-    if (fetchErr) throw fetchErr;
-
-    const { error } = await sb
-      .from("ucf_ichor_shower")
-      .update({ pool_amount: amount, updated_at: new Date().toISOString() })
-      .eq("id", rows.id)
-      .select();
+    const { error } = await sb.rpc("increment_ichor_shower_pool", {
+      delta_pool_amount: poolIncrement,
+    });
     if (error) throw error;
   } catch (err) {
     logError("updateIchorShowerPool failed", err);
@@ -427,25 +417,11 @@ export async function incrementStats(
 ): Promise<void> {
   try {
     const sb = freshServiceClient();
-    // Read current stats, then increment. Single row table.
-    const { data: row, error: fetchErr } = await sb
-      .from("ucf_rumble_stats")
-      .select("id, total_rumbles, total_sol_wagered, total_ichor_minted, total_ichor_burned")
-      .limit(1)
-      .single();
-    if (fetchErr) throw fetchErr;
-
-    const { error } = await sb
-      .from("ucf_rumble_stats")
-      .update({
-        total_rumbles: (row.total_rumbles ?? 0) + 1,
-        total_sol_wagered: (row.total_sol_wagered ?? 0) + solWagered,
-        total_ichor_minted: (row.total_ichor_minted ?? 0) + ichorMinted,
-        total_ichor_burned: (row.total_ichor_burned ?? 0) + ichorBurned,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", row.id)
-      .select();
+    const { error } = await sb.rpc("increment_rumble_stats", {
+      delta_sol_wagered: solWagered,
+      delta_ichor_minted: ichorMinted,
+      delta_ichor_burned: ichorBurned,
+    });
     if (error) throw error;
   } catch (err) {
     logError("incrementStats failed", err);

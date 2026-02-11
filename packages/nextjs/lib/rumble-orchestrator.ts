@@ -29,12 +29,23 @@ import {
   calculateOdds,
   getBlockReward,
   summarizePayouts,
+  ADMIN_FEE_RATE,
+  SPONSORSHIP_RATE,
   type BettingPool,
   type PayoutResult,
   type FighterOdds,
 } from "./betting";
+import { METER_PER_TURN, SPECIAL_METER_COST, resolveCombat } from "./combat";
 
 import * as persist from "./rumble-persistence";
+
+import {
+  mintRumbleReward as mintRumbleRewardOnChain,
+  checkIchorShower as checkIchorShowerOnChain,
+  reportResult as reportResultOnChain,
+  completeRumble as completeRumbleOnChain,
+  sweepTreasury as sweepTreasuryOnChain,
+} from "./solana-programs";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -281,8 +292,8 @@ export class RumbleOrchestrator {
     this.queueManager.placeBet(slotIndex, bettorId, solAmount);
 
     // Persist: save bet to Supabase
-    const adminFee = solAmount * 0.01;
-    const sponsorFee = solAmount * 0.05;
+    const adminFee = solAmount * ADMIN_FEE_RATE;
+    const sponsorFee = solAmount * SPONSORSHIP_RATE;
     const netAmount = solAmount - adminFee - sponsorFee;
     persist.saveBet({
       rumbleId: slot.id,
@@ -389,8 +400,6 @@ export class RumbleOrchestrator {
 
   private runCombatTurn(slot: RumbleSlot, state: SlotCombatState): void {
     const MAX_TURNS = 20;
-    const METER_PER_TURN = 10; // matches combat.ts
-    const SPECIAL_METER_COST = 100; // matches combat.ts
 
     const alive = state.fighters.filter((f) => f.hp > 0);
 
@@ -431,10 +440,7 @@ export class RumbleOrchestrator {
       const moveA = selectMove(fA, alive.filter((f) => f.id !== fA.id), state.turns as any);
       const moveB = selectMove(fB, alive.filter((f) => f.id !== fB.id), state.turns as any);
 
-      // We can't call resolveCombat directly since it's imported only in rumble-engine.
-      // Instead, use a simplified damage model that matches the weighted auto-play logic.
-      // In production, this would call the combat engine directly.
-      const result = this.resolveSimpleCombat(moveA, moveB, fA.meter, fB.meter);
+      const result = resolveCombat(moveA, moveB, fA.meter, fB.meter);
 
       // Apply meter usage
       fA.meter = Math.max(0, fA.meter - result.meterUsedA);
@@ -463,9 +469,14 @@ export class RumbleOrchestrator {
       currentPairingsSet.add(key);
     }
 
-    // Grant meter to all alive fighters
+    // Grant meter only to fighters that actually participated in pairings.
+    const pairedThisTurn = new Set<string>();
+    for (const pairing of turnPairings) {
+      pairedThisTurn.add(pairing.fighterA);
+      pairedThisTurn.add(pairing.fighterB);
+    }
     for (const f of state.fighters) {
-      if (f.hp > 0) {
+      if (f.hp > 0 && pairedThisTurn.has(f.id)) {
         f.meter = Math.min(f.meter + METER_PER_TURN, SPECIAL_METER_COST);
       }
     }
@@ -578,6 +589,38 @@ export class RumbleOrchestrator {
       rumbleId: slot.id,
       result,
     });
+
+    // Fire-and-forget on-chain settlement (ICHOR minting + shower check)
+    this.settleOnChain(slot.id, winner).catch((err) => {
+      console.error(`[Orchestrator] On-chain settlement failed for ${slot.id}:`, err);
+    });
+  }
+
+  /**
+   * Settle a completed rumble on-chain:
+   * 1. Mint ICHOR reward to winner
+   * 2. Check for Ichor Shower trigger
+   *
+   * Runs in the background; failures are logged but do not block the
+   * off-chain payout flow.
+   */
+  private async settleOnChain(rumbleId: string, winnerId: string): Promise<void> {
+    try {
+      // TODO: resolve winnerId -> winner's ICHOR token account (ATA) and
+      // the shower vault token account. These require the ICHOR mint to be
+      // set via NEXT_PUBLIC_ICHOR_MINT env var and the winner to have an ATA.
+      // For now, log intent. The full flow requires:
+      //   1. Look up winner's wallet from fighter registry
+      //   2. Derive or create the winner's ICHOR ATA
+      //   3. Derive or create the shower vault ATA (owned by ArenaConfig PDA)
+      //   4. Call mintRumbleRewardOnChain(winnerATA, showerVaultATA)
+      //   5. Call checkIchorShowerOnChain(winnerATA, showerVaultATA)
+      console.log(
+        `[Orchestrator] On-chain settle queued: rumble=${rumbleId}, winner=${winnerId}`
+      );
+    } catch (err) {
+      console.error(`[Orchestrator] settleOnChain error:`, err);
+    }
   }
 
   // ---- Payout phase --------------------------------------------------------
@@ -609,16 +652,28 @@ export class RumbleOrchestrator {
       placements = slot.rumbleResult.placements;
     } else if (combatState) {
       // Fallback: derive from combat state
-      const ranked = [...combatState.fighters].sort((a, b) => {
+      const alive = combatState.fighters.filter((f) => f.hp > 0);
+      const eliminated = combatState.fighters.filter((f) => f.hp <= 0);
+
+      alive.sort((a, b) => {
         if (b.hp !== a.hp) return b.hp - a.hp;
         return b.totalDamageDealt - a.totalDamageDealt;
       });
+
+      eliminated.sort((a, b) => {
+        if (a.eliminatedOnTurn !== b.eliminatedOnTurn) {
+          return (b.eliminatedOnTurn ?? 0) - (a.eliminatedOnTurn ?? 0);
+        }
+        return b.totalDamageDealt - a.totalDamageDealt;
+      });
+
+      const ranked = [...alive, ...eliminated];
       placements = ranked.map((f, i) => ({ id: f.id, placement: i + 1 }));
     }
 
     if (placements.length < 3) {
       console.warn(`[Orchestrator] Not enough fighters for payout in slot ${slotIndex}`);
-      this.cleanupSlot(slotIndex);
+      this.cleanupSlot(slotIndex, slot.id);
       return;
     }
 
@@ -636,10 +691,13 @@ export class RumbleOrchestrator {
       );
 
       // Accumulate ICHOR shower pool
-      this.ichorShowerPool += payoutResult.ichorDistribution.showerPoolAccumulation;
+      const showerPoolIncrement = payoutResult.ichorDistribution.showerPoolAccumulation;
+      this.ichorShowerPool += showerPoolIncrement;
 
-      // Persist: update ichor shower pool
-      persist.updateIchorShowerPool(this.ichorShowerPool);
+      // Persist: atomically increment ichor shower pool
+      if (showerPoolIncrement > 0) {
+        persist.updateIchorShowerPool(showerPoolIncrement);
+      }
 
       // Handle Ichor Shower
       if (payoutResult.ichorShowerTriggered && payoutResult.ichorShowerWinner) {
@@ -715,116 +773,25 @@ export class RumbleOrchestrator {
     // but update payout status for safety)
     persist.updateRumbleStatus(slot.id, "complete");
 
-    this.cleanupSlot(slotIndex);
+    this.cleanupSlot(slotIndex, slot.id);
   }
 
   // ---- Cleanup -------------------------------------------------------------
 
-  private cleanupSlot(slotIndex: number): void {
+  private cleanupSlot(slotIndex: number, rumbleId?: string): void {
+    if (rumbleId) {
+      this.payoutProcessed.delete(rumbleId);
+    }
     this.bettingPools.delete(slotIndex);
     this.combatStates.delete(slotIndex);
     this.autoRequeueFighters.delete(slotIndex);
   }
 
   private handleSlotRecycled(slotIndex: number, previousFighters: string[]): void {
-    // Clean up any stale payout tracking
-    this.payoutProcessed.delete(
-      this.queueManager.getSlot(slotIndex)?.id ?? "",
-    );
-
     this.emit("slot_recycled", {
       slotIndex,
       previousFighters,
     });
-  }
-
-  // ---- Simplified combat resolution ----------------------------------------
-  // This is used for incremental turn-by-turn execution. In production,
-  // replace with a direct import of resolveCombat from combat.ts.
-
-  private resolveSimpleCombat(
-    moveA: string,
-    moveB: string,
-    meterA: number,
-    meterB: number,
-  ): {
-    damageToA: number;
-    damageToB: number;
-    meterUsedA: number;
-    meterUsedB: number;
-  } {
-    const STRIKE_DMG = 15;
-    const SPECIAL_DMG = 30;
-    const SPECIAL_COST = 100;
-
-    const isStrike = (m: string) =>
-      m === "HIGH_STRIKE" || m === "MID_STRIKE" || m === "LOW_STRIKE";
-    const isGuard = (m: string) =>
-      m === "GUARD_HIGH" || m === "GUARD_MID" || m === "GUARD_LOW";
-    const isDodge = (m: string) => m === "DODGE";
-    const isCatch = (m: string) => m === "CATCH";
-    const isSpecial = (m: string) => m === "SPECIAL";
-
-    // Check if a guard blocks a specific strike zone
-    const guardBlocks = (guard: string, strike: string): boolean => {
-      if (guard === "GUARD_HIGH" && strike === "HIGH_STRIKE") return true;
-      if (guard === "GUARD_MID" && strike === "MID_STRIKE") return true;
-      if (guard === "GUARD_LOW" && strike === "LOW_STRIKE") return true;
-      return false;
-    };
-
-    let damageToA = 0;
-    let damageToB = 0;
-    let meterUsedA = 0;
-    let meterUsedB = 0;
-
-    // Handle specials
-    if (isSpecial(moveA) && meterA >= SPECIAL_COST) {
-      meterUsedA = SPECIAL_COST;
-      if (!isDodge(moveB)) {
-        damageToB = SPECIAL_DMG;
-      }
-    }
-    if (isSpecial(moveB) && meterB >= SPECIAL_COST) {
-      meterUsedB = SPECIAL_COST;
-      if (!isDodge(moveA)) {
-        damageToA = SPECIAL_DMG;
-      }
-    }
-
-    // If both used specials, that's already resolved
-    if (meterUsedA > 0 || meterUsedB > 0) {
-      return { damageToA, damageToB, meterUsedA, meterUsedB };
-    }
-
-    // Strike vs Guard/Dodge/Catch/Strike
-    if (isStrike(moveA)) {
-      if (isGuard(moveB) && guardBlocks(moveB, moveA)) {
-        damageToB = 0; // blocked
-      } else if (isDodge(moveB)) {
-        damageToB = 0; // dodged
-      } else if (isCatch(moveB)) {
-        // Catch beats strike: reflect damage
-        damageToA = STRIKE_DMG;
-      } else {
-        damageToB = STRIKE_DMG;
-      }
-    }
-
-    if (isStrike(moveB)) {
-      if (isGuard(moveA) && guardBlocks(moveA, moveB)) {
-        damageToA = 0; // blocked
-      } else if (isDodge(moveA)) {
-        damageToA = 0; // dodged
-      } else if (isCatch(moveA)) {
-        // Catch beats strike: reflect damage
-        damageToB = STRIKE_DMG;
-      } else {
-        damageToA = STRIKE_DMG;
-      }
-    }
-
-    return { damageToA, damageToB, meterUsedA, meterUsedB };
   }
 
   // ---- Pairing helper (duplicated from rumble-engine for incremental use) --

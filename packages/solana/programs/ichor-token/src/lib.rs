@@ -58,7 +58,7 @@ pub mod ichor_token {
         let arena = &mut ctx.accounts.arena_config;
 
         // Calculate reward based on halving schedule
-        let reward = calculate_reward(arena.total_rumbles_completed);
+        let reward = calculate_reward(arena.base_reward, arena.total_rumbles_completed);
 
         // Total emission = reward + shower bonus
         let total_emission = reward
@@ -269,21 +269,24 @@ pub mod ichor_token {
 // ---------------------------------------------------------------------------
 
 /// Calculate the reward for a given rumble number based on the halving schedule.
-fn calculate_reward(rumbles_completed: u64) -> u64 {
+fn calculate_reward(base_reward: u64, rumbles_completed: u64) -> u64 {
     if rumbles_completed < HALVING_1 {
-        ONE_ICHOR // 1.0 ICHOR
+        base_reward
     } else if rumbles_completed < HALVING_2 {
-        ONE_ICHOR / 2 // 0.5 ICHOR
+        base_reward / 2
     } else if rumbles_completed < HALVING_3 {
-        ONE_ICHOR / 4 // 0.25 ICHOR
+        base_reward / 4
     } else if rumbles_completed < 21_000_000 {
-        ONE_ICHOR / 8 // 0.125 ICHOR
+        base_reward / 8
     } else {
-        ONE_ICHOR / 16 // 0.0625 ICHOR
+        base_reward / 16
     }
 }
 
 /// Derive a pseudorandom u64 from the SlotHashes sysvar data and current slot.
+///
+/// NOTE: This is not cryptographically secure randomness and can be biased by
+/// block producers. For production-grade jackpot fairness, replace with VRF.
 fn derive_rng_from_slot_hashes(data: &[u8], slot: u64) -> Result<u64> {
     // SlotHashes sysvar: first 8 bytes = count (u64 LE), then entries of (slot: u64, hash: [u8; 32])
     // Each entry is 40 bytes. We grab hash bytes from the first entry.
@@ -372,6 +375,7 @@ pub struct MintRumbleReward<'info> {
     #[account(
         mut,
         token::mint = ichor_mint,
+        token::authority = arena_config,
     )]
     pub shower_vault: Account<'info, TokenAccount>,
 

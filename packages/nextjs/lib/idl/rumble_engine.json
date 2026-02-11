@@ -1,0 +1,1265 @@
+{
+  "address": "2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC",
+  "metadata": {
+    "name": "rumble_engine",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Rumble engine: betting, combat, and payouts for Underground Claw Fights"
+  },
+  "instructions": [
+    {
+      "name": "claim_payout",
+      "docs": [
+        "Bettor claims their payout if their fighter placed 1st, 2nd, or 3rd.",
+        "",
+        "Payout logic:",
+        "1. Sum all pools for fighters that did NOT place 1st, 2nd, or 3rd = losers_pool",
+        "2. Treasury cut = 10% of losers_pool",
+        "3. Distributable = losers_pool - treasury_cut",
+        "4. 1st place bettors split 70% of distributable",
+        "5. 2nd place bettors split 20% of distributable",
+        "6. 3rd place bettors split 10% of distributable",
+        "7. Each bettor gets their original bet back + proportional share of their place's split"
+      ],
+      "discriminator": [
+        127,
+        240,
+        132,
+        62,
+        227,
+        198,
+        146,
+        133
+      ],
+      "accounts": [
+        {
+          "name": "bettor",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "rumble",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.id",
+                "account": "Rumble"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.id",
+                "account": "Rumble"
+              }
+            ]
+          }
+        },
+        {
+          "name": "bettor_account",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "claim_sponsorship_revenue",
+      "docs": [
+        "Fighter owner claims accumulated sponsorship revenue.",
+        "Drains the sponsorship PDA balance to the fighter owner."
+      ],
+      "discriminator": [
+        130,
+        68,
+        255,
+        78,
+        93,
+        146,
+        248,
+        177
+      ],
+      "accounts": [
+        {
+          "name": "fighter_owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "fighter",
+          "docs": [
+            "by reading bytes 8..40 (the authority pubkey after Anchor's 8-byte discriminator)."
+          ]
+        },
+        {
+          "name": "sponsorship_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  110,
+                  115,
+                  111,
+                  114,
+                  115,
+                  104,
+                  105,
+                  112
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "fighter"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "complete_rumble",
+      "docs": [
+        "Admin transitions rumble to Complete state after all payouts processed."
+      ],
+      "discriminator": [
+        149,
+        216,
+        36,
+        145,
+        185,
+        20,
+        229,
+        110
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "rumble",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.id",
+                "account": "Rumble"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "create_rumble",
+      "docs": [
+        "Create a new rumble with a list of fighters and a betting deadline."
+      ],
+      "discriminator": [
+        66,
+        165,
+        116,
+        45,
+        99,
+        162,
+        217,
+        4
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "rumble",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "rumble_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "rumble_id",
+          "type": "u64"
+        },
+        {
+          "name": "fighters",
+          "type": {
+            "vec": "pubkey"
+          }
+        },
+        {
+          "name": "betting_deadline",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "initialize",
+      "docs": [
+        "Initialize the rumble engine configuration.",
+        "Sets the admin key and treasury address."
+      ],
+      "discriminator": [
+        175,
+        175,
+        109,
+        31,
+        13,
+        152,
+        155,
+        237
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "place_bet",
+      "docs": [
+        "Place a bet on a fighter in a rumble.",
+        "Transfers SOL from bettor to vault, deducting admin fee and sponsorship."
+      ],
+      "discriminator": [
+        222,
+        62,
+        67,
+        220,
+        63,
+        166,
+        126,
+        33
+      ],
+      "accounts": [
+        {
+          "name": "bettor",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "rumble",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "rumble_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "docs": [
+            "Vault PDA that holds all bet SOL for this rumble."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "rumble_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "sponsorship_account",
+          "docs": [
+            "Sponsorship account PDA for the fighter being bet on."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  110,
+                  115,
+                  111,
+                  114,
+                  115,
+                  104,
+                  105,
+                  112
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.fighters [fighter_index as usize]",
+                "account": "Rumble"
+              }
+            ]
+          }
+        },
+        {
+          "name": "bettor_account",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "rumble_id",
+          "type": "u64"
+        },
+        {
+          "name": "fighter_index",
+          "type": "u8"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "report_result",
+      "docs": [
+        "Report the final result of a rumble.",
+        "Admin submits placements (1st through last). Transitions to Payout state.",
+        "placements[i] = the placement (1-indexed) of fighter at index i.",
+        "e.g. placements[0] = 1 means fighter 0 came in 1st place."
+      ],
+      "discriminator": [
+        195,
+        187,
+        161,
+        107,
+        75,
+        154,
+        102,
+        183
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "rumble",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.id",
+                "account": "Rumble"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "placements",
+          "type": "bytes"
+        },
+        {
+          "name": "winner_index",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "start_combat",
+      "docs": [
+        "Transition rumble from Betting to Combat.",
+        "Only callable by admin after the betting deadline."
+      ],
+      "discriminator": [
+        1,
+        221,
+        76,
+        221,
+        77,
+        32,
+        227,
+        31
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "rumble",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.id",
+                "account": "Rumble"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "sweep_treasury",
+      "docs": [
+        "Sweep remaining SOL from a completed Rumble's vault to the treasury.",
+        "Called by admin after all claims are processed."
+      ],
+      "discriminator": [
+        125,
+        203,
+        4,
+        4,
+        87,
+        34,
+        238,
+        169
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "rumble",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.id",
+                "account": "Rumble"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.id",
+                "account": "Rumble"
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        }
+      ],
+      "args": []
+    }
+  ],
+  "accounts": [
+    {
+      "name": "BettorAccount",
+      "discriminator": [
+        122,
+        110,
+        158,
+        151,
+        236,
+        225,
+        6,
+        38
+      ]
+    },
+    {
+      "name": "Rumble",
+      "discriminator": [
+        121,
+        136,
+        74,
+        188,
+        164,
+        146,
+        171,
+        5
+      ]
+    },
+    {
+      "name": "RumbleConfig",
+      "discriminator": [
+        247,
+        185,
+        149,
+        31,
+        177,
+        255,
+        146,
+        221
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "BetPlacedEvent",
+      "discriminator": [
+        218,
+        76,
+        236,
+        147,
+        222,
+        135,
+        81,
+        43
+      ]
+    },
+    {
+      "name": "CombatStartedEvent",
+      "discriminator": [
+        193,
+        23,
+        172,
+        156,
+        184,
+        175,
+        245,
+        247
+      ]
+    },
+    {
+      "name": "PayoutClaimedEvent",
+      "discriminator": [
+        69,
+        111,
+        213,
+        94,
+        91,
+        203,
+        244,
+        39
+      ]
+    },
+    {
+      "name": "ResultReportedEvent",
+      "discriminator": [
+        132,
+        217,
+        66,
+        126,
+        2,
+        52,
+        113,
+        44
+      ]
+    },
+    {
+      "name": "SponsorshipClaimedEvent",
+      "discriminator": [
+        204,
+        249,
+        246,
+        96,
+        186,
+        20,
+        40,
+        73
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "Unauthorized",
+      "msg": "Unauthorized: only admin can perform this action"
+    },
+    {
+      "code": 6001,
+      "name": "BettingClosed",
+      "msg": "Betting is closed for this rumble"
+    },
+    {
+      "code": 6002,
+      "name": "BettingNotEnded",
+      "msg": "Betting period has not ended yet"
+    },
+    {
+      "code": 6003,
+      "name": "InvalidStateTransition",
+      "msg": "Invalid state transition"
+    },
+    {
+      "code": 6004,
+      "name": "InvalidFighterIndex",
+      "msg": "Invalid fighter index"
+    },
+    {
+      "code": 6005,
+      "name": "InvalidFighterCount",
+      "msg": "Invalid fighter count: must be between 2 and 16"
+    },
+    {
+      "code": 6006,
+      "name": "InvalidPlacement",
+      "msg": "Invalid placement data"
+    },
+    {
+      "code": 6007,
+      "name": "ZeroBetAmount",
+      "msg": "Bet amount must be greater than zero"
+    },
+    {
+      "code": 6008,
+      "name": "AlreadyClaimed",
+      "msg": "Payout already claimed"
+    },
+    {
+      "code": 6009,
+      "name": "PayoutNotReady",
+      "msg": "Payout is not ready yet"
+    },
+    {
+      "code": 6010,
+      "name": "NotInPayoutRange",
+      "msg": "Fighter did not place in top 3"
+    },
+    {
+      "code": 6011,
+      "name": "MathOverflow",
+      "msg": "Math overflow"
+    },
+    {
+      "code": 6012,
+      "name": "InsufficientVaultFunds",
+      "msg": "Insufficient funds in vault"
+    },
+    {
+      "code": 6013,
+      "name": "InvalidTreasury",
+      "msg": "Invalid treasury address"
+    },
+    {
+      "code": 6014,
+      "name": "InvalidRumble",
+      "msg": "Invalid rumble ID mismatch"
+    },
+    {
+      "code": 6015,
+      "name": "NothingToClaim",
+      "msg": "Nothing to claim"
+    },
+    {
+      "code": 6016,
+      "name": "DeadlineInPast",
+      "msg": "Betting deadline must be in the future"
+    },
+    {
+      "code": 6017,
+      "name": "InvalidFighterAccount",
+      "msg": "Invalid fighter account data"
+    }
+  ],
+  "types": [
+    {
+      "name": "BetPlacedEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "rumble_id",
+            "type": "u64"
+          },
+          {
+            "name": "bettor",
+            "type": "pubkey"
+          },
+          {
+            "name": "fighter_index",
+            "type": "u8"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "net_amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BettorAccount",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "rumble_id",
+            "type": "u64"
+          },
+          {
+            "name": "fighter_index",
+            "type": "u8"
+          },
+          {
+            "name": "sol_deployed",
+            "type": "u64"
+          },
+          {
+            "name": "claimed",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CombatStartedEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "rumble_id",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PayoutClaimedEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "rumble_id",
+            "type": "u64"
+          },
+          {
+            "name": "bettor",
+            "type": "pubkey"
+          },
+          {
+            "name": "fighter_index",
+            "type": "u8"
+          },
+          {
+            "name": "placement",
+            "type": "u8"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ResultReportedEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "rumble_id",
+            "type": "u64"
+          },
+          {
+            "name": "winner_index",
+            "type": "u8"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Rumble",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "id",
+            "type": "u64"
+          },
+          {
+            "name": "state",
+            "type": {
+              "defined": {
+                "name": "RumbleState"
+              }
+            }
+          },
+          {
+            "name": "fighters",
+            "type": {
+              "array": [
+                "pubkey",
+                16
+              ]
+            }
+          },
+          {
+            "name": "fighter_count",
+            "type": "u8"
+          },
+          {
+            "name": "betting_pools",
+            "type": {
+              "array": [
+                "u64",
+                16
+              ]
+            }
+          },
+          {
+            "name": "total_deployed",
+            "type": "u64"
+          },
+          {
+            "name": "admin_fee_collected",
+            "type": "u64"
+          },
+          {
+            "name": "sponsorship_paid",
+            "type": "u64"
+          },
+          {
+            "name": "placements",
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "winner_index",
+            "type": "u8"
+          },
+          {
+            "name": "betting_deadline",
+            "type": "i64"
+          },
+          {
+            "name": "combat_started_at",
+            "type": "i64"
+          },
+          {
+            "name": "completed_at",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RumbleConfig",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "treasury",
+            "type": "pubkey"
+          },
+          {
+            "name": "total_rumbles",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RumbleState",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Betting"
+          },
+          {
+            "name": "Combat"
+          },
+          {
+            "name": "Payout"
+          },
+          {
+            "name": "Complete"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SponsorshipClaimedEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "fighter_owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "fighter",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    }
+  ]
+}

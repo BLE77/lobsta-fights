@@ -1,6 +1,8 @@
 import { getOrchestrator, type OrchestratorEvent } from "~~/lib/rumble-orchestrator";
 
 export const dynamic = "force-dynamic";
+const MAX_SSE_CONNECTIONS = 200;
+let activeSseConnections = 0;
 
 /**
  * GET /api/rumble/live
@@ -12,18 +14,49 @@ export const dynamic = "force-dynamic";
  *   payout_complete, slot_recycled
  */
 export async function GET() {
+  if (activeSseConnections >= MAX_SSE_CONNECTIONS) {
+    return new Response(
+      JSON.stringify({
+        error: "Too many live connections",
+        max_connections: MAX_SSE_CONNECTIONS,
+      }),
+      {
+        status: 429,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  }
+
   const encoder = new TextEncoder();
+  let cleanup: (() => void) | null = null;
 
   const stream = new ReadableStream({
     start(controller) {
       const orchestrator = getOrchestrator();
+      activeSseConnections += 1;
+      let cleanedUp = false;
+      const callbacks = new Map<OrchestratorEvent, (data: any) => void>();
+      let heartbeat: ReturnType<typeof setInterval> | null = null;
+
+      const runCleanup = () => {
+        if (cleanedUp) return;
+        cleanedUp = true;
+        if (heartbeat) {
+          clearInterval(heartbeat);
+        }
+        for (const [eventName, cb] of callbacks) {
+          orchestrator.off(eventName, cb);
+        }
+        activeSseConnections = Math.max(0, activeSseConnections - 1);
+      };
+      cleanup = runCleanup;
 
       function send(event: string, data: any) {
         try {
           const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
           controller.enqueue(encoder.encode(payload));
         } catch {
-          // Stream closed; ignore
+          runCleanup();
         }
       }
 
@@ -46,8 +79,6 @@ export async function GET() {
         "slot_recycled",
       ];
 
-      const callbacks = new Map<OrchestratorEvent, (data: any) => void>();
-
       for (const eventName of events) {
         const cb = (data: any) => send(eventName, data);
         callbacks.set(eventName, cb);
@@ -55,26 +86,16 @@ export async function GET() {
       }
 
       // Heartbeat every 15 seconds to keep the connection alive
-      const heartbeat = setInterval(() => {
+      heartbeat = setInterval(() => {
         try {
           controller.enqueue(encoder.encode(`: heartbeat ${new Date().toISOString()}\n\n`));
         } catch {
-          clearInterval(heartbeat);
+          runCleanup();
         }
       }, 15_000);
-
-      // Store cleanup for when the stream is cancelled
-      (controller as any).__cleanup = () => {
-        clearInterval(heartbeat);
-        for (const [eventName, cb] of callbacks) {
-          orchestrator.off(eventName, cb);
-        }
-      };
     },
-    cancel(controller: any) {
-      if (controller?.__cleanup) {
-        controller.__cleanup();
-      }
+    cancel() {
+      cleanup?.();
     },
   });
 

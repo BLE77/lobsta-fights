@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import FighterHP from "./FighterHP";
 
 interface FighterOdds {
@@ -34,7 +34,7 @@ export default function BettingPanel({
   const [timeLeft, setTimeLeft] = useState("");
 
   // Countdown timer
-  useState(() => {
+  useEffect(() => {
     if (!deadline) return;
     const update = () => {
       const now = Date.now();
@@ -52,7 +52,7 @@ export default function BettingPanel({
     update();
     const interval = setInterval(update, 1000);
     return () => clearInterval(interval);
-  });
+  }, [deadline]);
 
   const handleBet = () => {
     if (!selectedFighter || !betAmount || !onPlaceBet) return;

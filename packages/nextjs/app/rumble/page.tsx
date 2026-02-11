@@ -53,6 +53,28 @@ export default function RumblePage() {
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const bettorWalletRef = useRef<string>("");
+
+  const getBettorWallet = useCallback((): string => {
+    if (bettorWalletRef.current) {
+      return bettorWalletRef.current;
+    }
+
+    const storageKey = "ucf_bettor_wallet";
+    const existing = window.localStorage.getItem(storageKey);
+    if (existing) {
+      bettorWalletRef.current = existing;
+      return existing;
+    }
+
+    const randomId =
+      globalThis.crypto?.randomUUID?.() ??
+      `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const generated = `guest-${randomId}`;
+    window.localStorage.setItem(storageKey, generated);
+    bettorWalletRef.current = generated;
+    return generated;
+  }, []);
 
   // Fetch full status via polling
   const fetchStatus = useCallback(async () => {
@@ -192,7 +214,12 @@ export default function RumblePage() {
       const res = await fetch("/api/rumble/bet", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slotIndex, fighterId, amount }),
+        body: JSON.stringify({
+          slotIndex,
+          fighterId,
+          amount,
+          bettor_wallet: getBettorWallet(),
+        }),
       });
       if (!res.ok) {
         const data = await res.json();

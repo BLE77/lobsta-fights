@@ -64,9 +64,63 @@ CREATE TABLE IF NOT EXISTS ucf_rumble_stats (
 -- Indexes
 CREATE INDEX idx_rumble_queue_status ON ucf_rumble_queue(status);
 CREATE INDEX idx_rumbles_status ON ucf_rumbles(status);
+CREATE INDEX IF NOT EXISTS idx_rumbles_slot_index ON ucf_rumbles(slot_index);
 CREATE INDEX idx_bets_rumble_id ON ucf_bets(rumble_id);
 CREATE INDEX idx_bets_wallet ON ucf_bets(wallet_address);
 CREATE INDEX idx_bets_fighter ON ucf_bets(fighter_id);
+
+-- Atomic increment helpers to avoid read-modify-write races
+CREATE OR REPLACE FUNCTION increment_ichor_shower_pool(delta_pool_amount NUMERIC)
+RETURNS VOID
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  WITH target AS (
+    SELECT id
+    FROM ucf_ichor_shower
+    ORDER BY updated_at ASC, id ASC
+    LIMIT 1
+  )
+  UPDATE ucf_ichor_shower s
+  SET
+    pool_amount = s.pool_amount + COALESCE(delta_pool_amount, 0),
+    updated_at = now()
+  FROM target
+  WHERE s.id = target.id;
+$$;
+
+CREATE OR REPLACE FUNCTION increment_rumble_stats(
+  delta_sol_wagered NUMERIC,
+  delta_ichor_minted NUMERIC,
+  delta_ichor_burned NUMERIC
+)
+RETURNS VOID
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  WITH target AS (
+    SELECT id
+    FROM ucf_rumble_stats
+    ORDER BY updated_at ASC, id ASC
+    LIMIT 1
+  )
+  UPDATE ucf_rumble_stats s
+  SET
+    total_rumbles = s.total_rumbles + 1,
+    total_sol_wagered = s.total_sol_wagered + COALESCE(delta_sol_wagered, 0),
+    total_ichor_minted = s.total_ichor_minted + COALESCE(delta_ichor_minted, 0),
+    total_ichor_burned = s.total_ichor_burned + COALESCE(delta_ichor_burned, 0),
+    updated_at = now()
+  FROM target
+  WHERE s.id = target.id;
+$$;
+
+REVOKE ALL ON FUNCTION increment_ichor_shower_pool(NUMERIC) FROM PUBLIC;
+REVOKE ALL ON FUNCTION increment_rumble_stats(NUMERIC, NUMERIC, NUMERIC) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION increment_ichor_shower_pool(NUMERIC) TO service_role;
+GRANT EXECUTE ON FUNCTION increment_rumble_stats(NUMERIC, NUMERIC, NUMERIC) TO service_role;
 
 -- Enable RLS
 ALTER TABLE ucf_rumble_queue ENABLE ROW LEVEL SECURITY;

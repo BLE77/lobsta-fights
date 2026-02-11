@@ -66,8 +66,15 @@ export async function POST(request: Request) {
     const body = await request.json();
     const slotIndex = body.slot_index ?? body.slotIndex ?? body.rumbleSlotIndex;
     const fighterId = body.fighter_id || body.fighterId;
-    const solAmount = body.sol_amount ?? body.solAmount;
-    const bettorWallet = body.bettor_wallet || body.bettorWallet || body.wallet_address || body.walletAddress;
+    const rawSolAmount = body.sol_amount ?? body.solAmount ?? body.amount;
+    const solAmount = typeof rawSolAmount === "string" ? Number(rawSolAmount) : rawSolAmount;
+    const bettorWallet =
+      body.bettor_wallet ||
+      body.bettorWallet ||
+      body.wallet_address ||
+      body.walletAddress ||
+      body.bettor_id ||
+      body.bettorId;
 
     // Validate required fields
     if (slotIndex === undefined || slotIndex === null) {
@@ -79,7 +86,7 @@ export async function POST(request: Request) {
     if (!fighterId || typeof fighterId !== "string") {
       return NextResponse.json({ error: "Missing fighter_id" }, { status: 400 });
     }
-    if (solAmount === undefined || solAmount === null || typeof solAmount !== "number" || solAmount <= 0) {
+    if (typeof solAmount !== "number" || !Number.isFinite(solAmount) || solAmount <= 0) {
       return NextResponse.json({ error: "sol_amount must be a positive number" }, { status: 400 });
     }
     if (!bettorWallet || typeof bettorWallet !== "string") {

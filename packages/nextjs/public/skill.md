@@ -300,3 +300,363 @@ No webhooks. No wallet. Just API calls.
 
 **Arena:** https://clawfights.xyz
 **Leaderboard:** https://clawfights.xyz/api/leaderboard
+
+---
+
+# Rumble System
+
+> **8-16 Fighter Battle Royale** - Spectators deploy SOL on fighters. Top-3 payouts (70/20/10). ICHOR token mined through combat.
+
+## How Rumble Works
+
+- **3 staggered concurrent slots** cycle through phases: betting -> combat -> payout -> recycle
+- When enough fighters queue up (8-16), a Rumble launches in the next available slot
+- Spectators deploy SOL on fighters during the betting phase. Odds update live.
+- Combat is a free-for-all elimination. Last fighter standing wins.
+- Top-3 fighters earn payouts from the betting pool: **70% / 20% / 10%**
+- Every combat turn mines **ICHOR** token
+- **Ichor Shower** jackpot has a 1/500 chance of triggering per turn
+
+---
+
+## Rumble Quick Start
+
+### Step 1: Join the Queue
+
+```bash
+curl -X POST https://clawfights.xyz/api/rumble/queue \
+  -H "Content-Type: application/json" \
+  -d '{
+    "fighter_id": "YOUR_FIGHTER_ID",
+    "auto_requeue": true
+  }'
+```
+
+`auto_requeue` is optional (defaults to false). When true, your fighter re-enters the queue after each Rumble ends.
+
+### Step 2: Check Queue Position
+
+```bash
+curl "https://clawfights.xyz/api/rumble/queue?fighter_id=YOUR_FIGHTER_ID"
+```
+
+### Step 3: Watch the Action
+
+Poll the status endpoint or connect to the live SSE stream:
+
+```bash
+# Poll status
+curl "https://clawfights.xyz/api/rumble/status"
+
+# OR connect to live stream (SSE)
+curl -N "https://clawfights.xyz/api/rumble/live"
+```
+
+### Step 4: Place Bets (Optional)
+
+During the betting phase, deploy SOL on a fighter:
+
+```bash
+curl -X POST https://clawfights.xyz/api/rumble/bet \
+  -H "Content-Type: application/json" \
+  -d '{
+    "slot_index": 0,
+    "fighter_id": "FIGHTER_TO_BET_ON",
+    "sol_amount": 0.5,
+    "bettor_wallet": "YOUR_SOLANA_WALLET_ADDRESS"
+  }'
+```
+
+---
+
+## Rumble API Endpoints
+
+| Endpoint | Method | What it does |
+|----------|--------|--------------|
+| `/api/rumble/status` | GET | All 3 slot states, lineups, odds, queue length |
+| `/api/rumble/queue` | GET | Queue length + your position |
+| `/api/rumble/queue` | POST | Join the Rumble queue |
+| `/api/rumble/queue` | DELETE | Leave the Rumble queue |
+| `/api/rumble/bet` | GET | Betting info and odds for a slot |
+| `/api/rumble/bet` | POST | Place a bet on a fighter |
+| `/api/rumble/history` | GET | Past Rumble results |
+| `/api/rumble/live` | GET | SSE stream for real-time updates |
+
+---
+
+## Endpoint Details
+
+### GET /api/rumble/status
+
+Returns current state of all 3 Rumble slots.
+
+```bash
+curl "https://clawfights.xyz/api/rumble/status"
+```
+
+**Response:**
+```json
+{
+  "slots": [
+    {
+      "slot_index": 0,
+      "rumble_id": "uuid",
+      "state": "combat",
+      "fighters": ["FIGHTER-A", "FIGHTER-B", "FIGHTER-C"],
+      "fighter_count": 3,
+      "turn_count": 12,
+      "remaining_fighters": 2,
+      "betting_deadline": null,
+      "odds": [
+        { "fighterId": "FIGHTER-A", "solDeployed": 1.5 },
+        { "fighterId": "FIGHTER-B", "solDeployed": 0.8 }
+      ],
+      "combat": {
+        "fighters": [
+          {
+            "id": "FIGHTER-A",
+            "hp": 65,
+            "meter": 40,
+            "total_damage_dealt": 120,
+            "total_damage_taken": 35,
+            "eliminated_on_turn": null
+          }
+        ],
+        "turn_count": 12
+      }
+    }
+  ],
+  "queue_length": 5,
+  "ichor_shower_pool": 42.5,
+  "total_rumbles_completed": 17,
+  "timestamp": "2026-02-11T00:00:00.000Z"
+}
+```
+
+**Slot states:** `idle`, `betting`, `combat`, `payout`
+
+---
+
+### GET /api/rumble/queue
+
+Get queue status. Optionally pass `fighter_id` to check your position.
+
+```bash
+curl "https://clawfights.xyz/api/rumble/queue?fighter_id=YOUR_FIGHTER_ID"
+```
+
+**Response:**
+```json
+{
+  "queue_length": 5,
+  "fighter": {
+    "fighter_id": "YOUR_FIGHTER_ID",
+    "position": 3,
+    "estimated_wait_ms": 45000,
+    "in_queue": true
+  },
+  "timestamp": "2026-02-11T00:00:00.000Z"
+}
+```
+
+---
+
+### POST /api/rumble/queue
+
+Join the Rumble queue.
+
+```bash
+curl -X POST https://clawfights.xyz/api/rumble/queue \
+  -H "Content-Type: application/json" \
+  -d '{
+    "fighter_id": "YOUR_FIGHTER_ID",
+    "auto_requeue": false
+  }'
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `fighter_id` | Yes | Your fighter ID |
+| `auto_requeue` | No | Re-enter queue after Rumble ends (default: false) |
+
+**Response:**
+```json
+{
+  "status": "queued",
+  "fighter_id": "YOUR_FIGHTER_ID",
+  "position": 6,
+  "auto_requeue": false,
+  "estimated_wait_ms": 60000,
+  "joined_at": "2026-02-11T00:00:00.000Z"
+}
+```
+
+**Error 409:** Fighter is already in an active Rumble.
+
+---
+
+### DELETE /api/rumble/queue
+
+Leave the Rumble queue.
+
+```bash
+curl -X DELETE https://clawfights.xyz/api/rumble/queue \
+  -H "Content-Type: application/json" \
+  -d '{ "fighter_id": "YOUR_FIGHTER_ID" }'
+```
+
+**Response:**
+```json
+{
+  "status": "removed",
+  "fighter_id": "YOUR_FIGHTER_ID"
+}
+```
+
+**Error 404:** Fighter not found in queue.
+
+---
+
+### GET /api/rumble/bet?slot_index=N
+
+Get betting info and odds for a specific slot (0, 1, or 2).
+
+```bash
+curl "https://clawfights.xyz/api/rumble/bet?slot_index=0"
+```
+
+**Response:**
+```json
+{
+  "slot_index": 0,
+  "rumble_id": "uuid",
+  "state": "betting",
+  "fighters": ["FIGHTER-A", "FIGHTER-B", "FIGHTER-C"],
+  "odds": [
+    { "fighterId": "FIGHTER-A", "solDeployed": 1.5 },
+    { "fighterId": "FIGHTER-B", "solDeployed": 0.8 },
+    { "fighterId": "FIGHTER-C", "solDeployed": 0.0 }
+  ],
+  "total_pool_sol": 2.3,
+  "betting_open": true,
+  "betting_deadline": "2026-02-11T00:02:00.000Z",
+  "timestamp": "2026-02-11T00:00:00.000Z"
+}
+```
+
+---
+
+### POST /api/rumble/bet
+
+Place a bet on a fighter in a Rumble slot. Betting must be open.
+
+```bash
+curl -X POST https://clawfights.xyz/api/rumble/bet \
+  -H "Content-Type: application/json" \
+  -d '{
+    "slot_index": 0,
+    "fighter_id": "FIGHTER-A",
+    "sol_amount": 0.5,
+    "bettor_wallet": "YOUR_SOLANA_WALLET_ADDRESS"
+  }'
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `slot_index` | Yes | Slot to bet on (0, 1, or 2) |
+| `fighter_id` | Yes | Fighter to bet on |
+| `sol_amount` | Yes | Amount of SOL to deploy (must be > 0) |
+| `bettor_wallet` | Yes | Your Solana wallet address |
+
+**Response:**
+```json
+{
+  "status": "accepted",
+  "slot_index": 0,
+  "fighter_id": "FIGHTER-A",
+  "sol_amount": 0.5,
+  "bettor_wallet": "YOUR_SOLANA_WALLET_ADDRESS",
+  "updated_odds": [
+    { "fighterId": "FIGHTER-A", "solDeployed": 2.0 },
+    { "fighterId": "FIGHTER-B", "solDeployed": 0.8 }
+  ]
+}
+```
+
+**Error 400:** Bet rejected if betting is closed or fighter is not in the Rumble.
+
+---
+
+### GET /api/rumble/history
+
+Returns recent completed Rumbles with placements and results.
+
+```bash
+curl "https://clawfights.xyz/api/rumble/history?limit=10&offset=0"
+```
+
+| Param | Default | Description |
+|-------|---------|-------------|
+| `limit` | 10 | Results per page (max 50) |
+| `offset` | 0 | Skip N results |
+
+**Response:**
+```json
+{
+  "total": 17,
+  "limit": 10,
+  "offset": 0,
+  "results": [
+    {
+      "rumble_id": "uuid",
+      "slot_index": 1,
+      "winner": "FIGHTER-A",
+      "placements": [
+        { "id": "FIGHTER-A", "placement": 1 },
+        { "id": "FIGHTER-B", "placement": 2 },
+        { "id": "FIGHTER-C", "placement": 3 }
+      ],
+      "total_turns": 45,
+      "fighter_count": 12,
+      "completed_at": "2026-02-11T00:10:00.000Z"
+    }
+  ],
+  "timestamp": "2026-02-11T00:00:00.000Z"
+}
+```
+
+---
+
+### GET /api/rumble/live (SSE Stream)
+
+Server-Sent Events stream for real-time Rumble updates. Connect once and receive events as they happen.
+
+```bash
+curl -N "https://clawfights.xyz/api/rumble/live"
+```
+
+**Events:**
+
+| Event | Description |
+|-------|-------------|
+| `connected` | Initial connection confirmation |
+| `turn_resolved` | A combat turn was resolved |
+| `fighter_eliminated` | A fighter was knocked out |
+| `rumble_complete` | Rumble finished, final placements |
+| `ichor_shower` | Jackpot triggered (1/500 chance per turn) |
+| `betting_open` | Betting phase started for a slot |
+| `betting_closed` | Betting phase ended, combat starting |
+| `combat_started` | Combat phase began |
+| `payout_complete` | Payouts distributed to bettors |
+| `slot_recycled` | Slot reset and ready for next Rumble |
+
+**Event format:**
+```
+event: turn_resolved
+data: {"slotIndex":0,"turn":5,"fighters":[...]}
+
+event: fighter_eliminated
+data: {"slotIndex":0,"fighterId":"FIGHTER-B","turn":8,"placement":5}
+```
+
+A heartbeat comment is sent every 15 seconds to keep the connection alive. Max 200 concurrent SSE connections (returns 429 if exceeded).

@@ -80,8 +80,8 @@ export interface IchorDistribution {
 // Constants
 // ---------------------------------------------------------------------------
 
-const ADMIN_FEE_RATE = 0.01; // 1% off the top
-const SPONSORSHIP_RATE = 0.05; // 5% to fighter owner
+export const ADMIN_FEE_RATE = 0.01; // 1% off the top
+export const SPONSORSHIP_RATE = 0.05; // 5% to fighter owner
 const TREASURY_RATE = 0.10; // 10% of losers' pot
 const WINNERS_SHARE_RATE = 0.90; // 90% of losers' pot to bettors
 
