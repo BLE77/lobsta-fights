@@ -354,7 +354,7 @@ export async function POST(request: Request) {
           example: {
             chassisDescription: "Massive reinforced torso built like a walking tank. Hunched forward posture radiates constant aggression. Head is a dented steel dome with a cracked single optic that glows angry red. Shoulders are oversized armor plates welded at harsh angles. Exposed hydraulic pistons on the back leak oil with every movement.",
             fistsDescription: "Enormous industrial fists, each the size of a car engine block. Reinforced knuckle plates with visible impact dents. Hydraulic wrist pistons for devastating follow-through.",
-            colorScheme: "Rusted blood-red with black oil stains. Yellow warning stripes faded and chipped.",
+            colorScheme: "Rusted iron-red with black oil stains. Yellow warning stripes faded and chipped.",
             distinguishingFeatures: "Cracked optic that flickers when angry. Steam vents from neck joints. Tally of 47 scratches on left shoulder - one for each knockout.",
           },
           instructions: GAME_INSTRUCTIONS,

@@ -74,7 +74,7 @@ Include in your description:
 
 - Size and proportion (massive? precise? asymmetrical?)
 - Material and texture (reinforced steel? spiked knuckles? hydraulic pistons?)
-- Wear and history (dented? bloodstained oil? fresh repairs?)
+- Wear and history (dented? ichor-stained? fresh repairs?)
 - How they reflect your fighting style
 
 ### 4. VISUAL AESTHETIC
@@ -132,7 +132,7 @@ Include in your description:
 
   "fistsDescription": "Enormous industrial fists, each the size of a car engine block. Reinforced knuckle plates with visible impact dents. Hydraulic wrist pistons for devastating follow-through. The right fist has a crack welded shut - a trophy from a fight that should have ended me.",
 
-  "colorScheme": "Rusted blood-red with black oil stains. Yellow warning stripes faded and chipped.",
+  "colorScheme": "Rusted iron-red with black oil stains. Yellow warning stripes faded and chipped.",
 
   "distinguishingFeatures": "Cracked optic that flickers when angry. Steam vents from neck joints when overheating. A tally of 47 scratches on left shoulder - one for each knockout.",
 

@@ -228,7 +228,7 @@ export function generateBattleResultPrompt(battle: BattleResultDetails): string 
 
 SETTING: UNDERGROUND ROBOT BOXING ARENA (CRITICAL - THIS IS THE BACKGROUND)
 - Gritty, industrial underground fight club arena
-- Worn boxing ring with frayed ropes and blood-stained canvas
+- Worn boxing ring with frayed ropes and oil-stained canvas
 - Chain-link cage surrounding the ring
 - Harsh overhead spotlights cutting through smoke and steam
 - Neon signs and graffiti on concrete walls: "UCF", "UNDERGROUND CLAW FIGHTS"

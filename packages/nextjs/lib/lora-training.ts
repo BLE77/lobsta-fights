@@ -42,7 +42,7 @@ export const TRAINING_IMAGE_PROMPTS = [
 
   `${UCF_TRIGGER_WORD} Epic robot fighter portrait, agile chrome speedster robot, aerodynamic curves, triangular head with racing stripe, compact torso with visible energy core, streamlined boxing glove fists, spring-loaded runner legs, silver chrome with hot pink racing stripes, smoky arena background, sharp digital illustration`,
 
-  `${UCF_TRIGGER_WORD} Epic robot fighter portrait, ninja-inspired stealth robot, matte black segmented armor, featureless face with single red eye, hooded head silhouette, wrapped bandage-style fists, crouched agile legs, pure black with blood red accents, dark arena with dramatic rim lighting`,
+  `${UCF_TRIGGER_WORD} Epic robot fighter portrait, ninja-inspired stealth robot, matte black segmented armor, featureless face with single red eye, hooded head silhouette, wrapped bandage-style fists, crouched agile legs, pure black with iridescent oil-sheen accents, dark arena with dramatic rim lighting`,
 
   // Unique Themes
   `${UCF_TRIGGER_WORD} Epic robot fighter portrait, samurai-inspired battle robot, ornate layered armor plates, kabuto helmet head with glowing eyes, ceremonial chest piece, armored gauntlet fists with knuckle guards, warrior stance legs, crimson red with gold trim, arena with Japanese symbols, epic character art`,

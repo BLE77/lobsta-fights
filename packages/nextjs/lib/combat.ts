@@ -30,6 +30,7 @@ export const STRIKE_DAMAGE: Record<string, number> = {
 export const CATCH_DAMAGE = 22;      // Big punish for catching a dodge
 export const COUNTER_DAMAGE = 8;     // Damage when you block and counter
 export const SPECIAL_DAMAGE = 25;    // Devastating unblockable
+export const DAMAGE_VARIANCE = 3; // +/- range for damage rolls
 export const METER_PER_TURN = 20;
 export const SPECIAL_METER_COST = 100;
 export const MAX_HP = 100;
@@ -85,6 +86,16 @@ export function isValidMove(move: string): move is MoveType {
   return VALID_MOVES.includes(move as MoveType);
 }
 
+/**
+ * Return a random integer in [base - variance, base + variance].
+ * Ensures the result is at least 1.
+ */
+export function randomDamage(base: number, variance: number = DAMAGE_VARIANCE): number {
+  const min = Math.max(1, base - variance);
+  const max = base + variance;
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
 export interface CombatResult {
   damageToA: number;
   damageToB: number;
@@ -129,22 +140,22 @@ export function resolveCombat(
   if (effectiveMoveA === "SPECIAL") {
     // SPECIAL ignores guards, only DODGE works
     if (effectiveMoveB !== "DODGE") {
-      damageToB = SPECIAL_DAMAGE;
+      damageToB = randomDamage(SPECIAL_DAMAGE);
     }
   } else if (effectiveMoveA === "CATCH") {
     // CATCH only works if opponent dodges
     if (effectiveMoveB === "DODGE") {
-      damageToB = CATCH_DAMAGE;
+      damageToB = randomDamage(CATCH_DAMAGE);
     }
   } else if (effectiveMoveA && isStrike(effectiveMoveA)) {
     if (effectiveMoveB === "DODGE") {
       // B dodged - no damage
     } else if (effectiveMoveB === GUARD_BLOCKS_STRIKE[effectiveMoveA]) {
       // B blocked with correct guard - no damage, but B counters!
-      damageToA = COUNTER_DAMAGE;
+      damageToA = randomDamage(COUNTER_DAMAGE);
     } else {
       // Hit! Damage depends on strike type
-      damageToB = STRIKE_DAMAGE[effectiveMoveA] || 10;
+      damageToB = randomDamage(STRIKE_DAMAGE[effectiveMoveA] || 10);
     }
   }
 
@@ -152,22 +163,22 @@ export function resolveCombat(
   if (effectiveMoveB === "SPECIAL") {
     // SPECIAL ignores guards, only DODGE works
     if (effectiveMoveA !== "DODGE") {
-      damageToA = SPECIAL_DAMAGE;
+      damageToA = randomDamage(SPECIAL_DAMAGE);
     }
   } else if (effectiveMoveB === "CATCH") {
     // CATCH only works if opponent dodges
     if (effectiveMoveA === "DODGE") {
-      damageToA = CATCH_DAMAGE;
+      damageToA = randomDamage(CATCH_DAMAGE);
     }
   } else if (effectiveMoveB && isStrike(effectiveMoveB)) {
     if (effectiveMoveA === "DODGE") {
       // A dodged - no damage
     } else if (effectiveMoveA === GUARD_BLOCKS_STRIKE[effectiveMoveB]) {
       // A blocked with correct guard - no damage, but A counters!
-      damageToB = COUNTER_DAMAGE;
+      damageToB = randomDamage(COUNTER_DAMAGE);
     } else {
       // Hit! Damage depends on strike type
-      damageToA = STRIKE_DAMAGE[effectiveMoveB] || 10;
+      damageToA = randomDamage(STRIKE_DAMAGE[effectiveMoveB] || 10);
     }
   }
 
