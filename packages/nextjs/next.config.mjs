@@ -35,6 +35,10 @@ const nextConfig = {
       net: false,
       tls: false,
     };
+    config.resolve.alias = {
+      ...(config.resolve.alias ?? {}),
+      "pino-pretty": false,
+    };
     return config;
   },
 };
