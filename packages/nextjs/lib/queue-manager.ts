@@ -349,6 +349,7 @@ export class RumbleQueueManager implements QueueManager {
 
     // Reset slot to idle
     const oldFighters = slot.fighters;
+    const oldRumbleId = slot.id;
     slot.id = generateRumbleId();
     slot.state = "idle";
     slot.fighters = [];
@@ -359,14 +360,14 @@ export class RumbleQueueManager implements QueueManager {
 
     // Emit event so external systems can handle auto-requeue.
     // Kept as a no-op for now; will hook into Supabase later.
-    this.onSlotRecycled(slot.slotIndex, oldFighters);
+    this.onSlotRecycled(slot.slotIndex, oldFighters, oldRumbleId);
   }
 
   /**
    * Hook for external systems to handle auto-requeue after a slot recycles.
    * Override or replace this in production.
    */
-  onSlotRecycled(_slotIndex: number, _previousFighters: string[]): void {
+  onSlotRecycled(_slotIndex: number, _previousFighters: string[], _previousRumbleId: string): void {
     // no-op by default -- external code can monkeypatch or subclass
   }
 

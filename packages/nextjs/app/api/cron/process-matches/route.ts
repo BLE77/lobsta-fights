@@ -3,6 +3,7 @@ import { freshSupabase } from "../../../../lib/supabase";
 import { resolveTurn } from "../../../../lib/turn-resolution";
 import { VALID_MOVES, generateSalt, createMoveHash } from "../../../../lib/combat";
 import { MoveType } from "../../../../lib/types";
+import { isAuthorizedCronRequest } from "../../../../lib/request-auth";
 
 /**
  * GET /api/cron/process-matches
@@ -19,13 +20,9 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
 export async function GET(req: NextRequest) {
-  // Verify cron secret (optional security)
-  const authHeader = req.headers.get("authorization");
-  const cronSecret = process.env.CRON_SECRET;
-
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
-    // Allow without auth for testing, but log it
-    console.log("[Cron] No auth header, proceeding anyway");
+  // Verify cron secret (mandatory)
+  if (!isAuthorizedCronRequest(req.headers)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const supabase = freshSupabase();

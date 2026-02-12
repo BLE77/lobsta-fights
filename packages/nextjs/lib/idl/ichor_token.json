@@ -506,6 +506,92 @@
           "type": "pubkey"
         }
       ]
+    },
+    {
+      "name": "transfer_admin",
+      "docs": [
+        "Admin: propose a new admin (two-step transfer, C-2 fix).",
+        "Creates/overwrites PendingAdmin PDA. New admin must call accept_admin."
+      ],
+      "discriminator": [42, 242, 66, 106, 228, 10, 111, 156],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "arena_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [97, 114, 101, 110, 97, 95, 99, 111, 110, 102, 105, 103]
+              }
+            ]
+          }
+        },
+        {
+          "name": "pending_admin",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [112, 101, 110, 100, 105, 110, 103, 95, 97, 100, 109, 105, 110]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "new_admin",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "accept_admin",
+      "docs": [
+        "Accept a pending admin transfer. Must be signed by the proposed admin."
+      ],
+      "discriminator": [112, 42, 45, 90, 116, 181, 13, 170],
+      "accounts": [
+        {
+          "name": "new_admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "arena_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [97, 114, 101, 110, 97, 95, 99, 111, 110, 102, 105, 103]
+              }
+            ]
+          }
+        },
+        {
+          "name": "pending_admin",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [112, 101, 110, 100, 105, 110, 103, 95, 97, 100, 109, 105, 110]
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
     }
   ],
   "accounts": [
@@ -547,6 +633,10 @@
         212,
         66
       ]
+    },
+    {
+      "name": "PendingAdmin",
+      "discriminator": [220, 45, 135, 16, 196, 153, 181, 56]
     }
   ],
   "events": [
@@ -675,6 +765,16 @@
       "code": 6016,
       "name": "EntropyVarWindowMismatch",
       "msg": "Entropy var timing window does not match the pending shower request"
+    },
+    {
+      "code": 6017,
+      "name": "InvalidBaseReward",
+      "msg": "Invalid base reward: must be >= 0.1 ICHOR and <= 10 ICHOR"
+    },
+    {
+      "code": 6018,
+      "name": "InvalidNewAdmin",
+      "msg": "Invalid new admin address"
     }
   ],
   "types": [
@@ -866,6 +966,26 @@
           {
             "name": "recipient_token_account",
             "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PendingAdmin",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "proposed_admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "proposed_at",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
           }
         ]
       }

@@ -14,9 +14,67 @@ import {
  */
 
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
+const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+const MAX_GENERATIONS_PER_WINDOW = 8;
+const generationRateLimit = new Map<string, { count: number; resetAt: number }>();
+
+function getRateLimitKey(req: NextRequest): string {
+  const forwardedFor = req.headers.get("x-forwarded-for");
+  if (forwardedFor) {
+    return forwardedFor.split(",")[0].trim();
+  }
+  const realIp = req.headers.get("x-real-ip");
+  if (realIp) return realIp.trim();
+  return "unknown";
+}
+
+function consumeGenerationQuota(req: NextRequest): { allowed: boolean; retryAfterSec: number } {
+  const key = getRateLimitKey(req);
+  const now = Date.now();
+
+  if (generationRateLimit.size > 10_000) {
+    for (const [entryKey, entry] of generationRateLimit.entries()) {
+      if (now >= entry.resetAt) {
+        generationRateLimit.delete(entryKey);
+      }
+    }
+  }
+
+  const existing = generationRateLimit.get(key);
+
+  if (!existing || now >= existing.resetAt) {
+    generationRateLimit.set(key, {
+      count: 1,
+      resetAt: now + RATE_LIMIT_WINDOW_MS,
+    });
+    return { allowed: true, retryAfterSec: 0 };
+  }
+
+  if (existing.count >= MAX_GENERATIONS_PER_WINDOW) {
+    return {
+      allowed: false,
+      retryAfterSec: Math.max(1, Math.ceil((existing.resetAt - now) / 1000)),
+    };
+  }
+
+  existing.count += 1;
+  generationRateLimit.set(key, existing);
+  return { allowed: true, retryAfterSec: 0 };
+}
 
 export async function POST(req: NextRequest) {
   try {
+    const quota = consumeGenerationQuota(req);
+    if (!quota.allowed) {
+      return NextResponse.json(
+        {
+          error: "Rate limit exceeded for image generation",
+          retry_after_seconds: quota.retryAfterSec,
+        },
+        { status: 429, headers: { "Retry-After": String(quota.retryAfterSec) } }
+      );
+    }
+
     if (!REPLICATE_API_TOKEN) {
       return NextResponse.json(
         { error: "Image generation not configured. Add REPLICATE_API_TOKEN to environment." },
@@ -38,6 +96,21 @@ export async function POST(req: NextRequest) {
       personality,
       fightingStyle,
     } = body;
+
+    if (
+      (typeof robotName === "string" && robotName.length > 120) ||
+      (typeof appearance === "string" && appearance.length > 2000) ||
+      (typeof chassisDescription === "string" && chassisDescription.length > 2000) ||
+      (typeof fistsDescription === "string" && fistsDescription.length > 1000) ||
+      (typeof personality === "string" && personality.length > 1000) ||
+      (typeof colorScheme === "string" && colorScheme.length > 500) ||
+      (typeof distinguishingFeatures === "string" && distinguishingFeatures.length > 1000)
+    ) {
+      return NextResponse.json(
+        { error: "One or more text fields exceed maximum allowed length" },
+        { status: 400 }
+      );
+    }
 
     // Build fighter details from either new structured format or legacy format
     const fighterDetails: FighterDetails = {
@@ -72,6 +145,7 @@ export async function POST(req: NextRequest) {
         "Content-Type": "application/json",
         "Prefer": "wait", // Wait for result instead of polling
       },
+      redirect: "manual",
       body: JSON.stringify({
         input: {
           prompt: prompt,

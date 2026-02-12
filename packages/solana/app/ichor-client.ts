@@ -22,6 +22,7 @@ import {
 } from "@solana/spl-token";
 
 const ARENA_SEED = Buffer.from("arena_config");
+const SHOWER_REQUEST_SEED = Buffer.from("shower_request");
 
 export interface IchorClientConfig {
   programId: PublicKey;
@@ -34,6 +35,7 @@ export class IchorClient {
   private admin: Keypair;
   private arenaConfigPda: PublicKey;
   private arenaConfigBump: number;
+  private showerRequestPda: PublicKey;
 
   constructor(program: Program, admin: Keypair) {
     this.program = program;
@@ -45,6 +47,12 @@ export class IchorClient {
     );
     this.arenaConfigPda = pda;
     this.arenaConfigBump = bump;
+
+    const [showerRequestPda] = PublicKey.findProgramAddressSync(
+      [SHOWER_REQUEST_SEED],
+      program.programId
+    );
+    this.showerRequestPda = showerRequestPda;
   }
 
   get arenaConfig(): PublicKey {
@@ -107,10 +115,12 @@ export class IchorClient {
       .accounts({
         authority: this.admin.publicKey,
         arenaConfig: this.arenaConfigPda,
+        showerRequest: this.showerRequestPda,
         ichorMint,
         recipientTokenAccount,
         showerVault,
         slotHashes: SYSVAR_SLOT_HASHES_PUBKEY,
+        systemProgram: SystemProgram.programId,
         tokenProgram: TOKEN_PROGRAM_ID,
       })
       .signers([this.admin])

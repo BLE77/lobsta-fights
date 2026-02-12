@@ -5,6 +5,7 @@ import {
   UCF_NEGATIVE_PROMPT,
   type BattleResultDetails,
 } from "../../../../lib/art-style";
+import { isAuthorizedInternalRequest } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -19,6 +20,10 @@ const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
 
 export async function POST(req: NextRequest) {
   try {
+    if (!isAuthorizedInternalRequest(req.headers)) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     if (!REPLICATE_API_TOKEN) {
       return NextResponse.json(
         { error: "Image generation not configured. Add REPLICATE_API_TOKEN to environment." },
@@ -216,6 +221,10 @@ async function pollAndStoreImage(predictionId: string, matchId: string): Promise
 // GET endpoint to check prediction status
 export async function GET(req: NextRequest) {
   try {
+    if (!isAuthorizedInternalRequest(req.headers)) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     if (!REPLICATE_API_TOKEN) {
       return NextResponse.json(
         { error: "Image generation not configured" },

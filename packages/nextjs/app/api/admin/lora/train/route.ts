@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { startLoraTraining, checkTrainingStatus, UCF_TRIGGER_WORD } from "../../../../../lib/lora-training";
 import { supabase } from "../../../../../lib/supabase";
+import { isAuthorizedAdminRequest } from "../../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -20,8 +21,7 @@ export const dynamic = "force-dynamic";
  * Time: ~2 minutes
  */
 export async function POST(req: NextRequest) {
-  const adminKey = req.headers.get("x-admin-key");
-  if (adminKey !== process.env.ADMIN_API_KEY && adminKey !== process.env.ADMIN_SECRET) {
+  if (!isAuthorizedAdminRequest(req.headers)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -94,8 +94,7 @@ export async function POST(req: NextRequest) {
  * Check the status of a LoRA training job
  */
 export async function GET(req: NextRequest) {
-  const adminKey = req.headers.get("x-admin-key");
-  if (adminKey !== process.env.ADMIN_API_KEY && adminKey !== process.env.ADMIN_SECRET) {
+  if (!isAuthorizedAdminRequest(req.headers)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

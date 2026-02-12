@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { freshSupabase } from "../../../../lib/supabase";
 import { generateVictoryPosePrompt, generateFighterPortraitPrompt } from "../../../../lib/art-style";
 import { storeImagePermanently } from "../../../../lib/image-storage";
+import { isAuthorizedAdminRequest } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120; // 2 min per fighter is plenty
@@ -11,7 +12,7 @@ export const maxDuration = 120; // 2 min per fighter is plenty
  *
  * Generates victory poses (and optionally PFPs) for fighters who don't have them.
  *
- * Auth: x-admin-key header OR admin_secret in body (accepts ADMIN_API_KEY or ADMIN_SECRET env vars)
+ * Auth: x-admin-key or x-admin-secret header (ADMIN_API_KEY/ADMIN_SECRET)
  *
  * Optional query params:
  *   ?fighter_id=xxx  — Generate for a specific fighter only
@@ -20,22 +21,11 @@ export const maxDuration = 120; // 2 min per fighter is plenty
  */
 export async function POST(req: NextRequest) {
   const supabase = freshSupabase();
-
-  // Auth check - accept ADMIN_API_KEY or ADMIN_SECRET
-  const adminKeyHeader = req.headers.get("x-admin-key");
-  let body: any = {};
-  try { body = await req.json(); } catch { /* empty body is ok */ }
-  const adminSecretBody = body?.admin_secret;
-
-  const validKeys = [process.env.ADMIN_API_KEY, process.env.ADMIN_SECRET].filter(Boolean);
-  const providedKey = adminKeyHeader || adminSecretBody;
-
-  if (!providedKey || !validKeys.includes(providedKey)) {
+  if (!isAuthorizedAdminRequest(req.headers)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Accept token from body (for backfill) or env
-  const REPLICATE_API_TOKEN = body?.replicate_token || process.env.REPLICATE_API_TOKEN;
+  const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
   if (!REPLICATE_API_TOKEN) {
     return NextResponse.json({ error: "REPLICATE_API_TOKEN not configured" }, { status: 500 });
   }
@@ -203,6 +193,10 @@ async function generateImage(
 }
 
 export async function GET(req: NextRequest) {
+  if (!isAuthorizedAdminRequest(req.headers)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const supabase = freshSupabase();
 
   const { data: needPoses } = await supabase

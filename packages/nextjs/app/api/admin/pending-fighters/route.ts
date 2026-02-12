@@ -1,35 +1,13 @@
 import { NextResponse } from "next/server";
 import { supabase } from "../../../../lib/supabase";
+import { isAuthorizedAdminRequest } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
   try {
-    const { searchParams } = new URL(request.url);
-    const admin_secret = searchParams.get("admin_secret");
-
-    // Validate admin secret
-    if (!admin_secret) {
-      return NextResponse.json(
-        { error: "Missing required query parameter: admin_secret" },
-        { status: 400 }
-      );
-    }
-
-    // Verify admin secret
-    const expectedSecret = process.env.ADMIN_SECRET;
-    if (!expectedSecret) {
-      return NextResponse.json(
-        { error: "Admin secret not configured on server" },
-        { status: 500 }
-      );
-    }
-
-    if (admin_secret !== expectedSecret) {
-      return NextResponse.json(
-        { error: "Invalid admin secret" },
-        { status: 401 }
-      );
+    if (!isAuthorizedAdminRequest(request.headers)) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     // Fetch pending (unverified) fighters

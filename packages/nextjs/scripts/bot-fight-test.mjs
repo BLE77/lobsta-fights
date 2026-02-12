@@ -5,6 +5,7 @@
 import crypto from "crypto";
 
 const BASE_URL = process.env.API_URL || "http://localhost:3000";
+const INTERNAL_KEY = process.env.UCF_INTERNAL_KEY || process.env.CRON_SECRET || null;
 
 // Colors for terminal output
 const colors = {
@@ -31,9 +32,14 @@ function generateSalt() {
 }
 
 async function api(endpoint, method = "GET", body) {
+  const headers = { "Content-Type": "application/json" };
+  if (INTERNAL_KEY) {
+    headers["x-internal-key"] = INTERNAL_KEY;
+  }
+
   const response = await fetch(`${BASE_URL}${endpoint}`, {
     method,
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
   return response.json();

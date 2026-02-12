@@ -1,24 +1,26 @@
 import { NextResponse } from "next/server";
 import { supabase } from "../../../../lib/supabase";
+import { getApiKeyFromHeaders } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
 /**
- * GET /api/fighter/me?fighter_id=xxx&api_key=xxx
+ * GET /api/fighter/me?fighter_id=xxx
  *
  * Bots can check their own profile, including their generated profile picture.
  * Returns full fighter info with image_url.
+ * Auth: x-api-key header
  */
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const fighterId = searchParams.get("fighter_id");
-  const apiKey = searchParams.get("api_key");
+  const apiKey = getApiKeyFromHeaders(request.headers);
 
   if (!fighterId || !apiKey) {
     return NextResponse.json(
       {
         error: "Missing fighter_id or api_key",
-        usage: "GET /api/fighter/me?fighter_id=YOUR_ID&api_key=YOUR_KEY",
+        usage: "GET /api/fighter/me?fighter_id=YOUR_ID with x-api-key header",
         description: "Check your fighter profile including generated profile picture"
       },
       { status: 400 }

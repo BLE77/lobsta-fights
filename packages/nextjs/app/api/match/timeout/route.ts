@@ -3,6 +3,7 @@ import crypto from "crypto";
 import { supabase, freshSupabase } from "../../../../lib/supabase";
 import { MoveType } from "../../../../lib/types";
 import { VALID_MOVES, generateSalt, createMoveHash } from "../../../../lib/combat";
+import { isAuthorizedInternalRequest } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -40,9 +41,14 @@ function getRandomMove(): MoveType {
 /**
  * POST /api/match/timeout
  * Process timed-out matches and assign random moves
+ * Auth: internal key (x-internal-key/x-cron-secret or Bearer CRON_SECRET)
  */
 export async function POST(request: Request) {
   try {
+    if (!isAuthorizedInternalRequest(request.headers)) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     const now = new Date();
     const graceDeadline = new Date(now.getTime() - GRACE_PERIOD_MS);
 
@@ -449,7 +455,11 @@ async function notifyForfeit(
  * GET /api/match/timeout
  * Get timeout status and configuration
  */
-export async function GET() {
+export async function GET(request: Request) {
+  if (!isAuthorizedInternalRequest(request.headers)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const { data: pendingTimeouts } = await supabase
     .from("ucf_matches")
     .select("id, state, commit_deadline, reveal_deadline, missed_turns_a, missed_turns_b")

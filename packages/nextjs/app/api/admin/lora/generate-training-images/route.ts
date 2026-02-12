@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateTrainingImages, TRAINING_IMAGE_PROMPTS } from "../../../../../lib/lora-training";
 import { storeImagePermanently } from "../../../../../lib/image-storage";
+import { isAuthorizedAdminRequest } from "../../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -17,8 +18,7 @@ export const dynamic = "force-dynamic";
  * Cost: ~$0.04 per image = ~$0.80 for 20 images
  */
 export async function POST(req: NextRequest) {
-  const adminKey = req.headers.get("x-admin-key");
-  if (adminKey !== process.env.ADMIN_API_KEY && adminKey !== process.env.ADMIN_SECRET) {
+  if (!isAuthorizedAdminRequest(req.headers)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

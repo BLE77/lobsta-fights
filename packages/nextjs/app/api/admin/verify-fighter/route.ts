@@ -1,34 +1,22 @@
 import { NextResponse } from "next/server";
 import { supabase, freshSupabase } from "../../../../lib/supabase";
+import { isAuthorizedAdminRequest } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
+    if (!isAuthorizedAdminRequest(request.headers)) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     const body = await request.json();
-    const { fighter_id, admin_secret } = body;
+    const { fighter_id } = body;
 
-    // Validate required fields
-    if (!fighter_id || !admin_secret) {
+    if (!fighter_id) {
       return NextResponse.json(
-        { error: "Missing required fields: fighter_id, admin_secret" },
+        { error: "Missing required field: fighter_id" },
         { status: 400 }
-      );
-    }
-
-    // Verify admin secret
-    const expectedSecret = process.env.ADMIN_SECRET;
-    if (!expectedSecret) {
-      return NextResponse.json(
-        { error: "Admin secret not configured on server" },
-        { status: 500 }
-      );
-    }
-
-    if (admin_secret !== expectedSecret) {
-      return NextResponse.json(
-        { error: "Invalid admin secret" },
-        { status: 401 }
       );
     }
 

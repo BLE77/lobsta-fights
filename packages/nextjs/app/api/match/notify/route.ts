@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabase } from "../../../../lib/supabase";
 import { notifyBothFighters, notifyMatchComplete, notifyFighter } from "../../../../lib/webhook";
+import { isAuthorizedInternalRequest } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +13,7 @@ export const dynamic = "force-dynamic";
  * Notifies both fighters of the result via their webhooks
  *
  * Input: { match_id, event_type, internal_key? }
+ * Auth: internal key (x-internal-key/x-cron-secret or Bearer CRON_SECRET)
  * Events:
  *   - "turn_result": After combat resolves
  *   - "match_complete": When match finishes
@@ -31,12 +33,11 @@ export async function POST(request: Request) {
       );
     }
 
-    // Optional: Validate internal key for security
-    // In production, you'd want to verify this is an internal call
-    const expectedKey = process.env.UCF_INTERNAL_KEY;
-    if (expectedKey && internal_key !== expectedKey) {
-      console.warn(`[Notify] Unauthorized notification attempt for match ${match_id}`);
-      // Continue anyway for now, but log the warning
+    if (!isAuthorizedInternalRequest(request.headers, internal_key)) {
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
     }
 
     // Fetch the match with fighter details
@@ -218,6 +219,13 @@ export async function POST(request: Request) {
  * Get notification status for a match
  */
 export async function GET(request: Request) {
+  if (!isAuthorizedInternalRequest(request.headers)) {
+    return NextResponse.json(
+      { error: "Unauthorized" },
+      { status: 401 }
+    );
+  }
+
   const { searchParams } = new URL(request.url);
   const matchId = searchParams.get("match_id");
 

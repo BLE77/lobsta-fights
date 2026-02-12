@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { UCF_LORA_MODEL_VERSION, UCF_TRIGGER_WORD } from "../../../../../lib/lora-training";
 import { getModelInfo } from "../../../../../lib/image-generator";
 import { supabase } from "../../../../../lib/supabase";
+import { isAuthorizedAdminRequest } from "../../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -11,6 +12,10 @@ export const dynamic = "force-dynamic";
  * Get current LoRA configuration status and image generation costs
  */
 export async function GET(req: NextRequest) {
+  if (!isAuthorizedAdminRequest(req.headers)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const modelInfo = getModelInfo();
 
   // Get fighter count to estimate costs

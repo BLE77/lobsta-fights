@@ -14,7 +14,6 @@ import {
   PublicKey,
   SystemProgram,
   TransactionInstruction,
-  SYSVAR_RENT_PUBKEY,
   Transaction,
 } from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
@@ -48,6 +47,7 @@ export const RUMBLE_ENGINE_ID = new PublicKey(
 const ARENA_SEED = Buffer.from("arena_config");
 const SHOWER_REQUEST_SEED = Buffer.from("shower_request");
 const ENTROPY_CONFIG_SEED = Buffer.from("entropy_config");
+const PENDING_ADMIN_SEED = Buffer.from("pending_admin");
 const ENTROPY_VAR_SEED = Buffer.from("var");
 const REGISTRY_SEED = Buffer.from("registry_config");
 const CONFIG_SEED = Buffer.from("rumble_config");
@@ -743,6 +743,76 @@ export async function checkIchorShower(
     .accountsPartial(accounts);
 
   const tx = await builder.rpc();
+
+  return tx;
+}
+
+// ---------------------------------------------------------------------------
+// Admin Transfer Functions (C-2 fix: two-step admin transfer)
+// ---------------------------------------------------------------------------
+
+function derivePendingAdminPda(): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync([PENDING_ADMIN_SEED], ICHOR_TOKEN_ID);
+}
+
+/**
+ * Propose a new admin for the ICHOR program (step 1 of 2).
+ * New admin must call acceptAdmin() to complete the transfer.
+ */
+export async function transferAdmin(
+  newAdmin: PublicKey,
+  connection?: Connection
+): Promise<string | null> {
+  const provider = getAdminProvider(connection);
+  if (!provider) {
+    console.warn("[solana-programs] No admin keypair, skipping transferAdmin");
+    return null;
+  }
+  const program = getIchorTokenProgram(provider);
+  const admin = getAdminKeypair()!;
+
+  const [arenaConfigPda] = deriveArenaConfigPda();
+  const [pendingAdminPda] = derivePendingAdminPda();
+
+  const tx = await (program.methods as any)
+    .transferAdmin(newAdmin)
+    .accounts({
+      authority: admin.publicKey,
+      arenaConfig: arenaConfigPda,
+      pendingAdmin: pendingAdminPda,
+      systemProgram: SystemProgram.programId,
+    })
+    .rpc();
+
+  return tx;
+}
+
+/**
+ * Accept a pending admin transfer (step 2 of 2).
+ * Must be signed by the proposed new admin keypair.
+ */
+export async function acceptAdmin(
+  newAdminKeypair: Keypair,
+  connection?: Connection
+): Promise<string | null> {
+  const conn = connection ?? getConnection();
+  const wallet = new anchor.Wallet(newAdminKeypair);
+  const provider = new anchor.AnchorProvider(conn, wallet, {
+    commitment: "confirmed",
+  });
+  const program = getIchorTokenProgram(provider);
+
+  const [arenaConfigPda] = deriveArenaConfigPda();
+  const [pendingAdminPda] = derivePendingAdminPda();
+
+  const tx = await (program.methods as any)
+    .acceptAdmin()
+    .accounts({
+      newAdmin: newAdminKeypair.publicKey,
+      arenaConfig: arenaConfigPda,
+      pendingAdmin: pendingAdminPda,
+    })
+    .rpc();
 
   return tx;
 }

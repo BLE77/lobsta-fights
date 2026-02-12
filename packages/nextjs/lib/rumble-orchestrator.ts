@@ -51,6 +51,7 @@ import {
   ensureAta as ensureAtaOnChain,
   getIchorMint,
   deriveArenaConfigPda,
+  readShowerRequest,
 } from "./solana-programs";
 import { PublicKey } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
@@ -161,6 +162,7 @@ interface SlotCombatState {
 
 const NUM_SLOTS = 3;
 const COMBAT_TICK_INTERVAL_MS = 3_000; // one turn every ~3 seconds
+const SHOWER_SETTLEMENT_POLL_MS = 12_000;
 
 // ---------------------------------------------------------------------------
 // Orchestrator
@@ -184,13 +186,15 @@ export class RumbleOrchestrator {
   // Global counters
   private totalRumblesCompleted = 0;
   private ichorShowerPool = 0;
+  private lastShowerPollAt = 0;
+  private showerPollInFlight = false;
 
   constructor(queueManager: RumbleQueueManager) {
     this.queueManager = queueManager;
 
     // Hook into the queue manager's slot recycling so we can handle auto-requeue
-    this.queueManager.onSlotRecycled = (slotIndex, previousFighters) => {
-      this.handleSlotRecycled(slotIndex, previousFighters);
+    this.queueManager.onSlotRecycled = (slotIndex, previousFighters, previousRumbleId) => {
+      this.handleSlotRecycled(slotIndex, previousFighters, previousRumbleId);
     };
   }
 
@@ -232,6 +236,44 @@ export class RumbleOrchestrator {
     const slots = this.queueManager.getSlots();
     for (const slot of slots) {
       this.processSlot(slot);
+    }
+
+    this.pollPendingIchorShower();
+  }
+
+  private pollPendingIchorShower(): void {
+    if (this.showerPollInFlight) return;
+    const now = Date.now();
+    if (now - this.lastShowerPollAt < SHOWER_SETTLEMENT_POLL_MS) return;
+    this.lastShowerPollAt = now;
+    this.showerPollInFlight = true;
+    this.pollPendingIchorShowerAsync()
+      .catch((err) => {
+        console.error("[Orchestrator] Pending ICHOR shower poll failed:", err);
+      })
+      .finally(() => {
+        this.showerPollInFlight = false;
+      });
+  }
+
+  private async pollPendingIchorShowerAsync(): Promise<void> {
+    const pendingShower = await readShowerRequest().catch(() => null);
+    if (!pendingShower?.active) return;
+    if (pendingShower.recipientTokenAccount === "11111111111111111111111111111111") return;
+
+    let recipientAta: PublicKey;
+    try {
+      recipientAta = new PublicKey(pendingShower.recipientTokenAccount);
+    } catch {
+      return;
+    }
+
+    const ichorMint = getIchorMint();
+    const [arenaConfigPda] = deriveArenaConfigPda();
+    const showerVaultAta = getAssociatedTokenAddressSync(ichorMint, arenaConfigPda, true);
+    const sig = await checkIchorShowerOnChain(recipientAta, showerVaultAta);
+    if (sig) {
+      console.log(`[Orchestrator] On-chain pending checkIchorShower tx: ${sig}`);
     }
   }
 
@@ -322,6 +364,7 @@ export class RumbleOrchestrator {
       const sig = await createRumbleOnChain(rumbleIdNum, fighterPubkeys, deadline);
       if (sig) {
         console.log(`[Orchestrator] On-chain createRumble tx: ${sig}`);
+        persist.updateRumbleTxSignature(slot.id, "createRumble", sig);
       }
     } catch (err) {
       console.error(`[Orchestrator] createRumbleOnChain error:`, err);
@@ -339,6 +382,7 @@ export class RumbleOrchestrator {
       const sig = await startCombatOnChain(rumbleIdNum);
       if (sig) {
         console.log(`[Orchestrator] On-chain startCombat tx: ${sig}`);
+        persist.updateRumbleTxSignature(slot.id, "startCombat", sig);
       }
     } catch (err) {
       console.error(`[Orchestrator] startCombatOnChain error:`, err);
@@ -705,6 +749,7 @@ export class RumbleOrchestrator {
         const sig = await reportResultOnChain(rumbleIdNum, placementArray, winnerIndex);
         if (sig) {
           console.log(`[Orchestrator] On-chain reportResult tx: ${sig}`);
+          persist.updateRumbleTxSignature(rumbleId, "reportResult", sig);
         }
       }
     } catch (err) {
@@ -756,13 +801,37 @@ export class RumbleOrchestrator {
         const sig = await mintRumbleRewardOnChain(winnerAta, showerVaultAta);
         if (sig) {
           console.log(`[Orchestrator] On-chain mintRumbleReward tx: ${sig}`);
+          persist.updateRumbleTxSignature(rumbleId, "mintRumbleReward", sig);
         }
 
-        // 3. Check Ichor Shower (uses same accounts)
+        // 3. Check Ichor Shower (state machine: request first, then settle later)
         try {
-          const showerSig = await checkIchorShowerOnChain(winnerAta, showerVaultAta);
+          let showerRecipientAta = winnerAta;
+          const pendingShower = await readShowerRequest().catch(() => null);
+          if (
+            pendingShower?.active &&
+            pendingShower.recipientTokenAccount !==
+              "11111111111111111111111111111111"
+          ) {
+            try {
+              showerRecipientAta = new PublicKey(
+                pendingShower.recipientTokenAccount,
+              );
+            } catch (pendingErr) {
+              console.warn(
+                `[Orchestrator] Invalid pending shower recipient ATA: ${pendingShower.recipientTokenAccount}`,
+                pendingErr,
+              );
+            }
+          }
+
+          const showerSig = await checkIchorShowerOnChain(
+            showerRecipientAta,
+            showerVaultAta,
+          );
           if (showerSig) {
             console.log(`[Orchestrator] On-chain checkIchorShower tx: ${showerSig}`);
+            persist.updateRumbleTxSignature(rumbleId, "checkIchorShower", showerSig);
           }
         } catch (err) {
           console.error(`[Orchestrator] On-chain checkIchorShower failed:`, err);
@@ -777,6 +846,7 @@ export class RumbleOrchestrator {
       const sig = await completeRumbleOnChain(rumbleIdNum);
       if (sig) {
         console.log(`[Orchestrator] On-chain completeRumble tx: ${sig}`);
+        persist.updateRumbleTxSignature(rumbleId, "completeRumble", sig);
       }
     } catch (err) {
       console.error(`[Orchestrator] On-chain completeRumble failed:`, err);
@@ -787,6 +857,7 @@ export class RumbleOrchestrator {
       const sig = await sweepTreasuryOnChain(rumbleIdNum);
       if (sig) {
         console.log(`[Orchestrator] On-chain sweepTreasury tx: ${sig}`);
+        persist.updateRumbleTxSignature(rumbleId, "sweepTreasury", sig);
       }
     } catch (err) {
       console.error(`[Orchestrator] On-chain sweepTreasury failed:`, err);
@@ -958,7 +1029,12 @@ export class RumbleOrchestrator {
     this.autoRequeueFighters.delete(slotIndex);
   }
 
-  private handleSlotRecycled(slotIndex: number, previousFighters: string[]): void {
+  private handleSlotRecycled(
+    slotIndex: number,
+    previousFighters: string[],
+    previousRumbleId: string,
+  ): void {
+    this.payoutProcessed.delete(previousRumbleId);
     this.emit("slot_recycled", {
       slotIndex,
       previousFighters,

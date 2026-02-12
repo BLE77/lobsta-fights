@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { getOrchestrator } from "~~/lib/rumble-orchestrator";
+import { freshSupabase } from "~~/lib/supabase";
+import { getApiKeyFromHeaders } from "~~/lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -59,15 +61,18 @@ export async function GET(request: Request) {
  * POST /api/rumble/bet
  *
  * Place a bet on a fighter in a Rumble slot.
- * Body: { slot_index, fighter_id, sol_amount, bettor_wallet }
+ * Body: { slot_index, fighter_id, sol_amount, bettor_id?, bettor_wallet?, api_key? }
+ * Auth: x-api-key header or api_key in body
  */
 export async function POST(request: Request) {
   try {
     const body = await request.json();
     const slotIndex = body.slot_index ?? body.slotIndex ?? body.rumbleSlotIndex;
     const fighterId = body.fighter_id || body.fighterId;
+    const bettorId = body.bettor_id || body.bettorId;
     const rawSolAmount = body.sol_amount ?? body.solAmount ?? body.amount;
     const solAmount = typeof rawSolAmount === "string" ? Number(rawSolAmount) : rawSolAmount;
+    const apiKey = body.api_key || body.apiKey || getApiKeyFromHeaders(request.headers);
     const bettorWallet =
       body.bettor_wallet ||
       body.bettorWallet ||
@@ -79,7 +84,11 @@ export async function POST(request: Request) {
     // Validate required fields
     if (slotIndex === undefined || slotIndex === null) {
       return NextResponse.json(
-        { error: "Missing slot_index", required: ["slot_index", "fighter_id", "sol_amount", "bettor_wallet"] },
+        {
+          error: "Missing slot_index",
+          required: ["slot_index", "fighter_id", "sol_amount", "api_key"],
+          bettor_identity: "Provide bettor_id or bettor_wallet",
+        },
         { status: 400 },
       );
     }
@@ -89,8 +98,46 @@ export async function POST(request: Request) {
     if (typeof solAmount !== "number" || !Number.isFinite(solAmount) || solAmount <= 0) {
       return NextResponse.json({ error: "sol_amount must be a positive number" }, { status: 400 });
     }
-    if (!bettorWallet || typeof bettorWallet !== "string") {
-      return NextResponse.json({ error: "Missing bettor_wallet" }, { status: 400 });
+    if (!apiKey || typeof apiKey !== "string") {
+      return NextResponse.json(
+        { error: "Missing API key. Provide x-api-key header or api_key in body." },
+        { status: 400 },
+      );
+    }
+    if (
+      (!bettorWallet || typeof bettorWallet !== "string") &&
+      (!bettorId || typeof bettorId !== "string")
+    ) {
+      return NextResponse.json(
+        { error: "Missing bettor identity. Provide bettor_id or bettor_wallet." },
+        { status: 400 },
+      );
+    }
+
+    // Require authenticated bettor credentials so wallet IDs cannot be spoofed.
+    const authQuery = freshSupabase()
+      .from("ucf_fighters")
+      .select("id, wallet_address")
+      .eq("api_key", apiKey);
+
+    if (bettorId && typeof bettorId === "string") {
+      authQuery.eq("id", bettorId);
+    } else if (bettorWallet && typeof bettorWallet === "string") {
+      authQuery.eq("wallet_address", bettorWallet);
+    }
+
+    const { data: authFighter, error: authError } = await authQuery.maybeSingle();
+    if (authError || !authFighter) {
+      return NextResponse.json({ error: "Invalid bettor credentials" }, { status: 401 });
+    }
+    if (!authFighter.wallet_address) {
+      return NextResponse.json({ error: "Authenticated fighter has no wallet address" }, { status: 403 });
+    }
+    if (bettorWallet && bettorWallet !== authFighter.wallet_address) {
+      return NextResponse.json(
+        { error: "bettor_wallet does not match authenticated fighter wallet" },
+        { status: 403 },
+      );
     }
 
     const parsedSlotIndex = parseInt(String(slotIndex), 10);
@@ -104,7 +151,12 @@ export async function POST(request: Request) {
     const orchestrator = getOrchestrator();
 
     // placeBet validates: slot exists, state is "betting", fighter is in rumble
-    const accepted = orchestrator.placeBet(parsedSlotIndex, bettorWallet, fighterId, solAmount);
+    const accepted = orchestrator.placeBet(
+      parsedSlotIndex,
+      authFighter.wallet_address,
+      fighterId,
+      solAmount,
+    );
 
     if (!accepted) {
       return NextResponse.json(
@@ -120,7 +172,8 @@ export async function POST(request: Request) {
       slot_index: parsedSlotIndex,
       fighter_id: fighterId,
       sol_amount: solAmount,
-      bettor_wallet: bettorWallet,
+      bettor_id: authFighter.id,
+      bettor_wallet: authFighter.wallet_address,
       updated_odds: updatedOdds,
     });
   } catch (error: any) {

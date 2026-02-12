@@ -32,6 +32,8 @@ const ARENA_SEED: &[u8] = b"arena_config";
 const SHOWER_REQUEST_SEED: &[u8] = b"shower_request";
 /// Entropy config PDA seed
 const ENTROPY_CONFIG_SEED: &[u8] = b"entropy_config";
+/// Pending admin transfer PDA seed
+const PENDING_ADMIN_SEED: &[u8] = b"pending_admin";
 
 /// Delayed-slot entropy schedule (must settle before slot hash eviction window).
 const SHOWER_DELAY_SLOT_A: u64 = 8;
@@ -84,12 +86,15 @@ pub mod ichor_token {
         require!(new_total <= MAX_SUPPLY, IchorError::MaxSupplyExceeded);
 
         // Amount going to winner = reward - shower pool cut
+        // Gracefully degrade at deep halvings: if reward < SHOWER_POOL_CUT, entire
+        // reward goes to pool and winner gets zero (prevents underflow DOS -- C-1 fix).
+        let pool_cut = reward.min(SHOWER_POOL_CUT);
         let winner_amount = reward
-            .checked_sub(SHOWER_POOL_CUT)
+            .checked_sub(pool_cut)
             .ok_or(IchorError::MathOverflow)?;
 
-        // Shower pool gets: cut from reward (0.1) + bonus emission (0.2) = 0.3 per rumble
-        let shower_addition = SHOWER_POOL_CUT
+        // Shower pool gets: cut from reward + bonus emission
+        let shower_addition = pool_cut
             .checked_add(SHOWER_BONUS_EMISSION)
             .ok_or(IchorError::MathOverflow)?;
 
@@ -235,6 +240,35 @@ pub mod ichor_token {
             return Ok(());
         }
 
+        // Validate entropy_config PDA if provided (L-4 defense-in-depth fix).
+        if let Some(ref cfg) = ctx.accounts.entropy_config {
+            let (expected_key, _) = Pubkey::find_program_address(
+                &[ENTROPY_CONFIG_SEED],
+                ctx.program_id,
+            );
+            require!(cfg.key() == expected_key, IchorError::InvalidEntropyConfig);
+        }
+
+        // Auto-reset expired requests whose slot hashes have evicted (M-3 fix).
+        // SlotHashes retains ~512 entries; past that, legacy settlement is impossible.
+        const SLOT_HASH_EVICTION_WINDOW: u64 = 512;
+        if slot > request.target_slot_b.saturating_add(SLOT_HASH_EVICTION_WINDOW) {
+            let is_entropy = ctx
+                .accounts
+                .entropy_config
+                .as_ref()
+                .map(|cfg| cfg.enabled)
+                .unwrap_or(false);
+            if !is_entropy {
+                reset_shower_request(request);
+                msg!(
+                    "Shower request expired (slot hash window passed at slot {}). Auto-reset.",
+                    slot
+                );
+                return Ok(());
+            }
+        }
+
         let entropy_mode = ctx
             .accounts
             .entropy_config
@@ -332,7 +366,10 @@ pub mod ichor_token {
         let triggered = rng_value % SHOWER_CHANCE == 0;
 
         if triggered {
-            let pool_amount = arena.ichor_shower_pool;
+            // Use the smaller of the bookkeeping counter and actual vault balance
+            // to prevent desync from causing a revert (H-2 fix).
+            let vault_balance = ctx.accounts.shower_vault.amount;
+            let pool_amount = arena.ichor_shower_pool.min(vault_balance);
 
             // 90% to recipient, 10% burned
             let recipient_amount = pool_amount
@@ -432,7 +469,16 @@ pub mod ichor_token {
     }
 
     /// Admin: update the base reward amount.
+    /// Bounded: must be >= SHOWER_POOL_CUT (to avoid C-1 at era 0) and <= 10 ICHOR.
     pub fn update_base_reward(ctx: Context<AdminOnly>, new_base_reward: u64) -> Result<()> {
+        require!(
+            new_base_reward >= SHOWER_POOL_CUT,
+            IchorError::InvalidBaseReward
+        );
+        require!(
+            new_base_reward <= 10 * ONE_ICHOR,
+            IchorError::InvalidBaseReward
+        );
         let arena = &mut ctx.accounts.arena_config;
         arena.base_reward = new_base_reward;
         msg!("Base reward updated to {}", new_base_reward);
@@ -491,6 +537,42 @@ pub mod ichor_token {
             var_authority,
         });
 
+        Ok(())
+    }
+
+    /// Admin: propose a new admin (two-step transfer, C-2 fix).
+    /// Creates/overwrites PendingAdmin PDA. New admin must call accept_admin.
+    pub fn transfer_admin(ctx: Context<TransferAdmin>, new_admin: Pubkey) -> Result<()> {
+        require!(new_admin != Pubkey::default(), IchorError::InvalidNewAdmin);
+        require!(
+            new_admin != ctx.accounts.arena_config.admin,
+            IchorError::InvalidNewAdmin
+        );
+
+        let pending = &mut ctx.accounts.pending_admin;
+        pending.proposed_admin = new_admin;
+        pending.proposed_at = Clock::get()?.slot;
+        pending.bump = ctx.bumps.pending_admin;
+
+        msg!("Admin transfer proposed: {} -> {}", ctx.accounts.arena_config.admin, new_admin);
+        Ok(())
+    }
+
+    /// Accept a pending admin transfer. Must be signed by the proposed admin.
+    pub fn accept_admin(ctx: Context<AcceptAdmin>) -> Result<()> {
+        let arena = &mut ctx.accounts.arena_config;
+        let pending = &ctx.accounts.pending_admin;
+        let new_admin = ctx.accounts.new_admin.key();
+
+        require!(
+            new_admin == pending.proposed_admin,
+            IchorError::Unauthorized
+        );
+
+        let old_admin = arena.admin;
+        arena.admin = new_admin;
+
+        msg!("Admin transferred: {} -> {}", old_admin, new_admin);
         Ok(())
     }
 }
@@ -867,6 +949,53 @@ pub struct UpsertEntropyConfig<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[derive(Accounts)]
+pub struct TransferAdmin<'info> {
+    #[account(
+        mut,
+        constraint = authority.key() == arena_config.admin @ IchorError::Unauthorized,
+    )]
+    pub authority: Signer<'info>,
+
+    #[account(
+        seeds = [ARENA_SEED],
+        bump = arena_config.bump,
+    )]
+    pub arena_config: Account<'info, ArenaConfig>,
+
+    #[account(
+        init_if_needed,
+        payer = authority,
+        space = 8 + PendingAdmin::INIT_SPACE,
+        seeds = [PENDING_ADMIN_SEED],
+        bump
+    )]
+    pub pending_admin: Account<'info, PendingAdmin>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct AcceptAdmin<'info> {
+    /// The proposed new admin must sign this transaction.
+    #[account(mut)]
+    pub new_admin: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [ARENA_SEED],
+        bump = arena_config.bump,
+    )]
+    pub arena_config: Account<'info, ArenaConfig>,
+
+    #[account(
+        seeds = [PENDING_ADMIN_SEED],
+        bump = pending_admin.bump,
+        constraint = pending_admin.proposed_admin == new_admin.key() @ IchorError::Unauthorized,
+    )]
+    pub pending_admin: Account<'info, PendingAdmin>,
+}
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -907,6 +1036,14 @@ pub struct ShowerRequest {
     pub target_slot_a: u64,           // 8
     pub target_slot_b: u64,           // 8
     pub recipient_token_account: Pubkey, // 32
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct PendingAdmin {
+    pub proposed_admin: Pubkey,       // 32
+    pub proposed_at: u64,             // 8
+    pub bump: u8,                     // 1
 }
 
 // ---------------------------------------------------------------------------
@@ -994,6 +1131,12 @@ pub enum IchorError {
 
     #[msg("Entropy var timing window does not match the pending shower request")]
     EntropyVarWindowMismatch,
+
+    #[msg("Invalid base reward: must be >= 0.1 ICHOR and <= 10 ICHOR")]
+    InvalidBaseReward,
+
+    #[msg("Invalid new admin address")]
+    InvalidNewAdmin,
 }
 
 #[cfg(test)]
@@ -1078,6 +1221,28 @@ mod tests {
 
         assert_ne!(rng_a, rng_b);
         assert_ne!(rng_a, rng_c);
+    }
+
+    #[test]
+    fn calculate_reward_never_underflows_pool_cut() {
+        // C-1 regression: at deep halvings the reward can be smaller than SHOWER_POOL_CUT.
+        // Verify that pool_cut = reward.min(SHOWER_POOL_CUT) prevents underflow.
+        let small_base = 50_000_000u64; // 0.05 ICHOR -- much smaller than SHOWER_POOL_CUT
+        let reward = calculate_reward(small_base, 0);
+        assert_eq!(reward, small_base);
+        // This is the fix: pool_cut = min(reward, SHOWER_POOL_CUT) = min(50M, 100M) = 50M
+        let pool_cut = reward.min(SHOWER_POOL_CUT);
+        let winner_amount = reward.checked_sub(pool_cut).expect("should not underflow");
+        assert_eq!(winner_amount, 0); // entire reward goes to pool
+        assert_eq!(pool_cut, small_base);
+
+        // At era 4 (21M+ rumbles), base=1 ICHOR halved to 1/16 = 62.5M < SHOWER_POOL_CUT
+        let reward_era4 = calculate_reward(ONE_ICHOR, 21_000_001);
+        assert_eq!(reward_era4, ONE_ICHOR / 16); // 62_500_000
+        let pool_cut_era4 = reward_era4.min(SHOWER_POOL_CUT);
+        let winner_era4 = reward_era4.checked_sub(pool_cut_era4).expect("no underflow");
+        assert_eq!(winner_era4, 0);
+        assert_eq!(pool_cut_era4, reward_era4);
     }
 
     #[test]

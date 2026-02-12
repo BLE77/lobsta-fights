@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin, freshSupabase } from "../../../../../lib/supabase";
+import { isAuthorizedAdminRequest } from "../../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -19,8 +20,7 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
  *   -F "images=@robot2.png"
  */
 export async function POST(req: NextRequest) {
-  const adminKey = req.headers.get("x-admin-key");
-  if (adminKey !== process.env.ADMIN_API_KEY && adminKey !== process.env.ADMIN_SECRET) {
+  if (!isAuthorizedAdminRequest(req.headers)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -97,8 +97,7 @@ export async function POST(req: NextRequest) {
  * List already uploaded training images
  */
 export async function GET(req: NextRequest) {
-  const adminKey = req.headers.get("x-admin-key");
-  if (adminKey !== process.env.ADMIN_API_KEY && adminKey !== process.env.ADMIN_SECRET) {
+  if (!isAuthorizedAdminRequest(req.headers)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

@@ -479,3 +479,42 @@ export async function getStats(): Promise<{
     return null;
   }
 }
+
+/* ── Tx signature tracking ───────────────────────────────── */
+
+export type TxStep =
+  | "createRumble"
+  | "startCombat"
+  | "reportResult"
+  | "mintRumbleReward"
+  | "checkIchorShower"
+  | "completeRumble"
+  | "sweepTreasury";
+
+export async function updateRumbleTxSignature(
+  rumbleId: string,
+  step: TxStep,
+  sig: string | null,
+): Promise<void> {
+  try {
+    const sb = freshServiceClient();
+    // Read current tx_signatures, merge, write back
+    const { data, error: readErr } = await sb
+      .from("ucf_rumbles")
+      .select("tx_signatures")
+      .eq("id", rumbleId)
+      .single();
+    if (readErr) throw readErr;
+
+    const existing = (data?.tx_signatures as Record<string, string | null>) ?? {};
+    existing[step] = sig;
+
+    const { error: writeErr } = await sb
+      .from("ucf_rumbles")
+      .update({ tx_signatures: existing })
+      .eq("id", rumbleId);
+    if (writeErr) throw writeErr;
+  } catch (err) {
+    logError(`updateRumbleTxSignature(${rumbleId}, ${step}) failed`, err);
+  }
+}

@@ -2,20 +2,20 @@ import { NextResponse } from "next/server";
 import { supabase } from "../../../../lib/supabase";
 import { generateFighterPortraitPrompt } from "../../../../lib/art-style";
 import { storeFighterImage } from "../../../../lib/image-storage";
+import { isAuthorizedAdminRequest } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
-const ADMIN_SECRET = process.env.ADMIN_SECRET;
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
-    const { admin_secret, fighter_id } = body;
-
-    if (admin_secret !== ADMIN_SECRET) {
-      return NextResponse.json({ error: "Invalid admin secret" }, { status: 401 });
+    if (!isAuthorizedAdminRequest(request.headers)) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+
+    const body = await request.json();
+    const { fighter_id } = body;
 
     if (!REPLICATE_API_TOKEN) {
       return NextResponse.json({ error: "REPLICATE_API_TOKEN not configured" }, { status: 500 });

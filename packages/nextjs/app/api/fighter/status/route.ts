@@ -1,26 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "../../../../lib/supabase";
+import { getApiKeyFromHeaders } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
 /**
- * GET /api/fighter/status?fighter_id=X&api_key=Y
+ * GET /api/fighter/status?fighter_id=X
  *
  * Polling endpoint for bots that can't receive webhooks.
  * Returns current status: in match? your turn? game state?
+ * Auth: x-api-key header
  *
  * Poll this every 3-5 seconds during a match.
  */
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const fighterId = searchParams.get("fighter_id");
-  const apiKey = searchParams.get("api_key");
+  const apiKey = getApiKeyFromHeaders(req.headers);
 
   if (!fighterId || !apiKey) {
     return NextResponse.json(
       {
         error: "Missing fighter_id or api_key",
-        usage: "GET /api/fighter/status?fighter_id=YOUR_ID&api_key=YOUR_KEY",
+        usage: "GET /api/fighter/status?fighter_id=YOUR_ID with x-api-key header",
       },
       { status: 400 }
     );
@@ -44,7 +46,7 @@ export async function GET(req: NextRequest) {
   // Check if in lobby
   const { data: lobbyEntry } = await supabase
     .from("ucf_lobby")
-    .select("*")
+    .select("id, fighter_id")
     .eq("fighter_id", fighterId)
     .single();
 
@@ -52,7 +54,7 @@ export async function GET(req: NextRequest) {
   // First, find the match with a simpler query
   const { data: matches, error: matchError } = await supabase
     .from("ucf_matches")
-    .select("*")
+    .select("id, fighter_a_id, fighter_b_id, state, points_wager, agent_a_state, agent_b_state, current_round, current_turn, turn_history, commit_a, commit_b, move_a, move_b, commit_deadline, reveal_deadline, started_at, missed_turns_a, missed_turns_b, winner_id, result_image_url")
     .or(`fighter_a_id.eq.${fighterId},fighter_b_id.eq.${fighterId}`)
     .neq("state", "FINISHED")
     .order("created_at", { ascending: false })
@@ -90,7 +92,7 @@ export async function GET(req: NextRequest) {
 
     const { data: recentMatches } = await supabase
       .from("ucf_matches")
-      .select("*")
+      .select("id, fighter_a_id, fighter_b_id, state, points_wager, agent_a_state, agent_b_state, winner_id, turn_history, finished_at, result_image_url")
       .or(`fighter_a_id.eq.${fighterId},fighter_b_id.eq.${fighterId}`)
       .eq("state", "FINISHED")
       .gte("finished_at", twoMinutesAgo)

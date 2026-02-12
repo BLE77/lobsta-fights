@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { freshSupabase } from "../../../lib/supabase";
+import { getApiKeyFromHeaders } from "../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -23,7 +24,7 @@ export async function POST(request: Request) {
     // Verify fighter and API key
     const { data: fighter, error: fighterError } = await supabase
       .from("ucf_fighters")
-      .select("*")
+      .select("id, name, points, wins, losses, draws, matches_played, verified, webhook_url")
       .eq("id", fighterId)
       .eq("api_key", apiKey)
       .single();
@@ -46,7 +47,7 @@ export async function POST(request: Request) {
     // Check if already in an active match
     const { data: activeMatch } = await supabase
       .from("ucf_matches")
-      .select("*")
+      .select("id, state")
       .or(`fighter_a_id.eq.${fighterId},fighter_b_id.eq.${fighterId}`)
       .neq("state", "FINISHED")
       .single();
@@ -248,7 +249,7 @@ export async function DELETE(request: Request) {
   const supabase = freshSupabase();
   const { searchParams } = new URL(request.url);
   const fighterId = searchParams.get("fighter_id");
-  const apiKey = searchParams.get("api_key");
+  const apiKey = getApiKeyFromHeaders(request.headers);
 
   if (!fighterId || !apiKey) {
     return NextResponse.json({ error: "Missing fighter_id or api_key" }, { status: 400 });

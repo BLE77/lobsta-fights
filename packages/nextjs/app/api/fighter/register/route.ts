@@ -2,8 +2,136 @@ import { NextResponse } from "next/server";
 import { supabase, freshSupabase } from "../../../../lib/supabase";
 import { verifyMoltbookIdentity, isMoltbookEnabled } from "../../../../lib/moltbook";
 import { AI_FIGHTER_DESIGN_PROMPT, FIGHTER_DESIGN_HINT, REGISTRATION_EXAMPLE } from "../../../../lib/fighter-design-prompt";
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 
 export const dynamic = "force-dynamic";
+
+const REGISTRATION_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+const MAX_REGISTRATIONS_PER_WINDOW = 3;
+const registrationRateLimit = new Map<string, { count: number; resetAt: number }>();
+const BLOCKED_WEBHOOK_HOSTNAMES = new Set([
+  "localhost",
+  "metadata.google.internal",
+  "metadata.google",
+  "host.docker.internal",
+]);
+
+function getRateLimitKey(request: Request): string {
+  const forwardedFor = request.headers.get("x-forwarded-for");
+  if (forwardedFor) {
+    return forwardedFor.split(",")[0].trim();
+  }
+  const realIp = request.headers.get("x-real-ip");
+  if (realIp) return realIp.trim();
+  return "unknown";
+}
+
+function consumeRegistrationQuota(request: Request): { allowed: boolean; retryAfterSec: number } {
+  const key = getRateLimitKey(request);
+  const now = Date.now();
+
+  if (registrationRateLimit.size > 10_000) {
+    for (const [entryKey, entry] of registrationRateLimit.entries()) {
+      if (now >= entry.resetAt) registrationRateLimit.delete(entryKey);
+    }
+  }
+
+  const existing = registrationRateLimit.get(key);
+  if (!existing || now >= existing.resetAt) {
+    registrationRateLimit.set(key, {
+      count: 1,
+      resetAt: now + REGISTRATION_RATE_LIMIT_WINDOW_MS,
+    });
+    return { allowed: true, retryAfterSec: 0 };
+  }
+
+  if (existing.count >= MAX_REGISTRATIONS_PER_WINDOW) {
+    return {
+      allowed: false,
+      retryAfterSec: Math.max(1, Math.ceil((existing.resetAt - now) / 1000)),
+    };
+  }
+
+  existing.count += 1;
+  registrationRateLimit.set(key, existing);
+  return { allowed: true, retryAfterSec: 0 };
+}
+
+function isPrivateIpv4(address: string): boolean {
+  const octets = address.split(".").map(part => Number.parseInt(part, 10));
+  if (octets.length !== 4 || octets.some(n => Number.isNaN(n))) return true;
+  if (octets[0] === 10) return true;
+  if (octets[0] === 127) return true;
+  if (octets[0] === 0) return true;
+  if (octets[0] === 169 && octets[1] === 254) return true;
+  if (octets[0] === 192 && octets[1] === 168) return true;
+  if (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) return true;
+  if (octets[0] >= 224) return true;
+  return false;
+}
+
+function isPrivateIpv6(address: string): boolean {
+  const normalized = address.toLowerCase();
+  return (
+    normalized === "::1" ||
+    normalized === "::" ||
+    normalized.startsWith("fc") ||
+    normalized.startsWith("fd") ||
+    normalized.startsWith("fe80:")
+  );
+}
+
+function isPrivateIpAddress(address: string): boolean {
+  const version = isIP(address);
+  if (version === 4) return isPrivateIpv4(address);
+  if (version === 6) return isPrivateIpv6(address);
+  return true;
+}
+
+async function validateWebhookUrl(webhookUrl: string): Promise<string | null> {
+  let parsed: URL;
+  try {
+    parsed = new URL(webhookUrl);
+  } catch {
+    return "Invalid webhook URL";
+  }
+
+  if (!["https:", "http:"].includes(parsed.protocol)) {
+    return "Webhook URL must use http or https";
+  }
+
+  if (parsed.username || parsed.password) {
+    return "Webhook URL must not include credentials";
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  if (
+    BLOCKED_WEBHOOK_HOSTNAMES.has(host) ||
+    host.endsWith(".local") ||
+    host.endsWith(".internal")
+  ) {
+    return "Webhook URL cannot point to private/internal addresses";
+  }
+
+  if (isIP(host) && isPrivateIpAddress(host)) {
+    return "Webhook URL cannot point to private/internal addresses";
+  }
+
+  try {
+    const addresses = await lookup(host, { all: true });
+    if (
+      addresses.length === 0 ||
+      addresses.some(entry => isPrivateIpAddress(entry.address))
+    ) {
+      return "Webhook URL cannot resolve to private/internal IPs";
+    }
+  } catch {
+    return "Unable to resolve webhook hostname";
+  }
+
+  return null;
+}
 
 /**
  * UCF Fighter Registration API
@@ -218,6 +346,17 @@ interface RobotCharacter {
 
 export async function POST(request: Request) {
   try {
+    const quota = consumeRegistrationQuota(request);
+    if (!quota.allowed) {
+      return NextResponse.json(
+        {
+          error: "Registration rate limit exceeded",
+          retry_after_seconds: quota.retryAfterSec,
+        },
+        { status: 429, headers: { "Retry-After": String(quota.retryAfterSec) } },
+      );
+    }
+
     const body: RobotCharacter = await request.json();
     const {
       walletAddress,
@@ -239,9 +378,31 @@ export async function POST(request: Request) {
       moltbookToken
     } = body;
 
-    // Auto-generate walletAddress and webhookUrl if not provided
+    // Validate Solana wallet address if provided
+    if (walletAddress) {
+      // Validate base58 format: 32-44 chars, only base58 characters
+      const base58Regex = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+      if (!base58Regex.test(walletAddress)) {
+        return NextResponse.json(
+          { error: "Invalid wallet address. Must be a valid Solana public key (base58 format)." },
+          { status: 400 }
+        );
+      }
+    }
+
     const effectiveWalletAddress = walletAddress || `bot-${name?.toLowerCase().replace(/[^a-z0-9]/g, "-")}-${Date.now()}`;
     const effectiveWebhookUrl = webhookUrl || "https://polling-mode.local";
+
+    // Validate webhook URL to prevent SSRF (block private/internal addresses)
+    if (webhookUrl) {
+      const webhookValidationError = await validateWebhookUrl(webhookUrl);
+      if (webhookValidationError) {
+        return NextResponse.json(
+          { error: webhookValidationError },
+          { status: 400 }
+        );
+      }
+    }
 
     // Validate required fields
     if (!name) {

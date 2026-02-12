@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { freshSupabase } from "../../../../lib/supabase";
+import { isAuthorizedAdminRequest } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -9,19 +10,18 @@ export const dynamic = "force-dynamic";
  */
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
-    const { fighter_id, image_url, admin_secret } = body;
-
-    if (!fighter_id || !image_url || !admin_secret) {
-      return NextResponse.json(
-        { error: "Missing required fields: fighter_id, image_url, admin_secret" },
-        { status: 400 }
-      );
+    if (!isAuthorizedAdminRequest(request.headers)) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Verify admin secret
-    if (admin_secret !== process.env.ADMIN_SECRET) {
-      return NextResponse.json({ error: "Invalid admin secret" }, { status: 401 });
+    const body = await request.json();
+    const { fighter_id, image_url } = body;
+
+    if (!fighter_id || !image_url) {
+      return NextResponse.json(
+        { error: "Missing required fields: fighter_id, image_url" },
+        { status: 400 }
+      );
     }
 
     // Update fighter image

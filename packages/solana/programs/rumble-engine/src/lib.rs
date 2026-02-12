@@ -13,6 +13,7 @@ const BETTOR_SEED: &[u8] = b"bettor";
 const CONFIG_SEED: &[u8] = b"rumble_config";
 const SPONSORSHIP_SEED: &[u8] = b"sponsorship";
 const FIGHTER_REGISTRY_PROGRAM_ID: Pubkey = pubkey!("2hA6Jvj1yjP2Uj3qrJcsBeYA2R9xPM95mDKw1ncKVExa");
+const FIGHTER_ACCOUNT_DISCRIMINATOR: [u8; 8] = [24, 221, 27, 113, 60, 210, 101, 211];
 
 /// Fee basis points (out of 10_000)
 const ADMIN_FEE_BPS: u64 = 100; // 1%
@@ -489,6 +490,10 @@ pub mod rumble_engine {
         {
             let fighter_data = ctx.accounts.fighter.try_borrow_data()?;
             require!(fighter_data.len() >= 40, RumbleError::InvalidFighterAccount);
+            require!(
+                fighter_data[..8] == FIGHTER_ACCOUNT_DISCRIMINATOR,
+                RumbleError::InvalidFighterAccount
+            );
             let authority_bytes: [u8; 32] = fighter_data[8..40]
                 .try_into()
                 .map_err(|_| error!(RumbleError::InvalidFighterAccount))?;

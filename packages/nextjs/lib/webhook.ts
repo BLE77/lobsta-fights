@@ -2,6 +2,8 @@
  * UCF Webhook System
  * Utility functions for notifying fighters via their webhook endpoints
  */
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 
 export interface WebhookPayload {
   event: string;
@@ -19,6 +21,87 @@ export interface WebhookResponse {
 
 // Webhook timeout in milliseconds
 const WEBHOOK_TIMEOUT = 5000;
+const BLOCKED_HOSTNAMES = new Set([
+  "localhost",
+  "metadata.google.internal",
+  "metadata.google",
+  "host.docker.internal",
+]);
+
+function isPrivateIpv4(address: string): boolean {
+  const octets = address.split(".").map(part => Number.parseInt(part, 10));
+  if (octets.length !== 4 || octets.some(n => Number.isNaN(n))) return true;
+  if (octets[0] === 10) return true;
+  if (octets[0] === 127) return true;
+  if (octets[0] === 0) return true;
+  if (octets[0] === 169 && octets[1] === 254) return true;
+  if (octets[0] === 192 && octets[1] === 168) return true;
+  if (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) return true;
+  if (octets[0] >= 224) return true;
+  return false;
+}
+
+function isPrivateIpv6(address: string): boolean {
+  const normalized = address.toLowerCase();
+  return (
+    normalized === "::1" ||
+    normalized === "::" ||
+    normalized.startsWith("fc") ||
+    normalized.startsWith("fd") ||
+    normalized.startsWith("fe80:")
+  );
+}
+
+function isPrivateIpAddress(address: string): boolean {
+  const version = isIP(address);
+  if (version === 4) return isPrivateIpv4(address);
+  if (version === 6) return isPrivateIpv6(address);
+  return true;
+}
+
+async function validateWebhookUrl(webhookUrl: string): Promise<string | null> {
+  let parsed: URL;
+  try {
+    parsed = new URL(webhookUrl);
+  } catch {
+    return "Invalid webhook URL";
+  }
+
+  if (!["https:", "http:"].includes(parsed.protocol)) {
+    return "Webhook must use http or https";
+  }
+
+  if (parsed.username || parsed.password) {
+    return "Webhook URL must not include credentials";
+  }
+
+  const hostname = parsed.hostname.toLowerCase();
+  if (
+    BLOCKED_HOSTNAMES.has(hostname) ||
+    hostname.endsWith(".local") ||
+    hostname.endsWith(".internal")
+  ) {
+    return "Webhook URL cannot use internal/private hostnames";
+  }
+
+  if (isIP(hostname) && isPrivateIpAddress(hostname)) {
+    return "Webhook URL cannot use internal/private IP addresses";
+  }
+
+  try {
+    const addresses = await lookup(hostname, { all: true });
+    if (
+      addresses.length === 0 ||
+      addresses.some(entry => isPrivateIpAddress(entry.address))
+    ) {
+      return "Webhook resolves to an internal/private IP";
+    }
+  } catch {
+    return "Unable to resolve webhook hostname";
+  }
+
+  return null;
+}
 
 /**
  * Notify a fighter's webhook endpoint about an event
@@ -34,6 +117,15 @@ export async function notifyFighter(
   event: string,
   data: Record<string, any> = {}
 ): Promise<WebhookResponse> {
+  const webhookValidationError = await validateWebhookUrl(webhookUrl);
+  if (webhookValidationError) {
+    console.error(`[Webhook] Blocked outbound webhook ${webhookUrl}: ${webhookValidationError}`);
+    return {
+      success: false,
+      error: webhookValidationError,
+    };
+  }
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), WEBHOOK_TIMEOUT);
 
@@ -52,6 +144,7 @@ export async function notifyFighter(
         "X-UCF-Timestamp": payload.timestamp,
       },
       body: JSON.stringify(payload),
+      redirect: "manual",
       signal: controller.signal,
     });
 

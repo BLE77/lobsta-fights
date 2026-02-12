@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { freshSupabase } from "../../../../lib/supabase";
+import { isAuthorizedAdminToken } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -11,8 +12,11 @@ export const maxDuration = 120;
  * Processes one fighter per request to avoid timeout.
  */
 export async function POST(req: NextRequest) {
-  const backfillToken = req.headers.get("x-backfill-token");
-  if (backfillToken !== "ucf-victory-pose-backfill-2026") {
+  const adminKey =
+    req.headers.get("x-admin-secret") ??
+    req.headers.get("x-admin-key") ??
+    req.headers.get("x-backfill-token");
+  if (!isAuthorizedAdminToken(adminKey)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

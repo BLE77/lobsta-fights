@@ -2,8 +2,21 @@ import { NextResponse } from "next/server";
 import { getQueueManager } from "~~/lib/queue-manager";
 import { getOrchestrator } from "~~/lib/rumble-orchestrator";
 import { saveQueueFighter, removeQueueFighter } from "~~/lib/rumble-persistence";
+import { freshSupabase } from "~~/lib/supabase";
+import { getApiKeyFromHeaders } from "~~/lib/request-auth";
 
 export const dynamic = "force-dynamic";
+
+async function isAuthorizedFighter(fighterId: string, apiKey: string): Promise<boolean> {
+  const { data, error } = await freshSupabase()
+    .from("ucf_fighters")
+    .select("id")
+    .eq("id", fighterId)
+    .eq("api_key", apiKey)
+    .maybeSingle();
+
+  return !error && !!data;
+}
 
 /**
  * GET /api/rumble/queue
@@ -42,19 +55,30 @@ export async function GET(request: Request) {
  * POST /api/rumble/queue
  *
  * Fighter joins the Rumble queue.
- * Body: { fighter_id, auto_requeue? }
+ * Body: { fighter_id, api_key?, auto_requeue? }
+ * Auth: x-api-key header or api_key in body
  */
 export async function POST(request: Request) {
   try {
     const body = await request.json();
     const fighterId = body.fighter_id || body.fighterId;
     const autoRequeue = body.auto_requeue ?? body.autoRequeue ?? false;
+    const apiKey = body.api_key || body.apiKey || getApiKeyFromHeaders(request.headers);
 
     if (!fighterId || typeof fighterId !== "string") {
       return NextResponse.json(
         { error: "Missing fighter_id", required: ["fighter_id"], optional: ["auto_requeue"] },
         { status: 400 },
       );
+    }
+    if (!apiKey || typeof apiKey !== "string") {
+      return NextResponse.json(
+        { error: "Missing API key. Provide x-api-key header or api_key in body." },
+        { status: 400 },
+      );
+    }
+    if (!(await isAuthorizedFighter(fighterId, apiKey))) {
+      return NextResponse.json({ error: "Invalid fighter credentials" }, { status: 401 });
     }
 
     const qm = getQueueManager();
@@ -98,18 +122,29 @@ export async function POST(request: Request) {
  * DELETE /api/rumble/queue
  *
  * Fighter leaves the Rumble queue.
- * Body: { fighter_id }
+ * Body: { fighter_id, api_key? }
+ * Auth: x-api-key header or api_key in body
  */
 export async function DELETE(request: Request) {
   try {
     const body = await request.json();
     const fighterId = body.fighter_id || body.fighterId;
+    const apiKey = body.api_key || body.apiKey || getApiKeyFromHeaders(request.headers);
 
     if (!fighterId || typeof fighterId !== "string") {
       return NextResponse.json(
         { error: "Missing fighter_id", required: ["fighter_id"] },
         { status: 400 },
       );
+    }
+    if (!apiKey || typeof apiKey !== "string") {
+      return NextResponse.json(
+        { error: "Missing API key. Provide x-api-key header or api_key in body." },
+        { status: 400 },
+      );
+    }
+    if (!(await isAuthorizedFighter(fighterId, apiKey))) {
+      return NextResponse.json({ error: "Invalid fighter credentials" }, { status: 401 });
     }
 
     const qm = getQueueManager();

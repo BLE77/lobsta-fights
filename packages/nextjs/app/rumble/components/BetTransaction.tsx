@@ -125,14 +125,24 @@ export default function BetTransaction({
 
       // 4. Register the bet with the API
       setBetState("registering");
+      const bettorId = window.localStorage.getItem("ucf_fighter_id");
+      const apiKey = window.localStorage.getItem("ucf_api_key");
+      if (!bettorId || !apiKey) {
+        throw new Error("Missing ucf_fighter_id or ucf_api_key in localStorage");
+      }
+
       const registerRes = await fetch("/api/rumble/bet", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+        },
         body: JSON.stringify({
           rumble_id: rumbleId,
           slot_index: slotIndex,
           fighter_id: fighterId,
           sol_amount: parsedAmount,
+          bettor_id: bettorId,
           wallet_address: publicKey.toBase58(),
           tx_signature: signature,
         }),

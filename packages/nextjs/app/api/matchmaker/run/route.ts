@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { freshSupabase } from "../../../../lib/supabase";
+import { isAuthorizedCronRequest } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -22,15 +23,9 @@ const WEBHOOK_TIMEOUT = 5000; // 5 seconds
 export async function POST(request: Request) {
   const supabase = freshSupabase();
   try {
-    // Optional: Verify cron secret for security
-    const authHeader = request.headers.get("authorization");
-    const cronSecret = process.env.CRON_SECRET;
-
-    if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
-      // Allow without auth if no secret configured (for testing)
-      if (cronSecret) {
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-      }
+    // Verify cron secret (mandatory)
+    if (!isAuthorizedCronRequest(request.headers)) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     // Get all fighters in lobby, ordered by wait time

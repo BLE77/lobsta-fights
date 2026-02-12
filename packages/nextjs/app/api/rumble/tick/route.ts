@@ -4,6 +4,7 @@ import {
   recoverOrchestratorState,
   hasRecovered,
 } from "../../../../lib/rumble-state-recovery";
+import { isAuthorizedCronRequest } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 10; // Hobby plan limit; increase to 60 on Pro
@@ -23,11 +24,7 @@ const TICK_INTERVAL_MS = 1_000; // 1 second between ticks
 // ---------------------------------------------------------------------------
 
 function isAuthorized(req: NextRequest): boolean {
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) return true; // No secret configured = allow (testing mode)
-
-  const authHeader = req.headers.get("authorization");
-  return authHeader === `Bearer ${cronSecret}`;
+  return isAuthorizedCronRequest(req.headers);
 }
 
 // ---------------------------------------------------------------------------

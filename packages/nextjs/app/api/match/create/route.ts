@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { freshSupabase } from "../../../../lib/supabase";
+import { isAuthorizedInternalRequest } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -8,6 +9,7 @@ export const dynamic = "force-dynamic";
  * Start a new UCF match between two fighters
  *
  * Input: { fighter_a_id, fighter_b_id, points_wager }
+ * Auth: internal key (x-internal-key/x-cron-secret or Bearer CRON_SECRET)
  * - Verifies both fighters exist and are verified
  * - Verifies both fighters have enough points
  * - Creates match in ucf_matches table
@@ -16,6 +18,10 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
   const supabase = freshSupabase();
   try {
+    if (!isAuthorizedInternalRequest(request.headers)) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     const body = await request.json();
     const { fighter_a_id, fighter_b_id, points_wager } = body;
 

@@ -62,6 +62,10 @@ coverage/
 *.pem
 *.key
 **/secrets/
-Sat Jan 31 14:12:38 EST 2026
+
+# Solana keypairs and secret mappings (NEVER commit!)
+packages/solana/target/deploy/*-keypair.json
+packages/solana/scripts/fighter-mappings.json
+
 .vercel
 .env*.local

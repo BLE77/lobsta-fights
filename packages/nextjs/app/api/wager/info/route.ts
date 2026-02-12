@@ -7,6 +7,7 @@ import {
   getContractAddress,
   getChainInfo,
 } from "../../../../lib/contracts";
+import { getApiKeyFromHeaders } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -18,11 +19,11 @@ export const dynamic = "force-dynamic";
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const fighterId = searchParams.get("fighter_id");
-  const apiKey = searchParams.get("api_key");
+  const apiKey = getApiKeyFromHeaders(req.headers);
 
   if (!fighterId || !apiKey) {
     return NextResponse.json(
-      { error: "Missing fighter_id or api_key" },
+      { error: "Missing fighter_id or API key header (x-api-key)" },
       { status: 400 }
     );
   }

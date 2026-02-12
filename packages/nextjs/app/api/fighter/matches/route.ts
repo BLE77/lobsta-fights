@@ -1,27 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "../../../../lib/supabase";
+import { getApiKeyFromHeaders } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
 /**
- * GET /api/fighter/matches?fighter_id=X&api_key=Y&limit=10
+ * GET /api/fighter/matches?fighter_id=X&limit=10
  *
  * Returns recent match history for a fighter.
  * Useful for bots to track their win/loss history and retrieve missed results.
+ * Auth: x-api-key header
  *
  * This is a static route - takes priority over the [id] dynamic route.
  */
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const fighterId = searchParams.get("fighter_id");
-  const apiKey = searchParams.get("api_key");
+  const apiKey = getApiKeyFromHeaders(req.headers);
   const limit = Math.min(parseInt(searchParams.get("limit") || "10"), 50);
 
   if (!fighterId || !apiKey) {
     return NextResponse.json(
       {
         error: "Missing fighter_id or api_key",
-        usage: "GET /api/fighter/matches?fighter_id=YOUR_ID&api_key=YOUR_KEY&limit=10",
+        usage: "GET /api/fighter/matches?fighter_id=YOUR_ID&limit=10 with x-api-key header",
       },
       { status: 400 }
     );
@@ -45,7 +47,7 @@ export async function GET(req: NextRequest) {
   // Fetch recent matches
   const { data: matches, error: matchError } = await supabase
     .from("ucf_matches")
-    .select("*")
+    .select("id, fighter_a_id, fighter_b_id, state, points_wager, winner_id, agent_a_state, agent_b_state, current_round, current_turn, turn_history, started_at, finished_at, result_image_url, forfeit_reason")
     .or(`fighter_a_id.eq.${fighterId},fighter_b_id.eq.${fighterId}`)
     .eq("state", "FINISHED")
     .order("finished_at", { ascending: false })
