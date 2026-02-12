@@ -13,12 +13,14 @@ import {
   Keypair,
   PublicKey,
   SystemProgram,
+  TransactionInstruction,
   SYSVAR_RENT_PUBKEY,
   Transaction,
-  type TransactionInstruction,
 } from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { getConnection } from "./solana-connection";
+import { createHash, randomBytes } from "node:crypto";
+import { keccak_256 } from "@noble/hashes/sha3";
 
 // IDLs (imported as JSON)
 import fighterRegistryIdl from "./idl/fighter_registry.json";
@@ -44,6 +46,9 @@ export const RUMBLE_ENGINE_ID = new PublicKey(
 // ---------------------------------------------------------------------------
 
 const ARENA_SEED = Buffer.from("arena_config");
+const SHOWER_REQUEST_SEED = Buffer.from("shower_request");
+const ENTROPY_CONFIG_SEED = Buffer.from("entropy_config");
+const ENTROPY_VAR_SEED = Buffer.from("var");
 const REGISTRY_SEED = Buffer.from("registry_config");
 const CONFIG_SEED = Buffer.from("rumble_config");
 const FIGHTER_SEED = Buffer.from("fighter");
@@ -52,6 +57,9 @@ const RUMBLE_SEED = Buffer.from("rumble");
 const VAULT_SEED = Buffer.from("vault");
 const BETTOR_SEED = Buffer.from("bettor");
 const SPONSORSHIP_SEED = Buffer.from("sponsorship");
+const SLOT_HASHES_SYSVAR_ID = new PublicKey(
+  "SysvarS1otHashes111111111111111111111111111"
+);
 
 // ---------------------------------------------------------------------------
 // PDA Derivation Helpers (exported for frontend use)
@@ -59,6 +67,14 @@ const SPONSORSHIP_SEED = Buffer.from("sponsorship");
 
 export function deriveArenaConfigPda(): [PublicKey, number] {
   return PublicKey.findProgramAddressSync([ARENA_SEED], ICHOR_TOKEN_ID);
+}
+
+export function deriveShowerRequestPda(): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync([SHOWER_REQUEST_SEED], ICHOR_TOKEN_ID);
+}
+
+export function deriveEntropyConfigPda(): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync([ENTROPY_CONFIG_SEED], ICHOR_TOKEN_ID);
 }
 
 export function deriveRegistryConfigPda(): [PublicKey, number] {
@@ -325,6 +341,320 @@ export async function registerFighter(
 // ICHOR Token Functions
 // ---------------------------------------------------------------------------
 
+type EntropySettings = {
+  programId: PublicKey;
+  varAccount: PublicKey;
+  provider: PublicKey;
+  varAuthority: PublicKey;
+};
+
+let _entropyConfigCacheKey: string | null = null;
+let _runtimeEntropySettings: EntropySettings | null = null;
+let _entropyRotationInFlight: Promise<EntropySettings> | null = null;
+
+function entropyCacheKey(settings: EntropySettings): string {
+  return `${settings.programId.toBase58()}:${settings.varAccount.toBase58()}:${settings.provider.toBase58()}:${settings.varAuthority.toBase58()}`;
+}
+
+function isTruthyEnv(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function getEntropySettingsFromEnv(): EntropySettings | null {
+  if (!isTruthyEnv(process.env.ICHOR_ENTROPY_ENABLED)) {
+    return null;
+  }
+
+  const programIdRaw = process.env.ICHOR_ENTROPY_PROGRAM_ID;
+  const varRaw = process.env.ICHOR_ENTROPY_VAR;
+  const providerRaw = process.env.ICHOR_ENTROPY_PROVIDER;
+  const authorityRaw = process.env.ICHOR_ENTROPY_AUTHORITY;
+
+  if (!programIdRaw || !varRaw || !providerRaw || !authorityRaw) {
+    console.warn(
+      "[solana-programs] ICHOR_ENTROPY_ENABLED is true but entropy env vars are incomplete. Falling back to SlotHashes RNG."
+    );
+    return null;
+  }
+
+  try {
+    return {
+      programId: new PublicKey(programIdRaw),
+      varAccount: new PublicKey(varRaw),
+      provider: new PublicKey(providerRaw),
+      varAuthority: new PublicKey(authorityRaw),
+    };
+  } catch (err) {
+    console.warn("[solana-programs] Invalid entropy public key in env. Falling back to SlotHashes RNG.", err);
+    return null;
+  }
+}
+
+function anchorGlobalDiscriminator(methodName: string): Buffer {
+  return createHash("sha256").update(`global:${methodName}`).digest().subarray(0, 8);
+}
+
+function u64Buffer(value: bigint): Buffer {
+  const buf = Buffer.alloc(8);
+  buf.writeBigUInt64LE(value);
+  return buf;
+}
+
+function deriveEntropyVarPda(
+  authority: PublicKey,
+  id: bigint,
+  entropyProgramId: PublicKey
+): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [ENTROPY_VAR_SEED, authority.toBuffer(), u64Buffer(id)],
+    entropyProgramId
+  );
+}
+
+function buildEntropyOpenIx(
+  entropyProgramId: PublicKey,
+  authority: PublicKey,
+  payer: PublicKey,
+  provider: PublicKey,
+  varAccount: PublicKey,
+  id: bigint,
+  commit: Buffer,
+  endAt: bigint
+): TransactionInstruction {
+  const data = Buffer.concat([
+    Buffer.from([0]), // EntropyInstruction::Open
+    u64Buffer(id),
+    commit,
+    u64Buffer(0n), // is_auto = false
+    u64Buffer(1n), // samples = 1
+    u64Buffer(endAt),
+  ]);
+
+  return new TransactionInstruction({
+    programId: entropyProgramId,
+    keys: [
+      { pubkey: authority, isSigner: true, isWritable: false },
+      { pubkey: payer, isSigner: true, isWritable: true },
+      { pubkey: provider, isSigner: false, isWritable: false },
+      { pubkey: varAccount, isSigner: false, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data,
+  });
+}
+
+function buildEntropySampleIx(
+  entropyProgramId: PublicKey,
+  signer: PublicKey,
+  varAccount: PublicKey
+): TransactionInstruction {
+  return new TransactionInstruction({
+    programId: entropyProgramId,
+    keys: [
+      { pubkey: signer, isSigner: true, isWritable: false },
+      { pubkey: varAccount, isSigner: false, isWritable: true },
+      { pubkey: SLOT_HASHES_SYSVAR_ID, isSigner: false, isWritable: false },
+    ],
+    data: Buffer.from([5]), // EntropyInstruction::Sample
+  });
+}
+
+function buildEntropyRevealIx(
+  entropyProgramId: PublicKey,
+  signer: PublicKey,
+  varAccount: PublicKey,
+  seed: Buffer
+): TransactionInstruction {
+  return new TransactionInstruction({
+    programId: entropyProgramId,
+    keys: [
+      { pubkey: signer, isSigner: true, isWritable: false },
+      { pubkey: varAccount, isSigner: false, isWritable: true },
+    ],
+    data: Buffer.concat([
+      Buffer.from([4]), // EntropyInstruction::Reveal
+      seed,
+    ]),
+  });
+}
+
+async function sendAdminInstructions(
+  provider: anchor.AnchorProvider,
+  admin: Keypair,
+  instructions: TransactionInstruction[]
+): Promise<void> {
+  const tx = new Transaction().add(...instructions);
+  tx.feePayer = admin.publicKey;
+  const { blockhash, lastValidBlockHeight } =
+    await provider.connection.getLatestBlockhash("confirmed");
+  tx.recentBlockhash = blockhash;
+  tx.lastValidBlockHeight = lastValidBlockHeight;
+  await provider.sendAndConfirm(tx, []);
+}
+
+async function waitForSlot(
+  connection: Connection,
+  targetSlot: bigint,
+  timeoutMs = 20_000
+): Promise<void> {
+  const start = Date.now();
+  while (true) {
+    const slot = BigInt(await connection.getSlot("confirmed"));
+    if (slot >= targetSlot) return;
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`Timed out waiting for slot ${targetSlot.toString()}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+}
+
+function buildUpsertEntropyConfigIx(
+  authority: PublicKey,
+  arenaConfig: PublicKey,
+  entropyConfig: PublicKey,
+  entropySettings: EntropySettings,
+): TransactionInstruction {
+  const discriminator = anchorGlobalDiscriminator("upsert_entropy_config");
+  const data = Buffer.concat([
+    discriminator,
+    Buffer.from([1]), // enabled = true
+    entropySettings.programId.toBuffer(),
+    entropySettings.varAccount.toBuffer(),
+    entropySettings.provider.toBuffer(),
+    entropySettings.varAuthority.toBuffer(),
+  ]);
+
+  return new TransactionInstruction({
+    programId: ICHOR_TOKEN_ID,
+    keys: [
+      { pubkey: authority, isSigner: true, isWritable: true },
+      { pubkey: arenaConfig, isSigner: false, isWritable: false },
+      { pubkey: entropyConfig, isSigner: false, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data,
+  });
+}
+
+async function ensureEntropyConfig(
+  provider: anchor.AnchorProvider,
+  admin: Keypair,
+): Promise<EntropySettings | null> {
+  const entropySettings = _runtimeEntropySettings ?? getEntropySettingsFromEnv();
+  if (!entropySettings) return null;
+
+  const cacheKey = entropyCacheKey(entropySettings);
+  if (_entropyConfigCacheKey === cacheKey) {
+    return entropySettings;
+  }
+
+  const [arenaConfigPda] = deriveArenaConfigPda();
+  const [entropyConfigPda] = deriveEntropyConfigPda();
+  const ix = buildUpsertEntropyConfigIx(
+    admin.publicKey,
+    arenaConfigPda,
+    entropyConfigPda,
+    entropySettings,
+  );
+  await sendAdminInstructions(provider, admin, [ix]);
+  _entropyConfigCacheKey = cacheKey;
+  _runtimeEntropySettings = entropySettings;
+  return entropySettings;
+}
+
+async function maybeRotateEntropyVarForSettlement(
+  provider: anchor.AnchorProvider,
+  admin: Keypair,
+  entropySettings: EntropySettings
+): Promise<EntropySettings> {
+  const pendingShower = await readShowerRequest(provider.connection).catch(() => null);
+  if (!pendingShower?.active) return entropySettings;
+
+  const currentSlot = BigInt(await provider.connection.getSlot("confirmed"));
+  if (currentSlot < pendingShower.targetSlotB) return entropySettings;
+
+  if (_entropyRotationInFlight) {
+    return _entropyRotationInFlight;
+  }
+
+  _entropyRotationInFlight = (async () => {
+    if (!entropySettings.varAuthority.equals(admin.publicKey)) {
+      throw new Error(
+        "ICHOR_ENTROPY_AUTHORITY must match SOLANA_DEPLOYER_KEYPAIR_PATH public key for automatic entropy rotation."
+      );
+    }
+
+    // Keep a small slot buffer so open() validation doesn't race current slot advancement.
+    const minFutureEndAt = currentSlot + 8n;
+    const endAt =
+      pendingShower.targetSlotA > minFutureEndAt
+        ? pendingShower.targetSlotA
+        : minFutureEndAt;
+    const entropyVarId =
+      (currentSlot << 16n) ^ BigInt(randomBytes(2).readUInt16LE(0));
+    const [entropyVarPda] = deriveEntropyVarPda(
+      entropySettings.varAuthority,
+      entropyVarId,
+      entropySettings.programId
+    );
+
+    const seed = randomBytes(32);
+    const commit = Buffer.from(keccak_256(seed));
+    const openIx = buildEntropyOpenIx(
+      entropySettings.programId,
+      entropySettings.varAuthority,
+      admin.publicKey,
+      entropySettings.provider,
+      entropyVarPda,
+      entropyVarId,
+      commit,
+      endAt
+    );
+
+    await sendAdminInstructions(provider, admin, [openIx]);
+    await waitForSlot(provider.connection, endAt);
+
+    const sampleIx = buildEntropySampleIx(
+      entropySettings.programId,
+      admin.publicKey,
+      entropyVarPda
+    );
+    const revealIx = buildEntropyRevealIx(
+      entropySettings.programId,
+      admin.publicKey,
+      entropyVarPda,
+      seed
+    );
+    await sendAdminInstructions(provider, admin, [sampleIx, revealIx]);
+
+    const rotatedSettings: EntropySettings = {
+      ...entropySettings,
+      varAccount: entropyVarPda,
+    };
+    const [arenaConfigPda] = deriveArenaConfigPda();
+    const [entropyConfigPda] = deriveEntropyConfigPda();
+    const upsertIx = buildUpsertEntropyConfigIx(
+      admin.publicKey,
+      arenaConfigPda,
+      entropyConfigPda,
+      rotatedSettings
+    );
+    await sendAdminInstructions(provider, admin, [upsertIx]);
+
+    _runtimeEntropySettings = rotatedSettings;
+    _entropyConfigCacheKey = entropyCacheKey(rotatedSettings);
+    return rotatedSettings;
+  })();
+
+  try {
+    return await _entropyRotationInFlight;
+  } finally {
+    _entropyRotationInFlight = null;
+  }
+}
+
 /**
  * Mint rumble reward to the winner (admin/server-side).
  * Returns tx signature on success, null if admin keypair unavailable.
@@ -378,23 +708,41 @@ export async function checkIchorShower(
   const admin = getAdminKeypair()!;
 
   const [arenaConfigPda] = deriveArenaConfigPda();
+  const [showerRequestPda] = deriveShowerRequestPda();
+  const [entropyConfigPda] = deriveEntropyConfigPda();
   const ichorMint = getIchorMint();
-  const slotHashesSysvar = new PublicKey(
-    "SysvarS1otHashes111111111111111111111111111"
-  );
+  const slotHashesSysvar = SLOT_HASHES_SYSVAR_ID;
+  let entropySettings = await ensureEntropyConfig(provider, admin);
+  if (entropySettings) {
+    entropySettings = await maybeRotateEntropyVarForSettlement(
+      provider,
+      admin,
+      entropySettings
+    );
+  }
 
-  const tx = await (program.methods as any)
+  const accounts: Record<string, PublicKey> = {
+    authority: admin.publicKey,
+    arenaConfig: arenaConfigPda,
+    showerRequest: showerRequestPda,
+    ichorMint,
+    recipientTokenAccount,
+    showerVault,
+    slotHashes: slotHashesSysvar,
+    systemProgram: SystemProgram.programId,
+    tokenProgram: TOKEN_PROGRAM_ID,
+  };
+  if (entropySettings) {
+    accounts.entropyConfig = entropyConfigPda;
+    accounts.entropyVar = entropySettings.varAccount;
+    accounts.entropyProgram = entropySettings.programId;
+  }
+
+  const builder = (program.methods as any)
     .checkIchorShower()
-    .accounts({
-      authority: admin.publicKey,
-      arenaConfig: arenaConfigPda,
-      ichorMint,
-      recipientTokenAccount,
-      showerVault,
-      slotHashes: slotHashesSysvar,
-      tokenProgram: TOKEN_PROGRAM_ID,
-    })
-    .rpc();
+    .accountsPartial(accounts);
+
+  const tx = await builder.rpc();
 
   return tx;
 }
@@ -867,6 +1215,59 @@ export async function readArenaConfig(
     ichorShowerPool,
     treasuryVault,
     bump,
+  };
+}
+
+/**
+ * Read ShowerRequest state from chain.
+ */
+export async function readShowerRequest(
+  connection?: Connection
+): Promise<{
+  initialized: boolean;
+  active: boolean;
+  bump: number;
+  requestNonce: bigint;
+  requestedSlot: bigint;
+  targetSlotA: bigint;
+  targetSlotB: bigint;
+  recipientTokenAccount: string;
+} | null> {
+  const conn = connection ?? getConnection();
+  const [pda] = deriveShowerRequestPda();
+  const info = await conn.getAccountInfo(pda);
+  if (!info) return null;
+
+  const d = info.data;
+  let offset = 8; // discriminator
+
+  const initialized = d[offset] !== 0;
+  offset += 1;
+  const active = d[offset] !== 0;
+  offset += 1;
+  const bump = d[offset];
+  offset += 1;
+  const requestNonce = d.readBigUInt64LE(offset);
+  offset += 8;
+  const requestedSlot = d.readBigUInt64LE(offset);
+  offset += 8;
+  const targetSlotA = d.readBigUInt64LE(offset);
+  offset += 8;
+  const targetSlotB = d.readBigUInt64LE(offset);
+  offset += 8;
+  const recipientTokenAccount = new PublicKey(
+    d.subarray(offset, offset + 32)
+  ).toBase58();
+
+  return {
+    initialized,
+    active,
+    bump,
+    requestNonce,
+    requestedSlot,
+    targetSlotA,
+    targetSlotB,
+    recipientTokenAccount,
   };
 }
 

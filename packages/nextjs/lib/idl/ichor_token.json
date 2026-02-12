@@ -75,9 +75,13 @@
     {
       "name": "check_ichor_shower",
       "docs": [
-        "Check if an Ichor Shower should trigger (1/500 chance).",
-        "Uses the recent slot hash for pseudorandomness.",
-        "If triggered, transfers the entire shower pool to the lucky recipient."
+        "Progress the Ichor Shower state machine.",
+        "",
+        "Phase 1 (no active request): create a delayed-slot shower request.",
+        "Phase 2 (active request and mature): settle using two fixed future slot hashes.",
+        "",
+        "This removes same-slot leader bias: settlement entropy comes from slots chosen",
+        "at request time, not from the slot that includes the settlement transaction."
       ],
       "discriminator": [
         86,
@@ -92,6 +96,9 @@
       "accounts": [
         {
           "name": "authority",
+          "docs": [
+            "Request creation is admin-gated in handler logic; settlement is permissionless."
+          ],
           "writable": true,
           "signer": true
         },
@@ -121,6 +128,33 @@
           }
         },
         {
+          "name": "shower_request",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  104,
+                  111,
+                  119,
+                  101,
+                  114,
+                  95,
+                  114,
+                  101,
+                  113,
+                  117,
+                  101,
+                  115,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
           "name": "ichor_mint",
           "writable": true
         },
@@ -143,8 +177,27 @@
           "address": "SysvarS1otHashes111111111111111111111111111"
         },
         {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
           "name": "token_program",
           "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "entropy_config",
+          "docs": [
+            "Optional entropy config PDA (required only when entropy mode is enabled)."
+          ],
+          "optional": true
+        },
+        {
+          "name": "entropy_var",
+          "optional": true
+        },
+        {
+          "name": "entropy_program",
+          "optional": true
         }
       ],
       "args": []
@@ -350,6 +403,109 @@
           "type": "u64"
         }
       ]
+    },
+    {
+      "name": "upsert_entropy_config",
+      "docs": [
+        "Admin: configure external entropy source for shower settlement.",
+        "",
+        "When enabled, check_ichor_shower settlement uses the entropy var account's",
+        "finalized value instead of SlotHashes-derived pseudorandomness."
+      ],
+      "discriminator": [
+        79,
+        13,
+        176,
+        134,
+        223,
+        218,
+        228,
+        144
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "arena_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  114,
+                  101,
+                  110,
+                  97,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "entropy_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  101,
+                  110,
+                  116,
+                  114,
+                  111,
+                  112,
+                  121,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "enabled",
+          "type": "bool"
+        },
+        {
+          "name": "entropy_program_id",
+          "type": "pubkey"
+        },
+        {
+          "name": "entropy_var",
+          "type": "pubkey"
+        },
+        {
+          "name": "provider",
+          "type": "pubkey"
+        },
+        {
+          "name": "var_authority",
+          "type": "pubkey"
+        }
+      ]
     }
   ],
   "accounts": [
@@ -365,9 +521,48 @@
         33,
         38
       ]
+    },
+    {
+      "name": "EntropyConfig",
+      "discriminator": [
+        219,
+        113,
+        214,
+        173,
+        116,
+        111,
+        154,
+        137
+      ]
+    },
+    {
+      "name": "ShowerRequest",
+      "discriminator": [
+        25,
+        132,
+        133,
+        225,
+        164,
+        161,
+        212,
+        66
+      ]
     }
   ],
   "events": [
+    {
+      "name": "EntropyConfigUpdatedEvent",
+      "discriminator": [
+        63,
+        24,
+        10,
+        188,
+        126,
+        167,
+        150,
+        43
+      ]
+    },
     {
       "name": "IchorShowerEvent",
       "discriminator": [
@@ -379,6 +574,19 @@
         150,
         84,
         172
+      ]
+    },
+    {
+      "name": "IchorShowerRequestedEvent",
+      "discriminator": [
+        79,
+        76,
+        159,
+        43,
+        157,
+        249,
+        246,
+        63
       ]
     }
   ],
@@ -417,6 +625,56 @@
       "code": 6006,
       "name": "InvalidSlotHashes",
       "msg": "Invalid SlotHashes sysvar data"
+    },
+    {
+      "code": 6007,
+      "name": "SlotHashNotFound",
+      "msg": "Required slot hash not found in SlotHashes sysvar"
+    },
+    {
+      "code": 6008,
+      "name": "PendingRecipientMismatch",
+      "msg": "Recipient token account does not match active shower request"
+    },
+    {
+      "code": 6009,
+      "name": "InvalidShowerRequestPda",
+      "msg": "Invalid shower request PDA state"
+    },
+    {
+      "code": 6010,
+      "name": "InvalidEntropyConfig",
+      "msg": "Invalid entropy configuration"
+    },
+    {
+      "code": 6011,
+      "name": "MissingEntropyConfig",
+      "msg": "Missing entropy configuration account"
+    },
+    {
+      "code": 6012,
+      "name": "MissingEntropyAccounts",
+      "msg": "Missing entropy var/program accounts"
+    },
+    {
+      "code": 6013,
+      "name": "InvalidEntropyProgram",
+      "msg": "Invalid entropy program account"
+    },
+    {
+      "code": 6014,
+      "name": "InvalidEntropyVar",
+      "msg": "Invalid entropy var account"
+    },
+    {
+      "code": 6015,
+      "name": "EntropyVarNotReady",
+      "msg": "Entropy var is not finalized/ready yet"
+    },
+    {
+      "code": 6016,
+      "name": "EntropyVarWindowMismatch",
+      "msg": "Entropy var timing window does not match the pending shower request"
     }
   ],
   "types": [
@@ -461,6 +719,70 @@
       }
     },
     {
+      "name": "EntropyConfig",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "initialized",
+            "type": "bool"
+          },
+          {
+            "name": "enabled",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "entropy_program_id",
+            "type": "pubkey"
+          },
+          {
+            "name": "entropy_var",
+            "type": "pubkey"
+          },
+          {
+            "name": "provider",
+            "type": "pubkey"
+          },
+          {
+            "name": "var_authority",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "EntropyConfigUpdatedEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "enabled",
+            "type": "bool"
+          },
+          {
+            "name": "entropy_program_id",
+            "type": "pubkey"
+          },
+          {
+            "name": "entropy_var",
+            "type": "pubkey"
+          },
+          {
+            "name": "provider",
+            "type": "pubkey"
+          },
+          {
+            "name": "var_authority",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
       "name": "IchorShowerEvent",
       "type": {
         "kind": "struct",
@@ -475,6 +797,74 @@
           },
           {
             "name": "recipient",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "IchorShowerRequestedEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "request_nonce",
+            "type": "u64"
+          },
+          {
+            "name": "recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "requested_slot",
+            "type": "u64"
+          },
+          {
+            "name": "target_slot_a",
+            "type": "u64"
+          },
+          {
+            "name": "target_slot_b",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ShowerRequest",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "initialized",
+            "type": "bool"
+          },
+          {
+            "name": "active",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "request_nonce",
+            "type": "u64"
+          },
+          {
+            "name": "requested_slot",
+            "type": "u64"
+          },
+          {
+            "name": "target_slot_a",
+            "type": "u64"
+          },
+          {
+            "name": "target_slot_b",
+            "type": "u64"
+          },
+          {
+            "name": "recipient_token_account",
             "type": "pubkey"
           }
         ]

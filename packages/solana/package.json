@@ -6,7 +6,12 @@
   "scripts": {
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
     "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check",
-    "test": "anchor test"
+    "test": "anchor test",
+    "build:sbf:devnet": "./scripts/build-sbf-devnet.sh",
+    "preflight:devnet": "./scripts/preflight-devnet.sh",
+    "preflight:devnet:strict": "REQUIRE_ENTROPY_CONFIG=true ./scripts/preflight-devnet.sh",
+    "configure:entropy": "node ./scripts/configure-entropy.mjs",
+    "setup:entropy:var": "node ./scripts/setup-entropy-var.mjs"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.30.1",
