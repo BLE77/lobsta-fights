@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 
+export const dynamic = "force-dynamic";
+
 /**
  * UCF Bot Beta - "The Tactician"
  * Defensive/Counter fighting style - guards, dodges, then strikes

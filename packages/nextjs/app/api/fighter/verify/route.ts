@@ -5,6 +5,8 @@ import { isIP } from "node:net";
 // Verify that a fighter endpoint is automated (not human)
 // Sends a challenge and expects response within 5 seconds
 
+export const dynamic = "force-dynamic";
+
 const BLOCKED_HOSTNAMES = new Set([
   "localhost",
   "metadata.google.internal",

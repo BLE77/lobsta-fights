@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 
+export const dynamic = "force-dynamic";
+
 /**
  * UCF Bot Alpha - "The Punisher"
  * Aggressive fighting style - heavy on strikes

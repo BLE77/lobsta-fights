@@ -73,6 +73,8 @@ import {
   BotMatchState,
 } from "../../../../lib/bot-strategy";
 
+export const dynamic = "force-dynamic";
+
 // Bot configuration - in production, store these securely
 const BOT_CONFIG = {
   name: "Clawdbot",

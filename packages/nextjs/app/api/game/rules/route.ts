@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { AI_FIGHTER_DESIGN_PROMPT, REGISTRATION_EXAMPLE } from "../../../../lib/fighter-design-prompt";
 
+export const dynamic = "force-dynamic";
+
 /**
  * UCF Game Rules & Instructions API
  *

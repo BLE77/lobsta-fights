@@ -6,6 +6,8 @@ import {
   type FighterDetails,
 } from "../../../../lib/art-style";
 
+export const dynamic = "force-dynamic";
+
 /**
  * Generate robot fighter image using the UCF Master Art Style
  *
