@@ -171,7 +171,13 @@ export function setIchorMint(mint: PublicKey): void {
  * Minimal wallet adapter that satisfies AnchorProvider's Wallet interface.
  * Avoids relying on anchor.Wallet which has webpack resolution issues.
  */
-class NodeWallet implements anchor.Wallet {
+type ProviderWallet = {
+  publicKey: PublicKey;
+  signTransaction<T extends anchor.web3.Transaction | anchor.web3.VersionedTransaction>(tx: T): Promise<T>;
+  signAllTransactions<T extends anchor.web3.Transaction | anchor.web3.VersionedTransaction>(txs: T[]): Promise<T[]>;
+};
+
+class NodeWallet implements ProviderWallet {
   constructor(readonly payer: Keypair) {}
   get publicKey() { return this.payer.publicKey; }
   async signTransaction<T extends anchor.web3.Transaction | anchor.web3.VersionedTransaction>(tx: T): Promise<T> {
@@ -186,7 +192,7 @@ class NodeWallet implements anchor.Wallet {
 
 function getProvider(
   connection?: Connection,
-  wallet?: anchor.Wallet
+  wallet?: ProviderWallet
 ): anchor.AnchorProvider {
   const conn = connection ?? getConnection();
   const w = wallet ?? new NodeWallet(Keypair.generate());
@@ -796,7 +802,7 @@ export async function acceptAdmin(
   connection?: Connection
 ): Promise<string | null> {
   const conn = connection ?? getConnection();
-  const wallet = new anchor.Wallet(newAdminKeypair);
+  const wallet = new NodeWallet(newAdminKeypair);
   const provider = new anchor.AnchorProvider(conn, wallet, {
     commitment: "confirmed",
   });
