@@ -240,15 +240,22 @@ export class RumbleOrchestrator {
   /**
    * Called on a regular interval (~1 second). Drives the entire Rumble
    * lifecycle by advancing queue manager slots and running combat turns.
+   *
+   * Returns a promise that resolves once all slot processing (including
+   * awaited on-chain calls) completes for this tick.
    */
-  tick(): void {
+  async tick(): Promise<void> {
     // Let the queue manager handle state transitions (idle→betting, betting→combat, etc.)
     this.queueManager.advanceSlots();
 
     const slots = this.queueManager.getSlots();
+    const slotPromises: Promise<void>[] = [];
     for (const slot of slots) {
-      this.processSlot(slot);
+      slotPromises.push(this.processSlot(slot));
     }
+
+    // Await all slot processing; individual errors are caught inside processSlot
+    await Promise.all(slotPromises);
 
     this.pollPendingIchorShower();
   }
@@ -285,30 +292,36 @@ export class RumbleOrchestrator {
     const showerVaultAta = getAssociatedTokenAddressSync(ichorMint, arenaConfigPda, true);
     const sig = await checkIchorShowerOnChain(recipientAta, showerVaultAta);
     if (sig) {
-      console.log(`[Orchestrator] On-chain pending checkIchorShower tx: ${sig}`);
+      console.log(`[OnChain] pending checkIchorShower succeeded: ${sig}`);
+    } else {
+      console.warn(`[OnChain] pending checkIchorShower returned null`);
     }
   }
 
   // ---- Per-slot processing -------------------------------------------------
 
-  private processSlot(slot: RumbleSlot): void {
-    switch (slot.state) {
-      case "betting":
-        this.handleBettingPhase(slot);
-        break;
-      case "combat":
-        this.handleCombatPhase(slot);
-        break;
-      case "payout":
-        this.handlePayoutPhase(slot);
-        break;
-      // idle: nothing to do, queue manager handles transition
+  private async processSlot(slot: RumbleSlot): Promise<void> {
+    try {
+      switch (slot.state) {
+        case "betting":
+          await this.handleBettingPhase(slot);
+          break;
+        case "combat":
+          await this.handleCombatPhase(slot);
+          break;
+        case "payout":
+          this.handlePayoutPhase(slot);
+          break;
+        // idle: nothing to do, queue manager handles transition
+      }
+    } catch (err) {
+      console.error(`[Orchestrator] processSlot error for slot ${slot.slotIndex} (${slot.state}):`, err);
     }
   }
 
   // ---- Betting phase -------------------------------------------------------
 
-  private handleBettingPhase(slot: RumbleSlot): void {
+  private async handleBettingPhase(slot: RumbleSlot): Promise<void> {
     const idx = slot.slotIndex;
 
     // Create betting pool if we don't have one for this rumble
@@ -333,20 +346,19 @@ export class RumbleOrchestrator {
         deadline: slot.bettingDeadline!,
       });
 
-      // On-chain: create rumble (best-effort, fire-and-forget)
-      this.createRumbleOnChain(slot).catch((err) => {
-        console.error(`[Orchestrator] On-chain createRumble failed for ${slot.id}:`, err);
-      });
+      // On-chain: create rumble (awaited, but failures don't block the game)
+      await this.createRumbleOnChain(slot);
     }
   }
 
   /**
-   * Create a rumble on-chain when betting opens. Best-effort for devnet.
+   * Create a rumble on-chain when betting opens.
+   * Awaited but failures do not block the off-chain game loop.
    */
   private async createRumbleOnChain(slot: RumbleSlot): Promise<void> {
     const rumbleIdNum = parseInt(slot.id.replace(/\D/g, ""), 10);
     if (isNaN(rumbleIdNum)) {
-      console.warn(`[Orchestrator] Cannot parse rumbleId "${slot.id}" for on-chain create`);
+      console.warn(`[OnChain] Cannot parse rumbleId "${slot.id}" for createRumble`);
       return;
     }
 
@@ -359,11 +371,11 @@ export class RumbleOrchestrator {
         try {
           fighterPubkeys.push(new PublicKey(walletAddr));
         } catch {
-          console.warn(`[Orchestrator] Invalid wallet for "${fid}": ${walletAddr}`);
+          console.warn(`[OnChain] Invalid wallet for "${fid}": ${walletAddr}`);
           return;
         }
       } else {
-        console.log(`[Orchestrator] No wallet for "${fid}", skipping on-chain createRumble`);
+        console.log(`[OnChain] No wallet for "${fid}", skipping createRumble`);
         return;
       }
     }
@@ -375,16 +387,19 @@ export class RumbleOrchestrator {
     try {
       const sig = await createRumbleOnChain(rumbleIdNum, fighterPubkeys, deadline);
       if (sig) {
-        console.log(`[Orchestrator] On-chain createRumble tx: ${sig}`);
+        console.log(`[OnChain] createRumble succeeded: ${sig}`);
         persist.updateRumbleTxSignature(slot.id, "createRumble", sig);
+      } else {
+        console.warn(`[OnChain] createRumble returned null — continuing off-chain`);
       }
     } catch (err) {
-      console.error(`[Orchestrator] createRumbleOnChain error:`, err);
+      console.error(`[OnChain] createRumble error:`, err);
     }
   }
 
   /**
-   * Transition a rumble on-chain from Betting to Combat. Best-effort for devnet.
+   * Transition a rumble on-chain from Betting to Combat.
+   * Awaited but failures do not block the off-chain game loop.
    */
   private async startCombatOnChain(slot: RumbleSlot): Promise<void> {
     const rumbleIdNum = parseInt(slot.id.replace(/\D/g, ""), 10);
@@ -393,11 +408,13 @@ export class RumbleOrchestrator {
     try {
       const sig = await startCombatOnChain(rumbleIdNum);
       if (sig) {
-        console.log(`[Orchestrator] On-chain startCombat tx: ${sig}`);
+        console.log(`[OnChain] startCombat succeeded: ${sig}`);
         persist.updateRumbleTxSignature(slot.id, "startCombat", sig);
+      } else {
+        console.warn(`[OnChain] startCombat returned null — continuing off-chain`);
       }
     } catch (err) {
-      console.error(`[Orchestrator] startCombatOnChain error:`, err);
+      console.error(`[OnChain] startCombat error:`, err);
     }
   }
 
@@ -481,7 +498,7 @@ export class RumbleOrchestrator {
 
   // ---- Combat phase --------------------------------------------------------
 
-  private handleCombatPhase(slot: RumbleSlot): void {
+  private async handleCombatPhase(slot: RumbleSlot): Promise<void> {
     const idx = slot.slotIndex;
     const now = Date.now();
 
@@ -502,10 +519,8 @@ export class RumbleOrchestrator {
       // Persist: mark rumble as combat
       persist.updateRumbleStatus(slot.id, "combat");
 
-      // On-chain: transition from Betting → Combat
-      this.startCombatOnChain(slot).catch((err) => {
-        console.error(`[Orchestrator] On-chain startCombat failed for ${slot.id}:`, err);
-      });
+      // On-chain: transition from Betting -> Combat (awaited, failures don't block)
+      await this.startCombatOnChain(slot);
 
       this.emit("combat_started", {
         slotIndex: idx,
@@ -520,8 +535,8 @@ export class RumbleOrchestrator {
     // Throttle: only run one turn per COMBAT_TICK_INTERVAL_MS
     if (now - state.lastTickAt < COMBAT_TICK_INTERVAL_MS) return;
 
-    // Run one turn
-    this.runCombatTurn(slot, state);
+    // Run one turn (awaited so on-chain settlement is properly tracked)
+    await this.runCombatTurn(slot, state);
     state.lastTickAt = now;
   }
 
@@ -562,23 +577,23 @@ export class RumbleOrchestrator {
     const state = this.combatStates.get(slotIndex);
     if (!state) return;
 
-    this.runCombatTurn(slot, state);
+    await this.runCombatTurn(slot, state);
   }
 
-  private runCombatTurn(slot: RumbleSlot, state: SlotCombatState): void {
+  private async runCombatTurn(slot: RumbleSlot, state: SlotCombatState): Promise<void> {
     const MAX_TURNS = 20;
 
     const alive = state.fighters.filter((f) => f.hp > 0);
 
     // If only 0-1 fighters remain, rumble is complete
     if (alive.length <= 1) {
-      this.finishCombat(slot, state);
+      await this.finishCombat(slot, state);
       return;
     }
 
     // If we've hit max turns, end the rumble
     if (state.turns.length >= MAX_TURNS) {
-      this.finishCombat(slot, state);
+      await this.finishCombat(slot, state);
       return;
     }
 
@@ -692,11 +707,11 @@ export class RumbleOrchestrator {
 
     // Check if combat is done
     if (remaining <= 1 || state.turns.length >= MAX_TURNS) {
-      this.finishCombat(slot, state);
+      await this.finishCombat(slot, state);
     }
   }
 
-  private finishCombat(slot: RumbleSlot, state: SlotCombatState): void {
+  private async finishCombat(slot: RumbleSlot, state: SlotCombatState): Promise<void> {
     // Determine placements
     const allFighters = [...state.fighters];
     const alive = allFighters.filter((f) => f.hp > 0);
@@ -757,10 +772,10 @@ export class RumbleOrchestrator {
       result,
     });
 
-    // Fire-and-forget on-chain settlement (report result, ICHOR minting, shower check)
-    this.settleOnChain(slot.id, winner, result.placements, state.fighters).catch((err) => {
-      console.error(`[Orchestrator] On-chain settlement failed for ${slot.id}:`, err);
-    });
+    // On-chain settlement: awaited so we get proper logging and error tracking.
+    // settleOnChain has internal try/catch per step — failures are logged but
+    // do not throw, so the off-chain game loop continues regardless.
+    await this.settleOnChain(slot.id, winner, result.placements, state.fighters);
   }
 
   // ---------------------------------------------------------------------------
@@ -861,12 +876,14 @@ export class RumbleOrchestrator {
       if (winnerIndex >= 0) {
         const sig = await reportResultOnChain(rumbleIdNum, placementArray, winnerIndex);
         if (sig) {
-          console.log(`[Orchestrator] On-chain reportResult tx: ${sig}`);
+          console.log(`[OnChain] reportResult succeeded: ${sig}`);
           persist.updateRumbleTxSignature(rumbleId, "reportResult", sig);
+        } else {
+          console.warn(`[OnChain] reportResult returned null — continuing off-chain`);
         }
       }
     } catch (err) {
-      console.error(`[Orchestrator] On-chain reportResult failed:`, err);
+      console.error(`[OnChain] reportResult error:`, err);
     }
 
     // 2. Distribute ICHOR rewards by placement
@@ -896,8 +913,10 @@ export class RumbleOrchestrator {
         // distributeReward: sends 1st place share + shower pool cut, increments rumble counter
         const sig = await distributeRewardOnChain(winnerAta, showerVaultAta);
         if (sig) {
-          console.log(`[Orchestrator] On-chain distributeReward (1st place) tx: ${sig}`);
+          console.log(`[OnChain] distributeReward (1st place) succeeded: ${sig}`);
           persist.updateRumbleTxSignature(rumbleId, "mintRumbleReward", sig);
+        } else {
+          console.warn(`[OnChain] distributeReward returned null — continuing off-chain`);
         }
       }
 
@@ -944,11 +963,15 @@ export class RumbleOrchestrator {
             const sig = await adminDistributeOnChain(ata, amount);
             if (sig) {
               console.log(
-                `[Orchestrator] On-chain adminDistribute (place ${sorted[i].placement}) to ${sorted[i].id}: ${sig}`
+                `[OnChain] adminDistribute (place ${sorted[i].placement}) to ${sorted[i].id} succeeded: ${sig}`
+              );
+            } else {
+              console.warn(
+                `[OnChain] adminDistribute (place ${sorted[i].placement}) to ${sorted[i].id} returned null — continuing off-chain`
               );
             }
           } catch (err) {
-            console.error(`[Orchestrator] adminDistribute for ${sorted[i].id} failed:`, err);
+            console.error(`[OnChain] adminDistribute for ${sorted[i].id} error:`, err);
           }
         }
       }
@@ -970,37 +993,43 @@ export class RumbleOrchestrator {
 
           const showerSig = await checkIchorShowerOnChain(showerRecipientAta, showerVaultAta);
           if (showerSig) {
-            console.log(`[Orchestrator] On-chain checkIchorShower tx: ${showerSig}`);
+            console.log(`[OnChain] checkIchorShower succeeded: ${showerSig}`);
             persist.updateRumbleTxSignature(rumbleId, "checkIchorShower", showerSig);
+          } else {
+            console.warn(`[OnChain] checkIchorShower returned null — continuing off-chain`);
           }
         } catch (err) {
-          console.error(`[Orchestrator] On-chain checkIchorShower failed:`, err);
+          console.error(`[OnChain] checkIchorShower error:`, err);
         }
       }
     } catch (err) {
-      console.error(`[Orchestrator] On-chain ICHOR distribution failed:`, err);
+      console.error(`[OnChain] ICHOR distribution error:`, err);
     }
 
     // 4. Complete rumble on-chain
     try {
       const sig = await completeRumbleOnChain(rumbleIdNum);
       if (sig) {
-        console.log(`[Orchestrator] On-chain completeRumble tx: ${sig}`);
+        console.log(`[OnChain] completeRumble succeeded: ${sig}`);
         persist.updateRumbleTxSignature(rumbleId, "completeRumble", sig);
+      } else {
+        console.warn(`[OnChain] completeRumble returned null — continuing off-chain`);
       }
     } catch (err) {
-      console.error(`[Orchestrator] On-chain completeRumble failed:`, err);
+      console.error(`[OnChain] completeRumble error:`, err);
     }
 
     // 5. Sweep remaining vault SOL to treasury
     try {
       const sig = await sweepTreasuryOnChain(rumbleIdNum);
       if (sig) {
-        console.log(`[Orchestrator] On-chain sweepTreasury tx: ${sig}`);
+        console.log(`[OnChain] sweepTreasury succeeded: ${sig}`);
         persist.updateRumbleTxSignature(rumbleId, "sweepTreasury", sig);
+      } else {
+        console.warn(`[OnChain] sweepTreasury returned null — continuing off-chain`);
       }
     } catch (err) {
-      console.error(`[Orchestrator] On-chain sweepTreasury failed:`, err);
+      console.error(`[OnChain] sweepTreasury error:`, err);
     }
   }
 

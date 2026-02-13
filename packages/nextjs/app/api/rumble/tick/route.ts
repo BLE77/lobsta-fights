@@ -79,7 +79,7 @@ async function runTickBurst(): Promise<NextResponse> {
 
     // ---- Burst loop: run multiple ticks ---------------------------------
     for (let i = 0; i < TICKS_PER_INVOCATION; i++) {
-      orchestrator.tick();
+      await orchestrator.tick();
       ticksRun++;
 
       // Sleep between ticks (but not after the last one)

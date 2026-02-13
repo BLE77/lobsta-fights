@@ -851,7 +851,16 @@
         "This is the flat ICHOR reward per rumble for the current season.",
         "Bounded: must be >= SHOWER_POOL_CUT and <= 10,000 ICHOR."
       ],
-      "discriminator": [0, 0, 0, 0, 0, 0, 0, 0],
+      "discriminator": [
+        85,
+        218,
+        121,
+        168,
+        42,
+        0,
+        142,
+        202
+      ],
       "accounts": [
         {
           "name": "authority",
