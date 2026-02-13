@@ -429,6 +429,25 @@ export async function POST(request: Request) {
       );
     }
 
+    // Sybil protection: limit total fighters per IP
+    const registrantIp = getRateLimitKey(request);
+    if (registrantIp !== "unknown") {
+      const { count: ipFighterCount, error: countErr } = await supabase
+        .from("ucf_fighters")
+        .select("id", { count: "exact", head: true })
+        .eq("registered_from_ip", registrantIp);
+
+      if (!countErr && ipFighterCount !== null && ipFighterCount >= 5) {
+        return NextResponse.json(
+          {
+            error: "Too many fighters registered from your network. Maximum 5 fighters per IP.",
+            instructions: GAME_INSTRUCTIONS,
+          },
+          { status: 429 },
+        );
+      }
+    }
+
     // Check for duplicate names - each fighter must have a unique name!
     const { data: existingNames } = await supabase
       .from("ucf_fighters")
@@ -609,6 +628,7 @@ export async function POST(request: Request) {
         points: 1000,
         verified: true, // Auto-verify so agents can fight immediately
         moltbook_agent_id: moltbookAgentId,
+        registered_from_ip: registrantIp !== "unknown" ? registrantIp : null,
       })
       .select()
       .single();

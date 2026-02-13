@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { getOrchestrator } from "~~/lib/rumble-orchestrator";
 import { freshSupabase } from "~~/lib/supabase";
 import { getApiKeyFromHeaders } from "~~/lib/request-auth";
+import { verifyBetTransaction, markSignatureUsed, MIN_BET_SOL, MAX_BET_SOL } from "~~/lib/tx-verify";
+import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -11,6 +13,10 @@ export const dynamic = "force-dynamic";
  * Get betting info for a Rumble slot: odds per fighter, total pool.
  */
 export async function GET(request: Request) {
+  const rlKey = getRateLimitKey(request);
+  const rl = checkRateLimit("PUBLIC_READ", rlKey);
+  if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+
   try {
     const { searchParams } = new URL(request.url);
     const slotIndexStr = searchParams.get("slot_index") ?? searchParams.get("slotIndex");
@@ -68,6 +74,10 @@ export async function GET(request: Request) {
  *      The tx_signature proves the SOL was transferred on-chain.
  */
 export async function POST(request: Request) {
+  const rlKey = getRateLimitKey(request);
+  const rl = checkRateLimit("PUBLIC_WRITE", rlKey);
+  if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+
   try {
     const body = await request.json();
     const slotIndex = body.slot_index ?? body.slotIndex ?? body.rumbleSlotIndex;
@@ -97,6 +107,12 @@ export async function POST(request: Request) {
     if (typeof solAmount !== "number" || !Number.isFinite(solAmount) || solAmount <= 0) {
       return NextResponse.json({ error: "sol_amount must be a positive number" }, { status: 400 });
     }
+    if (solAmount < MIN_BET_SOL) {
+      return NextResponse.json({ error: `Minimum bet is ${MIN_BET_SOL} SOL` }, { status: 400 });
+    }
+    if (solAmount > MAX_BET_SOL) {
+      return NextResponse.json({ error: `Maximum bet is ${MAX_BET_SOL} SOL` }, { status: 400 });
+    }
 
     const parsedSlotIndex = parseInt(String(slotIndex), 10);
     if (isNaN(parsedSlotIndex) || parsedSlotIndex < 0 || parsedSlotIndex > 2) {
@@ -110,8 +126,24 @@ export async function POST(request: Request) {
 
     // --- Auth mode 1: Wallet + tx_signature (spectator betting) ---
     if (bettorWallet && txSignature) {
-      // On devnet, we trust the wallet address + tx sig. In production,
-      // we'd verify the tx signature on-chain to confirm the SOL transfer.
+      // Replay protection: reject reused tx signatures
+      const isReplay = markSignatureUsed(txSignature);
+      if (isReplay) {
+        return NextResponse.json(
+          { error: "This transaction signature has already been used for a bet." },
+          { status: 400 },
+        );
+      }
+
+      // Verify the transaction on-chain
+      const verification = await verifyBetTransaction(txSignature, bettorWallet, solAmount);
+      if (!verification.valid) {
+        return NextResponse.json(
+          { error: `TX verification failed: ${verification.error}` },
+          { status: 400 },
+        );
+      }
+
       resolvedWallet = bettorWallet;
     }
     // --- Auth mode 2: API key (bot betting) ---

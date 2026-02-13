@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { getOrchestrator } from "~~/lib/rumble-orchestrator";
 import { getQueueManager } from "~~/lib/queue-manager";
+import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 import {
   loadQueueState,
   getIchorShowerState,
@@ -61,7 +62,11 @@ function fighterImage(lookup: Map<string, FighterInfo>, id: string): string | nu
 //   { slots: SlotData[], queue: QueueFighter[], queueLength, nextRumbleIn, ichorShower }
 // ---------------------------------------------------------------------------
 
-export async function GET() {
+export async function GET(request: Request) {
+  const rlKey = getRateLimitKey(request);
+  const rl = checkRateLimit("PUBLIC_READ", rlKey);
+  if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+
   try {
     const orchestrator = getOrchestrator();
     const qm = getQueueManager();

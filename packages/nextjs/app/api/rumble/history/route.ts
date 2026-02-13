@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -68,6 +69,10 @@ export function addToHistory(entry: RumbleHistoryEntry): void {
  * Returns recent completed Rumbles with placements and results.
  */
 export async function GET(request: Request) {
+  const rlKey = getRateLimitKey(request);
+  const rl = checkRateLimit("PUBLIC_READ", rlKey);
+  if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+
   ensureListeners();
 
   try {

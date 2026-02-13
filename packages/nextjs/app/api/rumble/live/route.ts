@@ -1,4 +1,5 @@
 import { getOrchestrator, type OrchestratorEvent } from "~~/lib/rumble-orchestrator";
+import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 const MAX_SSE_CONNECTIONS = 200;
@@ -13,7 +14,11 @@ let activeSseConnections = 0;
  *   ichor_shower, betting_open, betting_closed, combat_started,
  *   payout_complete, slot_recycled
  */
-export async function GET() {
+export async function GET(request: Request) {
+  const rlKey = getRateLimitKey(request);
+  const rl = checkRateLimit("SSE", rlKey);
+  if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+
   if (activeSseConnections >= MAX_SSE_CONNECTIONS) {
     return new Response(
       JSON.stringify({

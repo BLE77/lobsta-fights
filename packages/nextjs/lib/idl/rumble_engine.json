@@ -10,16 +10,14 @@
     {
       "name": "claim_payout",
       "docs": [
-        "Bettor claims their payout if their fighter placed 1st, 2nd, or 3rd.",
+        "Bettor claims their payout if their fighter placed 1st (winner-takes-all).",
         "",
         "Payout logic:",
-        "1. Sum all pools for fighters that did NOT place 1st, 2nd, or 3rd = losers_pool",
+        "1. Sum all pools for fighters that did NOT place 1st = losers_pool",
         "2. Treasury cut = 10% of losers_pool",
         "3. Distributable = losers_pool - treasury_cut",
-        "4. 1st place bettors split 70% of distributable",
-        "5. 2nd place bettors split 20% of distributable",
-        "6. 3rd place bettors split 10% of distributable",
-        "7. Each bettor gets their original bet back + proportional share of their place's split"
+        "4. 1st place bettors split 100% of distributable (winner-takes-all)",
+        "5. Each winning bettor gets their original bet back + proportional share"
       ],
       "discriminator": [
         127,
@@ -951,7 +949,7 @@
     {
       "code": 6010,
       "name": "NotInPayoutRange",
-      "msg": "Fighter did not place in top 3"
+      "msg": "Fighter did not win (winner-takes-all)"
     },
     {
       "code": 6011,

@@ -19,10 +19,10 @@ const FIGHTER_ACCOUNT_DISCRIMINATOR: [u8; 8] = [24, 221, 27, 113, 60, 210, 101, 
 const ADMIN_FEE_BPS: u64 = 100; // 1%
 const SPONSORSHIP_FEE_BPS: u64 = 500; // 5%
 
-/// Payout splits for placing bettors (out of losers' pool after treasury cut)
-const FIRST_PLACE_BPS: u64 = 7_000; // 70%
-const SECOND_PLACE_BPS: u64 = 2_000; // 20%
-const THIRD_PLACE_BPS: u64 = 1_000; // 10%
+/// Winner-takes-all: 100% of losers' pool (after treasury cut) goes to 1st place bettors
+const FIRST_PLACE_BPS: u64 = 10_000; // 100%
+const SECOND_PLACE_BPS: u64 = 0;     // 0% — winner-takes-all
+const THIRD_PLACE_BPS: u64 = 0;      // 0% — winner-takes-all
 
 /// Treasury cut from losers' pool before payout distribution
 const TREASURY_CUT_BPS: u64 = 1_000; // 10%
@@ -343,16 +343,14 @@ pub mod rumble_engine {
         Ok(())
     }
 
-    /// Bettor claims their payout if their fighter placed 1st, 2nd, or 3rd.
+    /// Bettor claims their payout if their fighter placed 1st (winner-takes-all).
     ///
     /// Payout logic:
-    /// 1. Sum all pools for fighters that did NOT place 1st, 2nd, or 3rd = losers_pool
+    /// 1. Sum all pools for fighters that did NOT place 1st = losers_pool
     /// 2. Treasury cut = 10% of losers_pool
     /// 3. Distributable = losers_pool - treasury_cut
-    /// 4. 1st place bettors split 70% of distributable
-    /// 5. 2nd place bettors split 20% of distributable
-    /// 6. 3rd place bettors split 10% of distributable
-    /// 7. Each bettor gets their original bet back + proportional share of their place's split
+    /// 4. 1st place bettors split 100% of distributable (winner-takes-all)
+    /// 5. Each winning bettor gets their original bet back + proportional share
     pub fn claim_payout(ctx: Context<ClaimPayout>) -> Result<()> {
         let bettor_account = &mut ctx.accounts.bettor_account;
         let rumble = &ctx.accounts.rumble;
@@ -372,27 +370,23 @@ pub mod rumble_engine {
         let fighter_idx = bettor_account.fighter_index as usize;
         let placement = rumble.placements[fighter_idx];
 
-        // Only 1st, 2nd, 3rd place get payouts (plus their original bet back)
-        // Losers can still claim if they want, but get 0 (we refund nothing for losers)
+        // Winner-takes-all: only 1st place gets a payout
         require!(
-            placement >= 1 && placement <= 3,
+            placement == 1,
             RumbleError::NotInPayoutRange
         );
 
-        // Calculate losers' pool (sum of pools for fighters not in top 3)
+        // Calculate losers' pool (sum of pools for all fighters except 1st place)
         let mut losers_pool: u64 = 0;
         let mut first_pool: u64 = 0;
-        let mut second_pool: u64 = 0;
-        let mut third_pool: u64 = 0;
 
         for i in 0..rumble.fighter_count as usize {
             let p = rumble.placements[i];
             let pool = rumble.betting_pools[i];
-            match p {
-                1 => first_pool = first_pool.checked_add(pool).ok_or(RumbleError::MathOverflow)?,
-                2 => second_pool = second_pool.checked_add(pool).ok_or(RumbleError::MathOverflow)?,
-                3 => third_pool = third_pool.checked_add(pool).ok_or(RumbleError::MathOverflow)?,
-                _ => losers_pool = losers_pool.checked_add(pool).ok_or(RumbleError::MathOverflow)?,
+            if p == 1 {
+                first_pool = first_pool.checked_add(pool).ok_or(RumbleError::MathOverflow)?;
+            } else {
+                losers_pool = losers_pool.checked_add(pool).ok_or(RumbleError::MathOverflow)?;
             }
         }
 
@@ -407,28 +401,16 @@ pub mod rumble_engine {
             .checked_sub(treasury_cut)
             .ok_or(RumbleError::MathOverflow)?;
 
-        // Determine this bettor's share
-        let (place_share_bps, place_total_pool) = match placement {
-            1 => (FIRST_PLACE_BPS, first_pool),
-            2 => (SECOND_PLACE_BPS, second_pool),
-            3 => (THIRD_PLACE_BPS, third_pool),
-            _ => return err!(RumbleError::NotInPayoutRange),
-        };
+        // Winner-takes-all: 100% of distributable goes to 1st place bettors
+        let place_allocation = distributable;
 
-        // This place's total allocation from distributable
-        let place_allocation = distributable
-            .checked_mul(place_share_bps)
-            .ok_or(RumbleError::MathOverflow)?
-            .checked_div(10_000)
-            .ok_or(RumbleError::MathOverflow)?;
-
-        // Bettor's proportional share of their place's allocation
-        // share = (bettor_deployed / place_total_pool) * place_allocation
-        let winnings = if place_total_pool > 0 {
+        // Bettor's proportional share of the allocation
+        // share = (bettor_deployed / first_pool) * place_allocation
+        let winnings = if first_pool > 0 {
             place_allocation
                 .checked_mul(bettor_account.sol_deployed)
                 .ok_or(RumbleError::MathOverflow)?
-                .checked_div(place_total_pool)
+                .checked_div(first_pool)
                 .ok_or(RumbleError::MathOverflow)?
         } else {
             0
@@ -953,7 +935,7 @@ pub enum RumbleError {
     #[msg("Payout is not ready yet")]
     PayoutNotReady,
 
-    #[msg("Fighter did not place in top 3")]
+    #[msg("Fighter did not win (winner-takes-all)")]
     NotInPayoutRange,
 
     #[msg("Math overflow")]

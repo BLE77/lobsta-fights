@@ -59,6 +59,11 @@ pub mod ichor_token {
         let vault_key = ctx.accounts.distribution_vault.key();
         let bump = ctx.bumps.arena_config;
 
+        // Default season reward: 2500 ICHOR per rumble
+        let default_season_reward = 2_500u64
+            .checked_mul(ONE_ICHOR)
+            .ok_or(IchorError::MathOverflow)?;
+
         // Initialize arena config state
         let arena = &mut ctx.accounts.arena_config;
         arena.admin = admin_key;
@@ -70,6 +75,7 @@ pub mod ichor_token {
         arena.ichor_shower_pool = 0;
         arena.treasury_vault = 0;
         arena.bump = bump;
+        arena.season_reward = default_season_reward;
 
         // Mint the full 1B supply to the distribution vault
         // (use to_account_info() to avoid borrow conflicts)
@@ -105,8 +111,8 @@ pub mod ichor_token {
         let arena_info = ctx.accounts.arena_config.to_account_info();
         let arena = &mut ctx.accounts.arena_config;
 
-        // Calculate reward based on halving schedule
-        let reward = calculate_reward(arena.base_reward, arena.total_rumbles_completed);
+        // Calculate reward (season-based flat reward, no halving)
+        let reward = calculate_reward(arena.base_reward, arena.total_rumbles_completed, arena.season_reward);
 
         // Total emission = reward + shower bonus
         let total_emission = reward
@@ -506,8 +512,8 @@ pub mod ichor_token {
         Ok(())
     }
 
-    /// Admin: update the base reward amount.
-    /// Bounded: must be >= SHOWER_POOL_CUT (to avoid C-1 at era 0) and <= 10 ICHOR.
+    /// Admin: update the base reward amount (legacy).
+    /// Bounded: must be >= SHOWER_POOL_CUT (to avoid C-1 at era 0) and <= 2,000 ICHOR.
     pub fn update_base_reward(ctx: Context<AdminOnly>, new_base_reward: u64) -> Result<()> {
         require!(
             new_base_reward >= SHOWER_POOL_CUT,
@@ -520,6 +526,24 @@ pub mod ichor_token {
         let arena = &mut ctx.accounts.arena_config;
         arena.base_reward = new_base_reward;
         msg!("Base reward updated to {}", new_base_reward);
+        Ok(())
+    }
+
+    /// Admin: update the season reward amount.
+    /// This is the flat ICHOR reward per rumble for the current season.
+    /// Bounded: must be >= SHOWER_POOL_CUT and <= 10,000 ICHOR.
+    pub fn update_season_reward(ctx: Context<AdminOnly>, new_season_reward: u64) -> Result<()> {
+        require!(
+            new_season_reward >= SHOWER_POOL_CUT,
+            IchorError::InvalidSeasonReward
+        );
+        require!(
+            new_season_reward <= 10_000 * ONE_ICHOR,
+            IchorError::InvalidSeasonReward
+        );
+        let arena = &mut ctx.accounts.arena_config;
+        arena.season_reward = new_season_reward;
+        msg!("Season reward updated to {}", new_season_reward);
         Ok(())
     }
 
@@ -667,6 +691,11 @@ pub mod ichor_token {
         let vault_key = ctx.accounts.distribution_vault.key();
         let bump = ctx.bumps.arena_config;
 
+        // Default season reward: 2500 ICHOR per rumble
+        let default_season_reward = 2_500u64
+            .checked_mul(ONE_ICHOR)
+            .ok_or(IchorError::MathOverflow)?;
+
         let arena = &mut ctx.accounts.arena_config;
         arena.admin = admin_key;
         arena.ichor_mint = mint_key;
@@ -677,6 +706,7 @@ pub mod ichor_token {
         arena.ichor_shower_pool = 0;
         arena.treasury_vault = 0;
         arena.bump = bump;
+        arena.season_reward = default_season_reward;
 
         // No minting — vault starts empty.
         // Admin will fund by transferring tokens purchased from bonding curve / DEX.
@@ -718,18 +748,22 @@ pub mod ichor_token {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Calculate the reward for a given rumble number based on the halving schedule.
-fn calculate_reward(base_reward: u64, rumbles_completed: u64) -> u64 {
-    if rumbles_completed < HALVING_1 {
-        base_reward
-    } else if rumbles_completed < HALVING_2 {
-        base_reward / 2
-    } else if rumbles_completed < HALVING_3 {
-        base_reward / 4
-    } else if rumbles_completed < 21_000_000 {
-        base_reward / 8
+/// Calculate the reward for a rumble.
+/// Season-based: returns the configured season_reward (flat, no halving).
+/// Falls back to base_reward if season_reward is 0 (for backwards compatibility
+/// with existing on-chain state that predates the season_reward field).
+///
+/// Legacy halving schedule (kept for reference, no longer used):
+///   rumbles < 2,100,000 → base_reward
+///   rumbles < 6,300,000 → base_reward / 2
+///   rumbles < 12,600,000 → base_reward / 4
+///   rumbles < 21,000,000 → base_reward / 8
+///   rumbles >= 21,000,000 → base_reward / 16
+fn calculate_reward(base_reward: u64, _rumbles_completed: u64, season_reward: u64) -> u64 {
+    if season_reward > 0 {
+        season_reward
     } else {
-        base_reward / 16
+        base_reward
     }
 }
 
@@ -1251,10 +1285,11 @@ pub struct ArenaConfig {
     pub distribution_vault: Pubkey,   // 32  NEW — holds undistributed supply
     pub total_distributed: u64,       // 8   renamed from total_minted
     pub total_rumbles_completed: u64, // 8
-    pub base_reward: u64,             // 8
+    pub base_reward: u64,             // 8   (legacy, kept for compatibility)
     pub ichor_shower_pool: u64,       // 8
     pub treasury_vault: u64,          // 8
     pub bump: u8,                     // 1
+    pub season_reward: u64,           // 8   season-based flat reward per rumble
 }
 
 #[account]
@@ -1387,6 +1422,9 @@ pub enum IchorError {
 
     #[msg("Distribute amount must be greater than zero")]
     ZeroDistributeAmount,
+
+    #[msg("Invalid season reward: must be >= 0.1 ICHOR and <= 10,000 ICHOR")]
+    InvalidSeasonReward,
 }
 
 #[cfg(test)]
@@ -1474,25 +1512,35 @@ mod tests {
     }
 
     #[test]
+    fn calculate_reward_uses_season_reward_when_set() {
+        // Season reward takes precedence over base_reward
+        let season = 2_500 * ONE_ICHOR;
+        let reward = calculate_reward(ONE_ICHOR, 0, season);
+        assert_eq!(reward, season);
+
+        // Even at high rumble counts, season reward is flat (no halving)
+        let reward_high = calculate_reward(ONE_ICHOR, 21_000_001, season);
+        assert_eq!(reward_high, season);
+    }
+
+    #[test]
+    fn calculate_reward_falls_back_to_base_when_season_zero() {
+        // When season_reward is 0, falls back to base_reward
+        let reward = calculate_reward(ONE_ICHOR, 0, 0);
+        assert_eq!(reward, ONE_ICHOR);
+    }
+
+    #[test]
     fn calculate_reward_never_underflows_pool_cut() {
-        // C-1 regression: at deep halvings the reward can be smaller than SHOWER_POOL_CUT.
-        // Verify that pool_cut = reward.min(SHOWER_POOL_CUT) prevents underflow.
-        let small_base = 50_000_000u64; // 0.05 ICHOR -- much smaller than SHOWER_POOL_CUT
-        let reward = calculate_reward(small_base, 0);
-        assert_eq!(reward, small_base);
-        // This is the fix: pool_cut = min(reward, SHOWER_POOL_CUT) = min(50M, 100M) = 50M
+        // C-1 regression: even with a small season_reward, pool_cut should not underflow.
+        let small_season = 50_000_000u64; // 0.05 ICHOR -- smaller than SHOWER_POOL_CUT
+        let reward = calculate_reward(ONE_ICHOR, 0, small_season);
+        assert_eq!(reward, small_season);
+        // pool_cut = min(reward, SHOWER_POOL_CUT) = min(50M, 100M) = 50M
         let pool_cut = reward.min(SHOWER_POOL_CUT);
         let winner_amount = reward.checked_sub(pool_cut).expect("should not underflow");
         assert_eq!(winner_amount, 0); // entire reward goes to pool
-        assert_eq!(pool_cut, small_base);
-
-        // At era 4 (21M+ rumbles), base=1 ICHOR halved to 1/16 = 62.5M < SHOWER_POOL_CUT
-        let reward_era4 = calculate_reward(ONE_ICHOR, 21_000_001);
-        assert_eq!(reward_era4, ONE_ICHOR / 16); // 62_500_000
-        let pool_cut_era4 = reward_era4.min(SHOWER_POOL_CUT);
-        let winner_era4 = reward_era4.checked_sub(pool_cut_era4).expect("no underflow");
-        assert_eq!(winner_era4, 0);
-        assert_eq!(pool_cut_era4, reward_era4);
+        assert_eq!(pool_cut, small_season);
     }
 
     #[test]

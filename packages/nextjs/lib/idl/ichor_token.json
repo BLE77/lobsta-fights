@@ -792,8 +792,8 @@
     {
       "name": "update_base_reward",
       "docs": [
-        "Admin: update the base reward amount.",
-        "Bounded: must be >= SHOWER_POOL_CUT (to avoid C-1 at era 0) and <= 10 ICHOR."
+        "Admin: update the base reward amount (legacy).",
+        "Bounded: must be >= SHOWER_POOL_CUT (to avoid C-1 at era 0) and <= 2,000 ICHOR."
       ],
       "discriminator": [
         133,
@@ -840,6 +840,53 @@
       "args": [
         {
           "name": "new_base_reward",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "update_season_reward",
+      "docs": [
+        "Admin: update the season reward amount.",
+        "This is the flat ICHOR reward per rumble for the current season.",
+        "Bounded: must be >= SHOWER_POOL_CUT and <= 10,000 ICHOR."
+      ],
+      "discriminator": [0, 0, 0, 0, 0, 0, 0, 0],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "arena_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  114,
+                  101,
+                  110,
+                  97,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "new_season_reward",
           "type": "u64"
         }
       ]
@@ -1148,6 +1195,11 @@
       "code": 6020,
       "name": "ZeroDistributeAmount",
       "msg": "Distribute amount must be greater than zero"
+    },
+    {
+      "code": 6021,
+      "name": "InvalidSeasonReward",
+      "msg": "Invalid season reward: must be >= 0.1 ICHOR and <= 10,000 ICHOR"
     }
   ],
   "types": [
@@ -1191,6 +1243,10 @@
           {
             "name": "bump",
             "type": "u8"
+          },
+          {
+            "name": "season_reward",
+            "type": "u64"
           }
         ]
       }
