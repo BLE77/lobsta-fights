@@ -69,9 +69,9 @@ export interface FighterOdds {
 
 export interface IchorDistribution {
   totalMined: number;
-  winningBettors: Map<string, number>; // 1st place bettorId → ICHOR (70% of 60%)
-  secondPlaceBettors: Map<string, number>; // 2nd place bettorId → ICHOR (20% of 60%)
-  thirdPlaceBettors: Map<string, number>; // 3rd place bettorId → ICHOR (10% of 60%)
+  winningBettors: Map<string, number>; // winner bettorId → ICHOR (100% of 10%)
+  secondPlaceBettors: Map<string, number>; // unused (winner-takes-all)
+  thirdPlaceBettors: Map<string, number>; // unused (winner-takes-all)
   fighters: Map<string, number>; // fighterId → ICHOR
   showerPoolAccumulation: number;
 }
@@ -96,11 +96,11 @@ export const SEASON_NAME = "Training Season";
 export const SEASON_REWARD = 1000; // ICHOR per fight this season
 
 // ICHOR distribution splits
-const ICHOR_BETTORS_SHARE = 0.60; // 60% to winning bettors
-const ICHOR_FIGHTERS_SHARE = 0.30; // 30% to fighters by placement
+const ICHOR_BETTORS_SHARE = 0.10; // 10% to winning bettors (SOL is their real reward)
+const ICHOR_FIGHTERS_SHARE = 0.80; // 80% to fighters by placement (fighters mine ICHOR)
 const ICHOR_SHOWER_SHARE = 0.10; // 10% to Ichor Shower pool
 
-// Fighter ICHOR placement splits (of the 30% fighters share)
+// Fighter ICHOR placement splits (of the 80% fighters share)
 const FIGHTER_1ST_SHARE = 0.40;
 const FIGHTER_2ND_SHARE = 0.25;
 const FIGHTER_3RD_SHARE = 0.15;
@@ -358,8 +358,8 @@ export function calculatePayouts(
  * Calculate ICHOR mining distribution for a Rumble.
  *
  * Per Rumble (season-based, e.g. 1000 ICHOR for Training Season):
- *   60% → winner bettors only (proportional to SOL deployed on 1st place fighter)
- *   30% → fighters by placement (1st: 40%, 2nd: 25%, 3rd: 15%, rest: split 20%)
+ *   10% → winner bettors only (SOL is their real reward, ICHOR is a bonus)
+ *   80% → fighters by placement (1st: 40%, 2nd: 25%, 3rd: 15%, rest: split 20%)
  *   10% → Ichor Shower pool accumulation
  */
 function calculateIchorDistribution(
@@ -370,12 +370,12 @@ function calculateIchorDistribution(
   thirdId: string,
   blockReward: number,
 ): IchorDistribution {
-  const bettorIchor = blockReward * ICHOR_BETTORS_SHARE; // 60% = 600 ICHOR
-  const fighterIchor = blockReward * ICHOR_FIGHTERS_SHARE; // 30% = 300 ICHOR
+  const bettorIchor = blockReward * ICHOR_BETTORS_SHARE; // 10% = 100 ICHOR
+  const fighterIchor = blockReward * ICHOR_FIGHTERS_SHARE; // 80% = 800 ICHOR
   const showerIchor = blockReward * ICHOR_SHOWER_SHARE; // 10% = 100 ICHOR
 
-  // Winner-takes-all: all 60% bettor ICHOR goes to winner bettors only
-  const firstIchor = bettorIchor; // 100% of 60% = 600 ICHOR
+  // Winner-takes-all: all bettor ICHOR goes to winner bettors only
+  const firstIchor = bettorIchor; // 100% of 10% = 100 ICHOR
   const secondIchor = 0;
   const thirdIchor = 0;
 
@@ -402,17 +402,17 @@ function calculateIchorDistribution(
   const secondPlaceBettors = distributeToBettors(secondId, secondIchor);
   const thirdPlaceBettors = distributeToBettors(thirdId, thirdIchor);
 
-  // --- Fighters: 30% split by placement ---
+  // --- Fighters: 80% split by placement ---
   const fighters = new Map<string, number>();
 
   if (placements.length >= 1) {
-    fighters.set(placements[0], fighterIchor * FIGHTER_1ST_SHARE); // 1st: 40% of 0.3 = 0.12
+    fighters.set(placements[0], fighterIchor * FIGHTER_1ST_SHARE); // 1st: 40% of 800 = 320
   }
   if (placements.length >= 2) {
-    fighters.set(placements[1], fighterIchor * FIGHTER_2ND_SHARE); // 2nd: 25% of 0.3 = 0.075
+    fighters.set(placements[1], fighterIchor * FIGHTER_2ND_SHARE); // 2nd: 25% of 800 = 200
   }
   if (placements.length >= 3) {
-    fighters.set(placements[2], fighterIchor * FIGHTER_3RD_SHARE); // 3rd: 15% of 0.3 = 0.045
+    fighters.set(placements[2], fighterIchor * FIGHTER_3RD_SHARE); // 3rd: 15% of 800 = 120
   }
 
   // 4th and below split remaining 20%
