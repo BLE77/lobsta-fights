@@ -34,7 +34,7 @@ const FIGHTER_REGISTRY_ID = new PublicKey(
   "2hA6Jvj1yjP2Uj3qrJcsBeYA2R9xPM95mDKw1ncKVExa"
 );
 const ICHOR_TOKEN_ID = new PublicKey(
-  "8CHYSuh1Y3F83PyK95E3F1Uya6pgPk4m3vM3MF3mP5hg"
+  "925GAeqjKMX4B5MDANB91SZCvrx8HpEgmPJwHJzxKJx1"
 );
 const RUMBLE_ENGINE_ID = new PublicKey(
   "2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC"
@@ -42,6 +42,7 @@ const RUMBLE_ENGINE_ID = new PublicKey(
 
 // PDA seeds (matching the Rust constants)
 const ARENA_SEED = Buffer.from("arena_config");
+const DISTRIBUTION_VAULT_SEED = Buffer.from("distribution_vault");
 const REGISTRY_SEED = Buffer.from("registry_config");
 const CONFIG_SEED = Buffer.from("rumble_config");
 
@@ -101,6 +102,12 @@ async function main() {
   );
   console.log("Arena Config PDA:", arenaConfigPda.toBase58());
 
+  const [distributionVaultPda] = PublicKey.findProgramAddressSync(
+    [DISTRIBUTION_VAULT_SEED],
+    ICHOR_TOKEN_ID
+  );
+  console.log("Distribution Vault PDA:", distributionVaultPda.toBase58());
+
   const [rumbleConfigPda] = PublicKey.findProgramAddressSync(
     [CONFIG_SEED],
     RUMBLE_ENGINE_ID
@@ -149,44 +156,98 @@ async function main() {
   // ---------------------------------------------------------------------------
   // 2. Initialize ICHOR Token (ArenaConfig + Mint)
   // ---------------------------------------------------------------------------
-  console.log("\n--- Initializing ICHOR Token ---");
 
-  // Generate a new keypair for the ICHOR mint
-  const ichorMintKeypair = Keypair.generate();
-  console.log("ICHOR Mint (new keypair):", ichorMintKeypair.publicKey.toBase58());
+  // Check for --external-mint flag (for pump.fun / external token launches)
+  const externalMintArg = process.argv.find((a) => a.startsWith("--external-mint="));
+  const externalMintAddress = externalMintArg?.split("=")[1];
 
-  try {
-    const acctInfo = await connection.getAccountInfo(arenaConfigPda);
-    if (acctInfo) {
-      console.log("ICHOR ArenaConfig already initialized, skipping.");
-      // Read existing mint from account data
-      // ArenaConfig layout: discriminator(8) + admin(32) + ichor_mint(32) ...
-      const data = acctInfo.data;
-      const existingMint = new PublicKey(data.subarray(8 + 32, 8 + 32 + 32));
-      console.log("Existing ICHOR Mint:", existingMint.toBase58());
-    } else {
-      const tx = await (ichorToken.methods as any)
-        .initialize(BASE_REWARD)
-        .accounts({
-          admin: deployer.publicKey,
-          arenaConfig: arenaConfigPda,
-          ichorMint: ichorMintKeypair.publicKey,
-          systemProgram: SystemProgram.programId,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          rent: SYSVAR_RENT_PUBKEY,
-        })
-        .signers([ichorMintKeypair])
-        .rpc();
-      console.log("ICHOR Token initialized. Tx:", tx);
-      console.log("ICHOR Mint Address:", ichorMintKeypair.publicKey.toBase58());
+  if (externalMintAddress) {
+    console.log("\n--- Initializing ICHOR Token (EXTERNAL MINT mode) ---");
+    console.log("External mint:", externalMintAddress);
+    const externalMint = new PublicKey(externalMintAddress);
+
+    try {
+      const acctInfo = await connection.getAccountInfo(arenaConfigPda);
+      if (acctInfo) {
+        console.log("ICHOR ArenaConfig already initialized, skipping.");
+        const data = acctInfo.data;
+        const existingMint = new PublicKey(data.subarray(8 + 32, 8 + 32 + 32));
+        const existingVault = new PublicKey(data.subarray(8 + 32 + 32, 8 + 32 + 32 + 32));
+        console.log("Existing ICHOR Mint:", existingMint.toBase58());
+        console.log("Existing Distribution Vault:", existingVault.toBase58());
+      } else {
+        const tx = await (ichorToken.methods as any)
+          .initializeWithMint(BASE_REWARD)
+          .accounts({
+            admin: deployer.publicKey,
+            arenaConfig: arenaConfigPda,
+            ichorMint: externalMint,
+            distributionVault: distributionVaultPda,
+            systemProgram: SystemProgram.programId,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            rent: SYSVAR_RENT_PUBKEY,
+          })
+          .rpc();
+        console.log("ICHOR Token initialized (external mint). Tx:", tx);
+        console.log("External Mint:", externalMint.toBase58());
+        console.log("Distribution Vault:", distributionVaultPda.toBase58());
+        console.log("Vault is EMPTY — fund by transferring tokens to vault PDA");
+      }
+    } catch (err: any) {
+      if (err.message?.includes("already in use")) {
+        console.log("ICHOR Token already initialized (account in use).");
+      } else {
+        console.error("ICHOR Token init (external mint) failed:", err.message || err);
+      }
     }
-  } catch (err: any) {
-    if (err.message?.includes("already in use")) {
-      console.log("ICHOR Token already initialized (account in use).");
-    } else {
-      console.error("ICHOR Token init failed:", err.message || err);
+  } else {
+    console.log("\n--- Initializing ICHOR Token (SELF-MINT mode) ---");
+
+    // Generate a new keypair for the ICHOR mint
+    const ichorMintKeypair = Keypair.generate();
+    console.log("ICHOR Mint (new keypair):", ichorMintKeypair.publicKey.toBase58());
+
+    try {
+      const acctInfo = await connection.getAccountInfo(arenaConfigPda);
+      if (acctInfo) {
+        console.log("ICHOR ArenaConfig already initialized, skipping.");
+        const data = acctInfo.data;
+        const existingMint = new PublicKey(data.subarray(8 + 32, 8 + 32 + 32));
+        const existingVault = new PublicKey(data.subarray(8 + 32 + 32, 8 + 32 + 32 + 32));
+        console.log("Existing ICHOR Mint:", existingMint.toBase58());
+        console.log("Existing Distribution Vault:", existingVault.toBase58());
+      } else {
+        const tx = await (ichorToken.methods as any)
+          .initialize(BASE_REWARD)
+          .accounts({
+            admin: deployer.publicKey,
+            arenaConfig: arenaConfigPda,
+            ichorMint: ichorMintKeypair.publicKey,
+            distributionVault: distributionVaultPda,
+            systemProgram: SystemProgram.programId,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            rent: SYSVAR_RENT_PUBKEY,
+          })
+          .signers([ichorMintKeypair])
+          .rpc();
+        console.log("ICHOR Token initialized. Tx:", tx);
+        console.log("ICHOR Mint Address:", ichorMintKeypair.publicKey.toBase58());
+        console.log("Distribution Vault:", distributionVaultPda.toBase58());
+        console.log("Supply: 1,000,000,000 ICHOR minted to vault");
+      }
+    } catch (err: any) {
+      if (err.message?.includes("already in use")) {
+        console.log("ICHOR Token already initialized (account in use).");
+      } else {
+        console.error("ICHOR Token init failed:", err.message || err);
+      }
     }
   }
+
+  // Resolve the actual mint keypair for summary (external or self-mint)
+  const ichorMintKeypair = externalMintAddress
+    ? { publicKey: new PublicKey(externalMintAddress) }
+    : Keypair.generate(); // placeholder for summary — real one logged above
 
   // ---------------------------------------------------------------------------
   // 3. Initialize Rumble Engine
@@ -227,7 +288,9 @@ async function main() {
   console.log("  Registry Config:  ", registryConfigPda.toBase58());
   console.log("ICHOR Token ID:     ", ICHOR_TOKEN_ID.toBase58());
   console.log("  Arena Config PDA: ", arenaConfigPda.toBase58());
-  console.log("  ICHOR Mint:       ", ichorMintKeypair.publicKey.toBase58());
+  console.log("  ICHOR Mint:       ", externalMintAddress || "(see above)");
+  console.log("  Dist. Vault PDA:  ", distributionVaultPda.toBase58());
+  console.log("  Mode:             ", externalMintAddress ? "EXTERNAL MINT (pump.fun)" : "SELF-MINT (1B pre-minted)");
   console.log("Rumble Engine ID:   ", RUMBLE_ENGINE_ID.toBase58());
   console.log("  Rumble Config PDA:", rumbleConfigPda.toBase58());
   console.log("  Treasury:         ", deployer.publicKey.toBase58());

@@ -89,7 +89,7 @@ export async function GET(request: Request) {
   if (matchId) {
     const { data: match, error } = await supabase
       .from("ucf_matches")
-      .select("*")
+      .select("id, fighter_a_id, fighter_b_id, state, points_wager, agent_a_state, agent_b_state, current_round, current_turn, max_rounds, commit_deadline, reveal_deadline, winner_id, turn_history, created_at, started_at, finished_at, result_image_url, on_chain_wager, points_transferred, missed_turns_a, missed_turns_b, forfeit_reason")
       .eq("id", matchId)
       .single();
 
@@ -126,23 +126,23 @@ export async function GET(request: Request) {
   if (status === "active") {
     const { data, error } = await supabase
       .from("ucf_matches")
-      .select("*")
+      .select("id, fighter_a_id, fighter_b_id, state, points_wager, agent_a_state, agent_b_state, current_round, current_turn, max_rounds, commit_deadline, reveal_deadline, winner_id, turn_history, created_at, started_at, finished_at, result_image_url, on_chain_wager, points_transferred, missed_turns_a, missed_turns_b, forfeit_reason")
       .neq("state", "FINISHED")
       .order("created_at", { ascending: false })
       .limit(limit);
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ error: "An error occurred while fetching matches" }, { status: 500 });
     }
     matches = data || [];
   } else if (status === "finished") {
     const { data, error } = await supabase
       .from("ucf_matches")
-      .select("*")
+      .select("id, fighter_a_id, fighter_b_id, state, points_wager, agent_a_state, agent_b_state, current_round, current_turn, max_rounds, commit_deadline, reveal_deadline, winner_id, turn_history, created_at, started_at, finished_at, result_image_url, on_chain_wager, points_transferred, missed_turns_a, missed_turns_b, forfeit_reason")
       .eq("state", "FINISHED")
       .order("created_at", { ascending: false })
       .limit(limit);
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ error: "An error occurred while fetching matches" }, { status: 500 });
     }
     matches = data || [];
   } else {
@@ -150,23 +150,23 @@ export async function GET(request: Request) {
     const [activeResult, finishedResult] = await Promise.all([
       supabase
         .from("ucf_matches")
-        .select("*")
+        .select("id, fighter_a_id, fighter_b_id, state, points_wager, agent_a_state, agent_b_state, current_round, current_turn, max_rounds, commit_deadline, reveal_deadline, winner_id, turn_history, created_at, started_at, finished_at, result_image_url, on_chain_wager, points_transferred, missed_turns_a, missed_turns_b, forfeit_reason")
         .neq("state", "FINISHED")
         .order("created_at", { ascending: false })
         .limit(limit),
       supabase
         .from("ucf_matches")
-        .select("*")
+        .select("id, fighter_a_id, fighter_b_id, state, points_wager, agent_a_state, agent_b_state, current_round, current_turn, max_rounds, commit_deadline, reveal_deadline, winner_id, turn_history, created_at, started_at, finished_at, result_image_url, on_chain_wager, points_transferred, missed_turns_a, missed_turns_b, forfeit_reason")
         .eq("state", "FINISHED")
         .order("created_at", { ascending: false })
         .limit(limit),
     ]);
 
     if (activeResult.error) {
-      return NextResponse.json({ error: activeResult.error.message }, { status: 500 });
+      return NextResponse.json({ error: "An error occurred while fetching matches" }, { status: 500 });
     }
     if (finishedResult.error) {
-      return NextResponse.json({ error: finishedResult.error.message }, { status: 500 });
+      return NextResponse.json({ error: "An error occurred while fetching matches" }, { status: 500 });
     }
 
     // Merge: active first, then finished, respecting total limit

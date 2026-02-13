@@ -27,7 +27,7 @@ import {
   placeBet as placeBetInPool,
   calculatePayouts,
   calculateOdds,
-  getBlockReward,
+  getSeasonReward,
   summarizePayouts,
   ADMIN_FEE_RATE,
   SPONSORSHIP_RATE,
@@ -40,7 +40,8 @@ import { METER_PER_TURN, SPECIAL_METER_COST, resolveCombat } from "./combat";
 import * as persist from "./rumble-persistence";
 
 import {
-  mintRumbleReward as mintRumbleRewardOnChain,
+  distributeReward as distributeRewardOnChain,
+  adminDistribute as adminDistributeOnChain,
   checkIchorShower as checkIchorShowerOnChain,
   createRumble as createRumbleOnChain,
   startCombat as startCombatOnChain,
@@ -51,6 +52,7 @@ import {
   ensureAta as ensureAtaOnChain,
   getIchorMint,
   deriveArenaConfigPda,
+  readArenaConfig,
   readShowerRequest,
 } from "./solana-programs";
 import { PublicKey } from "@solana/web3.js";
@@ -394,13 +396,26 @@ export class RumbleOrchestrator {
    */
   placeBet(slotIndex: number, bettorId: string, fighterId: string, solAmount: number): boolean {
     const slot = this.queueManager.getSlot(slotIndex);
-    if (!slot || slot.state !== "betting") return false;
+    if (!slot) {
+      console.log(`[placeBet] REJECTED: slot ${slotIndex} not found`);
+      return false;
+    }
+    if (slot.state !== "betting") {
+      console.log(`[placeBet] REJECTED: slot ${slotIndex} state=${slot.state} (not betting)`);
+      return false;
+    }
 
     // Validate fighter is in this rumble
-    if (!slot.fighters.includes(fighterId)) return false;
+    if (!slot.fighters.includes(fighterId)) {
+      console.log(`[placeBet] REJECTED: fighter ${fighterId} not in slot fighters: [${slot.fighters.join(", ")}]`);
+      return false;
+    }
 
     const pool = this.bettingPools.get(slotIndex);
-    if (!pool || pool.rumbleId !== slot.id) return false;
+    if (!pool || pool.rumbleId !== slot.id) {
+      console.log(`[placeBet] REJECTED: no pool for slot ${slotIndex} or rumbleId mismatch`);
+      return false;
+    }
 
     placeBetInPool(pool, bettorId, fighterId, solAmount);
 
@@ -717,10 +732,72 @@ export class RumbleOrchestrator {
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // Placement-based ICHOR reward split
+  // ---------------------------------------------------------------------------
+
+  // Percentage of distributable ICHOR (after shower cut) by placement.
+  // 1st=40%, 2nd=25%, 3rd=15%, remaining 20% split evenly among losers.
+  private static PLACEMENT_SPLITS = [0.40, 0.25, 0.15];
+  private static PARTICIPATION_POOL_PCT = 0.20;
+
+  /**
+   * Calculate ICHOR amounts for each fighter based on placement.
+   * Returns a map of fighterId → ICHOR amount (in raw lamports, 9 decimals).
+   */
+  private calculatePlacementRewards(
+    placements: Array<{ id: string; placement: number }>,
+    totalDistributable: bigint,
+  ): Map<string, bigint> {
+    const rewards = new Map<string, bigint>();
+    const sorted = [...placements].sort((a, b) => a.placement - b.placement);
+
+    // Top 3 get fixed percentages
+    for (let i = 0; i < Math.min(3, sorted.length); i++) {
+      const pct = RumbleOrchestrator.PLACEMENT_SPLITS[i];
+      const amount = (totalDistributable * BigInt(Math.round(pct * 10000))) / 10000n;
+      rewards.set(sorted[i].id, amount);
+    }
+
+    // Remaining fighters split the participation pool evenly
+    const losers = sorted.slice(3);
+    if (losers.length > 0) {
+      const participationTotal =
+        (totalDistributable * BigInt(Math.round(RumbleOrchestrator.PARTICIPATION_POOL_PCT * 10000))) / 10000n;
+      const perLoser = participationTotal / BigInt(losers.length);
+      for (const loser of losers) {
+        rewards.set(loser.id, perLoser);
+      }
+    }
+
+    return rewards;
+  }
+
+  /**
+   * Resolve a fighter ID to a Solana wallet PublicKey.
+   * Tries parsing as pubkey first, falls back to DB lookup.
+   */
+  private async resolveFighterWallet(fighterId: string): Promise<PublicKey | null> {
+    try {
+      return new PublicKey(fighterId);
+    } catch {
+      const walletMap = await persist.lookupFighterWallets([fighterId]);
+      const walletAddr = walletMap.get(fighterId);
+      if (walletAddr) {
+        try {
+          return new PublicKey(walletAddr);
+        } catch {
+          console.warn(`[Orchestrator] Invalid wallet for "${fighterId}": ${walletAddr}`);
+        }
+      }
+      return null;
+    }
+  }
+
   /**
    * Settle a completed rumble on-chain:
    * 1. Report result on-chain (placements)
-   * 2. Mint ICHOR reward to winner
+   * 2. Distribute ICHOR rewards by placement (1st via distributeReward, rest via adminDistribute)
    * 3. Check for Ichor Shower trigger
    * 4. Complete rumble on-chain
    *
@@ -733,7 +810,6 @@ export class RumbleOrchestrator {
     placements: Array<{ id: string; placement: number }>,
     fighters: RumbleFighter[],
   ): Promise<void> {
-    // Parse rumble ID as number for on-chain calls
     const rumbleIdNum = parseInt(rumbleId.replace(/\D/g, ""), 10);
     if (isNaN(rumbleIdNum)) {
       console.warn(`[Orchestrator] Cannot parse rumbleId "${rumbleId}" as number, skipping on-chain`);
@@ -742,7 +818,6 @@ export class RumbleOrchestrator {
 
     // 1. Report result on-chain
     try {
-      // Build placements array: placements[i] = placement of fighter at index i
       const placementArray = placements.map((p) => p.placement);
       const winnerIndex = placements.findIndex((p) => p.placement === 1);
       if (winnerIndex >= 0) {
@@ -756,79 +831,106 @@ export class RumbleOrchestrator {
       console.error(`[Orchestrator] On-chain reportResult failed:`, err);
     }
 
-    // 2. Mint ICHOR reward to winner
+    // 2. Distribute ICHOR rewards by placement
     try {
       const ichorMint = getIchorMint();
-      // Look up the winner's Solana wallet address from Supabase
-      let winnerWallet: PublicKey | null = null;
+      const [arenaConfigPda] = deriveArenaConfigPda();
+      const showerVaultAta = getAssociatedTokenAddressSync(ichorMint, arenaConfigPda, true);
+
+      // Ensure shower vault ATA exists
       try {
-        winnerWallet = new PublicKey(winnerId);
-      } catch {
-        // winnerId is a fighter name, not a pubkey — look up from DB
-        const walletMap = await persist.lookupFighterWallets([winnerId]);
-        const walletAddr = walletMap.get(winnerId);
-        if (walletAddr) {
-          try {
-            winnerWallet = new PublicKey(walletAddr);
-            console.log(`[Orchestrator] Resolved "${winnerId}" → ${walletAddr}`);
-          } catch {
-            console.warn(`[Orchestrator] Invalid wallet for "${winnerId}": ${walletAddr}`);
-          }
-        } else {
-          console.log(`[Orchestrator] No wallet found for "${winnerId}", skipping ICHOR mint`);
-        }
+        await ensureAtaOnChain(ichorMint, arenaConfigPda, true);
+      } catch (ataErr) {
+        console.warn(`[Orchestrator] Failed to create shower vault ATA:`, ataErr);
       }
+
+      // Resolve winner wallet for the distributeReward call (handles shower + rumble counter)
+      const winnerWallet = await this.resolveFighterWallet(winnerId);
 
       if (winnerWallet) {
         const winnerAta = getAssociatedTokenAddressSync(ichorMint, winnerWallet);
-        const [arenaConfigPda] = deriveArenaConfigPda();
-        const showerVaultAta = getAssociatedTokenAddressSync(ichorMint, arenaConfigPda, true);
-
-        // Ensure winner's ATA AND shower vault ATA exist before minting
         try {
           await ensureAtaOnChain(ichorMint, winnerWallet);
-          console.log(`[Orchestrator] Winner ATA ensured: ${winnerAta.toBase58()}`);
         } catch (ataErr) {
           console.warn(`[Orchestrator] Failed to create winner ATA:`, ataErr);
         }
-        try {
-          await ensureAtaOnChain(ichorMint, arenaConfigPda, true);
-          console.log(`[Orchestrator] Shower vault ATA ensured: ${showerVaultAta.toBase58()}`);
-        } catch (ataErr) {
-          console.warn(`[Orchestrator] Failed to create shower vault ATA:`, ataErr);
-        }
 
-        const sig = await mintRumbleRewardOnChain(winnerAta, showerVaultAta);
+        // distributeReward: sends 1st place share + shower pool cut, increments rumble counter
+        const sig = await distributeRewardOnChain(winnerAta, showerVaultAta);
         if (sig) {
-          console.log(`[Orchestrator] On-chain mintRumbleReward tx: ${sig}`);
+          console.log(`[Orchestrator] On-chain distributeReward (1st place) tx: ${sig}`);
           persist.updateRumbleTxSignature(rumbleId, "mintRumbleReward", sig);
         }
+      }
 
-        // 3. Check Ichor Shower (state machine: request first, then settle later)
+      // Read arena config to calculate placement rewards from base_reward
+      const arenaConfig = await readArenaConfig();
+      if (arenaConfig && placements.length > 1) {
+        // The base reward determines how much ICHOR goes to non-1st fighters.
+        // distributeReward already handled 1st + shower. We use adminDistribute
+        // for 2nd, 3rd, and participation based on the base reward.
+        const baseReward = arenaConfig.baseReward;
+        // Distributable to 2nd/3rd/losers: 60% of base reward (1st got 40% via distributeReward)
+        const nonFirstPool = (baseReward * 60n) / 100n;
+
+        // Split: 2nd=25/60, 3rd=15/60, losers=20/60 of nonFirstPool
+        const sorted = [...placements].sort((a, b) => a.placement - b.placement);
+
+        for (let i = 1; i < sorted.length; i++) {
+          let amount: bigint;
+          if (i === 1) {
+            // 2nd place: 25% of total = 25/60 of nonFirstPool
+            amount = (nonFirstPool * 2500n) / 6000n;
+          } else if (i === 2) {
+            // 3rd place: 15% of total = 15/60 of nonFirstPool
+            amount = (nonFirstPool * 1500n) / 6000n;
+          } else {
+            // Participation: 20% of total split among remaining
+            const loserCount = BigInt(sorted.length - 3);
+            if (loserCount <= 0n) continue;
+            const participationPool = (nonFirstPool * 2000n) / 6000n;
+            amount = participationPool / loserCount;
+          }
+
+          if (amount <= 0n) continue;
+
+          const fighterWallet = await this.resolveFighterWallet(sorted[i].id);
+          if (!fighterWallet) {
+            console.log(`[Orchestrator] No wallet for "${sorted[i].id}", skipping ICHOR placement reward`);
+            continue;
+          }
+
+          try {
+            await ensureAtaOnChain(ichorMint, fighterWallet);
+            const ata = getAssociatedTokenAddressSync(ichorMint, fighterWallet);
+            const sig = await adminDistributeOnChain(ata, amount);
+            if (sig) {
+              console.log(
+                `[Orchestrator] On-chain adminDistribute (place ${sorted[i].placement}) to ${sorted[i].id}: ${sig}`
+              );
+            }
+          } catch (err) {
+            console.error(`[Orchestrator] adminDistribute for ${sorted[i].id} failed:`, err);
+          }
+        }
+      }
+
+      // 3. Check Ichor Shower (state machine: request first, then settle later)
+      if (winnerWallet) {
         try {
+          const winnerAta = getAssociatedTokenAddressSync(ichorMint, winnerWallet);
           let showerRecipientAta = winnerAta;
           const pendingShower = await readShowerRequest().catch(() => null);
           if (
             pendingShower?.active &&
-            pendingShower.recipientTokenAccount !==
-              "11111111111111111111111111111111"
+            pendingShower.recipientTokenAccount !== "11111111111111111111111111111111"
           ) {
             try {
-              showerRecipientAta = new PublicKey(
-                pendingShower.recipientTokenAccount,
-              );
-            } catch (pendingErr) {
-              console.warn(
-                `[Orchestrator] Invalid pending shower recipient ATA: ${pendingShower.recipientTokenAccount}`,
-                pendingErr,
-              );
-            }
+              showerRecipientAta = new PublicKey(pendingShower.recipientTokenAccount);
+            } catch {}
           }
 
-          const showerSig = await checkIchorShowerOnChain(
-            showerRecipientAta,
-            showerVaultAta,
-          );
+          const showerSig = await checkIchorShowerOnChain(showerRecipientAta, showerVaultAta);
           if (showerSig) {
             console.log(`[Orchestrator] On-chain checkIchorShower tx: ${showerSig}`);
             persist.updateRumbleTxSignature(rumbleId, "checkIchorShower", showerSig);
@@ -838,7 +940,7 @@ export class RumbleOrchestrator {
         }
       }
     } catch (err) {
-      console.error(`[Orchestrator] On-chain mintRumbleReward failed:`, err);
+      console.error(`[Orchestrator] On-chain ICHOR distribution failed:`, err);
     }
 
     // 4. Complete rumble on-chain
@@ -867,6 +969,7 @@ export class RumbleOrchestrator {
   // ---- Payout phase --------------------------------------------------------
 
   private payoutProcessed: Set<string> = new Set(); // track rumble IDs already paid out
+  private payoutResults: Map<number, PayoutResult> = new Map(); // store payout results for status API
 
   private handlePayoutPhase(slot: RumbleSlot): void {
     const idx = slot.slotIndex;
@@ -919,7 +1022,7 @@ export class RumbleOrchestrator {
     }
 
     // Calculate ICHOR block reward based on total rumbles completed
-    const blockReward = getBlockReward(this.totalRumblesCompleted);
+    const blockReward = getSeasonReward();
 
     // Calculate payouts if there's a betting pool with bets
     if (pool && pool.bets.length > 0) {
@@ -974,6 +1077,9 @@ export class RumbleOrchestrator {
         payoutResult.totalBurned,
       );
 
+      // Store payout result for status API
+      this.payoutResults.set(slotIndex, payoutResult);
+
       // Log payout summary
       const summary = summarizePayouts(payoutResult);
       console.log(`[Orchestrator] Payout for ${slot.id}:`, summary);
@@ -984,8 +1090,28 @@ export class RumbleOrchestrator {
         payout: payoutResult,
       });
     } else {
-      // No bets were placed; still emit payout_complete with minimal data
+      // No bets were placed; store a zero payout result for the status API
       console.log(`[Orchestrator] No bets for ${slot.id}, skipping SOL payout`);
+
+      this.payoutResults.set(slotIndex, {
+        rumbleId: slot.id,
+        winnerBettors: [],
+        placeBettors: [],
+        showBettors: [],
+        losingBettors: [],
+        treasuryVault: 0,
+        totalBurned: 0,
+        sponsorships: new Map(),
+        ichorDistribution: {
+          totalMined: 0,
+          winningBettors: new Map(),
+          secondPlaceBettors: new Map(),
+          thirdPlaceBettors: new Map(),
+          fighters: new Map(),
+          showerPoolAccumulation: 0,
+        },
+        ichorShowerTriggered: false,
+      });
 
       // Persist: still increment rumble count even without bets
       persist.incrementStats(0, 0, 0);
@@ -1024,8 +1150,11 @@ export class RumbleOrchestrator {
     // shows the slot in payout state for PAYOUT_DURATION_MS. Deleting early
     // causes handlePayoutPhase to re-run on every tick. The payout ID is
     // cleaned up in handleSlotRecycled when the slot returns to idle.
+    //
+    // KEEP combatStates alive during payout so the status API can serve
+    // final fighter HPs / placements to the spectator page.
     this.bettingPools.delete(slotIndex);
-    this.combatStates.delete(slotIndex);
+    // combatStates preserved until handleSlotRecycled
     this.autoRequeueFighters.delete(slotIndex);
   }
 
@@ -1035,6 +1164,8 @@ export class RumbleOrchestrator {
     previousRumbleId: string,
   ): void {
     this.payoutProcessed.delete(previousRumbleId);
+    this.combatStates.delete(slotIndex);
+    this.payoutResults.delete(slotIndex);
     this.emit("slot_recycled", {
       slotIndex,
       previousFighters,
@@ -1098,6 +1229,48 @@ export class RumbleOrchestrator {
     }
 
     return { pairings, bye };
+  }
+
+  // ---- Recovery helpers ----------------------------------------------------
+
+  /**
+   * Restore a betting pool from saved bets during cold-start recovery.
+   * Called by rumble-state-recovery.ts to reconstruct in-memory state
+   * without losing bets that were already placed.
+   */
+  restoreBettingPool(
+    slotIndex: number,
+    rumbleId: string,
+    bets: Array<{ wallet_address: string; fighter_id: string; gross_amount: number; net_amount: number }>,
+  ): void {
+    const pool = createBettingPool(rumbleId);
+
+    for (const bet of bets) {
+      const grossAmount = bet.gross_amount;
+      const netAmount = bet.net_amount;
+      const adminFee = grossAmount * ADMIN_FEE_RATE;
+      const sponsorship = grossAmount * SPONSORSHIP_RATE;
+
+      pool.bets.push({
+        bettorId: bet.wallet_address,
+        fighterId: bet.fighter_id,
+        grossAmount,
+        solAmount: netAmount,
+        timestamp: new Date(),
+      });
+
+      pool.totalDeployed += grossAmount;
+      pool.adminFeeCollected += adminFee;
+      pool.netPool += netAmount;
+
+      const currentSponsor = pool.sponsorshipPaid.get(bet.fighter_id) ?? 0;
+      pool.sponsorshipPaid.set(bet.fighter_id, currentSponsor + sponsorship);
+    }
+
+    this.bettingPools.set(slotIndex, pool);
+    console.log(
+      `[Orchestrator] Restored betting pool for slot ${slotIndex}: ${bets.length} bets, ${pool.totalDeployed} SOL`
+    );
   }
 
   // ---- External API --------------------------------------------------------
@@ -1168,21 +1341,30 @@ export class RumbleOrchestrator {
   getCombatState(slotIndex: number): SlotCombatState | null {
     return this.combatStates.get(slotIndex) ?? null;
   }
+
+  /**
+   * Get the payout result for a slot (for spectator views during payout phase).
+   */
+  getPayoutResult(slotIndex: number): PayoutResult | null {
+    return this.payoutResults.get(slotIndex) ?? null;
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Singleton
+// Singleton — uses globalThis to survive Next.js HMR reloads in dev mode.
+// Without globalThis, each route compilation gets its own module instance
+// and a separate Orchestrator, causing state to diverge across routes.
 // ---------------------------------------------------------------------------
 
-let instance: RumbleOrchestrator | null = null;
+const g = globalThis as unknown as { __rumbleOrchestrator?: RumbleOrchestrator };
 
 export function getOrchestrator(): RumbleOrchestrator {
-  if (!instance) {
-    instance = new RumbleOrchestrator(getQueueManager());
+  if (!g.__rumbleOrchestrator) {
+    g.__rumbleOrchestrator = new RumbleOrchestrator(getQueueManager());
   }
-  return instance;
+  return g.__rumbleOrchestrator;
 }
 
 export function resetOrchestrator(): void {
-  instance = null;
+  g.__rumbleOrchestrator = undefined;
 }

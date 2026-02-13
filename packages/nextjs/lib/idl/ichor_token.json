@@ -1,5 +1,5 @@
 {
-  "address": "8CHYSuh1Y3F83PyK95E3F1Uya6pgPk4m3vM3MF3mP5hg",
+  "address": "925GAeqjKMX4B5MDANB91SZCvrx8HpEgmPJwHJzxKJx1",
   "metadata": {
     "name": "ichor_token",
     "version": "0.1.0",
@@ -7,6 +7,156 @@
     "description": "ICHOR token program for Underground Claw Fights"
   },
   "instructions": [
+    {
+      "name": "accept_admin",
+      "docs": [
+        "Accept a pending admin transfer. Must be signed by the proposed admin."
+      ],
+      "discriminator": [
+        112,
+        42,
+        45,
+        90,
+        116,
+        181,
+        13,
+        170
+      ],
+      "accounts": [
+        {
+          "name": "new_admin",
+          "docs": [
+            "The proposed new admin must sign this transaction."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "arena_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  114,
+                  101,
+                  110,
+                  97,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "pending_admin",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  110,
+                  100,
+                  105,
+                  110,
+                  103,
+                  95,
+                  97,
+                  100,
+                  109,
+                  105,
+                  110
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "admin_distribute",
+      "docs": [
+        "Admin: distribute tokens from the vault to any recipient.",
+        "Enables LP seeding, airdrops, partnerships, and manual rewards."
+      ],
+      "discriminator": [
+        177,
+        215,
+        220,
+        198,
+        35,
+        186,
+        195,
+        175
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "arena_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  114,
+                  101,
+                  110,
+                  97,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "distribution_vault",
+          "docs": [
+            "Distribution vault (holds undistributed supply)."
+          ],
+          "writable": true
+        },
+        {
+          "name": "recipient_token_account",
+          "docs": [
+            "Recipient's ICHOR token account."
+          ],
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
     {
       "name": "burn",
       "docs": [
@@ -203,9 +353,91 @@
       "args": []
     },
     {
+      "name": "distribute_reward",
+      "docs": [
+        "Distribute rewards from the vault after a completed Rumble.",
+        "Transfers ICHOR from the distribution vault to the winner and shower pool."
+      ],
+      "discriminator": [
+        135,
+        65,
+        136,
+        143,
+        108,
+        234,
+        198,
+        46
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "docs": [
+            "Only admin (backend) can trigger rumble rewards."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "arena_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  114,
+                  101,
+                  110,
+                  97,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "distribution_vault",
+          "docs": [
+            "Distribution vault (holds undistributed supply)."
+          ],
+          "writable": true
+        },
+        {
+          "name": "ichor_mint"
+        },
+        {
+          "name": "winner_token_account",
+          "docs": [
+            "Winner's ICHOR token account."
+          ],
+          "writable": true
+        },
+        {
+          "name": "shower_vault",
+          "docs": [
+            "Shower vault token account (holds the shower pool)."
+          ],
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "initialize",
       "docs": [
-        "Initialize the ICHOR mint and arena configuration.",
+        "Initialize the ICHOR mint, arena configuration, and distribution vault.",
+        "Mints the full 1B supply to the distribution vault.",
         "The mint authority is the arena_config PDA so only the program can mint."
       ],
       "discriminator": [
@@ -255,6 +487,40 @@
           "signer": true
         },
         {
+          "name": "distribution_vault",
+          "docs": [
+            "Distribution vault: holds the entire 1B supply for distribution."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  105,
+                  115,
+                  116,
+                  114,
+                  105,
+                  98,
+                  117,
+                  116,
+                  105,
+                  111,
+                  110,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
         },
@@ -275,28 +541,25 @@
       ]
     },
     {
-      "name": "mint_rumble_reward",
+      "name": "initialize_with_mint",
       "docs": [
-        "Mint rewards after a completed Rumble.",
-        "Distributes ICHOR to the winner, contributes to the Ichor Shower pool,",
-        "and adds bonus shower emissions."
+        "Initialize the ICHOR arena with an EXISTING external mint (e.g. pump.fun token).",
+        "Does NOT create the mint or mint tokens — the vault starts empty.",
+        "Admin must fund the vault by transferring purchased tokens to it."
       ],
       "discriminator": [
-        119,
-        232,
-        61,
-        47,
-        175,
-        156,
-        227,
-        172
+        207,
+        178,
+        250,
+        199,
+        11,
+        78,
+        210,
+        163
       ],
       "accounts": [
         {
-          "name": "authority",
-          "docs": [
-            "Only admin (backend) can trigger rumble rewards."
-          ],
+          "name": "admin",
           "writable": true,
           "signer": true
         },
@@ -327,20 +590,112 @@
         },
         {
           "name": "ichor_mint",
-          "writable": true
+          "docs": [
+            "Existing external mint (NOT created by this program)."
+          ]
         },
         {
-          "name": "winner_token_account",
+          "name": "distribution_vault",
           "docs": [
-            "Winner's ICHOR token account."
+            "Distribution vault: PDA token account for the external mint.",
+            "Starts empty — admin funds it by transferring purchased tokens."
           ],
-          "writable": true
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  105,
+                  115,
+                  116,
+                  114,
+                  105,
+                  98,
+                  117,
+                  116,
+                  105,
+                  111,
+                  110,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              }
+            ]
+          }
         },
         {
-          "name": "shower_vault",
-          "docs": [
-            "Shower vault token account (holds the shower pool)."
-          ],
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "base_reward",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "revoke_mint_authority",
+      "docs": [
+        "Admin: permanently revoke mint authority. No more tokens can ever be minted.",
+        "This makes the supply truly fixed at 1B."
+      ],
+      "discriminator": [
+        140,
+        52,
+        61,
+        238,
+        209,
+        157,
+        189,
+        32
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "arena_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  114,
+                  101,
+                  110,
+                  97,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "ichor_mint",
           "writable": true
         },
         {
@@ -351,9 +706,94 @@
       "args": []
     },
     {
+      "name": "transfer_admin",
+      "docs": [
+        "Admin: propose a new admin (two-step transfer, C-2 fix).",
+        "Creates/overwrites PendingAdmin PDA. New admin must call accept_admin."
+      ],
+      "discriminator": [
+        42,
+        242,
+        66,
+        106,
+        228,
+        10,
+        111,
+        156
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "arena_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  114,
+                  101,
+                  110,
+                  97,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "pending_admin",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  110,
+                  100,
+                  105,
+                  110,
+                  103,
+                  95,
+                  97,
+                  100,
+                  109,
+                  105,
+                  110
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "new_admin",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
       "name": "update_base_reward",
       "docs": [
-        "Admin: update the base reward amount."
+        "Admin: update the base reward amount.",
+        "Bounded: must be >= SHOWER_POOL_CUT (to avoid C-1 at era 0) and <= 10 ICHOR."
       ],
       "discriminator": [
         133,
@@ -506,92 +946,6 @@
           "type": "pubkey"
         }
       ]
-    },
-    {
-      "name": "transfer_admin",
-      "docs": [
-        "Admin: propose a new admin (two-step transfer, C-2 fix).",
-        "Creates/overwrites PendingAdmin PDA. New admin must call accept_admin."
-      ],
-      "discriminator": [42, 242, 66, 106, 228, 10, 111, 156],
-      "accounts": [
-        {
-          "name": "authority",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "arena_config",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [97, 114, 101, 110, 97, 95, 99, 111, 110, 102, 105, 103]
-              }
-            ]
-          }
-        },
-        {
-          "name": "pending_admin",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [112, 101, 110, 100, 105, 110, 103, 95, 97, 100, 109, 105, 110]
-              }
-            ]
-          }
-        },
-        {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "new_admin",
-          "type": "pubkey"
-        }
-      ]
-    },
-    {
-      "name": "accept_admin",
-      "docs": [
-        "Accept a pending admin transfer. Must be signed by the proposed admin."
-      ],
-      "discriminator": [112, 42, 45, 90, 116, 181, 13, 170],
-      "accounts": [
-        {
-          "name": "new_admin",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "arena_config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [97, 114, 101, 110, 97, 95, 99, 111, 110, 102, 105, 103]
-              }
-            ]
-          }
-        },
-        {
-          "name": "pending_admin",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [112, 101, 110, 100, 105, 110, 103, 95, 97, 100, 109, 105, 110]
-              }
-            ]
-          }
-        }
-      ],
-      "args": []
     }
   ],
   "accounts": [
@@ -622,6 +976,19 @@
       ]
     },
     {
+      "name": "PendingAdmin",
+      "discriminator": [
+        220,
+        45,
+        135,
+        16,
+        196,
+        153,
+        181,
+        56
+      ]
+    },
+    {
       "name": "ShowerRequest",
       "discriminator": [
         25,
@@ -633,10 +1000,6 @@
         212,
         66
       ]
-    },
-    {
-      "name": "PendingAdmin",
-      "discriminator": [220, 45, 135, 16, 196, 153, 181, 56]
     }
   ],
   "events": [
@@ -683,8 +1046,8 @@
   "errors": [
     {
       "code": 6000,
-      "name": "MaxSupplyExceeded",
-      "msg": "Maximum ICHOR supply of 21,000,000 exceeded"
+      "name": "VaultInsufficientBalance",
+      "msg": "Distribution vault has insufficient balance"
     },
     {
       "code": 6001,
@@ -769,12 +1132,22 @@
     {
       "code": 6017,
       "name": "InvalidBaseReward",
-      "msg": "Invalid base reward: must be >= 0.1 ICHOR and <= 10 ICHOR"
+      "msg": "Invalid base reward: must be >= 0.1 ICHOR and <= 2,000 ICHOR"
     },
     {
       "code": 6018,
       "name": "InvalidNewAdmin",
       "msg": "Invalid new admin address"
+    },
+    {
+      "code": 6019,
+      "name": "InvalidVault",
+      "msg": "Invalid distribution vault"
+    },
+    {
+      "code": 6020,
+      "name": "ZeroDistributeAmount",
+      "msg": "Distribute amount must be greater than zero"
     }
   ],
   "types": [
@@ -792,7 +1165,11 @@
             "type": "pubkey"
           },
           {
-            "name": "total_minted",
+            "name": "distribution_vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "total_distributed",
             "type": "u64"
           },
           {
@@ -931,6 +1308,26 @@
       }
     },
     {
+      "name": "PendingAdmin",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "proposed_admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "proposed_at",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
       "name": "ShowerRequest",
       "type": {
         "kind": "struct",
@@ -966,26 +1363,6 @@
           {
             "name": "recipient_token_account",
             "type": "pubkey"
-          }
-        ]
-      }
-    },
-    {
-      "name": "PendingAdmin",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "proposed_admin",
-            "type": "pubkey"
-          },
-          {
-            "name": "proposed_at",
-            "type": "u64"
-          },
-          {
-            "name": "bump",
-            "type": "u8"
           }
         ]
       }

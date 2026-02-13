@@ -206,13 +206,13 @@ export async function completeRumbleRecord(
 }
 
 export async function loadActiveRumbles(): Promise<
-  Array<{ id: string; slot_index: number; status: string; fighters: unknown }>
+  Array<{ id: string; slot_index: number; status: string; fighters: unknown; created_at: string }>
 > {
   try {
     const sb = freshServiceClient();
     const { data, error } = await sb
       .from("ucf_rumbles")
-      .select("id, slot_index, status, fighters")
+      .select("id, slot_index, status, fighters, created_at")
       .in("status", ["betting", "combat", "payout"])
       .order("created_at", { ascending: true });
     if (error) throw error;

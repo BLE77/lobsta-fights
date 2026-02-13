@@ -1,7 +1,9 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import BettingPanel from "./BettingPanel";
 import CombatFeed from "./CombatFeed";
+import EliminationPopup from "./EliminationPopup";
 import FighterHP from "./FighterHP";
 import PayoutDisplay from "./PayoutDisplay";
 
@@ -81,6 +83,7 @@ export interface SlotData {
 interface RumbleSlotProps {
   slot: SlotData;
   onPlaceBet?: (slotIndex: number, fighterId: string, amount: number) => void;
+  myBetFighterIds?: Set<string>;
 }
 
 function getStateLabel(state: SlotData["state"]): {
@@ -121,8 +124,71 @@ function getStateLabel(state: SlotData["state"]): {
   }
 }
 
-export default function RumbleSlot({ slot, onPlaceBet }: RumbleSlotProps) {
+interface ActiveElimination {
+  key: string;
+  fighterName: string;
+  imageUrl: string | null;
+  placement: number;
+  totalFighters: number;
+}
+
+export default function RumbleSlot({ slot, onPlaceBet, myBetFighterIds }: RumbleSlotProps) {
   const label = getStateLabel(slot.state);
+  const [activeEliminations, setActiveEliminations] = useState<
+    ActiveElimination[]
+  >([]);
+  const seenTurnsRef = useRef<number>(0);
+
+  // Track new eliminations from incoming turns
+  useEffect(() => {
+    if (slot.state !== "combat" || slot.turns.length === 0) {
+      // Reset when not in combat
+      if (seenTurnsRef.current !== 0) {
+        seenTurnsRef.current = 0;
+        setActiveEliminations([]);
+      }
+      return;
+    }
+
+    const newTurns = slot.turns.filter(
+      (t) => t.turnNumber > seenTurnsRef.current
+    );
+    if (newTurns.length === 0) return;
+
+    seenTurnsRef.current = Math.max(
+      ...slot.turns.map((t) => t.turnNumber)
+    );
+
+    const fighterMap = new Map(slot.fighters.map((f) => [f.id, f]));
+    const newEliminations: ActiveElimination[] = [];
+
+    for (const turn of newTurns) {
+      for (const elimId of turn.eliminations) {
+        const fighter = fighterMap.get(elimId);
+        const key = `${turn.turnNumber}-${elimId}`;
+        newEliminations.push({
+          key,
+          fighterName:
+            fighter?.name || slot.fighterNames[elimId] || elimId,
+          imageUrl: fighter?.imageUrl ?? null,
+          placement: fighter?.placement || slot.fighters.length,
+          totalFighters: slot.fighters.length,
+        });
+      }
+    }
+
+    if (newEliminations.length === 0) return;
+
+    setActiveEliminations((prev) => [...prev, ...newEliminations]);
+
+    // Auto-remove after 3 seconds
+    const keys = newEliminations.map((e) => e.key);
+    setTimeout(() => {
+      setActiveEliminations((prev) =>
+        prev.filter((e) => !keys.includes(e.key))
+      );
+    }, 3000);
+  }, [slot.turns, slot.state, slot.fighters, slot.fighterNames]);
 
   return (
     <div
@@ -195,10 +261,26 @@ export default function RumbleSlot({ slot, onPlaceBet }: RumbleSlotProps) {
                       imageUrl={f.imageUrl}
                       isEliminated={f.hp <= 0}
                       damageDealt={f.totalDamageDealt}
+                      isMyBet={myBetFighterIds?.has(f.id)}
                     />
                   ))}
               </div>
             </div>
+
+            {/* Elimination popups */}
+            {activeEliminations.length > 0 && (
+              <div className="space-y-2">
+                {activeEliminations.map((elim) => (
+                  <EliminationPopup
+                    key={elim.key}
+                    fighterName={elim.fighterName}
+                    imageUrl={elim.imageUrl}
+                    placement={elim.placement}
+                    totalFighters={elim.totalFighters}
+                  />
+                ))}
+              </div>
+            )}
 
             {/* Turn feed */}
             <div className="border-t border-stone-800 pt-2">
@@ -226,6 +308,7 @@ export default function RumbleSlot({ slot, onPlaceBet }: RumbleSlotProps) {
                 damageDealt: f.totalDamageDealt,
               }))}
             payout={slot.payout}
+            myBetFighterIds={myBetFighterIds}
           />
         )}
       </div>

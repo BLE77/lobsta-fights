@@ -179,7 +179,7 @@ export async function POST(req: NextRequest) {
   } catch (error: any) {
     console.error("Image generation error:", error);
     return NextResponse.json(
-      { error: error.message || "Internal server error" },
+      { error: "Image generation failed" },
       { status: 500 }
     );
   }
@@ -228,8 +228,9 @@ export async function GET(req: NextRequest) {
       error: prediction.error,
     });
   } catch (error: any) {
+    console.error("Image status check error:", error);
     return NextResponse.json(
-      { error: error.message || "Internal server error" },
+      { error: "Failed to check image status" },
       { status: 500 }
     );
   }

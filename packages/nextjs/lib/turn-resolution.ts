@@ -49,10 +49,10 @@ export interface TurnResolutionResult {
 export async function resolveTurn(matchId: string): Promise<TurnResolutionResult> {
   const supabase = freshSupabase();
 
-  // Fetch the match with current state
+  // Fetch the match with current state (all columns needed for combat resolution)
   const { data: match, error: matchError } = await supabase
     .from("ucf_matches")
-    .select("*")
+    .select("id, fighter_a_id, fighter_b_id, state, move_a, move_b, agent_a_state, agent_b_state, current_round, current_turn, turn_history, points_wager, max_rounds, winner_id, on_chain_wager, result_image_url")
     .eq("id", matchId)
     .single();
 
@@ -278,12 +278,13 @@ export async function resolveTurn(matchId: string): Promise<TurnResolutionResult
     }
   }
 
-  // Update the match
+  // Update the match — ATOMIC: only update if still in REVEAL_PHASE (prevents double-resolution)
   const { data: updatedRows, error: updateError } = await supabase
     .from("ucf_matches")
     .update(matchUpdateData)
     .eq("id", matchId)
-    .select();
+    .eq("state", "REVEAL_PHASE")
+    .select("id");
 
   if (updateError) {
     console.error(`[Turn Resolution] Error updating match ${matchId}:`, updateError);

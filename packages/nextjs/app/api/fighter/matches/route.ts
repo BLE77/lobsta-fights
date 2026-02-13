@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "../../../../lib/supabase";
-import { getApiKeyFromHeaders } from "../../../../lib/request-auth";
+import { getApiKeyFromHeaders, isValidUUID } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +29,10 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  if (!isValidUUID(fighterId)) {
+    return NextResponse.json({ error: "Invalid fighter_id format" }, { status: 400 });
+  }
+
   // Verify credentials
   const { data: fighter, error: fighterError } = await supabase
     .from("ucf_fighters")
@@ -55,7 +59,7 @@ export async function GET(req: NextRequest) {
 
   if (matchError) {
     return NextResponse.json(
-      { error: matchError.message },
+      { error: "Failed to fetch matches" },
       { status: 500 }
     );
   }

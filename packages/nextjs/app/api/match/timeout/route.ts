@@ -32,10 +32,13 @@ const MOVES_FOR_RANDOM: MoveType[] = [
 ]; // Exclude SPECIAL and CATCH from random moves (they're more situational)
 
 /**
- * Get a random move for a timed-out fighter
+ * Get a cryptographically-random move for a timed-out fighter.
+ * Uses crypto.getRandomValues for fairness.
  */
 function getRandomMove(): MoveType {
-  return MOVES_FOR_RANDOM[Math.floor(Math.random() * MOVES_FOR_RANDOM.length)];
+  const arr = new Uint32Array(1);
+  crypto.getRandomValues(arr);
+  return MOVES_FOR_RANDOM[arr[0] % MOVES_FOR_RANDOM.length];
 }
 
 /**
@@ -130,7 +133,7 @@ export async function POST(request: Request) {
 
   } catch (error: any) {
     console.error("[Timeout] Error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Timeout processing error" }, { status: 500 });
   }
 }
 

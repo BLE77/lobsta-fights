@@ -614,7 +614,8 @@ export async function POST(request: Request) {
       .single();
 
     if (error) {
-      return NextResponse.json({ error: error.message, instructions: GAME_INSTRUCTIONS }, { status: 500 });
+      console.error("Fighter registration DB error:", error);
+      return NextResponse.json({ error: "Failed to register fighter", instructions: GAME_INSTRUCTIONS }, { status: 500 });
     }
 
     // Auto-generate profile image AND victory pose if no imageUrl provided and Replicate is configured
@@ -639,7 +640,8 @@ export async function POST(request: Request) {
       instructions: GAME_INSTRUCTIONS,
     });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message, instructions: GAME_INSTRUCTIONS }, { status: 500 });
+    console.error("Fighter registration error:", error);
+    return NextResponse.json({ error: "An error occurred during registration", instructions: GAME_INSTRUCTIONS }, { status: 500 });
   }
 }
 

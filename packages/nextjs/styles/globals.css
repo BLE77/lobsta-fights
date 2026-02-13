@@ -81,6 +81,36 @@ body {
   }
 }
 
+/* Elimination popup animation for KO overlay */
+.animate-elimination-popup {
+  animation: elimination-popup 0.4s ease-out forwards;
+}
+
+.animate-elimination-glow {
+  animation: elimination-glow 1.5s ease-in-out infinite;
+}
+
+@keyframes elimination-popup {
+  0% {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes elimination-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(239, 68, 68, 0.7);
+  }
+}
+
 @keyframes elimination-flash {
   0% {
     background-color: rgba(239, 68, 68, 0.4);

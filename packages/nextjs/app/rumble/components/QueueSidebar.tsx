@@ -14,8 +14,8 @@ interface QueueSidebarProps {
 }
 
 export default function QueueSidebar({
-  queue,
-  totalLength,
+  queue = [],
+  totalLength = 0,
   nextRumbleIn,
 }: QueueSidebarProps) {
   return (

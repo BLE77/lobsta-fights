@@ -162,7 +162,7 @@ export async function POST(request: Request) {
         .single();
 
       if (matchError) {
-        return NextResponse.json({ error: matchError.message }, { status: 500 });
+        return NextResponse.json({ error: "Failed to create match" }, { status: 500 });
       }
 
       // Create on-chain match (locks wagers)
@@ -198,10 +198,7 @@ export async function POST(request: Request) {
         await freshSupabase().from("ucf_matches").delete().eq("id", match.id);
 
         return NextResponse.json(
-          {
-            error: "Failed to create on-chain match",
-            details: err.message,
-          },
+          { error: "Failed to create on-chain match" },
           { status: 500 }
         );
       }
@@ -214,7 +211,7 @@ export async function POST(request: Request) {
     });
 
     if (lobbyError) {
-      return NextResponse.json({ error: lobbyError.message }, { status: 500 });
+      return NextResponse.json({ error: "Failed to join lobby" }, { status: 500 });
     }
 
     return NextResponse.json({
@@ -225,6 +222,6 @@ export async function POST(request: Request) {
       chain: getChainInfo(),
     });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

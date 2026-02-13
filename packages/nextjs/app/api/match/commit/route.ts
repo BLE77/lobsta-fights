@@ -25,6 +25,14 @@ export async function POST(request: Request) {
       );
     }
 
+    // Validate move_hash format (must be 64-char hex SHA256)
+    if (typeof move_hash !== "string" || !/^[a-f0-9]{64}$/i.test(move_hash)) {
+      return NextResponse.json(
+        { error: "Invalid move_hash format. Must be a 64-character hex SHA256 hash." },
+        { status: 400 }
+      );
+    }
+
     // Verify fighter credentials
     const { data: fighter, error: authError } = await supabase
       .from("ucf_fighters")
@@ -40,10 +48,10 @@ export async function POST(request: Request) {
       );
     }
 
-    // Fetch the match
+    // Fetch the match (explicit safe columns - no commit/move/salt data in response)
     const { data: match, error: matchError } = await supabase
       .from("ucf_matches")
-      .select("*")
+      .select("id, fighter_a_id, fighter_b_id, state, commit_a, commit_b, current_round, current_turn, commit_deadline, reveal_deadline, agent_a_state, agent_b_state, points_wager")
       .eq("id", match_id)
       .single();
 
@@ -73,6 +81,14 @@ export async function POST(request: Request) {
       );
     }
 
+    // Enforce commit deadline server-side
+    if (match.commit_deadline && new Date() > new Date(match.commit_deadline)) {
+      return NextResponse.json(
+        { error: "Commit deadline has passed. Wait for timeout handler to advance the match." },
+        { status: 400 }
+      );
+    }
+
     // Check if this fighter has already committed
     const commitColumn = isFighterA ? "commit_a" : "commit_b";
     const otherCommitColumn = isFighterA ? "commit_b" : "commit_a";
@@ -97,17 +113,19 @@ export async function POST(request: Request) {
       updateData.reveal_deadline = new Date(Date.now() + 60000).toISOString(); // 60 seconds to reveal (1 min)
     }
 
+    // Atomic state transition: only update if match is still in COMMIT_PHASE
     const { data: updatedMatch, error: updateError } = await freshSupabase()
       .from("ucf_matches")
       .update(updateData)
       .eq("id", match_id)
-      .select()
+      .eq("state", "COMMIT_PHASE")
+      .select("id, state, current_round, current_turn, reveal_deadline, commit_deadline")
       .single();
 
-    if (updateError) {
+    if (updateError || !updatedMatch) {
       return NextResponse.json(
-        { error: updateError.message },
-        { status: 500 }
+        { error: "Match state changed (concurrent modification). Retry." },
+        { status: 409 }
       );
     }
 
@@ -134,7 +152,7 @@ export async function POST(request: Request) {
   } catch (error: any) {
     console.error("Error committing move:", error);
     return NextResponse.json(
-      { error: error.message || "Internal server error" },
+      { error: "An error occurred while processing your request" },
       { status: 500 }
     );
   }

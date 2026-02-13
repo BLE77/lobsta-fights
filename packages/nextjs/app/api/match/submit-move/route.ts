@@ -52,6 +52,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Validate fighter_id is a valid UUID (prevents SQL injection via .or() template literals)
+    const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!UUID_REGEX.test(fighter_id)) {
+      return NextResponse.json(
+        { error: "Invalid fighter_id format" },
+        { status: 400 }
+      );
+    }
+
     // Validate move
     const upperMove = move.toUpperCase();
     if (!VALID_MOVES.includes(upperMove)) {
@@ -79,10 +88,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Find the active match
+    // Find the active match (explicit columns - includes pending moves needed for auto-reveal)
     let matchQuery = supabase
       .from("ucf_matches")
-      .select("*")
+      .select("id, fighter_a_id, fighter_b_id, state, commit_a, commit_b, move_a, move_b, pending_move_a, pending_move_b, pending_salt_a, pending_salt_b, agent_a_state, agent_b_state, current_round, current_turn, commit_deadline, reveal_deadline, points_wager, created_at")
       .or(`fighter_a_id.eq.${fighter_id},fighter_b_id.eq.${fighter_id}`)
       .in("state", ["COMMIT_PHASE", "REVEAL_PHASE"]);
 
@@ -159,16 +168,20 @@ export async function POST(req: NextRequest) {
             pending_salt_b: salt,
           };
 
-      const { error: updateError } = await supabase
+      // Atomic: only update if match is still in COMMIT_PHASE
+      const { error: updateError, data: updateResult } = await supabase
         .from("ucf_matches")
         .update(updateFields)
-        .eq("id", match.id);
+        .eq("id", match.id)
+        .eq("state", "COMMIT_PHASE")
+        .select("id")
+        .maybeSingle();
 
-      if (updateError) {
+      if (updateError || !updateResult) {
         console.error("Failed to commit move:", updateError);
         return NextResponse.json(
-          { error: "Failed to commit move" },
-          { status: 500 }
+          { error: "Match state changed. Retry." },
+          { status: 409 }
         );
       }
 
@@ -185,13 +198,15 @@ export async function POST(req: NextRequest) {
         // Both committed - transition to reveal phase
         const revealDeadline = new Date(Date.now() + 30 * 1000).toISOString();
 
+        // Atomic: only transition if still in COMMIT_PHASE
         await supabase
           .from("ucf_matches")
           .update({
             state: "REVEAL_PHASE",
             reveal_deadline: revealDeadline,
           })
-          .eq("id", match.id);
+          .eq("id", match.id)
+          .eq("state", "COMMIT_PHASE");
 
         // Auto-reveal our move since we're using simple mode
         await autoReveal(match.id, fighter_id, isPlayerA, upperMove, salt);
@@ -267,7 +282,7 @@ export async function POST(req: NextRequest) {
   } catch (error: any) {
     console.error("Submit move error:", error);
     return NextResponse.json(
-      { error: error.message || "Internal server error" },
+      { error: "An error occurred while processing your request" },
       { status: 500 }
     );
   }

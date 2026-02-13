@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { freshSupabase } from "../../../../../lib/supabase";
+import { isValidUUID } from "../../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,14 @@ export async function GET(
   const { searchParams } = new URL(req.url);
   const opponentId = searchParams.get("opponent_id");
 
+  // Validate UUID format to prevent filter injection via .or() template literals
+  if (!isValidUUID(fighterId)) {
+    return NextResponse.json({ error: "Invalid fighter ID format" }, { status: 400 });
+  }
+  if (opponentId && !isValidUUID(opponentId)) {
+    return NextResponse.json({ error: "Invalid opponent_id format" }, { status: 400 });
+  }
+
   const supabase = freshSupabase();
 
   // Get all finished matches for this fighter
@@ -28,7 +37,7 @@ export async function GET(
     .order("finished_at", { ascending: false });
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Failed to fetch fighter stats" }, { status: 500 });
   }
 
   if (!matches || matches.length === 0) {

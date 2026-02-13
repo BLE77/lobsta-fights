@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { freshSupabase } from "../../../lib/supabase";
 import { getApiKeyFromHeaders } from "../../../lib/request-auth";
+import { checkFighterCooldown } from "../../../lib/fighter-cooldown";
 
 export const dynamic = "force-dynamic";
 
@@ -41,6 +42,19 @@ export async function POST(request: Request) {
       return NextResponse.json(
         { error: `Insufficient points. You have ${fighter.points}, need ${pointsWager}` },
         { status: 400 }
+      );
+    }
+
+    // Check fighter cooldown (45 min between fights)
+    const cooldown = await checkFighterCooldown(fighterId);
+    if (cooldown.on_cooldown) {
+      return NextResponse.json(
+        {
+          error: `Fighter is on cooldown. ${cooldown.minutes_remaining} minutes remaining.`,
+          cooldown_ends: cooldown.cooldown_ends,
+          minutes_remaining: cooldown.minutes_remaining,
+        },
+        { status: 429 }
       );
     }
 
@@ -167,7 +181,8 @@ export async function POST(request: Request) {
         .single();
 
       if (matchError) {
-        return NextResponse.json({ error: matchError.message }, { status: 500 });
+        console.error("Error creating match:", matchError);
+        return NextResponse.json({ error: "Failed to create match" }, { status: 500 });
       }
 
       return NextResponse.json({
@@ -190,7 +205,8 @@ export async function POST(request: Request) {
       }, { onConflict: "fighter_id" });
 
     if (lobbyError) {
-      return NextResponse.json({ error: lobbyError.message }, { status: 500 });
+      console.error("Error joining lobby:", lobbyError);
+      return NextResponse.json({ error: "Failed to join lobby" }, { status: 500 });
     }
 
     return NextResponse.json({
@@ -199,7 +215,8 @@ export async function POST(request: Request) {
       points_wager: pointsWager,
     });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error("Lobby error:", error);
+    return NextResponse.json({ error: "An error occurred while processing your request" }, { status: 500 });
   }
 }
 
@@ -228,7 +245,7 @@ export async function GET(request: Request) {
     .order("created_at", { ascending: true });
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Failed to fetch lobby" }, { status: 500 });
   }
 
   // Check if specific fighter is in lobby

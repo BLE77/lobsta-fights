@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { freshSupabase } from "../../../../lib/supabase";
 import { isAuthorizedCronRequest } from "../../../../lib/request-auth";
+import { checkFighterCooldown } from "../../../../lib/fighter-cooldown";
 
 export const dynamic = "force-dynamic";
 
@@ -49,7 +50,8 @@ export async function POST(request: Request) {
       .order("created_at", { ascending: true });
 
     if (lobbyError) {
-      return NextResponse.json({ error: lobbyError.message }, { status: 500 });
+      console.error("Lobby fetch error:", lobbyError);
+      return NextResponse.json({ error: "Failed to fetch lobby" }, { status: 500 });
     }
 
     if (!lobby || lobby.length < 2) {
@@ -63,6 +65,27 @@ export async function POST(request: Request) {
 
     const matchesCreated: any[] = [];
     const matchedFighterIds = new Set<string>();
+    const cooldownFighterIds = new Set<string>();
+
+    // Pre-check cooldowns for all lobby fighters
+    const cooldownChecks = await Promise.all(
+      lobby.map(async (entry) => {
+        const result = await checkFighterCooldown(entry.fighter_id);
+        return { fighter_id: entry.fighter_id, ...result };
+      })
+    );
+
+    for (const check of cooldownChecks) {
+      if (check.on_cooldown) {
+        cooldownFighterIds.add(check.fighter_id);
+        // Remove fighters on cooldown from lobby so they don't sit there forever
+        await supabase
+          .from("ucf_lobby")
+          .delete()
+          .eq("fighter_id", check.fighter_id);
+        console.log(`[Matchmaker] Removed ${check.fighter_id} from lobby — cooldown (${check.minutes_remaining}m remaining)`);
+      }
+    }
 
     // Try to pair fighters
     for (let i = 0; i < lobby.length; i++) {
@@ -70,6 +93,9 @@ export async function POST(request: Request) {
 
       // Skip if already matched in this run
       if (matchedFighterIds.has(fighter1.fighter_id)) continue;
+
+      // Skip if on cooldown
+      if (cooldownFighterIds.has(fighter1.fighter_id)) continue;
 
       // Skip if not verified
       if (!fighter1.fighter?.verified) continue;
@@ -79,6 +105,9 @@ export async function POST(request: Request) {
 
         // Skip if already matched
         if (matchedFighterIds.has(fighter2.fighter_id)) continue;
+
+        // Skip if on cooldown
+        if (cooldownFighterIds.has(fighter2.fighter_id)) continue;
 
         // Skip if not verified
         if (!fighter2.fighter?.verified) continue;
@@ -148,7 +177,7 @@ export async function POST(request: Request) {
 
   } catch (error: any) {
     console.error("Matchmaker error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Matchmaker error" }, { status: 500 });
   }
 }
 
@@ -167,6 +196,9 @@ const WHITELISTED_FIGHTERS = new Set([
  * Check if two fighters are compatible for a match
  */
 function isCompatible(f1: any, f2: any): boolean {
+  // SECURITY: Never match a fighter against themselves (prevents point farming)
+  if (f1.fighter_id === f2.fighter_id) return false;
+
   // Whitelisted fighters always match each other (skip wager & range checks)
   if (WHITELISTED_FIGHTERS.has(f1.fighter_id) && WHITELISTED_FIGHTERS.has(f2.fighter_id)) {
     return true;

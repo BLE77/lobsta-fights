@@ -1,88 +1,233 @@
 import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import { getOrchestrator } from "~~/lib/rumble-orchestrator";
+import { getQueueManager } from "~~/lib/queue-manager";
 import {
-  loadActiveRumbles,
   loadQueueState,
   getIchorShowerState,
   getStats,
-  loadBetsForRumble,
 } from "~~/lib/rumble-persistence";
 
 export const dynamic = "force-dynamic";
 
-/**
- * GET /api/rumble/status
- *
- * Returns current state of all 3 Rumble slots + queue + stats.
- * Reads directly from Supabase (source of truth) rather than in-memory
- * orchestrator state, since serverless routes don't share memory.
- */
+// ---------------------------------------------------------------------------
+// Fresh Supabase client (no-store cache)
+// ---------------------------------------------------------------------------
+
+const noStoreFetch: typeof fetch = (input, init) =>
+  fetch(input, { ...init, cache: "no-store" });
+
+function freshServiceClient() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) throw new Error("Missing Supabase env vars");
+  return createClient(url, key, {
+    auth: { autoRefreshToken: false, persistSession: false },
+    global: { fetch: noStoreFetch },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Fighter lookup cache (refreshed per request)
+// ---------------------------------------------------------------------------
+
+type FighterInfo = { name: string; imageUrl: string | null };
+
+async function loadFighterLookup(): Promise<Map<string, FighterInfo>> {
+  const sb = freshServiceClient();
+  const { data } = await sb
+    .from("ucf_fighters")
+    .select("id, name, image_url");
+
+  const map = new Map<string, FighterInfo>();
+  for (const f of data ?? []) {
+    map.set(f.id, { name: f.name, imageUrl: f.image_url });
+  }
+  return map;
+}
+
+function fighterName(lookup: Map<string, FighterInfo>, id: string): string {
+  return lookup.get(id)?.name ?? id.slice(0, 8);
+}
+
+function fighterImage(lookup: Map<string, FighterInfo>, id: string): string | null {
+  return lookup.get(id)?.imageUrl ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/rumble/status
+//
+// Returns the exact shape expected by the /rumble spectator page:
+//   { slots: SlotData[], queue: QueueFighter[], queueLength, nextRumbleIn, ichorShower }
+// ---------------------------------------------------------------------------
+
 export async function GET() {
   try {
-    // Load active rumbles from Supabase
-    const activeRumbles = await loadActiveRumbles();
+    const orchestrator = getOrchestrator();
+    const qm = getQueueManager();
+
+    // Load fighter info for name/image enrichment
+    const lookup = await loadFighterLookup();
+
+    // ---- Build slots from in-memory orchestrator ----------------------------
+    const orchStatus = orchestrator.getStatus();
+    const slots = orchStatus.map((slotInfo) => {
+      const combatState = orchestrator.getCombatState(slotInfo.slotIndex);
+
+      // Fighter name lookup for this slot
+      const fighterNames: Record<string, string> = {};
+      for (const fid of slotInfo.fighters) {
+        fighterNames[fid] = fighterName(lookup, fid);
+      }
+
+      // Build fighters array (SlotFighter[])
+      let fighters;
+      if (combatState && (slotInfo.state === "combat" || slotInfo.state === "payout")) {
+        fighters = combatState.fighters.map((f) => ({
+          id: f.id,
+          name: fighterName(lookup, f.id),
+          hp: f.hp,
+          maxHp: 100,
+          imageUrl: fighterImage(lookup, f.id),
+          meter: f.meter,
+          totalDamageDealt: f.totalDamageDealt,
+          totalDamageTaken: f.totalDamageTaken,
+          eliminatedOnTurn: f.eliminatedOnTurn,
+          placement: f.placement,
+        }));
+      } else {
+        fighters = slotInfo.fighters.map((fid) => ({
+          id: fid,
+          name: fighterName(lookup, fid),
+          hp: 100,
+          maxHp: 100,
+          imageUrl: fighterImage(lookup, fid),
+          meter: 0,
+          totalDamageDealt: 0,
+          totalDamageTaken: 0,
+          eliminatedOnTurn: null,
+          placement: 0,
+        }));
+      }
+
+      // Build odds (SlotOdds[]) — always include ALL fighters, merge bet data
+      const orchOdds = orchestrator.getOdds(slotInfo.slotIndex);
+      let totalPool = 0;
+
+      // Build a map of fighterId -> bet data from orchestrator odds
+      const oddsMap = new Map<string, typeof orchOdds[number]>();
+      for (const o of orchOdds) {
+        totalPool += o.solDeployed;
+        oddsMap.set(o.fighterId, o);
+      }
+
+      const count = Math.max(1, slotInfo.fighters.length);
+      const odds = slotInfo.fighters.map((fid) => {
+        const betData = oddsMap.get(fid);
+        return {
+          fighterId: fid,
+          fighterName: fighterName(lookup, fid),
+          imageUrl: fighterImage(lookup, fid),
+          hp: combatState?.fighters.find((f) => f.id === fid)?.hp ?? 100,
+          solDeployed: betData?.solDeployed ?? 0,
+          betCount: betData?.betCount ?? 0,
+          impliedProbability: betData?.impliedProbability ?? 1 / count,
+          potentialReturn: betData?.potentialReturn ?? count,
+        };
+      });
+
+      // Build turns (SlotTurn[])
+      const turns = (combatState?.turns ?? []).map((t) => ({
+        turnNumber: t.turnNumber,
+        pairings: t.pairings.map((p) => ({
+          fighterA: p.fighterA,
+          fighterB: p.fighterB,
+          fighterAName: fighterName(lookup, p.fighterA),
+          fighterBName: fighterName(lookup, p.fighterB),
+          moveA: p.moveA,
+          moveB: p.moveB,
+          damageToA: p.damageToA,
+          damageToB: p.damageToB,
+        })),
+        eliminations: t.eliminations,
+        bye: t.bye,
+      }));
+
+      // Build payout data from orchestrator (available during payout phase)
+      const payoutResult = orchestrator.getPayoutResult(slotInfo.slotIndex);
+      let payout = null;
+      if (payoutResult) {
+        const sumReturned = (arr: Array<{ solReturned: number; solProfit: number }>) =>
+          arr.reduce((s, b) => s + b.solReturned + b.solProfit, 0);
+        payout = {
+          winnerBettorsPayout: sumReturned(payoutResult.winnerBettors),
+          placeBettorsPayout: sumReturned(payoutResult.placeBettors),
+          showBettorsPayout: sumReturned(payoutResult.showBettors),
+          treasuryVault: payoutResult.treasuryVault,
+          totalPool,
+          ichorMined: payoutResult.ichorDistribution.totalMined,
+          ichorShowerTriggered: payoutResult.ichorShowerTriggered,
+          ichorShowerAmount: payoutResult.ichorShowerAmount,
+        };
+      }
+
+      return {
+        slotIndex: slotInfo.slotIndex,
+        rumbleId: slotInfo.rumbleId,
+        state: slotInfo.state,
+        fighters,
+        odds,
+        totalPool,
+        bettingDeadline: slotInfo.bettingDeadline?.toISOString() ?? null,
+        currentTurn: combatState?.turns.length ?? 0,
+        turns,
+        payout,
+        fighterNames,
+      };
+    });
+
+    // ---- Build queue (QueueFighter[]) --------------------------------------
     const queueEntries = await loadQueueState();
+    const queue = queueEntries.map((entry, index) => ({
+      fighterId: entry.fighter_id,
+      name: fighterName(lookup, entry.fighter_id),
+      imageUrl: fighterImage(lookup, entry.fighter_id),
+      position: index + 1,
+    }));
+
+    // ---- Ichor shower state ------------------------------------------------
     const showerState = await getIchorShowerState();
     const stats = await getStats();
+    const rumblesSinceLastTrigger = stats?.total_rumbles ?? 0;
 
-    // Build 3-slot view (slot 0, 1, 2)
-    const slotData = [];
-    for (let i = 0; i < 3; i++) {
-      const rumble = activeRumbles.find((r) => r.slot_index === i);
-      if (rumble) {
-        const fighters = rumble.fighters as Array<{ id: string; name: string }>;
-        // Load bets for odds calculation
-        const bets = await loadBetsForRumble(rumble.id);
-        const totalPool = bets.reduce((sum, b) => sum + Number(b.net_amount), 0);
-
-        const odds = fighters.map((f) => {
-          const fighterPool = bets
-            .filter((b) => b.fighter_id === f.id)
-            .reduce((sum, b) => sum + Number(b.net_amount), 0);
-          return {
-            fighter_id: f.id,
-            fighter_name: f.name,
-            pool: fighterPool,
-            odds: totalPool > 0 && fighterPool > 0 ? totalPool / fighterPool : 0,
-            percentage: totalPool > 0 ? (fighterPool / totalPool) * 100 : 0,
-          };
-        });
-
-        slotData.push({
-          slot_index: i,
-          rumble_id: rumble.id,
-          state: rumble.status,
-          fighters: fighters.map((f) => f.id),
-          fighter_count: fighters.length,
-          turn_count: 0,
-          remaining_fighters: fighters.length,
-          betting_deadline: null,
-          odds,
-          combat: null,
-        });
-      } else {
-        slotData.push({
-          slot_index: i,
-          rumble_id: null,
-          state: "idle",
-          fighters: [],
-          fighter_count: 0,
-          turn_count: 0,
-          remaining_fighters: 0,
-          betting_deadline: null,
-          odds: [],
-          combat: null,
-        });
-      }
+    // ---- nextRumbleIn estimate ---------------------------------------------
+    const inMemoryQueueLen = qm.getQueueLength();
+    let nextRumbleIn: string | null = null;
+    if (inMemoryQueueLen > 0 && inMemoryQueueLen < 8) {
+      nextRumbleIn = `Need ${8 - inMemoryQueueLen} more fighters`;
+    } else if (inMemoryQueueLen >= 8) {
+      const hasIdleSlot = slots.some((s) => s.state === "idle");
+      nextRumbleIn = hasIdleSlot ? "Starting soon..." : "All slots active";
     }
 
+    // ---- queueLength: in-queue + in-combat fighters for display ------------
+    const activeFighterCount = slots.reduce(
+      (sum, s) => sum + (s.state !== "idle" ? s.fighters.length : 0),
+      0,
+    );
+
     return NextResponse.json({
-      slots: slotData,
-      queue_length: queueEntries.length,
-      ichor_shower_pool: showerState?.pool_amount ?? 0,
-      total_rumbles_completed: stats?.total_rumbles ?? 0,
-      timestamp: new Date().toISOString(),
+      slots,
+      queue,
+      queueLength: queueEntries.length + activeFighterCount,
+      nextRumbleIn,
+      ichorShower: {
+        currentPool: Number(showerState?.pool_amount ?? 0),
+        rumblesSinceLastTrigger,
+      },
     });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error("[StatusAPI]", error);
+    return NextResponse.json({ error: "Failed to fetch rumble status" }, { status: 500 });
   }
 }

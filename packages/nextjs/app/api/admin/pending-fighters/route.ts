@@ -19,7 +19,7 @@ export async function GET(request: Request) {
 
     if (error) {
       return NextResponse.json(
-        { error: error.message },
+        { error: "Failed to fetch pending fighters" },
         { status: 500 }
       );
     }
@@ -31,7 +31,7 @@ export async function GET(request: Request) {
     });
   } catch (error: any) {
     return NextResponse.json(
-      { error: error.message },
+      { error: "Internal server error" },
       { status: 500 }
     );
   }

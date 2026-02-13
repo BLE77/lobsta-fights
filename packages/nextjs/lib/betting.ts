@@ -85,13 +85,15 @@ export const SPONSORSHIP_RATE = 0.05; // 5% to fighter owner
 const TREASURY_RATE = 0.10; // 10% of losers' pot
 const WINNERS_SHARE_RATE = 0.90; // 90% of losers' pot to bettors
 
-// Top-3 payout split of the winners' share
-const WIN_SHARE = 0.70; // 1st place bettors
-const PLACE_SHARE = 0.20; // 2nd place bettors
-const SHOW_SHARE = 0.10; // 3rd place bettors
+// Winner-takes-all: 100% of losers' pot goes to 1st place bettors
+const WIN_SHARE = 1.0; // 1st place bettors get everything
+const PLACE_SHARE = 0; // 2nd place bettors get nothing
+const SHOW_SHARE = 0; // 3rd place bettors get nothing
 
-// ICHOR mining per Rumble (before halving)
-const BASE_BLOCK_REWARD = 1.0;
+// --- Seasons ---
+// ICHOR reward per Rumble is season-based (admin-configurable), not auto-halving.
+export const SEASON_NAME = "Training Season";
+export const SEASON_REWARD = 1000; // ICHOR per fight this season
 
 // ICHOR distribution splits
 const ICHOR_BETTORS_SHARE = 0.60; // 60% to winning bettors
@@ -220,13 +222,13 @@ export function calculateOdds(pool: BettingPool): FighterOdds[] {
  * @param pool - The betting pool with all bets placed
  * @param placements - Ordered array of fighter IDs by final placement.
  *                     Index 0 = 1st place (winner), index 1 = 2nd, index 2 = 3rd, etc.
- * @param blockReward - ICHOR block reward for this Rumble (default 1.0, adjusted for halving)
+ * @param blockReward - ICHOR reward for this Rumble (default SEASON_REWARD)
  * @param ichorShowerPool - Current accumulated Ichor Shower pool (for payout if triggered)
  */
 export function calculatePayouts(
   pool: BettingPool,
   placements: string[],
-  blockReward: number = BASE_BLOCK_REWARD,
+  blockReward: number = SEASON_REWARD,
   ichorShowerPool: number = 0,
 ): PayoutResult {
   if (placements.length < 3) {
@@ -236,7 +238,7 @@ export function calculatePayouts(
   const firstId = placements[0];
   const secondId = placements[1];
   const thirdId = placements[2];
-  const topThreeIds = new Set([firstId, secondId, thirdId]);
+  const winnerId = firstId;
 
   // Group bets by fighter, and aggregate net SOL per fighter
   const betsByFighter = new Map<string, Bet[]>();
@@ -249,10 +251,10 @@ export function calculatePayouts(
     solByFighter.set(bet.fighterId, (solByFighter.get(bet.fighterId) ?? 0) + bet.solAmount);
   }
 
-  // The pot = net SOL deployed on ALL LOSING fighters (not in top 3)
+  // Winner-takes-all: pot = ALL non-winner fighters' SOL
   let pot = 0;
   for (const [fighterId, sol] of solByFighter) {
-    if (!topThreeIds.has(fighterId)) {
+    if (fighterId !== winnerId) {
       pot += sol;
     }
   }
@@ -303,10 +305,10 @@ export function calculatePayouts(
   const placeBettors = buildPayouts(secondId, placePot, ichorDistribution.secondPlaceBettors);
   const showBettors = buildPayouts(thirdId, showPot, ichorDistribution.thirdPlaceBettors);
 
-  // Losing bettors: no return, no profit, no ICHOR
+  // Losing bettors: everyone who didn't bet on the winner — no return, no profit, no ICHOR
   const losingBettors: BettorPayout[] = [];
   for (const [fighterId, bets] of betsByFighter) {
-    if (topThreeIds.has(fighterId)) continue;
+    if (fighterId === winnerId) continue;
     for (const bet of bets) {
       losingBettors.push({
         bettorId: bet.bettorId,
@@ -355,8 +357,8 @@ export function calculatePayouts(
 /**
  * Calculate ICHOR mining distribution for a Rumble.
  *
- * Per Rumble (1.0 ICHOR before halving):
- *   60% → winning bettors (proportional to SOL deployed on 1st place fighter)
+ * Per Rumble (season-based, e.g. 1000 ICHOR for Training Season):
+ *   60% → winner bettors only (proportional to SOL deployed on 1st place fighter)
  *   30% → fighters by placement (1st: 40%, 2nd: 25%, 3rd: 15%, rest: split 20%)
  *   10% → Ichor Shower pool accumulation
  */
@@ -368,14 +370,14 @@ function calculateIchorDistribution(
   thirdId: string,
   blockReward: number,
 ): IchorDistribution {
-  const bettorIchor = blockReward * ICHOR_BETTORS_SHARE; // 0.6
-  const fighterIchor = blockReward * ICHOR_FIGHTERS_SHARE; // 0.3
-  const showerIchor = blockReward * ICHOR_SHOWER_SHARE; // 0.1
+  const bettorIchor = blockReward * ICHOR_BETTORS_SHARE; // 60% = 600 ICHOR
+  const fighterIchor = blockReward * ICHOR_FIGHTERS_SHARE; // 30% = 300 ICHOR
+  const showerIchor = blockReward * ICHOR_SHOWER_SHARE; // 10% = 100 ICHOR
 
-  // Split the 60% bettor ICHOR across top-3 using the same SOL payout ratios
-  const firstIchor = bettorIchor * WIN_SHARE; // 70% of 60% = 0.42
-  const secondIchor = bettorIchor * PLACE_SHARE; // 20% of 60% = 0.12
-  const thirdIchor = bettorIchor * SHOW_SHARE; // 10% of 60% = 0.06
+  // Winner-takes-all: all 60% bettor ICHOR goes to winner bettors only
+  const firstIchor = bettorIchor; // 100% of 60% = 600 ICHOR
+  const secondIchor = 0;
+  const thirdIchor = 0;
 
   // Helper: distribute ICHOR proportionally among bettors on a specific fighter
   function distributeToBettors(fighterId: string, ichorAmount: number): Map<string, number> {
@@ -479,19 +481,21 @@ export function selectIchorShowerWinner(
 }
 
 // ---------------------------------------------------------------------------
-// Halving
+// Seasons
 // ---------------------------------------------------------------------------
 
 /**
- * Get the current block reward based on total Rumbles completed.
- * Halving schedule from the whitepaper.
+ * Get the current season's ICHOR reward per Rumble.
+ * Season-based model — admin changes the reward between seasons.
+ * No automatic halving.
  */
-export function getBlockReward(totalRumblesCompleted: number): number {
-  if (totalRumblesCompleted < 2_100_000) return 1.0;
-  if (totalRumblesCompleted < 6_300_000) return 0.5;
-  if (totalRumblesCompleted < 12_600_000) return 0.25;
-  if (totalRumblesCompleted < 21_000_000) return 0.125;
-  return 0.0625;
+export function getSeasonReward(): number {
+  return SEASON_REWARD;
+}
+
+/** @deprecated Use getSeasonReward() instead */
+export function getBlockReward(_totalRumblesCompleted: number): number {
+  return SEASON_REWARD;
 }
 
 // ---------------------------------------------------------------------------

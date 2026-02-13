@@ -29,9 +29,10 @@ export default function BettingPanel({
   deadline,
   onPlaceBet,
 }: BettingPanelProps) {
-  const [selectedFighter, setSelectedFighter] = useState<string | null>(null);
-  const [betAmount, setBetAmount] = useState("");
+  // Map of fighterId -> bet amount (allows betting on multiple fighters)
+  const [bets, setBets] = useState<Map<string, string>>(new Map());
   const [timeLeft, setTimeLeft] = useState("");
+  const [deploying, setDeploying] = useState<Set<string>>(new Set());
 
   // Countdown timer
   useEffect(() => {
@@ -54,13 +55,84 @@ export default function BettingPanel({
     return () => clearInterval(interval);
   }, [deadline]);
 
-  const handleBet = () => {
-    if (!selectedFighter || !betAmount || !onPlaceBet) return;
-    const amount = parseFloat(betAmount);
-    if (isNaN(amount) || amount <= 0) return;
-    onPlaceBet(slotIndex, selectedFighter, amount);
-    setBetAmount("");
+  const toggleFighter = (fighterId: string) => {
+    setBets((prev) => {
+      const next = new Map(prev);
+      if (next.has(fighterId)) {
+        next.delete(fighterId);
+      } else {
+        next.set(fighterId, "0.05");
+      }
+      return next;
+    });
   };
+
+  const updateAmount = (fighterId: string, amount: string) => {
+    setBets((prev) => {
+      const next = new Map(prev);
+      next.set(fighterId, amount);
+      return next;
+    });
+  };
+
+  const handleDeploySingle = async (fighterId: string) => {
+    const amountStr = bets.get(fighterId);
+    if (!amountStr || !onPlaceBet) return;
+    const amount = parseFloat(amountStr);
+    if (isNaN(amount) || amount <= 0) return;
+
+    setDeploying((prev) => new Set(prev).add(fighterId));
+    try {
+      await onPlaceBet(slotIndex, fighterId, amount);
+      // Remove from bets after successful deploy
+      setBets((prev) => {
+        const next = new Map(prev);
+        next.delete(fighterId);
+        return next;
+      });
+    } finally {
+      setDeploying((prev) => {
+        const next = new Set(prev);
+        next.delete(fighterId);
+        return next;
+      });
+    }
+  };
+
+  const handleDeployAll = async () => {
+    if (!onPlaceBet || bets.size === 0) return;
+    // Deploy each bet sequentially (each needs a separate tx)
+    const entries = [...bets.entries()];
+    for (const [fighterId, amountStr] of entries) {
+      const amount = parseFloat(amountStr);
+      if (isNaN(amount) || amount <= 0) continue;
+      setDeploying((prev) => new Set(prev).add(fighterId));
+      try {
+        await onPlaceBet(slotIndex, fighterId, amount);
+        setBets((prev) => {
+          const next = new Map(prev);
+          next.delete(fighterId);
+          return next;
+        });
+      } catch {
+        // Stop on first failure
+        break;
+      } finally {
+        setDeploying((prev) => {
+          const next = new Set(prev);
+          next.delete(fighterId);
+          return next;
+        });
+      }
+    }
+  };
+
+  const totalBetAmount = [...bets.values()].reduce(
+    (sum, v) => sum + (parseFloat(v) || 0),
+    0
+  );
+
+  const isClosed = timeLeft === "CLOSED";
 
   return (
     <div className="space-y-3">
@@ -77,7 +149,7 @@ export default function BettingPanel({
         </div>
         <span
           className={`font-mono text-sm font-bold ${
-            timeLeft === "CLOSED" ? "text-red-500" : "text-amber-400"
+            isClosed ? "text-red-500" : "text-amber-400"
           }`}
         >
           {timeLeft || "--:--"}
@@ -88,68 +160,101 @@ export default function BettingPanel({
       <div className="bg-stone-950/80 border border-amber-700/30 rounded-sm p-2 text-center">
         <span className="font-mono text-xs text-stone-500">TOTAL POOL</span>
         <p className="font-mono text-lg font-bold text-amber-400">
-          {totalPool.toFixed(2)} SOL
+          {(totalPool ?? 0).toFixed(2)} SOL
         </p>
       </div>
 
-      {/* Fighter Odds List */}
-      <div className="space-y-1 max-h-60 overflow-y-auto">
-        {fighters.map((f) => (
-          <button
-            key={f.fighterId}
-            onClick={() => setSelectedFighter(f.fighterId)}
-            className={`w-full flex items-center justify-between p-2 rounded-sm border transition-all text-left ${
-              selectedFighter === f.fighterId
-                ? "border-amber-500 bg-amber-900/20"
-                : "border-stone-800 bg-stone-900/50 hover:border-stone-600"
-            }`}
-          >
-            <div className="flex items-center gap-2 flex-1 min-w-0">
-              <FighterHP
-                name={f.fighterName}
-                hp={f.hp}
-                imageUrl={f.imageUrl}
-              />
+      {/* Fighter Odds List — click to toggle selection */}
+      <div className="space-y-1 max-h-80 overflow-y-auto">
+        {fighters.map((f) => {
+          const isSelected = bets.has(f.fighterId);
+          const isDeploying = deploying.has(f.fighterId);
+
+          return (
+            <div key={f.fighterId} className="space-y-0">
+              <button
+                onClick={() => toggleFighter(f.fighterId)}
+                className={`w-full flex items-center justify-between p-2 rounded-sm border transition-all text-left ${
+                  isSelected
+                    ? "border-amber-500 bg-amber-900/20"
+                    : "border-stone-800 bg-stone-900/50 hover:border-stone-600"
+                }`}
+              >
+                <div className="flex items-center gap-2 flex-1 min-w-0">
+                  <FighterHP
+                    name={f.fighterName}
+                    hp={f.hp}
+                    imageUrl={f.imageUrl}
+                  />
+                </div>
+                <div className="text-right flex-shrink-0 ml-2">
+                  <p className="font-mono text-xs text-amber-400">
+                    {f.potentialReturn.toFixed(1)}x
+                  </p>
+                  <p className="font-mono text-[10px] text-stone-500">
+                    {(f.impliedProbability * 100).toFixed(0)}%
+                  </p>
+                  <p className="font-mono text-[10px] text-stone-600">
+                    {f.solDeployed.toFixed(2)} SOL
+                  </p>
+                </div>
+              </button>
+
+              {/* Inline bet controls when selected */}
+              {isSelected && (
+                <div className="flex items-center gap-1 px-2 py-1 bg-stone-900/80 border-x border-b border-amber-500/30 rounded-b-sm">
+                  {/* Quick amount buttons */}
+                  {[0.05, 0.1, 0.25, 0.5].map((amt) => (
+                    <button
+                      key={amt}
+                      onClick={() => updateAmount(f.fighterId, String(amt))}
+                      className={`text-[10px] font-mono px-2 py-0.5 rounded-sm transition-all ${
+                        bets.get(f.fighterId) === String(amt)
+                          ? "bg-amber-600 text-stone-950"
+                          : "bg-stone-800 hover:bg-stone-700 text-stone-400"
+                      }`}
+                    >
+                      {amt}
+                    </button>
+                  ))}
+                  <input
+                    type="number"
+                    value={bets.get(f.fighterId) ?? ""}
+                    onChange={(e) => updateAmount(f.fighterId, e.target.value)}
+                    placeholder="SOL"
+                    min="0.01"
+                    step="0.01"
+                    className="w-16 bg-stone-950 border border-stone-700 rounded-sm px-2 py-0.5 text-stone-200 font-mono text-xs focus:outline-none focus:border-amber-600"
+                  />
+                  <button
+                    onClick={() => handleDeploySingle(f.fighterId)}
+                    disabled={isClosed || !onPlaceBet || isDeploying}
+                    className="px-2 py-0.5 bg-amber-600 hover:bg-amber-500 disabled:bg-stone-700 disabled:text-stone-500 text-stone-950 font-mono text-[10px] font-bold uppercase transition-all"
+                  >
+                    {isDeploying ? "..." : "BET"}
+                  </button>
+                </div>
+              )}
             </div>
-            <div className="text-right flex-shrink-0 ml-2">
-              <p className="font-mono text-xs text-amber-400">
-                {f.potentialReturn.toFixed(1)}x
-              </p>
-              <p className="font-mono text-[10px] text-stone-500">
-                {(f.impliedProbability * 100).toFixed(0)}%
-              </p>
-              <p className="font-mono text-[10px] text-stone-600">
-                {f.solDeployed.toFixed(2)} SOL
-              </p>
-            </div>
-          </button>
-        ))}
+          );
+        })}
       </div>
 
-      {/* Bet Input */}
-      {selectedFighter && (
-        <div className="flex gap-2">
-          <input
-            type="number"
-            value={betAmount}
-            onChange={(e) => setBetAmount(e.target.value)}
-            placeholder="SOL amount"
-            min="0.001"
-            step="0.01"
-            className="flex-1 bg-stone-950 border border-stone-700 rounded-sm px-3 py-2 text-stone-200 font-mono text-sm focus:outline-none focus:border-amber-600"
-          />
-          <button
-            onClick={handleBet}
-            disabled={timeLeft === "CLOSED"}
-            className="px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:bg-stone-700 disabled:text-stone-500 text-stone-950 font-mono text-sm font-bold uppercase transition-all"
-          >
-            Deploy
-          </button>
-        </div>
+      {/* Deploy All button when multiple selected */}
+      {bets.size > 1 && (
+        <button
+          onClick={handleDeployAll}
+          disabled={isClosed || !onPlaceBet || deploying.size > 0}
+          className="w-full py-2 bg-amber-600 hover:bg-amber-500 disabled:bg-stone-700 disabled:text-stone-500 text-stone-950 font-mono text-sm font-bold uppercase transition-all rounded-sm"
+        >
+          {deploying.size > 0
+            ? "DEPLOYING..."
+            : `DEPLOY ALL (${bets.size} fighters · ${totalBetAmount.toFixed(2)} SOL)`}
+        </button>
       )}
 
       <p className="text-[10px] text-stone-600 font-mono text-center">
-        1% admin fee + 5% fighter sponsorship deducted
+        Tap fighters to select · 1% admin + 5% sponsorship deducted
       </p>
     </div>
   );

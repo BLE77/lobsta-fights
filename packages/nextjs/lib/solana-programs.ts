@@ -34,7 +34,7 @@ export const FIGHTER_REGISTRY_ID = new PublicKey(
   "2hA6Jvj1yjP2Uj3qrJcsBeYA2R9xPM95mDKw1ncKVExa"
 );
 export const ICHOR_TOKEN_ID = new PublicKey(
-  "8CHYSuh1Y3F83PyK95E3F1Uya6pgPk4m3vM3MF3mP5hg"
+  "925GAeqjKMX4B5MDANB91SZCvrx8HpEgmPJwHJzxKJx1"
 );
 export const RUMBLE_ENGINE_ID = new PublicKey(
   "2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC"
@@ -45,6 +45,7 @@ export const RUMBLE_ENGINE_ID = new PublicKey(
 // ---------------------------------------------------------------------------
 
 const ARENA_SEED = Buffer.from("arena_config");
+const DISTRIBUTION_VAULT_SEED = Buffer.from("distribution_vault");
 const SHOWER_REQUEST_SEED = Buffer.from("shower_request");
 const ENTROPY_CONFIG_SEED = Buffer.from("entropy_config");
 const PENDING_ADMIN_SEED = Buffer.from("pending_admin");
@@ -75,6 +76,10 @@ export function deriveShowerRequestPda(): [PublicKey, number] {
 
 export function deriveEntropyConfigPda(): [PublicKey, number] {
   return PublicKey.findProgramAddressSync([ENTROPY_CONFIG_SEED], ICHOR_TOKEN_ID);
+}
+
+export function deriveDistributionVaultPda(): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync([DISTRIBUTION_VAULT_SEED], ICHOR_TOKEN_ID);
 }
 
 export function deriveRegistryConfigPda(): [PublicKey, number] {
@@ -662,30 +667,73 @@ async function maybeRotateEntropyVarForSettlement(
 }
 
 /**
- * Mint rumble reward to the winner (admin/server-side).
+ * Initialize the ICHOR arena with an EXISTING external mint (e.g. pump.fun token).
+ * Creates ArenaConfig + distribution vault PDA, but does NOT mint tokens.
+ * Admin must fund the vault afterward by transferring purchased tokens to it.
  * Returns tx signature on success, null if admin keypair unavailable.
  */
-export async function mintRumbleReward(
-  winnerTokenAccount: PublicKey,
-  showerVault: PublicKey,
+export async function initializeWithMint(
+  existingMint: PublicKey,
+  baseReward: bigint | number = 1_000_000_000n, // default 1 ICHOR
   connection?: Connection
 ): Promise<string | null> {
   const provider = getAdminProvider(connection);
   if (!provider) {
-    console.warn("[solana-programs] No admin keypair, skipping mintRumbleReward");
+    console.warn("[solana-programs] No admin keypair, skipping initializeWithMint");
     return null;
   }
   const program = getIchorTokenProgram(provider);
   const admin = getAdminKeypair()!;
 
   const [arenaConfigPda] = deriveArenaConfigPda();
+  const [distributionVaultPda] = deriveDistributionVaultPda();
+
+  const tx = await (program.methods as any)
+    .initializeWithMint(new anchor.BN(baseReward.toString()))
+    .accounts({
+      admin: admin.publicKey,
+      arenaConfig: arenaConfigPda,
+      ichorMint: existingMint,
+      distributionVault: distributionVaultPda,
+      systemProgram: SystemProgram.programId,
+      tokenProgram: TOKEN_PROGRAM_ID,
+      rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+    })
+    .rpc();
+
+  // Cache the mint address
+  setIchorMint(existingMint);
+
+  return tx;
+}
+
+/**
+ * Distribute rumble reward from vault to the winner (admin/server-side).
+ * Returns tx signature on success, null if admin keypair unavailable.
+ */
+export async function distributeReward(
+  winnerTokenAccount: PublicKey,
+  showerVault: PublicKey,
+  connection?: Connection
+): Promise<string | null> {
+  const provider = getAdminProvider(connection);
+  if (!provider) {
+    console.warn("[solana-programs] No admin keypair, skipping distributeReward");
+    return null;
+  }
+  const program = getIchorTokenProgram(provider);
+  const admin = getAdminKeypair()!;
+
+  const [arenaConfigPda] = deriveArenaConfigPda();
+  const [distributionVaultPda] = deriveDistributionVaultPda();
   const ichorMint = getIchorMint();
 
   const tx = await (program.methods as any)
-    .mintRumbleReward()
+    .distributeReward()
     .accounts({
       authority: admin.publicKey,
       arenaConfig: arenaConfigPda,
+      distributionVault: distributionVaultPda,
       ichorMint,
       winnerTokenAccount,
       showerVault,
@@ -695,6 +743,9 @@ export async function mintRumbleReward(
 
   return tx;
 }
+
+/** @deprecated Use distributeReward instead */
+export const mintRumbleReward = distributeReward;
 
 /**
  * Check for ichor shower trigger (admin/server-side).
@@ -817,6 +868,75 @@ export async function acceptAdmin(
       newAdmin: newAdminKeypair.publicKey,
       arenaConfig: arenaConfigPda,
       pendingAdmin: pendingAdminPda,
+    })
+    .rpc();
+
+  return tx;
+}
+
+// ---------------------------------------------------------------------------
+// ICHOR Vault Distribution Functions
+// ---------------------------------------------------------------------------
+
+/**
+ * Admin: distribute tokens from the vault to any recipient (LP seeding, airdrops, etc).
+ * Returns tx signature on success, null if admin keypair unavailable.
+ */
+export async function adminDistribute(
+  recipientTokenAccount: PublicKey,
+  amount: bigint | number,
+  connection?: Connection
+): Promise<string | null> {
+  const provider = getAdminProvider(connection);
+  if (!provider) {
+    console.warn("[solana-programs] No admin keypair, skipping adminDistribute");
+    return null;
+  }
+  const program = getIchorTokenProgram(provider);
+  const admin = getAdminKeypair()!;
+
+  const [arenaConfigPda] = deriveArenaConfigPda();
+  const [distributionVaultPda] = deriveDistributionVaultPda();
+
+  const tx = await (program.methods as any)
+    .adminDistribute(new anchor.BN(amount.toString()))
+    .accounts({
+      authority: admin.publicKey,
+      arenaConfig: arenaConfigPda,
+      distributionVault: distributionVaultPda,
+      recipientTokenAccount,
+      tokenProgram: TOKEN_PROGRAM_ID,
+    })
+    .rpc();
+
+  return tx;
+}
+
+/**
+ * Admin: permanently revoke mint authority. Supply becomes fixed at 1B.
+ * Returns tx signature on success, null if admin keypair unavailable.
+ */
+export async function revokeMintAuthority(
+  connection?: Connection
+): Promise<string | null> {
+  const provider = getAdminProvider(connection);
+  if (!provider) {
+    console.warn("[solana-programs] No admin keypair, skipping revokeMintAuthority");
+    return null;
+  }
+  const program = getIchorTokenProgram(provider);
+  const admin = getAdminKeypair()!;
+
+  const [arenaConfigPda] = deriveArenaConfigPda();
+  const ichorMint = getIchorMint();
+
+  const tx = await (program.methods as any)
+    .revokeMintAuthority()
+    .accounts({
+      authority: admin.publicKey,
+      arenaConfig: arenaConfigPda,
+      ichorMint,
+      tokenProgram: TOKEN_PROGRAM_ID,
     })
     .rpc();
 
@@ -1252,12 +1372,15 @@ export async function readArenaConfig(
 ): Promise<{
   admin: string;
   ichorMint: string;
-  totalMinted: bigint;
+  distributionVault: string;
+  totalDistributed: bigint;
   totalRumblesCompleted: bigint;
   baseReward: bigint;
   ichorShowerPool: bigint;
   treasuryVault: bigint;
   bump: number;
+  /** @deprecated Use totalDistributed */
+  totalMinted: bigint;
 } | null> {
   const conn = connection ?? getConnection();
   const [pda] = deriveArenaConfigPda();
@@ -1270,7 +1393,9 @@ export async function readArenaConfig(
   offset += 32;
   const ichorMint = new PublicKey(d.subarray(offset, offset + 32)).toBase58();
   offset += 32;
-  const totalMinted = d.readBigUInt64LE(offset);
+  const distributionVault = new PublicKey(d.subarray(offset, offset + 32)).toBase58();
+  offset += 32;
+  const totalDistributed = d.readBigUInt64LE(offset);
   offset += 8;
   const totalRumblesCompleted = d.readBigUInt64LE(offset);
   offset += 8;
@@ -1285,12 +1410,14 @@ export async function readArenaConfig(
   return {
     admin,
     ichorMint,
-    totalMinted,
+    distributionVault,
+    totalDistributed,
     totalRumblesCompleted,
     baseReward,
     ichorShowerPool,
     treasuryVault,
     bump,
+    totalMinted: totalDistributed, // backwards compat alias
   };
 }
 

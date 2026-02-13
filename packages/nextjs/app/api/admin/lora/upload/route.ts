@@ -69,7 +69,7 @@ export async function POST(req: NextRequest) {
         });
 
       if (error) {
-        errors.push(`${file.name}: ${error.message}`);
+        errors.push(`${file.name}: upload failed`);
         continue;
       }
 
@@ -87,7 +87,7 @@ export async function POST(req: NextRequest) {
         : `Upload more images - need at least 10, have ${uploadedUrls.length}`,
     });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
 
@@ -108,7 +108,7 @@ export async function GET(req: NextRequest) {
     .list("lora-training");
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Failed to list images" }, { status: 500 });
   }
 
   const imageUrls = (files || [])

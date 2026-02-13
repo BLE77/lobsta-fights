@@ -8,6 +8,7 @@ interface FighterHPProps {
   isEliminated?: boolean;
   placement?: number;
   damageDealt?: number;
+  isMyBet?: boolean;
 }
 
 export default function FighterHP({
@@ -18,6 +19,7 @@ export default function FighterHP({
   isEliminated = false,
   placement,
   damageDealt,
+  isMyBet,
 }: FighterHPProps) {
   const hpPercent = Math.max(0, Math.min(100, (hp / maxHp) * 100));
 
@@ -41,7 +43,7 @@ export default function FighterHP({
         isEliminated
           ? "opacity-40 line-through decoration-red-500"
           : ""
-      }`}
+      } ${isMyBet && !isEliminated ? "ring-1 ring-cyan-500/50 bg-cyan-950/10" : ""}`}
     >
       {/* Avatar */}
       <div className="relative flex-shrink-0">
@@ -50,7 +52,7 @@ export default function FighterHP({
             src={imageUrl}
             alt={name}
             className={`w-8 h-8 rounded-sm object-cover border ${
-              isEliminated ? "border-red-800 grayscale" : "border-stone-700"
+              isEliminated ? "border-red-800 grayscale" : isMyBet ? "border-cyan-500" : "border-stone-700"
             }`}
           />
         ) : (
@@ -58,6 +60,8 @@ export default function FighterHP({
             className={`w-8 h-8 rounded-sm flex items-center justify-center border ${
               isEliminated
                 ? "border-red-800 bg-stone-900"
+                : isMyBet
+                ? "border-cyan-500 bg-stone-800"
                 : "border-stone-700 bg-stone-800"
             }`}
           >
@@ -87,12 +91,19 @@ export default function FighterHP({
       {/* Name + HP bar */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between mb-0.5">
-          <span
-            className={`font-mono text-xs font-bold truncate ${
-              isEliminated ? "text-stone-600" : "text-stone-200"
-            }`}
-          >
-            {name}
+          <span className="flex items-center gap-1 truncate">
+            <span
+              className={`font-mono text-xs font-bold truncate ${
+                isEliminated ? "text-stone-600" : "text-stone-200"
+              }`}
+            >
+              {name}
+            </span>
+            {isMyBet && !isEliminated && (
+              <span className="font-mono text-[8px] px-1 py-px bg-cyan-900/50 text-cyan-400 border border-cyan-700/40 rounded-sm flex-shrink-0">
+                BET
+              </span>
+            )}
           </span>
           <span
             className={`font-mono text-[10px] ml-2 flex-shrink-0 ${

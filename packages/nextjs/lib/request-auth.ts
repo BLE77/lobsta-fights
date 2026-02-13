@@ -32,6 +32,16 @@ function getBearerToken(headers: Headers): string | null {
   return token.trim();
 }
 
+/**
+ * Validate that a string is a valid UUID v4 format.
+ * CRITICAL: Use this before interpolating any user-provided ID into .or() template literals
+ * to prevent PostgREST filter injection.
+ */
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export function isValidUUID(value: string | null | undefined): boolean {
+  return typeof value === "string" && UUID_REGEX.test(value);
+}
+
 export function getApiKeyFromHeaders(headers: Headers): string | null {
   const apiKey = headers.get("x-api-key") ?? headers.get("x-ucf-api-key");
   return apiKey?.trim() || null;
@@ -47,9 +57,7 @@ export function isAuthorizedAdminRequest(headers: Headers): boolean {
 }
 
 export function isAuthorizedCronRequest(headers: Headers): boolean {
-  const cronSecret = process.env.CRON_SECRET?.trim();
-  if (!cronSecret) return false;
-  return getBearerToken(headers) === cronSecret;
+  return matchesAnySecret(getBearerToken(headers), [process.env.CRON_SECRET]);
 }
 
 export function isAuthorizedInternalRequest(

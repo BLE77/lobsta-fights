@@ -36,7 +36,7 @@ export async function POST(request: Request) {
     const { data: fighters, error } = await query;
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ error: "Internal server error" }, { status: 500 });
     }
 
     if (!fighters || fighters.length === 0) {
@@ -119,6 +119,6 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ results });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

@@ -204,7 +204,7 @@ export async function POST(request: Request) {
   } catch (error: any) {
     console.error("[Clawdbot] Error processing webhook:", error);
     return NextResponse.json(
-      { error: "Failed to process webhook", details: error.message },
+      { error: "Failed to process webhook" },
       { status: 500 }
     );
   }

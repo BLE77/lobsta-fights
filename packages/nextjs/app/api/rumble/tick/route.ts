@@ -111,7 +111,7 @@ async function runTickBurst(): Promise<NextResponse> {
     return NextResponse.json(
       {
         success: false,
-        error: error.message,
+        error: "Tick processing error",
         ticksRun,
         recovery: recoveryResult,
         elapsedMs: Date.now() - startTime,

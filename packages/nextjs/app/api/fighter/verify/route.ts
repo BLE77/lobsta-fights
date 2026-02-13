@@ -182,7 +182,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           verified: false,
-          error: `Failed to reach endpoint: ${fetchError.message}`
+          error: "Failed to reach endpoint"
         },
         { status: 200 }
       );
@@ -190,7 +190,7 @@ export async function POST(req: NextRequest) {
 
   } catch (error: any) {
     return NextResponse.json(
-      { error: error.message || "Internal server error" },
+      { error: "Internal server error" },
       { status: 500 }
     );
   }

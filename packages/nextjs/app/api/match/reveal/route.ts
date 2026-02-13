@@ -87,10 +87,10 @@ export async function POST(request: Request) {
       );
     }
 
-    // Fetch the match
+    // Fetch the match (all columns needed for combat resolution - server-side only, never returned raw)
     const { data: match, error: matchError } = await supabase
       .from("ucf_matches")
-      .select("*")
+      .select("id, fighter_a_id, fighter_b_id, state, commit_a, commit_b, move_a, move_b, salt_a, salt_b, agent_a_state, agent_b_state, current_round, current_turn, turn_history, points_wager, max_rounds, commit_deadline, reveal_deadline, winner_id, on_chain_wager, result_image_url")
       .eq("id", match_id)
       .single();
 
@@ -116,6 +116,14 @@ export async function POST(request: Request) {
     if (match.state !== "REVEAL_PHASE") {
       return NextResponse.json(
         { error: `Cannot reveal: match is in ${match.state} state` },
+        { status: 400 }
+      );
+    }
+
+    // Enforce reveal deadline server-side
+    if (match.reveal_deadline && new Date() > new Date(match.reveal_deadline)) {
+      return NextResponse.json(
+        { error: "Reveal deadline has passed. Wait for timeout handler to resolve the turn." },
         { status: 400 }
       );
     }
@@ -160,15 +168,16 @@ export async function POST(request: Request) {
     const otherHasRevealed = !!match[otherRevealColumn];
 
     if (!otherHasRevealed) {
-      // Wait for opponent to reveal
+      // Wait for opponent to reveal — atomic: only update if still in REVEAL_PHASE
       const { error: updateError } = await freshSupabase()
         .from("ucf_matches")
         .update(updateData)
-        .eq("id", match_id);
+        .eq("id", match_id)
+        .eq("state", "REVEAL_PHASE");
 
       if (updateError) {
         return NextResponse.json(
-          { error: updateError.message },
+          { error: "An error occurred while processing your request" },
           { status: 500 }
         );
       }
@@ -310,17 +319,19 @@ export async function POST(request: Request) {
       // Cost savings: $0.04-0.12 per match
     }
 
+    // Atomic: only update if match is still in REVEAL_PHASE (prevents double-resolution)
     const { data: updatedMatch, error: updateError } = await freshSupabase()
       .from("ucf_matches")
       .update(matchUpdateData)
       .eq("id", match_id)
-      .select()
+      .eq("state", "REVEAL_PHASE")
+      .select("id, state, current_round, current_turn, agent_a_state, agent_b_state, winner_id, commit_deadline, reveal_deadline, turn_history")
       .single();
 
-    if (updateError) {
+    if (updateError || !updatedMatch) {
       return NextResponse.json(
-        { error: updateError.message },
-        { status: 500 }
+        { error: "Match state changed (concurrent modification). Turn may already be resolved." },
+        { status: 409 }
       );
     }
 
@@ -447,7 +458,7 @@ export async function POST(request: Request) {
   } catch (error: any) {
     console.error("Error revealing move:", error);
     return NextResponse.json(
-      { error: error.message || "Internal server error" },
+      { error: "An error occurred while processing your request" },
       { status: 500 }
     );
   }
@@ -489,6 +500,10 @@ export async function GET(request: Request) {
     );
   }
 
+  // SECURITY: Only show revealed moves AFTER both fighters have revealed
+  // This prevents peeking at opponent's move before committing your own reveal
+  const bothRevealed = !!match.move_a && !!match.move_b;
+
   const response: Record<string, any> = {
     match_id: matchId,
     state: match.state,
@@ -505,7 +520,7 @@ export async function GET(request: Request) {
     response.winner_id = match.winner_id;
   }
 
-  // Include last turn result if available
+  // Only include last turn result AFTER both revealed (previous turn data is safe)
   if (match.turn_history && match.turn_history.length > 0) {
     response.last_turn = match.turn_history[match.turn_history.length - 1];
   }

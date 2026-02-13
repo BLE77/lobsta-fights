@@ -2,6 +2,13 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
+import {
+  PublicKey,
+  SystemProgram,
+  Transaction,
+  LAMPORTS_PER_SOL,
+  Connection,
+} from "@solana/web3.js";
 import RumbleSlot, { SlotData } from "./components/RumbleSlot";
 import QueueSidebar from "./components/QueueSidebar";
 import IchorShowerPool from "./components/IchorShowerPool";
@@ -51,15 +58,95 @@ export default function RumblePage() {
   const [status, setStatus] = useState<RumbleStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [connected, setConnected] = useState(false);
+  const [sseConnected, setSseConnected] = useState(false);
+  const [betPending, setBetPending] = useState(false);
+  const [solBalance, setSolBalance] = useState<number | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
-  const getBettorCredentials = useCallback((): { bettorId: string | null; apiKey: string | null } => {
-    return {
-      bettorId: window.localStorage.getItem("ucf_fighter_id"),
-      apiKey: window.localStorage.getItem("ucf_api_key"),
+  // Track which fighters the user bet on per slot (persists through combat/payout)
+  // Map<slotIndex, Set<fighterId>>
+  const [myBets, setMyBets] = useState<Map<number, Set<string>>>(new Map());
+
+  // ---- Direct Phantom wallet management (no wallet adapter) ----
+  const [phantomProvider, setPhantomProvider] = useState<any>(null);
+  const [publicKey, setPublicKey] = useState<PublicKey | null>(null);
+  const walletConnected = !!publicKey;
+
+  // RPC connection
+  const rpcEndpoint = process.env.NEXT_PUBLIC_HELIUS_API_KEY
+    ? `https://devnet.helius-rpc.com/?api-key=${process.env.NEXT_PUBLIC_HELIUS_API_KEY}`
+    : "https://api.devnet.solana.com";
+  const connectionRef = useRef(new Connection(rpcEndpoint, "confirmed"));
+  const connection = connectionRef.current;
+
+  // Detect Phantom on mount
+  useEffect(() => {
+    const checkPhantom = () => {
+      const provider = (window as any).phantom?.solana;
+      if (provider?.isPhantom) {
+        setPhantomProvider(provider);
+        // Check if already connected (eager connect)
+        if (provider.isConnected && provider.publicKey) {
+          setPublicKey(new PublicKey(provider.publicKey.toString()));
+        }
+        // Listen for account changes
+        provider.on("accountChanged", (pk: any) => {
+          if (pk) {
+            setPublicKey(new PublicKey(pk.toString()));
+          } else {
+            setPublicKey(null);
+          }
+        });
+        provider.on("disconnect", () => setPublicKey(null));
+      }
     };
+    // Phantom injects after page load, so check with a small delay too
+    checkPhantom();
+    const timer = setTimeout(checkPhantom, 500);
+    return () => clearTimeout(timer);
   }, []);
+
+  const connectPhantom = useCallback(async () => {
+    const provider = phantomProvider || (window as any).phantom?.solana;
+    if (!provider?.isPhantom) {
+      window.open("https://phantom.app/", "_blank");
+      return;
+    }
+    try {
+      const resp = await provider.connect();
+      setPublicKey(new PublicKey(resp.publicKey.toString()));
+      setPhantomProvider(provider);
+    } catch (e: any) {
+      console.error("Phantom connect failed:", e);
+    }
+  }, [phantomProvider]);
+
+  const disconnectWallet = useCallback(async () => {
+    if (phantomProvider) {
+      await phantomProvider.disconnect();
+    }
+    setPublicKey(null);
+    setSolBalance(null);
+  }, [phantomProvider]);
+
+  // Fetch SOL balance when wallet connects
+  useEffect(() => {
+    if (!publicKey) {
+      setSolBalance(null);
+      return;
+    }
+    const fetchBalance = async () => {
+      try {
+        const lamports = await connection.getBalance(publicKey, "confirmed");
+        setSolBalance(lamports / LAMPORTS_PER_SOL);
+      } catch {
+        setSolBalance(null);
+      }
+    };
+    fetchBalance();
+    const interval = setInterval(fetchBalance, 15_000);
+    return () => clearInterval(interval);
+  }, [publicKey, connection]);
 
   // Fetch full status via polling
   const fetchStatus = useCallback(async () => {
@@ -71,6 +158,19 @@ export default function RumblePage() {
       const data: RumbleStatus = await res.json();
       setStatus(data);
       setError(null);
+
+      // Clear bet tracking for slots that returned to idle
+      setMyBets((prev) => {
+        let changed = false;
+        const next = new Map(prev);
+        for (const slot of data.slots) {
+          if (slot.state === "idle" && next.has(slot.slotIndex)) {
+            next.delete(slot.slotIndex);
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
     } catch (e: any) {
       console.error("Failed to fetch rumble status:", e);
       setError(e.message || "Failed to connect");
@@ -89,7 +189,7 @@ export default function RumblePage() {
     eventSourceRef.current = es;
 
     es.onopen = () => {
-      setConnected(true);
+      setSseConnected(true);
     };
 
     es.onmessage = (event) => {
@@ -102,7 +202,7 @@ export default function RumblePage() {
     };
 
     es.onerror = () => {
-      setConnected(false);
+      setSseConnected(false);
       // EventSource auto-reconnects
     };
 
@@ -189,41 +289,115 @@ export default function RumblePage() {
     };
   }, [fetchStatus, connectSSE]);
 
-  // Handle bet placement
+  // Handle bet placement with wallet SOL transfer
   const handlePlaceBet = async (
     slotIndex: number,
     fighterId: string,
     amount: number
   ) => {
+    if (!publicKey || !phantomProvider || !walletConnected) {
+      alert("Connect your Phantom wallet first to place bets.");
+      throw new Error("Wallet not connected");
+    }
+    if (amount <= 0 || amount > 10) {
+      alert("Bet must be between 0.01 and 10 SOL");
+      throw new Error("Invalid amount");
+    }
+
+    // 0. Pre-validate: check slot is still in betting state before sending SOL
+    const slotData = status?.slots?.[slotIndex];
+    if (!slotData || slotData.state !== "betting") {
+      alert("Betting is not open for this slot right now.");
+      throw new Error("Betting closed");
+    }
+    const fighterInSlot = slotData.fighters?.some(
+      (f: any) => f.id === fighterId || f.fighterId === fighterId
+    );
+    if (!fighterInSlot) {
+      alert("This fighter is not in the current rumble.");
+      throw new Error("Fighter not in rumble");
+    }
+
+    setBetPending(true);
     try {
-      const { bettorId, apiKey } = getBettorCredentials();
-      if (!bettorId || !apiKey) {
-        alert("Missing bettor credentials. Set ucf_fighter_id and ucf_api_key in localStorage.");
+
+      // 1. Build SOL transfer to treasury/vault
+      const treasuryAddress = process.env.NEXT_PUBLIC_TREASURY_ADDRESS
+        || "FXvriUM1dTwDeVXaWTSqGo14jPQk7363FQsQaUP1tvdE"; // deployer wallet as vault for devnet
+      const vaultPubkey = new PublicKey(treasuryAddress);
+      const lamports = Math.round(amount * LAMPORTS_PER_SOL);
+
+      const transaction = new Transaction().add(
+        SystemProgram.transfer({
+          fromPubkey: publicKey,
+          toPubkey: vaultPubkey,
+          lamports,
+        }),
+      );
+
+      const { blockhash, lastValidBlockHeight } =
+        await connection.getLatestBlockhash("confirmed");
+      transaction.recentBlockhash = blockhash;
+      transaction.lastValidBlockHeight = lastValidBlockHeight;
+      transaction.feePayer = publicKey;
+
+      // 2. Sign with Phantom directly
+      const signed = await phantomProvider.signTransaction(transaction);
+
+      // 3. Send to Solana
+      const rawTx = signed.serialize();
+      const txSig = await connection.sendRawTransaction(rawTx, {
+        skipPreflight: false,
+        preflightCommitment: "confirmed",
+      });
+
+      // 4. Wait for confirmation
+      await connection.confirmTransaction(
+        { signature: txSig, blockhash, lastValidBlockHeight },
+        "confirmed",
+      );
+
+      // 5. Register the bet with the API (wallet auth, no API key needed)
+      const res = await fetch("/api/rumble/bet", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          slot_index: slotIndex,
+          fighter_id: fighterId,
+          sol_amount: amount,
+          wallet_address: publicKey.toBase58(),
+          tx_signature: txSig,
+        }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        alert(data.error || "Bet registered on-chain but API failed");
         return;
       }
 
-      const res = await fetch("/api/rumble/bet", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": apiKey,
-        },
-        body: JSON.stringify({
-          slotIndex,
-          fighterId,
-          amount,
-          bettor_id: bettorId,
-        }),
+      // Track this bet for "YOUR BET" indicators
+      setMyBets((prev) => {
+        const next = new Map(prev);
+        const existing = next.get(slotIndex) ?? new Set<string>();
+        existing.add(fighterId);
+        next.set(slotIndex, existing);
+        return next;
       });
-      if (!res.ok) {
-        const data = await res.json();
-        alert(data.error || "Failed to place bet");
-        return;
-      }
-      // Refresh status immediately after bet
+
+      // Refresh status + balance
       fetchStatus();
-    } catch (e) {
-      console.error("Failed to place bet:", e);
+      const newBalance = await connection.getBalance(publicKey, "confirmed");
+      setSolBalance(newBalance / LAMPORTS_PER_SOL);
+    } catch (e: any) {
+      if (e?.message?.includes("User rejected")) {
+        // User cancelled in wallet, no alert needed
+      } else {
+        console.error("Failed to place bet:", e);
+        alert(e?.message || "Failed to place bet");
+      }
+    } finally {
+      setBetPending(false);
     }
   };
 
@@ -231,9 +405,6 @@ export default function RumblePage() {
     currentPool: 0,
     rumblesSinceLastTrigger: 0,
   };
-
-  // Consider "near trigger" if we're past 80% of expected (~400 rumbles)
-  const isNearTrigger = ichorShower.rumblesSinceLastTrigger > 400;
 
   return (
     <main className="relative flex flex-col min-h-screen text-stone-200">
@@ -277,13 +448,38 @@ export default function RumblePage() {
               <div className="flex items-center gap-1.5">
                 <span
                   className={`inline-block w-2 h-2 rounded-full ${
-                    connected ? "bg-green-500" : "bg-red-500 animate-pulse"
+                    sseConnected ? "bg-green-500" : "bg-red-500 animate-pulse"
                   }`}
                 />
                 <span className="font-mono text-[10px] text-stone-500">
-                  {connected ? "LIVE" : "POLLING"}
+                  {sseConnected ? "LIVE" : "POLLING"}
                 </span>
               </div>
+
+              {/* Wallet */}
+              {walletConnected && publicKey ? (
+                <div className="flex items-center gap-2 bg-stone-900/80 border border-stone-700 rounded-sm px-2 py-1">
+                  <span className="font-mono text-[10px] text-stone-400">
+                    {solBalance !== null ? `${solBalance.toFixed(3)} SOL` : "..."}
+                  </span>
+                  <span className="font-mono text-[10px] text-amber-400">
+                    {publicKey.toBase58().slice(0, 4)}...{publicKey.toBase58().slice(-4)}
+                  </span>
+                  <button
+                    onClick={disconnectWallet}
+                    className="font-mono text-[10px] text-stone-600 hover:text-red-400 ml-1"
+                  >
+                    [X]
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={connectPhantom}
+                  className="px-3 py-1 bg-amber-600 hover:bg-amber-500 text-stone-950 font-mono text-xs font-bold rounded-sm transition-all"
+                >
+                  {phantomProvider ? "Connect Phantom" : "Install Phantom"}
+                </button>
+              )}
 
               <Link
                 href="/matches"
@@ -333,6 +529,7 @@ export default function RumblePage() {
                     key={slot.slotIndex}
                     slot={slot}
                     onPlaceBet={handlePlaceBet}
+                    myBetFighterIds={myBets.get(slot.slotIndex)}
                   />
                 ))}
 
@@ -373,10 +570,6 @@ export default function RumblePage() {
 
                 <IchorShowerPool
                   currentPool={ichorShower.currentPool}
-                  rumblesSinceLastTrigger={
-                    ichorShower.rumblesSinceLastTrigger
-                  }
-                  isNearTrigger={isNearTrigger}
                 />
               </div>
             </div>
@@ -394,10 +587,6 @@ export default function RumblePage() {
               />
               <IchorShowerPool
                 currentPool={ichorShower.currentPool}
-                rumblesSinceLastTrigger={
-                  ichorShower.rumblesSinceLastTrigger
-                }
-                isNearTrigger={isNearTrigger}
               />
             </>
           )}

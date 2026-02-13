@@ -55,8 +55,9 @@ export async function POST(request: Request) {
       .in("id", [fighter_a_id, fighter_b_id]);
 
     if (fetchError) {
+      console.error("Error fetching fighters:", fetchError);
       return NextResponse.json(
-        { error: fetchError.message },
+        { error: "Failed to fetch fighters" },
         { status: 500 }
       );
     }
@@ -152,8 +153,9 @@ export async function POST(request: Request) {
       .single();
 
     if (createError) {
+      console.error("Error creating match:", createError);
       return NextResponse.json(
-        { error: createError.message },
+        { error: "Failed to create match" },
         { status: 500 }
       );
     }
@@ -179,7 +181,7 @@ export async function POST(request: Request) {
   } catch (error: any) {
     console.error("Error creating match:", error);
     return NextResponse.json(
-      { error: error.message || "Internal server error" },
+      { error: "An error occurred while processing your request" },
       { status: 500 }
     );
   }
@@ -203,7 +205,11 @@ export async function GET(request: Request) {
   const { data: match, error } = await freshSupabase()
     .from("ucf_matches")
     .select(`
-      *,
+      id, fighter_a_id, fighter_b_id, state, points_wager,
+      agent_a_state, agent_b_state, current_round, current_turn, max_rounds,
+      commit_deadline, reveal_deadline, winner_id, turn_history,
+      created_at, started_at, finished_at, result_image_url,
+      on_chain_wager, points_transferred, missed_turns_a, missed_turns_b, forfeit_reason,
       fighter_a:ucf_fighters!fighter_a_id(id, name, image_url),
       fighter_b:ucf_fighters!fighter_b_id(id, name, image_url)
     `)

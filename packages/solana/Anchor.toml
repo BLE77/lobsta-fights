@@ -7,7 +7,7 @@ skip-lint = false
 
 [programs.devnet]
 fighter_registry = "2hA6Jvj1yjP2Uj3qrJcsBeYA2R9xPM95mDKw1ncKVExa"
-ichor_token = "8CHYSuh1Y3F83PyK95E3F1Uya6pgPk4m3vM3MF3mP5hg"
+ichor_token = "925GAeqjKMX4B5MDANB91SZCvrx8HpEgmPJwHJzxKJx1"
 rumble_engine = "2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC"
 
 [registry]

@@ -44,7 +44,7 @@ export interface QueueManager {
 
 const NUM_SLOTS = 3;
 const FIGHTERS_PER_RUMBLE = 12;
-const BETTING_DURATION_MS = 2 * 60 * 1000; // 2 minutes
+const BETTING_DURATION_MS = 60 * 1000; // 60 seconds for devnet testing
 const COMBAT_DURATION_MS = 5 * 60 * 1000; // 5 minutes (max)
 const PAYOUT_DURATION_MS = 30 * 1000; // 30 seconds
 
@@ -187,6 +187,7 @@ export class RumbleQueueManager implements QueueManager {
 
         case "betting":
           if (slot.bettingDeadline && now >= slot.bettingDeadline) {
+            console.log(`[QM] Slot ${slot.slotIndex} betting→combat: now=${now.toISOString()} deadline=${slot.bettingDeadline.toISOString()} diff=${now.getTime() - slot.bettingDeadline.getTime()}ms`);
             this.transitionToCombat(slot, now);
           }
           break;
@@ -245,6 +246,8 @@ export class RumbleQueueManager implements QueueManager {
     slot.combatStartedAt = null;
     slot.rumbleResult = null;
     slot.state = "betting";
+
+    console.log(`[QM] Slot ${slotIndex} started betting: deadline=${slot.bettingDeadline.toISOString()} BETTING_DURATION_MS=${BETTING_DURATION_MS}`);
 
     return pulled;
   }
@@ -371,6 +374,42 @@ export class RumbleQueueManager implements QueueManager {
     // no-op by default -- external code can monkeypatch or subclass
   }
 
+  // ---- Recovery helpers ----------------------------------------------------
+
+  /**
+   * Restore a slot to a specific state during cold-start recovery.
+   * Directly sets the slot's fighters, state, and deadlines without
+   * pulling from the queue. Used by rumble-state-recovery.ts.
+   */
+  restoreSlot(
+    slotIndex: number,
+    rumbleId: string,
+    fighters: string[],
+    state: SlotState,
+    bettingDeadline: Date | null,
+  ): boolean {
+    const slot = this.slots[slotIndex];
+    if (!slot) return false;
+
+    slot.id = rumbleId;
+    slot.state = state;
+    slot.fighters = fighters;
+    slot.bettingPool = new Map();
+    slot.bettingDeadline = bettingDeadline;
+    slot.combatStartedAt = state === "combat" ? new Date() : null;
+    slot.rumbleResult = null;
+
+    // Remove restored fighters from the queue if they're in it
+    for (const fid of fighters) {
+      this.removeFromQueue(fid);
+    }
+
+    console.log(
+      `[QM] Restored slot ${slotIndex} → state=${state} rumbleId=${rumbleId} fighters=${fighters.length} deadline=${bettingDeadline?.toISOString() ?? "none"}`
+    );
+    return true;
+  }
+
   // ---- Initialization helpers ---------------------------------------------
 
   /**
@@ -394,19 +433,21 @@ export class RumbleQueueManager implements QueueManager {
 }
 
 // ---------------------------------------------------------------------------
-// Singleton (in-memory, replaced by Supabase later)
+// Singleton — uses globalThis to survive Next.js HMR reloads in dev mode.
+// Without globalThis, each route compilation gets its own module instance
+// and a separate QueueManager, causing state to diverge across routes.
 // ---------------------------------------------------------------------------
 
-let instance: RumbleQueueManager | null = null;
+const g = globalThis as unknown as { __rumbleQueueManager?: RumbleQueueManager };
 
 export function getQueueManager(): RumbleQueueManager {
-  if (!instance) {
-    instance = new RumbleQueueManager();
+  if (!g.__rumbleQueueManager) {
+    g.__rumbleQueueManager = new RumbleQueueManager();
   }
-  return instance;
+  return g.__rumbleQueueManager;
 }
 
 /** Reset the singleton -- useful for tests. */
 export function resetQueueManager(): void {
-  instance = null;
+  g.__rumbleQueueManager = undefined;
 }

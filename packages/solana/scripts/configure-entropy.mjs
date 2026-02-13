@@ -15,7 +15,7 @@ import {
 } from "@solana/web3.js";
 
 const ICHOR_PROGRAM_ID = new PublicKey(
-  "8CHYSuh1Y3F83PyK95E3F1Uya6pgPk4m3vM3MF3mP5hg",
+  "925GAeqjKMX4B5MDANB91SZCvrx8HpEgmPJwHJzxKJx1",
 );
 const ARENA_SEED = Buffer.from("arena_config");
 const ENTROPY_CONFIG_SEED = Buffer.from("entropy_config");

@@ -1,7 +1,8 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Burn, Mint, MintTo, Token, TokenAccount, Transfer};
+use anchor_spl::token::{self, Burn, Mint, MintTo, SetAuthority, Token, TokenAccount, Transfer};
+use anchor_spl::token::spl_token::instruction::AuthorityType;
 
-declare_id!("8CHYSuh1Y3F83PyK95E3F1Uya6pgPk4m3vM3MF3mP5hg");
+declare_id!("925GAeqjKMX4B5MDANB91SZCvrx8HpEgmPJwHJzxKJx1");
 
 /// ICHOR token decimals
 const ICHOR_DECIMALS: u8 = 9;
@@ -9,8 +10,8 @@ const ICHOR_DECIMALS: u8 = 9;
 /// 1 ICHOR in smallest unit (lamports of ICHOR)
 const ONE_ICHOR: u64 = 1_000_000_000;
 
-/// Maximum supply: 21,000,000 ICHOR
-const MAX_SUPPLY: u64 = 21_000_000 * ONE_ICHOR;
+/// Maximum supply: 1,000,000,000 ICHOR (1 Billion)
+const MAX_SUPPLY: u64 = 1_000_000_000 * ONE_ICHOR;
 
 /// Ichor Shower bonus emission per rumble: 0.2 ICHOR
 const SHOWER_BONUS_EMISSION: u64 = 200_000_000;
@@ -28,6 +29,8 @@ const HALVING_3: u64 = 12_600_000;
 
 /// Arena config PDA seed
 const ARENA_SEED: &[u8] = b"arena_config";
+/// Distribution vault PDA seed (holds undistributed supply)
+const DISTRIBUTION_VAULT_SEED: &[u8] = b"distribution_vault";
 /// Shower request PDA seed
 const SHOWER_REQUEST_SEED: &[u8] = b"shower_request";
 /// Entropy config PDA seed
@@ -46,27 +49,59 @@ const ENTROPY_VAR_LEN: usize = 232;
 pub mod ichor_token {
     use super::*;
 
-    /// Initialize the ICHOR mint and arena configuration.
+    /// Initialize the ICHOR mint, arena configuration, and distribution vault.
+    /// Mints the full 1B supply to the distribution vault.
     /// The mint authority is the arena_config PDA so only the program can mint.
     pub fn initialize(ctx: Context<Initialize>, base_reward: u64) -> Result<()> {
+        // Store keys before mutable borrow
+        let admin_key = ctx.accounts.admin.key();
+        let mint_key = ctx.accounts.ichor_mint.key();
+        let vault_key = ctx.accounts.distribution_vault.key();
+        let bump = ctx.bumps.arena_config;
+
+        // Initialize arena config state
         let arena = &mut ctx.accounts.arena_config;
-        arena.admin = ctx.accounts.admin.key();
-        arena.ichor_mint = ctx.accounts.ichor_mint.key();
-        arena.total_minted = 0;
+        arena.admin = admin_key;
+        arena.ichor_mint = mint_key;
+        arena.distribution_vault = vault_key;
+        arena.total_distributed = 0;
         arena.total_rumbles_completed = 0;
         arena.base_reward = base_reward;
         arena.ichor_shower_pool = 0;
         arena.treasury_vault = 0;
-        arena.bump = ctx.bumps.arena_config;
+        arena.bump = bump;
 
-        msg!("ICHOR Arena initialized. Mint: {}", arena.ichor_mint);
+        // Mint the full 1B supply to the distribution vault
+        // (use to_account_info() to avoid borrow conflicts)
+        let bump_ref = &[bump];
+        let seeds: &[&[u8]] = &[ARENA_SEED, bump_ref];
+        let signer_seeds = &[seeds];
+
+        token::mint_to(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                MintTo {
+                    mint: ctx.accounts.ichor_mint.to_account_info(),
+                    to: ctx.accounts.distribution_vault.to_account_info(),
+                    authority: ctx.accounts.arena_config.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            MAX_SUPPLY,
+        )?;
+
+        msg!(
+            "ICHOR Arena initialized. Mint: {}, Vault: {}, Supply: {} ICHOR",
+            mint_key,
+            vault_key,
+            MAX_SUPPLY / ONE_ICHOR
+        );
         Ok(())
     }
 
-    /// Mint rewards after a completed Rumble.
-    /// Distributes ICHOR to the winner, contributes to the Ichor Shower pool,
-    /// and adds bonus shower emissions.
-    pub fn mint_rumble_reward(ctx: Context<MintRumbleReward>) -> Result<()> {
+    /// Distribute rewards from the vault after a completed Rumble.
+    /// Transfers ICHOR from the distribution vault to the winner and shower pool.
+    pub fn distribute_reward(ctx: Context<DistributeReward>) -> Result<()> {
         let arena_info = ctx.accounts.arena_config.to_account_info();
         let arena = &mut ctx.accounts.arena_config;
 
@@ -78,12 +113,11 @@ pub mod ichor_token {
             .checked_add(SHOWER_BONUS_EMISSION)
             .ok_or(IchorError::MathOverflow)?;
 
-        // Check supply cap
-        let new_total = arena
-            .total_minted
-            .checked_add(total_emission)
-            .ok_or(IchorError::MathOverflow)?;
-        require!(new_total <= MAX_SUPPLY, IchorError::MaxSupplyExceeded);
+        // Check vault has enough balance
+        require!(
+            ctx.accounts.distribution_vault.amount >= total_emission,
+            IchorError::VaultInsufficientBalance
+        );
 
         // Amount going to winner = reward - shower pool cut
         // Gracefully degrade at deep halvings: if reward < SHOWER_POOL_CUT, entire
@@ -103,13 +137,13 @@ pub mod ichor_token {
         let seeds: &[&[u8]] = &[ARENA_SEED, bump];
         let signer_seeds = &[seeds];
 
-        // Mint winner's share to their token account
+        // Transfer winner's share from vault to their token account
         if winner_amount > 0 {
-            token::mint_to(
+            token::transfer(
                 CpiContext::new_with_signer(
                     ctx.accounts.token_program.to_account_info(),
-                    MintTo {
-                        mint: ctx.accounts.ichor_mint.to_account_info(),
+                    Transfer {
+                        from: ctx.accounts.distribution_vault.to_account_info(),
                         to: ctx.accounts.winner_token_account.to_account_info(),
                         authority: arena_info.clone(),
                     },
@@ -119,13 +153,13 @@ pub mod ichor_token {
             )?;
         }
 
-        // Mint shower pool portion to the shower vault
+        // Transfer shower pool portion from vault to the shower vault
         if shower_addition > 0 {
-            token::mint_to(
+            token::transfer(
                 CpiContext::new_with_signer(
                     ctx.accounts.token_program.to_account_info(),
-                    MintTo {
-                        mint: ctx.accounts.ichor_mint.to_account_info(),
+                    Transfer {
+                        from: ctx.accounts.distribution_vault.to_account_info(),
                         to: ctx.accounts.shower_vault.to_account_info(),
                         authority: arena_info.clone(),
                     },
@@ -136,7 +170,11 @@ pub mod ichor_token {
         }
 
         // Update state
-        arena.total_minted = new_total;
+        let new_total = arena
+            .total_distributed
+            .checked_add(total_emission)
+            .ok_or(IchorError::MathOverflow)?;
+        arena.total_distributed = new_total;
         arena.total_rumbles_completed = arena
             .total_rumbles_completed
             .checked_add(1)
@@ -147,11 +185,11 @@ pub mod ichor_token {
             .ok_or(IchorError::MathOverflow)?;
 
         msg!(
-            "Rumble #{} reward: {} to winner, {} to shower pool. Total minted: {}",
+            "Rumble #{} reward: {} to winner, {} to shower pool. Total distributed: {}",
             arena.total_rumbles_completed,
             winner_amount,
             shower_addition,
-            arena.total_minted
+            arena.total_distributed
         );
 
         Ok(())
@@ -476,7 +514,7 @@ pub mod ichor_token {
             IchorError::InvalidBaseReward
         );
         require!(
-            new_base_reward <= 10 * ONE_ICHOR,
+            new_base_reward <= 2_000 * ONE_ICHOR,
             IchorError::InvalidBaseReward
         );
         let arena = &mut ctx.accounts.arena_config;
@@ -573,6 +611,105 @@ pub mod ichor_token {
         arena.admin = new_admin;
 
         msg!("Admin transferred: {} -> {}", old_admin, new_admin);
+        Ok(())
+    }
+
+    /// Admin: distribute tokens from the vault to any recipient.
+    /// Enables LP seeding, airdrops, partnerships, and manual rewards.
+    pub fn admin_distribute(ctx: Context<AdminDistribute>, amount: u64) -> Result<()> {
+        require!(amount > 0, IchorError::ZeroDistributeAmount);
+
+        let arena_info = ctx.accounts.arena_config.to_account_info();
+        let arena = &mut ctx.accounts.arena_config;
+
+        require!(
+            ctx.accounts.distribution_vault.amount >= amount,
+            IchorError::VaultInsufficientBalance
+        );
+
+        let bump = &[arena.bump];
+        let seeds: &[&[u8]] = &[ARENA_SEED, bump];
+        let signer_seeds = &[seeds];
+
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.distribution_vault.to_account_info(),
+                    to: ctx.accounts.recipient_token_account.to_account_info(),
+                    authority: arena_info,
+                },
+                signer_seeds,
+            ),
+            amount,
+        )?;
+
+        arena.total_distributed = arena
+            .total_distributed
+            .checked_add(amount)
+            .ok_or(IchorError::MathOverflow)?;
+
+        msg!(
+            "Admin distributed {} ICHOR to {}. Total distributed: {}",
+            amount,
+            ctx.accounts.recipient_token_account.key(),
+            arena.total_distributed
+        );
+        Ok(())
+    }
+
+    /// Initialize the ICHOR arena with an EXISTING external mint (e.g. pump.fun token).
+    /// Does NOT create the mint or mint tokens — the vault starts empty.
+    /// Admin must fund the vault by transferring purchased tokens to it.
+    pub fn initialize_with_mint(ctx: Context<InitializeWithMint>, base_reward: u64) -> Result<()> {
+        let admin_key = ctx.accounts.admin.key();
+        let mint_key = ctx.accounts.ichor_mint.key();
+        let vault_key = ctx.accounts.distribution_vault.key();
+        let bump = ctx.bumps.arena_config;
+
+        let arena = &mut ctx.accounts.arena_config;
+        arena.admin = admin_key;
+        arena.ichor_mint = mint_key;
+        arena.distribution_vault = vault_key;
+        arena.total_distributed = 0;
+        arena.total_rumbles_completed = 0;
+        arena.base_reward = base_reward;
+        arena.ichor_shower_pool = 0;
+        arena.treasury_vault = 0;
+        arena.bump = bump;
+
+        // No minting — vault starts empty.
+        // Admin will fund by transferring tokens purchased from bonding curve / DEX.
+        msg!(
+            "ICHOR Arena initialized with external mint. Mint: {}, Vault: {} (empty — fund via transfer)",
+            mint_key,
+            vault_key
+        );
+        Ok(())
+    }
+
+    /// Admin: permanently revoke mint authority. No more tokens can ever be minted.
+    /// This makes the supply truly fixed at 1B.
+    pub fn revoke_mint_authority(ctx: Context<RevokeMint>) -> Result<()> {
+        let arena = &ctx.accounts.arena_config;
+        let bump = &[arena.bump];
+        let seeds: &[&[u8]] = &[ARENA_SEED, bump];
+        let signer_seeds = &[seeds];
+
+        token::set_authority(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                SetAuthority {
+                    account_or_mint: ctx.accounts.ichor_mint.to_account_info(),
+                    current_authority: ctx.accounts.arena_config.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            AuthorityType::MintTokens,
+            None,
+        )?;
+
+        msg!("Mint authority permanently revoked. Supply fixed at {} ICHOR.", MAX_SUPPLY / ONE_ICHOR);
         Ok(())
     }
 }
@@ -775,13 +912,59 @@ pub struct Initialize<'info> {
     )]
     pub ichor_mint: Account<'info, Mint>,
 
+    /// Distribution vault: holds the entire 1B supply for distribution.
+    #[account(
+        init,
+        payer = admin,
+        token::mint = ichor_mint,
+        token::authority = arena_config,
+        seeds = [DISTRIBUTION_VAULT_SEED],
+        bump
+    )]
+    pub distribution_vault: Account<'info, TokenAccount>,
+
+    pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+    pub rent: Sysvar<'info, Rent>,
+}
+
+/// Accounts for initialize_with_mint: uses an EXISTING external mint (pump.fun, etc).
+#[derive(Accounts)]
+pub struct InitializeWithMint<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+
+    #[account(
+        init,
+        payer = admin,
+        space = 8 + ArenaConfig::INIT_SPACE,
+        seeds = [ARENA_SEED],
+        bump
+    )]
+    pub arena_config: Account<'info, ArenaConfig>,
+
+    /// Existing external mint (NOT created by this program).
+    pub ichor_mint: Account<'info, Mint>,
+
+    /// Distribution vault: PDA token account for the external mint.
+    /// Starts empty — admin funds it by transferring purchased tokens.
+    #[account(
+        init,
+        payer = admin,
+        token::mint = ichor_mint,
+        token::authority = arena_config,
+        seeds = [DISTRIBUTION_VAULT_SEED],
+        bump
+    )]
+    pub distribution_vault: Account<'info, TokenAccount>,
+
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
     pub rent: Sysvar<'info, Rent>,
 }
 
 #[derive(Accounts)]
-pub struct MintRumbleReward<'info> {
+pub struct DistributeReward<'info> {
     /// Only admin (backend) can trigger rumble rewards.
     #[account(
         mut,
@@ -796,8 +979,16 @@ pub struct MintRumbleReward<'info> {
     )]
     pub arena_config: Account<'info, ArenaConfig>,
 
+    /// Distribution vault (holds undistributed supply).
     #[account(
         mut,
+        address = arena_config.distribution_vault @ IchorError::InvalidVault,
+        token::mint = ichor_mint,
+        token::authority = arena_config,
+    )]
+    pub distribution_vault: Account<'info, TokenAccount>,
+
+    #[account(
         address = arena_config.ichor_mint @ IchorError::InvalidMint,
     )]
     pub ichor_mint: Account<'info, Mint>,
@@ -996,6 +1187,58 @@ pub struct AcceptAdmin<'info> {
     pub pending_admin: Account<'info, PendingAdmin>,
 }
 
+#[derive(Accounts)]
+pub struct AdminDistribute<'info> {
+    #[account(
+        mut,
+        constraint = authority.key() == arena_config.admin @ IchorError::Unauthorized,
+    )]
+    pub authority: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [ARENA_SEED],
+        bump = arena_config.bump,
+    )]
+    pub arena_config: Account<'info, ArenaConfig>,
+
+    /// Distribution vault (holds undistributed supply).
+    #[account(
+        mut,
+        address = arena_config.distribution_vault @ IchorError::InvalidVault,
+        token::authority = arena_config,
+    )]
+    pub distribution_vault: Account<'info, TokenAccount>,
+
+    /// Recipient's ICHOR token account.
+    #[account(mut)]
+    pub recipient_token_account: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct RevokeMint<'info> {
+    #[account(
+        constraint = authority.key() == arena_config.admin @ IchorError::Unauthorized,
+    )]
+    pub authority: Signer<'info>,
+
+    #[account(
+        seeds = [ARENA_SEED],
+        bump = arena_config.bump,
+    )]
+    pub arena_config: Account<'info, ArenaConfig>,
+
+    #[account(
+        mut,
+        address = arena_config.ichor_mint @ IchorError::InvalidMint,
+    )]
+    pub ichor_mint: Account<'info, Mint>,
+
+    pub token_program: Program<'info, Token>,
+}
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -1003,14 +1246,15 @@ pub struct AcceptAdmin<'info> {
 #[account]
 #[derive(InitSpace)]
 pub struct ArenaConfig {
-    pub admin: Pubkey,            // 32
-    pub ichor_mint: Pubkey,       // 32
-    pub total_minted: u64,        // 8
+    pub admin: Pubkey,                // 32
+    pub ichor_mint: Pubkey,           // 32
+    pub distribution_vault: Pubkey,   // 32  NEW — holds undistributed supply
+    pub total_distributed: u64,       // 8   renamed from total_minted
     pub total_rumbles_completed: u64, // 8
-    pub base_reward: u64,         // 8
-    pub ichor_shower_pool: u64,   // 8
-    pub treasury_vault: u64,      // 8
-    pub bump: u8,                 // 1
+    pub base_reward: u64,             // 8
+    pub ichor_shower_pool: u64,       // 8
+    pub treasury_vault: u64,          // 8
+    pub bump: u8,                     // 1
 }
 
 #[account]
@@ -1081,8 +1325,8 @@ pub struct EntropyConfigUpdatedEvent {
 
 #[error_code]
 pub enum IchorError {
-    #[msg("Maximum ICHOR supply of 21,000,000 exceeded")]
-    MaxSupplyExceeded,
+    #[msg("Distribution vault has insufficient balance")]
+    VaultInsufficientBalance,
 
     #[msg("Math overflow")]
     MathOverflow,
@@ -1132,11 +1376,17 @@ pub enum IchorError {
     #[msg("Entropy var timing window does not match the pending shower request")]
     EntropyVarWindowMismatch,
 
-    #[msg("Invalid base reward: must be >= 0.1 ICHOR and <= 10 ICHOR")]
+    #[msg("Invalid base reward: must be >= 0.1 ICHOR and <= 2,000 ICHOR")]
     InvalidBaseReward,
 
     #[msg("Invalid new admin address")]
     InvalidNewAdmin,
+
+    #[msg("Invalid distribution vault")]
+    InvalidVault,
+
+    #[msg("Distribute amount must be greater than zero")]
+    ZeroDistributeAmount,
 }
 
 #[cfg(test)]

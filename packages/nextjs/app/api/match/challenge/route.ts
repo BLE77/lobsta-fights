@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabase, freshSupabase } from "../../../../lib/supabase";
 import { sendChallenge, notifyFighter } from "../../../../lib/webhook";
+import { checkFighterCooldown } from "../../../../lib/fighter-cooldown";
 
 export const dynamic = "force-dynamic";
 
@@ -100,6 +101,34 @@ export async function POST(request: Request) {
       return NextResponse.json(
         { error: `Opponent has insufficient points: ${opponent.points} < ${wager}` },
         { status: 400 }
+      );
+    }
+
+    // Check fighter cooldowns (45 min between fights)
+    const [challengerCooldown, opponentCooldown] = await Promise.all([
+      checkFighterCooldown(challenger_id),
+      checkFighterCooldown(opponent_id),
+    ]);
+
+    if (challengerCooldown.on_cooldown) {
+      return NextResponse.json(
+        {
+          error: `${challenger.name} is on cooldown. ${challengerCooldown.minutes_remaining} minutes remaining.`,
+          cooldown_ends: challengerCooldown.cooldown_ends,
+          minutes_remaining: challengerCooldown.minutes_remaining,
+        },
+        { status: 429 }
+      );
+    }
+
+    if (opponentCooldown.on_cooldown) {
+      return NextResponse.json(
+        {
+          error: `${opponent.name} is on cooldown. ${opponentCooldown.minutes_remaining} minutes remaining.`,
+          cooldown_ends: opponentCooldown.cooldown_ends,
+          minutes_remaining: opponentCooldown.minutes_remaining,
+        },
+        { status: 429 }
       );
     }
 
@@ -216,7 +245,7 @@ export async function POST(request: Request) {
     if (createError) {
       console.error("[Challenge] Error creating match:", createError);
       return NextResponse.json(
-        { error: createError.message },
+        { error: "Failed to create match" },
         { status: 500 }
       );
     }
@@ -263,7 +292,7 @@ export async function POST(request: Request) {
   } catch (error: any) {
     console.error("[Challenge] Error:", error);
     return NextResponse.json(
-      { error: error.message || "Internal server error" },
+      { error: "An error occurred while processing your request" },
       { status: 500 }
     );
   }

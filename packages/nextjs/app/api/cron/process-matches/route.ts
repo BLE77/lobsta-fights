@@ -1,9 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
+import crypto from "crypto";
 import { freshSupabase } from "../../../../lib/supabase";
 import { resolveTurn } from "../../../../lib/turn-resolution";
 import { VALID_MOVES, generateSalt, createMoveHash } from "../../../../lib/combat";
 import { MoveType } from "../../../../lib/types";
 import { isAuthorizedCronRequest } from "../../../../lib/request-auth";
+
+/** Cryptographically-secure random index for auto-move selection */
+function secureRandomIndex(length: number): number {
+  const arr = new Uint32Array(1);
+  crypto.getRandomValues(arr);
+  return arr[0] % length;
+}
 
 /**
  * GET /api/cron/process-matches
@@ -147,7 +155,7 @@ export async function GET(req: NextRequest) {
             results.processed++;
             continue;
           }
-          const move = RANDOM_MOVES[Math.floor(Math.random() * RANDOM_MOVES.length)];
+          const move = RANDOM_MOVES[secureRandomIndex(RANDOM_MOVES.length)];
           const salt = generateSalt();
           updateData.commit_a = createMoveHash(move, salt);
           updateData.auto_move_a = move;
@@ -169,7 +177,7 @@ export async function GET(req: NextRequest) {
             results.processed++;
             continue;
           }
-          const move = RANDOM_MOVES[Math.floor(Math.random() * RANDOM_MOVES.length)];
+          const move = RANDOM_MOVES[secureRandomIndex(RANDOM_MOVES.length)];
           const salt = generateSalt();
           updateData.commit_b = createMoveHash(move, salt);
           updateData.auto_move_b = move;
@@ -218,7 +226,7 @@ export async function GET(req: NextRequest) {
             updateData.move_a = match.auto_move_a;
             updateData.salt_a = match.auto_salt_a;
           } else {
-            const move = RANDOM_MOVES[Math.floor(Math.random() * RANDOM_MOVES.length)];
+            const move = RANDOM_MOVES[secureRandomIndex(RANDOM_MOVES.length)];
             updateData.move_a = move;
             updateData.salt_a = generateSalt();
           }
@@ -228,7 +236,7 @@ export async function GET(req: NextRequest) {
             updateData.move_b = match.auto_move_b;
             updateData.salt_b = match.auto_salt_b;
           } else {
-            const move = RANDOM_MOVES[Math.floor(Math.random() * RANDOM_MOVES.length)];
+            const move = RANDOM_MOVES[secureRandomIndex(RANDOM_MOVES.length)];
             updateData.move_b = move;
             updateData.salt_b = generateSalt();
           }
@@ -269,7 +277,7 @@ export async function GET(req: NextRequest) {
   } catch (error: any) {
     console.error("[Cron] Error:", error);
     return NextResponse.json(
-      { error: error.message, ...results },
+      { error: "Cron processing error", ...results },
       { status: 500 }
     );
   }
