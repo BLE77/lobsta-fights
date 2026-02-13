@@ -8,12 +8,19 @@
 // Called on a regular tick (~1s). Emits events for live spectator updates.
 // =============================================================================
 
+import { randomBytes } from "node:crypto";
 import {
   RumbleQueueManager,
   getQueueManager,
   type RumbleSlot,
   type SlotState,
 } from "./queue-manager";
+
+/** Cryptographically secure random float in [0, 1) */
+function secureRandom(): number {
+  const buf = randomBytes(4);
+  return buf.readUInt32BE(0) / 0x100000000;
+}
 
 import {
   selectMove,
@@ -190,6 +197,9 @@ export class RumbleOrchestrator {
   private ichorShowerPool = 0;
   private lastShowerPollAt = 0;
   private showerPollInFlight = false;
+
+  // Dedup: track rumble IDs that have been settled on-chain to prevent double payouts
+  private settledRumbleIds: Map<string, number> = new Map(); // rumbleId → timestamp
 
   constructor(queueManager: RumbleQueueManager) {
     this.queueManager = queueManager;
@@ -393,28 +403,49 @@ export class RumbleOrchestrator {
 
   /**
    * External API: place a bet on a fighter in a slot.
+   * Returns { accepted: true } or { accepted: false, reason: string }.
    */
-  placeBet(slotIndex: number, bettorId: string, fighterId: string, solAmount: number): boolean {
+  placeBet(
+    slotIndex: number,
+    bettorId: string,
+    fighterId: string,
+    solAmount: number,
+  ): { accepted: boolean; reason?: string } {
     const slot = this.queueManager.getSlot(slotIndex);
     if (!slot) {
       console.log(`[placeBet] REJECTED: slot ${slotIndex} not found`);
-      return false;
+      return { accepted: false, reason: "Slot not found." };
     }
     if (slot.state !== "betting") {
       console.log(`[placeBet] REJECTED: slot ${slotIndex} state=${slot.state} (not betting)`);
-      return false;
+      return { accepted: false, reason: "Betting is not open for this slot." };
     }
 
     // Validate fighter is in this rumble
     if (!slot.fighters.includes(fighterId)) {
       console.log(`[placeBet] REJECTED: fighter ${fighterId} not in slot fighters: [${slot.fighters.join(", ")}]`);
-      return false;
+      return { accepted: false, reason: "Fighter is not in this Rumble." };
     }
 
     const pool = this.bettingPools.get(slotIndex);
     if (!pool || pool.rumbleId !== slot.id) {
       console.log(`[placeBet] REJECTED: no pool for slot ${slotIndex} or rumbleId mismatch`);
-      return false;
+      return { accepted: false, reason: "Betting pool not available." };
+    }
+
+    // Duplicate bet prevention: reject if this wallet already bet on a DIFFERENT fighter
+    const existingBetOnOther = pool.bets.find(
+      (b) => b.bettorId === bettorId && b.fighterId !== fighterId,
+    );
+    if (existingBetOnOther) {
+      console.log(
+        `[placeBet] REJECTED: wallet ${bettorId} already bet on ${existingBetOnOther.fighterId} in slot ${slotIndex}, cannot also bet on ${fighterId}`,
+      );
+      return {
+        accepted: false,
+        reason:
+          "You already bet on a different fighter in this slot. One fighter per wallet per Rumble.",
+      };
     }
 
     placeBetInPool(pool, bettorId, fighterId, solAmount);
@@ -436,7 +467,7 @@ export class RumbleOrchestrator {
       sponsorFee,
     });
 
-    return true;
+    return { accepted: true };
   }
 
   /**
@@ -810,6 +841,13 @@ export class RumbleOrchestrator {
     placements: Array<{ id: string; placement: number }>,
     fighters: RumbleFighter[],
   ): Promise<void> {
+    // Dedup guard: prevent double on-chain settlement for the same rumble
+    if (this.settledRumbleIds.has(rumbleId)) {
+      console.warn(`[Orchestrator] settleOnChain already processed for rumbleId "${rumbleId}", skipping`);
+      return;
+    }
+    this.settledRumbleIds.set(rumbleId, Date.now());
+
     const rumbleIdNum = parseInt(rumbleId.replace(/\D/g, ""), 10);
     if (isNaN(rumbleIdNum)) {
       console.warn(`[Orchestrator] Cannot parse rumbleId "${rumbleId}" as number, skipping on-chain`);
@@ -1166,6 +1204,16 @@ export class RumbleOrchestrator {
     this.payoutProcessed.delete(previousRumbleId);
     this.combatStates.delete(slotIndex);
     this.payoutResults.delete(slotIndex);
+
+    // Prune settled rumble IDs older than 1 hour to prevent unbounded growth
+    const ONE_HOUR_MS = 60 * 60 * 1000;
+    const cutoff = Date.now() - ONE_HOUR_MS;
+    for (const [id, ts] of this.settledRumbleIds) {
+      if (ts < cutoff) {
+        this.settledRumbleIds.delete(id);
+      }
+    }
+
     this.emit("slot_recycled", {
       slotIndex,
       previousFighters,
@@ -1182,7 +1230,7 @@ export class RumbleOrchestrator {
 
     // Fisher-Yates shuffle
     for (let i = ids.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
+      const j = Math.floor(secureRandom() * (i + 1));
       [ids[i], ids[j]] = [ids[j], ids[i]];
     }
 

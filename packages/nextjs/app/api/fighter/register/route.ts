@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { supabase, freshSupabase } from "../../../../lib/supabase";
 import { verifyMoltbookIdentity, isMoltbookEnabled } from "../../../../lib/moltbook";
 import { AI_FIGHTER_DESIGN_PROMPT, FIGHTER_DESIGN_HINT, REGISTRATION_EXAMPLE } from "../../../../lib/fighter-design-prompt";
+import { generateApiKey } from "../../../../lib/api-key";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 
@@ -615,6 +616,7 @@ export async function POST(request: Request) {
 
     // Create new fighter with 1000 starting points
     // Auto-verify all fighters so they can fight immediately
+    const { plaintext: plaintextApiKey, hash: apiKeyHash } = generateApiKey();
     const { data, error } = await supabase
       .from("ucf_fighters")
       .insert({
@@ -629,6 +631,8 @@ export async function POST(request: Request) {
         verified: true, // Auto-verify so agents can fight immediately
         moltbook_agent_id: moltbookAgentId,
         registered_from_ip: registrantIp !== "unknown" ? registrantIp : null,
+        api_key: plaintextApiKey, // backwards compat: stored for old auth paths
+        api_key_hash: apiKeyHash, // secure: used for new auth checks
       })
       .select()
       .single();
@@ -652,7 +656,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       success: true,
       fighter_id: data.id,
-      api_key: data.api_key,
+      api_key: plaintextApiKey,
       message: "🤖 Robot fighter registered! You start with 1000 points. Profile image generating...",
       points: data.points,
       robot: robotMetadata,

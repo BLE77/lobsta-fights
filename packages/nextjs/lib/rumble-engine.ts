@@ -7,8 +7,14 @@
  * Fighters eliminated at 0 HP. After 20 turns, survivors ranked by HP.
  */
 
-import crypto from "crypto";
+import crypto, { randomBytes } from "crypto";
 import { MoveType } from "./types";
+
+/** Cryptographically secure random float in [0, 1) */
+function secureRandom(): number {
+  const buf = randomBytes(4);
+  return buf.readUInt32BE(0) / 0x100000000;
+}
 import {
   VALID_MOVES,
   STRIKE_DAMAGE,
@@ -85,16 +91,16 @@ export function selectMove(
     return "SPECIAL";
   }
 
-  const roll = Math.random();
+  const roll = secureRandom();
 
   if (roll < 0.67) {
     // 67% strikes - pick one of the three randomly
     const strikes: MoveType[] = ["HIGH_STRIKE", "MID_STRIKE", "LOW_STRIKE"];
-    return strikes[Math.floor(Math.random() * strikes.length)];
+    return strikes[Math.floor(secureRandom() * strikes.length)];
   } else if (roll < 0.87) {
     // 20% guards
     const guards: MoveType[] = ["GUARD_HIGH", "GUARD_MID", "GUARD_LOW"];
-    return guards[Math.floor(Math.random() * guards.length)];
+    return guards[Math.floor(secureRandom() * guards.length)];
   } else if (roll < 0.95) {
     // 8% dodge
     return "DODGE";
@@ -113,7 +119,7 @@ export function selectMove(
  */
 function shuffle<T>(arr: T[]): T[] {
   for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = Math.floor(secureRandom() * (i + 1));
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
   return arr;

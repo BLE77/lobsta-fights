@@ -4,6 +4,7 @@ import { freshSupabase } from "~~/lib/supabase";
 import { getApiKeyFromHeaders } from "~~/lib/request-auth";
 import { verifyBetTransaction, markSignatureUsed, MIN_BET_SOL, MAX_BET_SOL } from "~~/lib/tx-verify";
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
+import { hashApiKey } from "~~/lib/api-key";
 
 export const dynamic = "force-dynamic";
 
@@ -148,19 +149,52 @@ export async function POST(request: Request) {
     }
     // --- Auth mode 2: API key (bot betting) ---
     else if (apiKey) {
-      const authQuery = freshSupabase()
+      const hashedKey = hashApiKey(apiKey);
+
+      // Try hashed key first (new fighters)
+      let authQuery = freshSupabase()
         .from("ucf_fighters")
-        .select("id, wallet_address")
-        .eq("api_key", apiKey);
+        .select("id, wallet_address, api_key_hash")
+        .eq("api_key_hash", hashedKey);
 
       if (bettorId && typeof bettorId === "string") {
-        authQuery.eq("id", bettorId);
+        authQuery = authQuery.eq("id", bettorId);
       } else if (bettorWallet && typeof bettorWallet === "string") {
-        authQuery.eq("wallet_address", bettorWallet);
+        authQuery = authQuery.eq("wallet_address", bettorWallet);
       }
 
-      const { data: authFighter, error: authError } = await authQuery.maybeSingle();
-      if (authError || !authFighter) {
+      let { data: authFighter } = await authQuery.maybeSingle();
+
+      // Fallback: plaintext api_key for old fighters without api_key_hash
+      if (!authFighter) {
+        let legacyQuery = freshSupabase()
+          .from("ucf_fighters")
+          .select("id, wallet_address, api_key_hash")
+          .eq("api_key", apiKey);
+
+        if (bettorId && typeof bettorId === "string") {
+          legacyQuery = legacyQuery.eq("id", bettorId);
+        } else if (bettorWallet && typeof bettorWallet === "string") {
+          legacyQuery = legacyQuery.eq("wallet_address", bettorWallet);
+        }
+
+        const { data: legacyFighter } = await legacyQuery.maybeSingle();
+        if (legacyFighter) {
+          authFighter = legacyFighter;
+          // Backfill hash for this fighter
+          if (!legacyFighter.api_key_hash) {
+            freshSupabase()
+              .from("ucf_fighters")
+              .update({ api_key_hash: hashedKey })
+              .eq("id", legacyFighter.id)
+              .then(() => {
+                console.log(`[Auth] Backfilled api_key_hash for fighter ${legacyFighter.id}`);
+              });
+          }
+        }
+      }
+
+      if (!authFighter) {
         return NextResponse.json({ error: "Invalid bettor credentials" }, { status: 401 });
       }
       if (!authFighter.wallet_address) {
@@ -180,17 +214,18 @@ export async function POST(request: Request) {
 
     console.log(`[BetAPI] slotIndex=${parsedSlotIndex} fighterId=${fighterId} amount=${solAmount} wallet=${resolvedWallet}`);
 
-    // placeBet validates: slot exists, state is "betting", fighter is in rumble
-    const accepted = orchestrator.placeBet(
+    // placeBet validates: slot exists, state is "betting", fighter is in rumble,
+    // and duplicate bet prevention (one fighter per wallet per Rumble)
+    const result = orchestrator.placeBet(
       parsedSlotIndex,
       resolvedWallet,
       fighterId,
       solAmount,
     );
 
-    if (!accepted) {
+    if (!result.accepted) {
       return NextResponse.json(
-        { error: "Bet rejected. Either betting is not open for this slot, or the fighter is not in this rumble." },
+        { error: result.reason ?? "Bet rejected." },
         { status: 400 },
       );
     }

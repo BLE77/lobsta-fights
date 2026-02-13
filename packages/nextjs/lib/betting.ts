@@ -15,6 +15,14 @@
 //  10. Ichor Shower check (1/500)
 // =============================================================================
 
+import { randomBytes } from "node:crypto";
+
+/** Cryptographically secure random float in [0, 1) */
+function secureRandom(): number {
+  const buf = randomBytes(4);
+  return buf.readUInt32BE(0) / 0x100000000;
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -441,10 +449,10 @@ function calculateIchorDistribution(
 /**
  * 1/500 random check for Ichor Shower trigger.
  * In production, this would use on-chain randomness (slot hash).
- * Here we use Math.random() as a placeholder.
+ * Uses crypto.randomBytes() for unpredictable RNG server-side.
  */
 export function checkIchorShower(rngValue?: number): boolean {
-  const value = rngValue ?? Math.random();
+  const value = rngValue ?? secureRandom();
   // Map to integer [0, 499] and check if 0
   return Math.floor(value * ICHOR_SHOWER_ODDS) === 0;
 }
@@ -466,7 +474,7 @@ export function selectIchorShowerWinner(
     throw new Error("Total SOL deployed is zero");
   }
 
-  const roll = (rngValue ?? Math.random()) * totalSol;
+  const roll = (rngValue ?? secureRandom()) * totalSol;
   let cumulative = 0;
 
   for (const bettor of winningBettors) {
