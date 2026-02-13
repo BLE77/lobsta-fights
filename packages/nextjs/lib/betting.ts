@@ -93,7 +93,7 @@ const SHOW_SHARE = 0; // 3rd place bettors get nothing
 // --- Seasons ---
 // ICHOR reward per Rumble is season-based (admin-configurable), not auto-halving.
 export const SEASON_NAME = "Training Season";
-export const SEASON_REWARD = 1000; // ICHOR per fight this season
+export const SEASON_REWARD = 2500; // ICHOR per fight this season
 
 // ICHOR distribution splits
 const ICHOR_BETTORS_SHARE = 0.10; // 10% to winning bettors (SOL is their real reward)
