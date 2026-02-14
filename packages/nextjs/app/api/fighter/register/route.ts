@@ -632,8 +632,7 @@ export async function POST(request: Request) {
         verified: true, // Auto-verify so agents can fight immediately
         moltbook_agent_id: moltbookAgentId,
         registered_from_ip: registrantIp !== "unknown" ? registrantIp : null,
-        api_key: plaintextApiKey, // backwards compat: stored for old auth paths
-        api_key_hash: apiKeyHash, // secure: used for new auth checks
+        api_key_hash: apiKeyHash,
       })
       .select()
       .single();

@@ -359,10 +359,9 @@ export async function POST(request: Request) {
 
       const hashedKey = hashApiKey(apiKey);
 
-      // Try hashed key first (new fighters)
       let authQuery = freshSupabase()
         .from("ucf_fighters")
-        .select("id, wallet_address, api_key_hash")
+        .select("id, wallet_address")
         .eq("api_key_hash", hashedKey);
 
       if (bettorId && typeof bettorId === "string") {
@@ -371,36 +370,7 @@ export async function POST(request: Request) {
         authQuery = authQuery.eq("wallet_address", bettorWallet);
       }
 
-      let { data: authFighter } = await authQuery.maybeSingle();
-
-      // Fallback: plaintext api_key for old fighters without api_key_hash
-      if (!authFighter) {
-        let legacyQuery = freshSupabase()
-          .from("ucf_fighters")
-          .select("id, wallet_address, api_key_hash")
-          .eq("api_key", apiKey);
-
-        if (bettorId && typeof bettorId === "string") {
-          legacyQuery = legacyQuery.eq("id", bettorId);
-        } else if (bettorWallet && typeof bettorWallet === "string") {
-          legacyQuery = legacyQuery.eq("wallet_address", bettorWallet);
-        }
-
-        const { data: legacyFighter } = await legacyQuery.maybeSingle();
-        if (legacyFighter) {
-          authFighter = legacyFighter;
-          // Backfill hash for this fighter
-          if (!legacyFighter.api_key_hash) {
-            freshSupabase()
-              .from("ucf_fighters")
-              .update({ api_key_hash: hashedKey })
-              .eq("id", legacyFighter.id)
-              .then(() => {
-                console.log(`[Auth] Backfilled api_key_hash for fighter ${legacyFighter.id}`);
-              });
-          }
-        }
-      }
+      const { data: authFighter } = await authQuery.maybeSingle();
 
       if (!authFighter) {
         return NextResponse.json({ error: "Invalid bettor credentials" }, { status: 401 });

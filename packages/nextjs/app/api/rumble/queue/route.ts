@@ -12,39 +12,14 @@ export const dynamic = "force-dynamic";
 async function isAuthorizedFighter(fighterId: string, apiKey: string): Promise<boolean> {
   const hashedKey = hashApiKey(apiKey);
 
-  // Try hashed key first (new fighters)
-  const { data: hashMatch } = await freshSupabase()
+  const { data } = await freshSupabase()
     .from("ucf_fighters")
     .select("id")
     .eq("id", fighterId)
     .eq("api_key_hash", hashedKey)
     .maybeSingle();
 
-  if (hashMatch) return true;
-
-  // Fallback: plaintext api_key column for old fighters without api_key_hash
-  const { data: legacyMatch } = await freshSupabase()
-    .from("ucf_fighters")
-    .select("id, api_key_hash")
-    .eq("id", fighterId)
-    .eq("api_key", apiKey)
-    .maybeSingle();
-
-  if (legacyMatch) {
-    // Backfill: migrate this fighter to hashed key
-    if (!legacyMatch.api_key_hash) {
-      freshSupabase()
-        .from("ucf_fighters")
-        .update({ api_key_hash: hashedKey })
-        .eq("id", fighterId)
-        .then(() => {
-          console.log(`[Auth] Backfilled api_key_hash for fighter ${fighterId}`);
-        });
-    }
-    return true;
-  }
-
-  return false;
+  return !!data;
 }
 
 /**

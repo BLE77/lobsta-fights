@@ -74,42 +74,14 @@ export async function authenticateFighterByApiKey(
   const { hashApiKey } = await import("~~/lib/api-key");
   const hashedKey = hashApiKey(apiKey);
 
-  // Try hashed key first (new fighters)
-  const { data: hashMatch } = await supabaseFn()
+  const { data } = await supabaseFn()
     .from("ucf_fighters")
     .select(selectColumns)
     .eq("id", fighterId)
     .eq("api_key_hash", hashedKey)
     .maybeSingle();
 
-  if (hashMatch) return hashMatch as Record<string, any>;
-
-  // Fallback: plaintext api_key column for old fighters
-  const { data: legacyMatch } = await supabaseFn()
-    .from("ucf_fighters")
-    .select(selectColumns + ", api_key_hash")
-    .eq("id", fighterId)
-    .eq("api_key", apiKey)
-    .maybeSingle();
-
-  if (legacyMatch) {
-    const legacy = legacyMatch as Record<string, any>;
-    // Backfill hash for this fighter
-    if (!legacy.api_key_hash) {
-      supabaseFn()
-        .from("ucf_fighters")
-        .update({ api_key_hash: hashedKey })
-        .eq("id", fighterId)
-        .then(() => {
-          console.log(`[Auth] Backfilled api_key_hash for fighter ${fighterId}`);
-        });
-    }
-    // Remove api_key_hash from returned data to match expected shape
-    const { api_key_hash: _, ...rest } = legacy;
-    return rest;
-  }
-
-  return null;
+  return (data as Record<string, any>) ?? null;
 }
 
 export function isAuthorizedInternalRequest(

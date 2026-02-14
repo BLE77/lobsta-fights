@@ -273,13 +273,13 @@ export async function DELETE(request: Request) {
     return NextResponse.json({ error: "Missing fighter_id or api_key" }, { status: 400 });
   }
 
-  // Verify ownership
-  const { data: fighter } = await supabase
-    .from("ucf_fighters")
-    .select("id")
-    .eq("id", fighterId)
-    .eq("api_key", apiKey)
-    .single();
+  // Verify ownership (hash-only)
+  const fighter = await authenticateFighterByApiKey(
+    fighterId,
+    apiKey,
+    "id",
+    freshSupabase,
+  );
 
   if (!fighter) {
     return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
