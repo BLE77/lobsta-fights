@@ -4,6 +4,8 @@ import {
   recoverOrchestratorState,
   hasRecovered,
 } from "../../../../lib/rumble-state-recovery";
+import { reconcileOnchainReportResults } from "../../../../lib/rumble-onchain-reconcile";
+import { reconcileStalePendingPayouts } from "../../../../lib/rumble-payout-reconcile";
 import { isAuthorizedCronRequest } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
@@ -13,11 +15,21 @@ export const maxDuration = 10; // Hobby plan limit; increase to 60 on Pro
 // Constants
 // ---------------------------------------------------------------------------
 
-// Number of ticks to run per cron invocation.
-// On Hobby (10s max), we run 8 ticks with ~1s spacing = ~8s total.
-// On Pro (60s max), bump to 55 ticks for nearly continuous operation.
-const TICKS_PER_INVOCATION = 8;
-const TICK_INTERVAL_MS = 1_000; // 1 second between ticks
+function readEnvInt(
+  envName: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const raw = Number(process.env[envName] ?? "");
+  if (!Number.isFinite(raw)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(raw)));
+}
+
+// Number of ticks to run per invocation and spacing between ticks.
+// Defaults remain bursty for production cron, but can be slowed locally via env.
+const TICKS_PER_INVOCATION = readEnvInt("RUMBLE_TICKS_PER_INVOCATION", 8, 1, 60);
+const TICK_INTERVAL_MS = readEnvInt("RUMBLE_TICK_BURST_INTERVAL_MS", 1_000, 250, 10_000);
 
 // ---------------------------------------------------------------------------
 // Auth helper — matches existing cron pattern
@@ -68,6 +80,8 @@ async function runTickBurst(): Promise<NextResponse> {
   const orchestrator = getOrchestrator();
   let ticksRun = 0;
   let recoveryResult = null;
+  let onchainReconcileResult = null;
+  let payoutReconcileResult = null;
 
   try {
     // ---- State recovery on cold start -----------------------------------
@@ -76,6 +90,18 @@ async function runTickBurst(): Promise<NextResponse> {
       recoveryResult = await recoverOrchestratorState();
       console.log("[RumbleTick] Recovery result:", recoveryResult);
     }
+
+    // ---- On-chain settlement reconciliation ------------------------------
+    // Guards against drift where DB marks a rumble complete but on-chain
+    // report_result never landed (claims would then fail as payout_not_ready).
+    onchainReconcileResult = await reconcileOnchainReportResults().catch((error) => {
+      console.error("[RumbleTick] On-chain reconcile error:", error);
+      return null;
+    });
+    payoutReconcileResult = await reconcileStalePendingPayouts().catch((error) => {
+      console.error("[RumbleTick] Payout reconcile error:", error);
+      return null;
+    });
 
     // ---- Burst loop: run multiple ticks ---------------------------------
     for (let i = 0; i < TICKS_PER_INVOCATION; i++) {
@@ -96,6 +122,8 @@ async function runTickBurst(): Promise<NextResponse> {
       ticksRun,
       elapsedMs: elapsed,
       recovery: recoveryResult,
+      onchainReconcile: onchainReconcileResult,
+      payoutReconcile: payoutReconcileResult,
       slots: status.map((s) => ({
         slot: s.slotIndex,
         state: s.state,
@@ -114,6 +142,8 @@ async function runTickBurst(): Promise<NextResponse> {
         error: "Tick processing error",
         ticksRun,
         recovery: recoveryResult,
+        onchainReconcile: onchainReconcileResult,
+        payoutReconcile: payoutReconcileResult,
         elapsedMs: Date.now() - startTime,
       },
       { status: 500 },

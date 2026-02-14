@@ -1,36 +1,131 @@
 {
+  "accounts": [
+    {
+      "discriminator": [
+        24,
+        221,
+        27,
+        113,
+        60,
+        210,
+        101,
+        211
+      ],
+      "name": "Fighter"
+    },
+    {
+      "discriminator": [
+        23,
+        118,
+        10,
+        246,
+        173,
+        231,
+        243,
+        156
+      ],
+      "name": "RegistryConfig"
+    },
+    {
+      "discriminator": [
+        126,
+        186,
+        0,
+        158,
+        92,
+        223,
+        167,
+        68
+      ],
+      "name": "WalletState"
+    }
+  ],
   "address": "2hA6Jvj1yjP2Uj3qrJcsBeYA2R9xPM95mDKw1ncKVExa",
-  "metadata": {
-    "name": "fighter_registry",
-    "version": "0.1.0",
-    "spec": "0.1.0",
-    "description": "Fighter registry program for Underground Claw Fights"
-  },
+  "errors": [
+    {
+      "code": 6000,
+      "msg": "Maximum of 5 fighters per wallet",
+      "name": "MaxFightersReached"
+    },
+    {
+      "code": 6001,
+      "msg": "Insufficient ICHOR to register additional fighter (10 ICHOR required)",
+      "name": "InsufficientIchor"
+    },
+    {
+      "code": 6002,
+      "msg": "ICHOR token account required for additional fighter registration",
+      "name": "IchorAccountRequired"
+    },
+    {
+      "code": 6003,
+      "msg": "Unauthorized: only the fighter's authority or admin can perform this action",
+      "name": "Unauthorized"
+    },
+    {
+      "code": 6004,
+      "msg": "Fighter is already in the queue",
+      "name": "AlreadyQueued"
+    },
+    {
+      "code": 6005,
+      "msg": "Fighter is not in the queue",
+      "name": "NotInQueue"
+    },
+    {
+      "code": 6006,
+      "msg": "Fighter is currently in a rumble",
+      "name": "InRumble"
+    },
+    {
+      "code": 6007,
+      "msg": "Fighter must leave queue before transfer",
+      "name": "MustLeaveQueueFirst"
+    },
+    {
+      "code": 6008,
+      "msg": "Math overflow",
+      "name": "MathOverflow"
+    }
+  ],
+  "events": [
+    {
+      "discriminator": [
+        50,
+        147,
+        74,
+        205,
+        156,
+        88,
+        119,
+        99
+      ],
+      "name": "FighterRegistered"
+    },
+    {
+      "discriminator": [
+        116,
+        239,
+        29,
+        108,
+        134,
+        167,
+        149,
+        110
+      ],
+      "name": "FighterTransferred"
+    }
+  ],
   "instructions": [
     {
-      "name": "initialize",
-      "docs": [
-        "Initialize the registry configuration. Called once by admin."
-      ],
-      "discriminator": [
-        175,
-        175,
-        109,
-        31,
-        13,
-        152,
-        155,
-        237
-      ],
       "accounts": [
         {
           "name": "admin",
-          "writable": true,
-          "signer": true
+          "signer": true,
+          "writable": true
         },
         {
           "name": "registry_config",
-          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -54,36 +149,37 @@
                 ]
               }
             ]
-          }
+          },
+          "writable": true
         },
         {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
+          "address": "11111111111111111111111111111111",
+          "name": "system_program"
         }
       ],
-      "args": []
+      "args": [],
+      "discriminator": [
+        175,
+        175,
+        109,
+        31,
+        13,
+        152,
+        155,
+        237
+      ],
+      "docs": [
+        "Initialize the registry configuration. Called once by admin."
+      ],
+      "name": "initialize"
     },
     {
-      "name": "join_queue",
-      "docs": [
-        "Fighter joins the Rumble queue."
-      ],
-      "discriminator": [
-        157,
-        115,
-        48,
-        109,
-        65,
-        86,
-        203,
-        238
-      ],
       "accounts": [
         {
-          "name": "authority",
           "docs": [
             "Fighter's current authority must sign."
           ],
+          "name": "authority",
           "signer": true
         },
         {
@@ -100,13 +196,37 @@
           "name": "auto_requeue",
           "type": "bool"
         }
-      ]
+      ],
+      "discriminator": [
+        157,
+        115,
+        48,
+        109,
+        65,
+        86,
+        203,
+        238
+      ],
+      "docs": [
+        "Fighter joins the Rumble queue."
+      ],
+      "name": "join_queue"
     },
     {
-      "name": "leave_queue",
-      "docs": [
-        "Fighter leaves the Rumble queue."
+      "accounts": [
+        {
+          "docs": [
+            "Fighter's current authority must sign."
+          ],
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "fighter",
+          "writable": true
+        }
       ],
+      "args": [],
       "discriminator": [
         95,
         75,
@@ -117,46 +237,20 @@
         65,
         97
       ],
-      "accounts": [
-        {
-          "name": "authority",
-          "docs": [
-            "Fighter's current authority must sign."
-          ],
-          "signer": true
-        },
-        {
-          "name": "fighter",
-          "writable": true
-        }
+      "docs": [
+        "Fighter leaves the Rumble queue."
       ],
-      "args": []
+      "name": "leave_queue"
     },
     {
-      "name": "register_fighter",
-      "docs": [
-        "Register a new fighter for the calling wallet.",
-        "First fighter per wallet is free; additional fighters cost 10 ICHOR (burned)."
-      ],
-      "discriminator": [
-        89,
-        189,
-        101,
-        179,
-        184,
-        140,
-        40,
-        177
-      ],
       "accounts": [
         {
           "name": "authority",
-          "writable": true,
-          "signer": true
+          "signer": true,
+          "writable": true
         },
         {
           "name": "wallet_state",
-          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -181,7 +275,8 @@
                 "path": "authority"
               }
             ]
-          }
+          },
+          "writable": true
         },
         {
           "name": "fighter",
@@ -189,7 +284,6 @@
         },
         {
           "name": "registry_config",
-          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -213,26 +307,27 @@
                 ]
               }
             ]
-          }
+          },
+          "writable": true
         },
         {
           "name": "ichor_token_account",
-          "writable": true,
-          "optional": true
+          "optional": true,
+          "writable": true
         },
         {
           "name": "ichor_mint",
-          "writable": true,
+          "optional": true,
+          "writable": true
+        },
+        {
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "name": "token_program",
           "optional": true
         },
         {
-          "name": "token_program",
-          "optional": true,
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-        },
-        {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
+          "address": "11111111111111111111111111111111",
+          "name": "system_program"
         }
       ],
       "args": [
@@ -245,31 +340,32 @@
             ]
           }
         }
-      ]
-    },
-    {
-      "name": "transfer_fighter",
-      "docs": [
-        "Transfer a fighter's authority to a new wallet. Requires burning a 5% ICHOR fee."
       ],
       "discriminator": [
-        59,
-        13,
-        153,
-        80,
-        221,
-        215,
-        100,
-        136
+        89,
+        189,
+        101,
+        179,
+        184,
+        140,
+        40,
+        177
       ],
+      "docs": [
+        "Register a new fighter for the calling wallet.",
+        "First fighter per wallet is free; additional fighters cost 10 ICHOR (burned)."
+      ],
+      "name": "register_fighter"
+    },
+    {
       "accounts": [
         {
-          "name": "old_authority",
           "docs": [
             "Current owner must sign."
           ],
-          "writable": true,
-          "signer": true
+          "name": "old_authority",
+          "signer": true,
+          "writable": true
         },
         {
           "name": "new_authority"
@@ -280,7 +376,6 @@
         },
         {
           "name": "old_wallet_state",
-          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -305,11 +400,11 @@
                 "path": "old_authority"
               }
             ]
-          }
+          },
+          "writable": true
         },
         {
           "name": "new_wallet_state",
-          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -334,7 +429,8 @@
                 "path": "new_authority"
               }
             ]
-          }
+          },
+          "writable": true
         },
         {
           "name": "ichor_mint",
@@ -345,31 +441,31 @@
           "writable": true
         },
         {
-          "name": "token_program",
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "name": "token_program"
         },
         {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
+          "address": "11111111111111111111111111111111",
+          "name": "system_program"
         }
       ],
-      "args": []
+      "args": [],
+      "discriminator": [
+        59,
+        13,
+        153,
+        80,
+        221,
+        215,
+        100,
+        136
+      ],
+      "docs": [
+        "Transfer a fighter's authority to a new wallet. Requires burning a 5% ICHOR fee."
+      ],
+      "name": "transfer_fighter"
     },
     {
-      "name": "update_admin",
-      "docs": [
-        "Admin: update the admin key in registry config."
-      ],
-      "discriminator": [
-        161,
-        176,
-        40,
-        213,
-        60,
-        184,
-        179,
-        228
-      ],
       "accounts": [
         {
           "name": "authority",
@@ -377,7 +473,6 @@
         },
         {
           "name": "registry_config",
-          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -401,7 +496,8 @@
                 ]
               }
             ]
-          }
+          },
+          "writable": true
         }
       ],
       "args": [
@@ -409,29 +505,29 @@
           "name": "new_admin",
           "type": "pubkey"
         }
-      ]
-    },
-    {
-      "name": "update_record",
-      "docs": [
-        "Update a fighter's combat record after a Rumble. Admin/engine only."
       ],
       "discriminator": [
-        54,
-        194,
-        108,
-        162,
-        199,
-        12,
-        5,
-        60
+        161,
+        176,
+        40,
+        213,
+        60,
+        184,
+        179,
+        228
       ],
+      "docs": [
+        "Admin: update the admin key in registry config."
+      ],
+      "name": "update_admin"
+    },
+    {
       "accounts": [
         {
-          "name": "authority",
           "docs": [
             "Only admin/engine can update records."
           ],
+          "name": "authority",
           "signer": true
         },
         {
@@ -491,130 +587,33 @@
           "name": "rumble_id",
           "type": "u64"
         }
-      ]
-    }
-  ],
-  "accounts": [
-    {
-      "name": "Fighter",
+      ],
       "discriminator": [
-        24,
-        221,
-        27,
-        113,
-        60,
-        210,
-        101,
-        211
-      ]
-    },
-    {
-      "name": "RegistryConfig",
-      "discriminator": [
-        23,
-        118,
-        10,
-        246,
-        173,
-        231,
-        243,
-        156
-      ]
-    },
-    {
-      "name": "WalletState",
-      "discriminator": [
-        126,
-        186,
-        0,
-        158,
-        92,
-        223,
-        167,
-        68
-      ]
-    }
-  ],
-  "events": [
-    {
-      "name": "FighterRegistered",
-      "discriminator": [
-        50,
-        147,
-        74,
-        205,
-        156,
-        88,
-        119,
-        99
-      ]
-    },
-    {
-      "name": "FighterTransferred",
-      "discriminator": [
-        116,
-        239,
-        29,
+        54,
+        194,
         108,
-        134,
-        167,
-        149,
-        110
-      ]
+        162,
+        199,
+        12,
+        5,
+        60
+      ],
+      "docs": [
+        "Update a fighter's combat record after a Rumble. Admin/engine only."
+      ],
+      "name": "update_record"
     }
   ],
-  "errors": [
-    {
-      "code": 6000,
-      "name": "MaxFightersReached",
-      "msg": "Maximum of 5 fighters per wallet"
-    },
-    {
-      "code": 6001,
-      "name": "InsufficientIchor",
-      "msg": "Insufficient ICHOR to register additional fighter (10 ICHOR required)"
-    },
-    {
-      "code": 6002,
-      "name": "IchorAccountRequired",
-      "msg": "ICHOR token account required for additional fighter registration"
-    },
-    {
-      "code": 6003,
-      "name": "Unauthorized",
-      "msg": "Unauthorized: only the fighter's authority or admin can perform this action"
-    },
-    {
-      "code": 6004,
-      "name": "AlreadyQueued",
-      "msg": "Fighter is already in the queue"
-    },
-    {
-      "code": 6005,
-      "name": "NotInQueue",
-      "msg": "Fighter is not in the queue"
-    },
-    {
-      "code": 6006,
-      "name": "InRumble",
-      "msg": "Fighter is currently in a rumble"
-    },
-    {
-      "code": 6007,
-      "name": "MustLeaveQueueFirst",
-      "msg": "Fighter must leave queue before transfer"
-    },
-    {
-      "code": 6008,
-      "name": "MathOverflow",
-      "msg": "Math overflow"
-    }
-  ],
+  "metadata": {
+    "description": "Fighter registry program for Underground Claw Fights",
+    "name": "fighter_registry",
+    "spec": "0.1.0",
+    "version": "0.1.0"
+  },
   "types": [
     {
       "name": "Fighter",
       "type": {
-        "kind": "struct",
         "fields": [
           {
             "name": "authority",
@@ -703,13 +702,13 @@
             "name": "bump",
             "type": "u8"
           }
-        ]
+        ],
+        "kind": "struct"
       }
     },
     {
       "name": "FighterRegistered",
       "type": {
-        "kind": "struct",
         "fields": [
           {
             "name": "authority",
@@ -728,13 +727,13 @@
               ]
             }
           }
-        ]
+        ],
+        "kind": "struct"
       }
     },
     {
       "name": "FighterTransferred",
       "type": {
-        "kind": "struct",
         "fields": [
           {
             "name": "from",
@@ -748,13 +747,13 @@
             "name": "fee_burned",
             "type": "u64"
           }
-        ]
+        ],
+        "kind": "struct"
       }
     },
     {
       "name": "RegistryConfig",
       "type": {
-        "kind": "struct",
         "fields": [
           {
             "name": "admin",
@@ -768,13 +767,13 @@
             "name": "bump",
             "type": "u8"
           }
-        ]
+        ],
+        "kind": "struct"
       }
     },
     {
       "name": "WalletState",
       "type": {
-        "kind": "struct",
         "fields": [
           {
             "name": "authority",
@@ -788,7 +787,8 @@
             "name": "bump",
             "type": "u8"
           }
-        ]
+        ],
+        "kind": "struct"
       }
     }
   ]

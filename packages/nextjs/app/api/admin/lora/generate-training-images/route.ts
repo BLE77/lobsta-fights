@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { NextRequest, NextResponse } from "next/server";
 import { generateTrainingImages, TRAINING_IMAGE_PROMPTS } from "../../../../../lib/lora-training";
 import { storeImagePermanently } from "../../../../../lib/image-storage";

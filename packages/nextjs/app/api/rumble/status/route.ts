@@ -8,6 +8,7 @@ import {
   getIchorShowerState,
   getStats,
 } from "~~/lib/rumble-persistence";
+import { readArenaConfig } from "~~/lib/solana-programs";
 
 export const dynamic = "force-dynamic";
 
@@ -202,6 +203,7 @@ export async function GET(request: Request) {
 
     // ---- Ichor shower state ------------------------------------------------
     const showerState = await getIchorShowerState();
+    const arenaConfig = await readArenaConfig().catch(() => null);
     const stats = await getStats();
     const rumblesSinceLastTrigger = stats?.total_rumbles ?? 0;
 
@@ -227,7 +229,10 @@ export async function GET(request: Request) {
       queueLength: queueEntries.length + activeFighterCount,
       nextRumbleIn,
       ichorShower: {
-        currentPool: Number(showerState?.pool_amount ?? 0),
+        currentPool:
+          arenaConfig
+            ? Number(arenaConfig.ichorShowerPool) / 1_000_000_000
+            : Number(showerState?.pool_amount ?? 0),
         rumblesSinceLastTrigger,
       },
     });

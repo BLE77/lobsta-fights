@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { NextRequest, NextResponse } from "next/server";
 import { startLoraTraining, checkTrainingStatus, UCF_TRIGGER_WORD } from "../../../../../lib/lora-training";
 import { supabase } from "../../../../../lib/supabase";

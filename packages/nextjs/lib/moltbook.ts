@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Moltbook Integration for AI Agent Identity Verification
  *

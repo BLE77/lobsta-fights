@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { freshSupabase } from "./supabase";
 import { MoveType, TurnResult } from "./types";
 import {

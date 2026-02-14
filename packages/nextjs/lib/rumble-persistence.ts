@@ -10,6 +10,7 @@
 // =============================================================================
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import type { RumblePayoutMode } from "./rumble-payout-mode";
 
 // ---------------------------------------------------------------------------
 // Fresh service-role client factory
@@ -36,6 +37,15 @@ function log(msg: string, ...args: unknown[]) {
 
 function logError(msg: string, err: unknown) {
   console.error(`[RumblePersistence] ${msg}`, err);
+}
+
+function toNumber(value: unknown): number {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -223,6 +233,112 @@ export async function loadActiveRumbles(): Promise<
   }
 }
 
+export interface CompletedRumbleForOnchainReconcile {
+  id: string;
+  status: string;
+  winner_id: string | null;
+  placements: unknown;
+  fighters: unknown;
+  tx_signatures: Record<string, string | null> | null;
+  completed_at: string | null;
+}
+
+export interface PendingSettlementRumble {
+  id: string;
+  status: string;
+  winner_id: string | null;
+  placements: unknown;
+  fighters: unknown;
+  pending_rows: number;
+  pending_net_sol: number;
+}
+
+/**
+ * Load recent completed rumbles so we can reconcile on-chain report_result
+ * if a previous on-chain settlement step failed.
+ */
+export async function loadRecentCompletedRumblesForOnchainReconcile(
+  limit: number = 20,
+): Promise<CompletedRumbleForOnchainReconcile[]> {
+  try {
+    const sb = freshServiceClient();
+    const since = new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString();
+    const { data, error } = await sb
+      .from("ucf_rumbles")
+      .select("id, status, winner_id, placements, fighters, tx_signatures, completed_at")
+      .eq("status", "complete")
+      .gte("completed_at", since)
+      .order("completed_at", { ascending: false })
+      .limit(Math.max(1, Math.min(limit, 100)));
+    if (error) throw error;
+    return (data as CompletedRumbleForOnchainReconcile[]) ?? [];
+  } catch (err) {
+    logError("loadRecentCompletedRumblesForOnchainReconcile failed", err);
+    return [];
+  }
+}
+
+/**
+ * Load rumbles that still have pending rows with null payout_amount.
+ * These are candidates for stale payout reconciliation.
+ */
+export async function loadPendingSettlementRumbles(
+  limit: number = 40,
+): Promise<PendingSettlementRumble[]> {
+  try {
+    const sb = freshServiceClient();
+    const { data: pendingRows, error: pendingError } = await sb
+      .from("ucf_bets")
+      .select("rumble_id, net_amount")
+      .eq("payout_status", "pending")
+      .is("payout_amount", null)
+      .order("placed_at", { ascending: false })
+      .limit(Math.max(1, Math.min(limit * 25, 1000)));
+    if (pendingError) throw pendingError;
+
+    const pendingByRumble = new Map<string, { rows: number; netSol: number }>();
+    for (const row of pendingRows ?? []) {
+      const rumbleId = String((row as any).rumble_id ?? "");
+      if (!rumbleId) continue;
+      const current = pendingByRumble.get(rumbleId) ?? { rows: 0, netSol: 0 };
+      current.rows += 1;
+      current.netSol += toNumber((row as any).net_amount);
+      pendingByRumble.set(rumbleId, current);
+    }
+    const rumbleIds = [...pendingByRumble.keys()].slice(0, Math.max(1, Math.min(limit, 200)));
+    if (rumbleIds.length === 0) return [];
+
+    const { data: rumbleRows, error: rumbleError } = await sb
+      .from("ucf_rumbles")
+      .select("id, status, winner_id, placements, fighters")
+      .in("id", rumbleIds);
+    if (rumbleError) throw rumbleError;
+
+    const out: PendingSettlementRumble[] = [];
+    for (const row of rumbleRows ?? []) {
+      const id = String((row as any).id ?? "");
+      const pending = pendingByRumble.get(id);
+      if (!id || !pending) continue;
+      out.push({
+        id,
+        status: String((row as any).status ?? ""),
+        winner_id:
+          typeof (row as any).winner_id === "string" ? String((row as any).winner_id) : null,
+        placements: (row as any).placements ?? null,
+        fighters: (row as any).fighters ?? null,
+        pending_rows: pending.rows,
+        pending_net_sol: pending.netSol,
+      });
+    }
+
+    out.sort((a, b) => b.pending_net_sol - a.pending_net_sol);
+    return out;
+  } catch (err) {
+    logError("loadPendingSettlementRumbles failed", err);
+    return [];
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Bets
 // ---------------------------------------------------------------------------
@@ -338,6 +454,224 @@ export async function markLosingBets(
   }
 }
 
+/**
+ * Settle winner-takes-all payouts into ucf_bets.
+ * Winners are marked:
+ * - pending in accrue_claim mode (user must claim)
+ * - paid in instant mode
+ */
+export async function settleWinnerTakeAllBets(
+  rumbleId: string,
+  winnerFighterId: string,
+  payoutMode: RumblePayoutMode,
+): Promise<void> {
+  try {
+    const sb = freshServiceClient();
+    const { data, error } = await sb
+      .from("ucf_bets")
+      .select("id, fighter_id, net_amount")
+      .eq("rumble_id", rumbleId);
+    if (error) throw error;
+
+    const bets = (data ?? []).map((row: any) => ({
+      id: String(row.id),
+      fighterId: String(row.fighter_id),
+      netAmount: toNumber(row.net_amount),
+    }));
+    if (bets.length === 0) return;
+
+    const totalByFighter = new Map<string, number>();
+    for (const bet of bets) {
+      totalByFighter.set(
+        bet.fighterId,
+        (totalByFighter.get(bet.fighterId) ?? 0) + bet.netAmount,
+      );
+    }
+
+    const winnerPool = totalByFighter.get(winnerFighterId) ?? 0;
+    let losersPool = 0;
+    for (const [fighterId, total] of totalByFighter) {
+      if (fighterId !== winnerFighterId) losersPool += total;
+    }
+
+    const treasuryCut = losersPool * 0.1;
+    const distributable = Math.max(0, losersPool - treasuryCut);
+    const winnerStatus = payoutMode === "accrue_claim" ? "pending" : "paid";
+
+    const updates = bets.map((bet) => {
+      if (bet.fighterId !== winnerFighterId) {
+        return {
+          betId: bet.id,
+          payoutAmount: 0,
+          payoutStatus: "lost" as const,
+        };
+      }
+      const winningsShare =
+        winnerPool > 0 ? (distributable * bet.netAmount) / winnerPool : 0;
+      const payoutAmount = bet.netAmount + winningsShare;
+      return {
+        betId: bet.id,
+        payoutAmount,
+        payoutStatus: winnerStatus as "pending" | "paid",
+      };
+    });
+
+    await updateBetPayouts(rumbleId, updates);
+    log(
+      `Settled ${updates.length} bets for rumble ${rumbleId} (${payoutMode}, winner=${winnerFighterId})`,
+    );
+  } catch (err) {
+    logError("settleWinnerTakeAllBets failed", err);
+  }
+}
+
+export interface WalletClaimableRumble {
+  rumbleId: string;
+  claimableSol: number;
+}
+
+export interface WalletPayoutBalance {
+  claimableSol: number;
+  claimedSol: number;
+  unsettledSol: number;
+  orphanedSol: number;
+  pendingRumbles: WalletClaimableRumble[];
+}
+
+/**
+ * Returns payout balances for a wallet from persisted bet settlement state.
+ */
+export async function getWalletPayoutBalance(
+  walletAddress: string,
+): Promise<WalletPayoutBalance> {
+  try {
+    const sb = freshServiceClient();
+    const { data, error } = await sb
+      .from("ucf_bets")
+      .select("rumble_id, payout_status, payout_amount, net_amount")
+      .eq("wallet_address", walletAddress);
+    if (error) throw error;
+
+    let claimableSol = 0;
+    let claimedSol = 0;
+    let unsettledSol = 0;
+    let orphanedSol = 0;
+    const pendingByRumble = new Map<string, number>();
+    const unsettledCandidates: Array<{ rumbleId: string; netAmount: number }> = [];
+
+    for (const row of data ?? []) {
+      const status = String((row as any).payout_status ?? "pending");
+      const payoutAmount = toNumber((row as any).payout_amount);
+      const netAmount = toNumber((row as any).net_amount);
+      const rumbleId = String((row as any).rumble_id ?? "");
+
+      if (status === "paid") {
+        claimedSol += payoutAmount;
+        continue;
+      }
+      if (status === "lost") {
+        continue;
+      }
+
+      // status pending
+      if (payoutAmount > 0) {
+        claimableSol += payoutAmount;
+        pendingByRumble.set(rumbleId, (pendingByRumble.get(rumbleId) ?? 0) + payoutAmount);
+      } else if (netAmount > 0) {
+        unsettledCandidates.push({ rumbleId, netAmount });
+      }
+    }
+
+    if (unsettledCandidates.length > 0) {
+      const unsettledRumbleIds = [...new Set(unsettledCandidates.map((row) => row.rumbleId))];
+      const { data: rumbleRows, error: rumbleError } = await sb
+        .from("ucf_rumbles")
+        .select("id, status, winner_id")
+        .in("id", unsettledRumbleIds);
+      if (rumbleError) throw rumbleError;
+
+      const rumbleMeta = new Map<string, { status: string; winnerId: string | null }>();
+      for (const row of rumbleRows ?? []) {
+        rumbleMeta.set(String((row as any).id ?? ""), {
+          status: String((row as any).status ?? ""),
+          winnerId:
+            typeof (row as any).winner_id === "string" ? String((row as any).winner_id) : null,
+        });
+      }
+
+      for (const row of unsettledCandidates) {
+        const meta = rumbleMeta.get(row.rumbleId);
+        // Only show "unsettled" for in-flight rumbles.
+        if (!meta || meta.status === "betting" || meta.status === "combat" || meta.status === "payout") {
+          unsettledSol += row.netAmount;
+          continue;
+        }
+
+        // Completed rumbles with pending rows are stale/orphaned and should not
+        // block the claim UX as "unsettled". Track separately for diagnostics.
+        if (meta.status === "complete") {
+          orphanedSol += row.netAmount;
+          continue;
+        }
+
+        // Unknown status fallback.
+        unsettledSol += row.netAmount;
+      }
+    }
+
+    const pendingRumbles = [...pendingByRumble.entries()]
+      .map(([rumbleId, amount]) => ({ rumbleId, claimableSol: amount }))
+      .sort((a, b) => b.claimableSol - a.claimableSol);
+
+    return { claimableSol, claimedSol, unsettledSol, orphanedSol, pendingRumbles };
+  } catch (err) {
+    logError("getWalletPayoutBalance failed", err);
+    return { claimableSol: 0, claimedSol: 0, unsettledSol: 0, orphanedSol: 0, pendingRumbles: [] };
+  }
+}
+
+/**
+ * Marks a rumble's pending payouts as paid for this wallet after a claim tx confirms.
+ */
+export async function markWalletRumbleClaimed(
+  walletAddress: string,
+  rumbleId: string,
+): Promise<{ updated: number; claimedSol: number }> {
+  try {
+    const sb = freshServiceClient();
+    const { data: pendingRows, error: readError } = await sb
+      .from("ucf_bets")
+      .select("id, payout_amount")
+      .eq("wallet_address", walletAddress)
+      .eq("rumble_id", rumbleId)
+      .eq("payout_status", "pending");
+    if (readError) throw readError;
+
+    const targetRows = (pendingRows ?? []).filter(
+      (row: any) => toNumber(row.payout_amount) > 0,
+    );
+    if (targetRows.length === 0) return { updated: 0, claimedSol: 0 };
+
+    let claimedSol = 0;
+    for (const row of targetRows) {
+      claimedSol += toNumber((row as any).payout_amount);
+    }
+
+    const ids = targetRows.map((row: any) => String(row.id));
+    const { data: updatedRows, error: updateError } = await sb
+      .from("ucf_bets")
+      .update({ payout_status: "paid" })
+      .in("id", ids)
+      .select("id");
+    if (updateError) throw updateError;
+
+    return { updated: updatedRows?.length ?? 0, claimedSol };
+  } catch (err) {
+    logError("markWalletRumbleClaimed failed", err);
+    return { updated: 0, claimedSol: 0 };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Ichor Shower
 // ---------------------------------------------------------------------------
@@ -433,25 +767,35 @@ export async function incrementStats(
 // ---------------------------------------------------------------------------
 
 /**
- * Look up Solana wallet addresses for fighters by their name (used as fighter_id).
- * Returns a map of fighter_id → wallet_address.
+ * Look up Solana wallet addresses for fighters by either fighter id or fighter name.
+ * Returns a map keyed by the original lookup token (id/name) -> wallet_address.
  */
 export async function lookupFighterWallets(
-  fighterIds: string[],
+  fighterKeys: string[],
 ): Promise<Map<string, string>> {
   const result = new Map<string, string>();
-  if (fighterIds.length === 0) return result;
+  if (fighterKeys.length === 0) return result;
   try {
     const sb = freshServiceClient();
-    const { data, error } = await sb
-      .from("ucf_fighters")
-      .select("name, wallet_address")
-      .in("name", fighterIds);
-    if (error) throw error;
-    for (const row of data ?? []) {
-      if (row.wallet_address) {
-        result.set(row.name, row.wallet_address);
-      }
+    const uniqueKeys = [...new Set(fighterKeys.filter(Boolean))];
+    const [byIdRes, byNameRes] = await Promise.all([
+      sb
+        .from("ucf_fighters")
+        .select("id, name, wallet_address")
+        .in("id", uniqueKeys),
+      sb
+        .from("ucf_fighters")
+        .select("id, name, wallet_address")
+        .in("name", uniqueKeys),
+    ]);
+    if (byIdRes.error) throw byIdRes.error;
+    if (byNameRes.error) throw byNameRes.error;
+
+    const rows = [...(byIdRes.data ?? []), ...(byNameRes.data ?? [])];
+    for (const row of rows) {
+      if (!row.wallet_address) continue;
+      if (row.id && uniqueKeys.includes(row.id)) result.set(row.id, row.wallet_address);
+      if (row.name && uniqueKeys.includes(row.name)) result.set(row.name, row.wallet_address);
     }
   } catch (err) {
     logError("lookupFighterWallets failed", err);

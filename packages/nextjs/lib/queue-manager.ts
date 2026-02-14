@@ -44,9 +44,42 @@ export interface QueueManager {
 
 const NUM_SLOTS = 3;
 const FIGHTERS_PER_RUMBLE = 12;
-const BETTING_DURATION_MS = 60 * 1000; // 60 seconds for devnet testing
-const COMBAT_DURATION_MS = 5 * 60 * 1000; // 5 minutes (max)
-const PAYOUT_DURATION_MS = 30 * 1000; // 30 seconds
+
+function readDurationMs(
+  envName: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const raw = Number(process.env[envName] ?? "");
+  if (!Number.isFinite(raw)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(raw)));
+}
+
+const BETTING_DURATION_MS = readDurationMs(
+  "RUMBLE_BETTING_DURATION_MS",
+  60 * 1000,
+  15 * 1000,
+  10 * 60 * 1000,
+);
+const COMBAT_DURATION_MS = readDurationMs(
+  "RUMBLE_COMBAT_DURATION_MS",
+  5 * 60 * 1000,
+  60 * 1000,
+  20 * 60 * 1000,
+);
+const PAYOUT_DURATION_MS = readDurationMs(
+  "RUMBLE_PAYOUT_DURATION_MS",
+  30 * 1000,
+  10 * 1000,
+  5 * 60 * 1000,
+);
+const BETTING_CLOSE_GRACE_MS = readDurationMs(
+  "RUMBLE_BETTING_CLOSE_GRACE_MS",
+  1_500,
+  0,
+  15_000,
+);
 
 // Slot offsets -- each slot is staggered by ~2 minutes so there's always
 // something happening. These aren't wall-clock offsets; they're the initial
@@ -186,8 +219,13 @@ export class RumbleQueueManager implements QueueManager {
           break;
 
         case "betting":
-          if (slot.bettingDeadline && now >= slot.bettingDeadline) {
-            console.log(`[QM] Slot ${slot.slotIndex} betting→combat: now=${now.toISOString()} deadline=${slot.bettingDeadline.toISOString()} diff=${now.getTime() - slot.bettingDeadline.getTime()}ms`);
+          if (
+            slot.bettingDeadline &&
+            now.getTime() >= slot.bettingDeadline.getTime() + BETTING_CLOSE_GRACE_MS
+          ) {
+            console.log(
+              `[QM] Slot ${slot.slotIndex} betting→combat: now=${now.toISOString()} deadline=${slot.bettingDeadline.toISOString()} diff=${now.getTime() - slot.bettingDeadline.getTime()}ms grace=${BETTING_CLOSE_GRACE_MS}ms`,
+            );
             this.transitionToCombat(slot, now);
           }
           break;

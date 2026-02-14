@@ -2,14 +2,6 @@
   "framework": "nextjs",
   "crons": [
     {
-      "path": "/api/matchmaker/run",
-      "schedule": "* * * * *"
-    },
-    {
-      "path": "/api/cron/process-matches",
-      "schedule": "* * * * *"
-    },
-    {
       "path": "/api/rumble/tick",
       "schedule": "* * * * *"
     }

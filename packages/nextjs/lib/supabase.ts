@@ -1,7 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 
+type SupabaseClientType = ReturnType<typeof createClient>;
+
 // Lazy-initialized admin client to avoid throwing at import time (breaks Next.js page data collection)
-let _supabaseAdmin: ReturnType<typeof createClient> | null = null;
+let _supabaseAdmin: SupabaseClientType | null = null;
 
 function getSupabaseUrl() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -54,22 +56,24 @@ export const supabase = new Proxy({} as ReturnType<typeof createClient>, {
 
 // Admin client for server-side operations like storage uploads (bypasses RLS)
 // Only available on server-side where SUPABASE_SERVICE_ROLE_KEY is set
-export const supabaseAdmin = new Proxy({} as ReturnType<typeof createClient> | null, {
+export function getSupabaseAdmin(): SupabaseClientType | null {
+  if (_supabaseAdmin !== null) return _supabaseAdmin;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!serviceRoleKey) return null;
+  _supabaseAdmin = createClient(getSupabaseUrl(), serviceRoleKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+    global: { fetch: noStoreFetch },
+  });
+  return _supabaseAdmin;
+}
+
+export const supabaseAdmin = new Proxy({} as SupabaseClientType, {
   get(_, prop) {
-    if (_supabaseAdmin === null) {
-      const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-      if (serviceRoleKey) {
-        _supabaseAdmin = createClient(getSupabaseUrl(), serviceRoleKey, {
-          auth: { autoRefreshToken: false, persistSession: false },
-          global: { fetch: noStoreFetch },
-        });
-      } else {
-        return undefined;
-      }
-    }
-    return (_supabaseAdmin as any)[prop];
+    const client = getSupabaseAdmin();
+    if (!client) return undefined;
+    return (client as any)[prop];
   },
-}) as ReturnType<typeof createClient> | null;
+}) as SupabaseClientType;
 
 // Types for UCF
 export interface RobotMetadata {

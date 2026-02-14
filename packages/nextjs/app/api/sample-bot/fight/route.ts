@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Clawdbot AI Fighter - Sample Bot Webhook for UCF
  *

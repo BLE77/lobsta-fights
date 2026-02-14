@@ -5,10 +5,12 @@
  * from the claimed wallet to our treasury, for the claimed amount.
  */
 
+import { createHash } from "node:crypto";
+import { utils as anchorUtils } from "@coral-xyz/anchor";
 import { PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { getConnection } from "./solana-connection";
-
-const TREASURY_ADDRESS = "FXvriUM1dTwDeVXaWTSqGo14jPQk7363FQsQaUP1tvdE";
+import { getConfiguredTreasuryAddress } from "./treasury";
+import { RUMBLE_ENGINE_ID } from "./solana-programs";
 
 /** Tolerance for SOL amount matching (accounts for rounding). */
 const AMOUNT_TOLERANCE_SOL = 0.001;
@@ -47,6 +49,14 @@ export function markSignatureUsed(sig: string): boolean {
   return false; // first use
 }
 
+/**
+ * Read-only replay check. Use this before expensive verification.
+ */
+export function isSignatureUsed(sig: string): boolean {
+  cleanupSignatures();
+  return usedSignatures.has(sig);
+}
+
 // ---------------------------------------------------------------------------
 // Transaction verification
 // ---------------------------------------------------------------------------
@@ -54,6 +64,17 @@ export function markSignatureUsed(sig: string): boolean {
 export interface VerifyResult {
   valid: boolean;
   error?: string;
+}
+
+const PLACE_BET_DISCRIMINATOR = createHash("sha256")
+  .update("global:place_bet")
+  .digest()
+  .subarray(0, 8);
+
+interface ParsedPlaceBetInstruction {
+  rumbleId: number;
+  fighterIndex: number;
+  amountLamports: number;
 }
 
 /**
@@ -66,6 +87,13 @@ export async function verifyBetTransaction(
   expectedAmountSol: number,
 ): Promise<VerifyResult> {
   try {
+    const treasuryAddress = getConfiguredTreasuryAddress();
+    try {
+      new PublicKey(treasuryAddress);
+    } catch {
+      return { valid: false, error: "Treasury address is invalid or not configured." };
+    }
+
     const connection = getConnection();
 
     const tx = await connection.getParsedTransaction(txSignature, {
@@ -104,7 +132,7 @@ export async function verifyBetTransaction(
         const info = ix.parsed.info;
         if (
           info.source === expectedWallet &&
-          info.destination === TREASURY_ADDRESS
+          info.destination === treasuryAddress
         ) {
           foundTransfer = true;
           transferredLamports = info.lamports;
@@ -121,7 +149,7 @@ export async function verifyBetTransaction(
             const info = ix.parsed.info;
             if (
               info.source === expectedWallet &&
-              info.destination === TREASURY_ADDRESS
+              info.destination === treasuryAddress
             ) {
               foundTransfer = true;
               transferredLamports = info.lamports;
@@ -157,4 +185,121 @@ export async function verifyBetTransaction(
       error: `Verification failed: ${err.message || "unknown error"}`,
     };
   }
+}
+
+/**
+ * Verify that a transaction includes the expected rumble place_bet instruction.
+ */
+export async function verifyRumblePlaceBetTransaction(
+  txSignature: string,
+  expectedWallet: string,
+  expectedRumbleId: number,
+  expectedFighterIndex: number,
+  expectedAmountSol: number,
+): Promise<VerifyResult> {
+  return verifyRumblePlaceBetBatchTransaction(
+    txSignature,
+    expectedWallet,
+    expectedRumbleId,
+    [{ fighterIndex: expectedFighterIndex, amountSol: expectedAmountSol }],
+  );
+}
+
+/**
+ * Verify that a transaction includes all expected rumble place_bet instructions.
+ */
+export async function verifyRumblePlaceBetBatchTransaction(
+  txSignature: string,
+  expectedWallet: string,
+  expectedRumbleId: number,
+  expectedBets: Array<{ fighterIndex: number; amountSol: number }>,
+): Promise<VerifyResult> {
+  try {
+    if (!Array.isArray(expectedBets) || expectedBets.length === 0) {
+      return { valid: false, error: "No expected bets provided." };
+    }
+
+    const connection = getConnection();
+    const tx = await connection.getParsedTransaction(txSignature, {
+      maxSupportedTransactionVersion: 0,
+      commitment: "confirmed",
+    });
+
+    if (!tx) {
+      return { valid: false, error: "Transaction not found. It may not be confirmed yet." };
+    }
+    if (tx.meta?.err) {
+      return { valid: false, error: "Transaction failed on-chain." };
+    }
+
+    const signers = tx.transaction.message.accountKeys
+      .filter((k) => k.signer)
+      .map((k) => k.pubkey.toBase58());
+    if (!signers.includes(expectedWallet)) {
+      return {
+        valid: false,
+        error: "Expected wallet is not a signer of this transaction.",
+      };
+    }
+
+    const parsedIx = extractRumblePlaceBetInstructions(tx).filter(
+      ix => ix.rumbleId === expectedRumbleId,
+    );
+    if (parsedIx.length === 0) {
+      return {
+        valid: false,
+        error: "No matching rumble place_bet instruction found in this transaction.",
+      };
+    }
+
+    const toleranceLamports = Math.round(AMOUNT_TOLERANCE_SOL * LAMPORTS_PER_SOL);
+    const available = [...parsedIx];
+
+    for (const expected of expectedBets) {
+      const expectedLamports = Math.round(expected.amountSol * LAMPORTS_PER_SOL);
+      const matchIndex = available.findIndex(ix => {
+        if (ix.fighterIndex !== expected.fighterIndex) return false;
+        return Math.abs(ix.amountLamports - expectedLamports) <= toleranceLamports;
+      });
+      if (matchIndex === -1) {
+        return {
+          valid: false,
+          error:
+            `Missing expected place_bet leg (fighter=${expected.fighterIndex}, ` +
+            `amount=${expectedLamports} lamports) in tx ${txSignature}.`,
+        };
+      }
+      // Consume matched instruction to handle duplicate legs correctly.
+      available.splice(matchIndex, 1);
+    }
+
+    return { valid: true };
+  } catch (err: any) {
+    return {
+      valid: false,
+      error: `Verification failed: ${err.message || "unknown error"}`,
+    };
+  }
+}
+
+function extractRumblePlaceBetInstructions(tx: any): ParsedPlaceBetInstruction[] {
+  const out: ParsedPlaceBetInstruction[] = [];
+  for (const ix of tx.transaction.message.instructions) {
+    try {
+      if (ix.programId.toBase58() !== RUMBLE_ENGINE_ID.toBase58()) continue;
+      if (!("data" in ix) || typeof ix.data !== "string") continue;
+      const raw = anchorUtils.bytes.bs58.decode(ix.data);
+      if (raw.length < 25) continue;
+      if (!Buffer.from(raw.subarray(0, 8)).equals(PLACE_BET_DISCRIMINATOR)) continue;
+
+      const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+      const rumbleId = Number(view.getBigUint64(8, true));
+      const fighterIndex = raw[16] ?? -1;
+      const amountLamports = Number(view.getBigUint64(17, true));
+      out.push({ rumbleId, fighterIndex, amountLamports });
+    } catch {
+      // keep scanning
+    }
+  }
+  return out;
 }

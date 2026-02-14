@@ -83,7 +83,35 @@
         },
         {
           "name": "bettor_account",
-          "writable": true
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  101,
+                  116,
+                  116,
+                  111,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.id",
+                "account": "Rumble"
+              },
+              {
+                "kind": "account",
+                "path": "bettor"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
         }
       ],
       "args": []
@@ -143,6 +171,10 @@
               }
             ]
           }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
         }
       ],
       "args": []
@@ -503,7 +535,30 @@
         },
         {
           "name": "bettor_account",
-          "writable": true
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  101,
+                  116,
+                  116,
+                  111,
+                  114
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "rumble_id"
+              },
+              {
+                "kind": "account",
+                "path": "bettor"
+              }
+            ]
+          }
         },
         {
           "name": "system_program",
@@ -782,6 +837,10 @@
         {
           "name": "treasury",
           "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
         }
       ],
       "args": []
@@ -985,6 +1044,16 @@
       "code": 6017,
       "name": "InvalidFighterAccount",
       "msg": "Invalid fighter account data"
+    },
+    {
+      "code": 6018,
+      "name": "ClaimWindowActive",
+      "msg": "Payout claim window is still active"
+    },
+    {
+      "code": 6019,
+      "name": "InvalidBettorAccount",
+      "msg": "Invalid bettor account data"
     }
   ],
   "types": [
@@ -1038,12 +1107,33 @@
             "type": "u64"
           },
           {
+            "name": "claimable_lamports",
+            "type": "u64"
+          },
+          {
+            "name": "total_claimed_lamports",
+            "type": "u64"
+          },
+          {
+            "name": "last_claim_ts",
+            "type": "i64"
+          },
+          {
             "name": "claimed",
             "type": "bool"
           },
           {
             "name": "bump",
             "type": "u8"
+          },
+          {
+            "name": "fighter_deployments",
+            "type": {
+              "array": [
+                "u64",
+                16
+              ]
+            }
           }
         ]
       }

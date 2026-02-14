@@ -51,6 +51,8 @@ coverage/
 *.tmp
 *.temp
 .cache/
+artifacts/
+packages/nextjs/.rumble-session.json
 
 # TypeScript
 *.tsbuildinfo

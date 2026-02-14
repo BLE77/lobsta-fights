@@ -37,10 +37,7 @@ pub mod fighter_registry {
 
     /// Register a new fighter for the calling wallet.
     /// First fighter per wallet is free; additional fighters cost 10 ICHOR (burned).
-    pub fn register_fighter(
-        ctx: Context<RegisterFighter>,
-        name: [u8; 32],
-    ) -> Result<()> {
+    pub fn register_fighter(ctx: Context<RegisterFighter>, name: [u8; 32]) -> Result<()> {
         let wallet_state = &mut ctx.accounts.wallet_state;
         let fighter = &mut ctx.accounts.fighter;
         let config = &mut ctx.accounts.registry_config;
@@ -92,7 +89,10 @@ pub mod fighter_registry {
                 ADDITIONAL_FIGHTER_COST,
             )?;
 
-            msg!("Burned {} ICHOR for additional fighter", ADDITIONAL_FIGHTER_COST);
+            msg!(
+                "Burned {} ICHOR for additional fighter",
+                ADDITIONAL_FIGHTER_COST
+            );
         }
 
         // Initialize fighter account
@@ -242,10 +242,7 @@ pub mod fighter_registry {
     pub fn leave_queue(ctx: Context<LeaveQueue>) -> Result<()> {
         let fighter = &mut ctx.accounts.fighter;
 
-        require!(
-            fighter.queue_position.is_some(),
-            RegistryError::NotInQueue
-        );
+        require!(fighter.queue_position.is_some(), RegistryError::NotInQueue);
         require!(!fighter.in_rumble, RegistryError::InRumble);
 
         fighter.queue_position = None;
@@ -498,46 +495,46 @@ pub struct AdminOnly<'info> {
 #[account]
 #[derive(InitSpace)]
 pub struct RegistryConfig {
-    pub admin: Pubkey,        // 32
-    pub total_fighters: u64,  // 8
-    pub bump: u8,             // 1
+    pub admin: Pubkey,       // 32
+    pub total_fighters: u64, // 8
+    pub bump: u8,            // 1
 }
 
 #[account]
 #[derive(InitSpace)]
 pub struct WalletState {
-    pub authority: Pubkey,    // 32
-    pub fighter_count: u8,    // 1
-    pub bump: u8,             // 1
+    pub authority: Pubkey, // 32
+    pub fighter_count: u8, // 1
+    pub bump: u8,          // 1
 }
 
 #[account]
 #[derive(InitSpace)]
 pub struct Fighter {
-    pub authority: Pubkey,           // 32
-    pub name: [u8; 32],             // 32
-    pub created_at: i64,            // 8
+    pub authority: Pubkey, // 32
+    pub name: [u8; 32],    // 32
+    pub created_at: i64,   // 8
     // Combat record
-    pub wins: u64,                  // 8
-    pub losses: u64,                // 8
-    pub total_damage_dealt: u64,    // 8
-    pub total_damage_taken: u64,    // 8
-    pub total_rumbles: u64,         // 8
-    pub current_streak: i64,        // 8 (positive = win streak, negative = loss streak)
-    pub best_streak: u64,           // 8
+    pub wins: u64,               // 8
+    pub losses: u64,             // 8
+    pub total_damage_dealt: u64, // 8
+    pub total_damage_taken: u64, // 8
+    pub total_rumbles: u64,      // 8
+    pub current_streak: i64,     // 8 (positive = win streak, negative = loss streak)
+    pub best_streak: u64,        // 8
     // Economy
-    pub total_ichor_mined: u64,     // 8
-    pub unclaimed_ichor: u64,       // 8
-    pub sponsorship_earned: u64,    // 8
+    pub total_ichor_mined: u64,  // 8
+    pub unclaimed_ichor: u64,    // 8
+    pub sponsorship_earned: u64, // 8
     // Queue
     pub queue_position: Option<u64>, // 1 + 8 = 9
-    pub auto_requeue: bool,         // 1
-    pub in_rumble: bool,            // 1
+    pub auto_requeue: bool,          // 1
+    pub in_rumble: bool,             // 1
     // Meta
-    pub last_rumble_id: u64,        // 8
-    pub last_rumble_at: i64,        // 8
-    pub fighter_index: u8,          // 1
-    pub bump: u8,                   // 1
+    pub last_rumble_id: u64, // 8
+    pub last_rumble_at: i64, // 8
+    pub fighter_index: u8,   // 1
+    pub bump: u8,            // 1
 }
 
 // ---------------------------------------------------------------------------

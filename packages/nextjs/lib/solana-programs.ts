@@ -9,6 +9,7 @@
  */
 import * as anchor from "@coral-xyz/anchor";
 import {
+  ComputeBudgetProgram,
   Connection,
   Keypair,
   PublicKey,
@@ -127,13 +128,12 @@ export function deriveVaultPda(rumbleId: bigint | number): [PublicKey, number] {
 
 export function deriveBettorPda(
   rumbleId: bigint | number,
-  bettor: PublicKey,
-  fighterIndex: number
+  bettor: PublicKey
 ): [PublicKey, number] {
   const buf = Buffer.alloc(8);
   buf.writeBigUInt64LE(BigInt(rumbleId));
   return PublicKey.findProgramAddressSync(
-    [BETTOR_SEED, buf, bettor.toBuffer(), Buffer.from([fighterIndex])],
+    [BETTOR_SEED, buf, bettor.toBuffer()],
     RUMBLE_ENGINE_ID
   );
 }
@@ -145,6 +145,170 @@ export function deriveSponsorshipPda(
     [SPONSORSHIP_SEED, fighterPubkey.toBuffer()],
     RUMBLE_ENGINE_ID
   );
+}
+
+function readU64LE(data: Uint8Array, offset: number): bigint {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  return view.getBigUint64(offset, true);
+}
+
+function readI64LE(data: Uint8Array, offset: number): bigint {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  return view.getBigInt64(offset, true);
+}
+
+export interface BettorAccountState {
+  address: PublicKey;
+  authority: PublicKey;
+  rumbleId: bigint;
+  fighterIndex: number;
+  solDeployedLamports: bigint;
+  claimableLamports: bigint;
+  totalClaimedLamports: bigint;
+  lastClaimTs: bigint;
+  claimed: boolean;
+  bump: number;
+  fighterDeploymentsLamports: bigint[];
+}
+
+export type OnchainRumbleState = "betting" | "combat" | "payout" | "complete";
+
+const ONCHAIN_RUMBLE_STATES: OnchainRumbleState[] = [
+  "betting",
+  "combat",
+  "payout",
+  "complete",
+];
+
+export interface RumbleAccountState {
+  address: PublicKey;
+  rumbleId: bigint;
+  state: OnchainRumbleState;
+  fighterCount: number;
+  winnerIndex: number | null;
+}
+
+/**
+ * Read a rumble account's current state directly from chain.
+ */
+export async function readRumbleAccountState(
+  rumbleId: bigint | number,
+  connection?: Connection,
+): Promise<RumbleAccountState | null> {
+  const conn = connection ?? getConnection();
+  const [rumblePda] = deriveRumblePda(rumbleId);
+  const info = await conn.getAccountInfo(rumblePda, "confirmed");
+  if (!info || info.data.length < 17) return null;
+
+  const data = info.data;
+  const parsedRumbleId = readU64LE(data, 8);
+  const rawState = data[16] ?? 0;
+  const state = ONCHAIN_RUMBLE_STATES[rawState];
+  if (!state) return null;
+
+  // discriminator(8) + id(8) + state(1) + fighters(32*16=512)
+  const fighterCountOffset = 8 + 8 + 1 + 32 * 16;
+  const fighterCount = data[fighterCountOffset] ?? 0;
+  // winner index offset from Rumble account layout:
+  // disc(8)+id(8)+state(1)+fighters(512)+count(1)+pools(128)+totals(24)+placements(16)
+  const winnerIndexOffset = 8 + 8 + 1 + 32 * 16 + 1 + 8 * 16 + 8 + 8 + 8 + 16;
+  const winnerIndexRaw = data.length > winnerIndexOffset ? data[winnerIndexOffset] : undefined;
+  const winnerIndex =
+    typeof winnerIndexRaw === "number" && winnerIndexRaw < 16 ? winnerIndexRaw : null;
+
+  return {
+    address: rumblePda,
+    rumbleId: parsedRumbleId,
+    state,
+    fighterCount,
+    winnerIndex,
+  };
+}
+
+/**
+ * Read a bettor account directly from chain.
+ * Works with both old and new layouts; missing new fields default to zero.
+ */
+export async function readBettorAccount(
+  bettor: PublicKey,
+  rumbleId: bigint | number,
+  connection?: Connection,
+): Promise<BettorAccountState | null> {
+  const conn = connection ?? getConnection();
+  const [bettorPda] = deriveBettorPda(rumbleId, bettor);
+  const info = await conn.getAccountInfo(bettorPda, "confirmed");
+  if (!info || info.data.length < 59) return null;
+
+  const data = info.data;
+  let offset = 8; // discriminator
+
+  const authority = new PublicKey(data.subarray(offset, offset + 32));
+  offset += 32;
+
+  const parsedRumbleId = readU64LE(data, offset);
+  offset += 8;
+
+  const fighterIndex = data[offset] ?? 0;
+  offset += 1;
+
+  const solDeployedLamports = readU64LE(data, offset);
+  offset += 8;
+
+  // Older layouts only had claimed + bump after sol_deployed.
+  let claimableLamports = 0n;
+  let totalClaimedLamports = 0n;
+  let lastClaimTs = 0n;
+  let claimed = false;
+  let bump = 0;
+  const fighterDeploymentsLamports: bigint[] = [];
+
+  if (data.length >= offset + 8 + 8 + 8 + 1 + 1) {
+    claimableLamports = readU64LE(data, offset);
+    offset += 8;
+    totalClaimedLamports = readU64LE(data, offset);
+    offset += 8;
+    lastClaimTs = readI64LE(data, offset);
+    offset += 8;
+    claimed = data[offset] === 1;
+    offset += 1;
+    bump = data[offset] ?? 0;
+    offset += 1;
+  } else if (data.length >= offset + 1 + 1) {
+    claimed = data[offset] === 1;
+    offset += 1;
+    bump = data[offset] ?? 0;
+    offset += 1;
+  }
+
+  // New layout appends fighter_deployments: [u64; 16] after bump.
+  if (data.length >= offset + 8 * 16) {
+    // bump byte is consumed above; deployments start at current offset
+    for (let i = 0; i < 16; i++) {
+      fighterDeploymentsLamports.push(readU64LE(data, offset));
+      offset += 8;
+    }
+  } else {
+    // Legacy fallback: only one fighter index tracked.
+    const legacy = Array<bigint>(16).fill(0n);
+    if (fighterIndex >= 0 && fighterIndex < 16) {
+      legacy[fighterIndex] = solDeployedLamports;
+    }
+    fighterDeploymentsLamports.push(...legacy);
+  }
+
+  return {
+    address: bettorPda,
+    authority,
+    rumbleId: parsedRumbleId,
+    fighterIndex,
+    solDeployedLamports,
+    claimableLamports,
+    totalClaimedLamports,
+    lastClaimTs,
+    claimed,
+    bump,
+    fighterDeploymentsLamports,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -210,19 +374,31 @@ function getProvider(
 function getFighterRegistryProgram(
   provider: anchor.AnchorProvider
 ): anchor.Program {
-  return new anchor.Program(fighterRegistryIdl as any, provider);
+  const idl = {
+    ...(fighterRegistryIdl as any),
+    address: FIGHTER_REGISTRY_ID.toBase58(),
+  };
+  return new anchor.Program(idl, provider);
 }
 
 function getIchorTokenProgram(
   provider: anchor.AnchorProvider
 ): anchor.Program {
-  return new anchor.Program(ichorTokenIdl as any, provider);
+  const idl = {
+    ...(ichorTokenIdl as any),
+    address: ICHOR_TOKEN_ID.toBase58(),
+  };
+  return new anchor.Program(idl, provider);
 }
 
 function getRumbleEngineProgram(
   provider: anchor.AnchorProvider
 ): anchor.Program {
-  return new anchor.Program(rumbleEngineIdl as any, provider);
+  const idl = {
+    ...(rumbleEngineIdl as any),
+    address: RUMBLE_ENGINE_ID.toBase58(),
+  };
+  return new anchor.Program(idl, provider);
 }
 
 // ---------------------------------------------------------------------------
@@ -495,14 +671,14 @@ async function sendAdminInstructions(
   provider: anchor.AnchorProvider,
   admin: Keypair,
   instructions: TransactionInstruction[]
-): Promise<void> {
+): Promise<string> {
   const tx = new Transaction().add(...instructions);
   tx.feePayer = admin.publicKey;
   const { blockhash, lastValidBlockHeight } =
     await provider.connection.getLatestBlockhash("confirmed");
   tx.recentBlockhash = blockhash;
   tx.lastValidBlockHeight = lastValidBlockHeight;
-  await provider.sendAndConfirm(tx, []);
+  return await provider.sendAndConfirm(tx, []);
 }
 
 async function waitForSlot(
@@ -913,6 +1089,96 @@ export async function adminDistribute(
 }
 
 /**
+ * Admin: update the on-chain season reward (flat ICHOR per rumble).
+ * Returns tx signature on success, null if admin keypair unavailable.
+ */
+export async function updateSeasonReward(
+  newSeasonReward: bigint | number,
+  connection?: Connection
+): Promise<string | null> {
+  const provider = getAdminProvider(connection);
+  if (!provider) {
+    console.warn("[solana-programs] No admin keypair, skipping updateSeasonReward");
+    return null;
+  }
+  const program = getIchorTokenProgram(provider);
+  const admin = getAdminKeypair()!;
+  const [arenaConfigPda] = deriveArenaConfigPda();
+  const value = BigInt(newSeasonReward);
+  const method = (program.methods as any)?.updateSeasonReward;
+
+  // Some local IDLs are stale and may not expose updateSeasonReward yet.
+  // Fall back to a raw Anchor instruction payload so this remains callable.
+  if (typeof method === "function") {
+    return await method(new anchor.BN(value.toString()))
+      .accounts({
+        authority: admin.publicKey,
+        arenaConfig: arenaConfigPda,
+      })
+      .rpc();
+  }
+
+  const data = Buffer.concat([
+    anchorGlobalDiscriminator("update_season_reward"),
+    u64Buffer(value),
+  ]);
+  const ix = new TransactionInstruction({
+    programId: ICHOR_TOKEN_ID,
+    keys: [
+      { pubkey: admin.publicKey, isSigner: true, isWritable: true },
+      { pubkey: arenaConfigPda, isSigner: false, isWritable: true },
+    ],
+    data,
+  });
+  return await sendAdminInstructions(provider, admin, [ix]);
+}
+
+/**
+ * Admin: migrate legacy ArenaConfig account to V2 layout and set season reward.
+ * Use when on-chain account fails to deserialize on updateSeasonReward.
+ */
+export async function migrateArenaConfigV2(
+  seasonReward: bigint | number,
+  connection?: Connection
+): Promise<string | null> {
+  const provider = getAdminProvider(connection);
+  if (!provider) {
+    console.warn("[solana-programs] No admin keypair, skipping migrateArenaConfigV2");
+    return null;
+  }
+  const program = getIchorTokenProgram(provider);
+  const admin = getAdminKeypair()!;
+  const [arenaConfigPda] = deriveArenaConfigPda();
+  const value = BigInt(seasonReward);
+  const method = (program.methods as any)?.migrateArenaConfigV2;
+
+  if (typeof method === "function") {
+    return await method(new anchor.BN(value.toString()))
+      .accounts({
+        authority: admin.publicKey,
+        arenaConfig: arenaConfigPda,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+  }
+
+  const data = Buffer.concat([
+    anchorGlobalDiscriminator("migrate_arena_config_v2"),
+    u64Buffer(value),
+  ]);
+  const ix = new TransactionInstruction({
+    programId: ICHOR_TOKEN_ID,
+    keys: [
+      { pubkey: admin.publicKey, isSigner: true, isWritable: true },
+      { pubkey: arenaConfigPda, isSigner: false, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data,
+  });
+  return await sendAdminInstructions(provider, admin, [ix]);
+}
+
+/**
  * Admin: permanently revoke mint authority. Supply becomes fixed at 1B.
  * Returns tx signature on success, null if admin keypair unavailable.
  */
@@ -998,30 +1264,20 @@ export async function buildPlaceBetTx(
   const provider = getProvider(connection);
   const program = getRumbleEngineProgram(provider);
 
-  const [rumbleConfigPda] = deriveRumbleConfigPda();
-  const [rumblePda] = deriveRumblePda(rumbleId);
-  const [vaultPda] = deriveVaultPda(rumbleId);
-  const [bettorAccountPda] = deriveBettorPda(rumbleId, bettor, fighterIndex);
-
-  // Read the rumble account to get the fighter pubkey for sponsorship PDA
   const conn = connection ?? getConnection();
-  const rumbleInfo = await conn.getAccountInfo(rumblePda);
-  if (!rumbleInfo) throw new Error(`Rumble account not found: ${rumblePda}`);
-
-  // Rumble layout: discriminator(8) + id(8) + state(1) + fighters(32*16=512)
-  // Fighter at index: offset = 8 + 8 + 1 + (fighterIndex * 32)
-  const fighterOffset = 8 + 8 + 1 + fighterIndex * 32;
-  const fighterPubkey = new PublicKey(
-    rumbleInfo.data.subarray(fighterOffset, fighterOffset + 32)
-  );
-
+  const {
+    rumbleConfigPda,
+    rumblePda,
+    vaultPda,
+    treasury,
+    fighterPubkeys,
+  } = await loadRumbleBetContext(rumbleId, conn);
+  const fighterPubkey = fighterPubkeys[fighterIndex];
+  if (!fighterPubkey) {
+    throw new Error(`Invalid fighter index ${fighterIndex} for rumble ${rumbleId}`);
+  }
   const [sponsorshipPda] = deriveSponsorshipPda(fighterPubkey);
-
-  // Read config to get treasury
-  const configInfo = await conn.getAccountInfo(rumbleConfigPda);
-  if (!configInfo) throw new Error("Rumble config not found");
-  // RumbleConfig: discriminator(8) + admin(32) + treasury(32)
-  const treasury = new PublicKey(configInfo.data.subarray(8 + 32, 8 + 32 + 32));
+  const [bettorAccountPda] = deriveBettorPda(rumbleId, bettor);
 
   const tx = await (program.methods as any)
     .placeBet(
@@ -1049,6 +1305,118 @@ export async function buildPlaceBetTx(
   tx.lastValidBlockHeight = lastValidBlockHeight;
 
   return tx;
+}
+
+/**
+ * Build a single transaction containing multiple place_bet instructions.
+ * This enables users to bet multiple fighters with one wallet signature.
+ */
+export async function buildPlaceBetBatchTx(
+  bettor: PublicKey,
+  rumbleId: number,
+  bets: Array<{ fighterIndex: number; lamports: number }>,
+  connection?: Connection,
+): Promise<Transaction> {
+  if (!Array.isArray(bets) || bets.length === 0) {
+    throw new Error("At least one bet is required for batch place_bet");
+  }
+
+  const provider = getProvider(connection);
+  const program = getRumbleEngineProgram(provider);
+  const conn = connection ?? getConnection();
+
+  const {
+    rumbleConfigPda,
+    rumblePda,
+    vaultPda,
+    treasury,
+    fighterPubkeys,
+  } = await loadRumbleBetContext(rumbleId, conn);
+  const [bettorAccountPda] = deriveBettorPda(rumbleId, bettor);
+
+  const tx = new Transaction();
+
+  for (const leg of bets) {
+    if (!Number.isInteger(leg.fighterIndex) || leg.fighterIndex < 0) {
+      throw new Error(`Invalid fighterIndex in batch leg: ${String(leg.fighterIndex)}`);
+    }
+    if (!Number.isFinite(leg.lamports) || leg.lamports <= 0) {
+      throw new Error(`Invalid lamports in batch leg for fighter ${leg.fighterIndex}`);
+    }
+
+    const fighterPubkey = fighterPubkeys[leg.fighterIndex];
+    if (!fighterPubkey) {
+      throw new Error(`Fighter index ${leg.fighterIndex} not found in rumble ${rumbleId}`);
+    }
+    const [sponsorshipPda] = deriveSponsorshipPda(fighterPubkey);
+
+    const ix = await (program.methods as any)
+      .placeBet(
+        new anchor.BN(rumbleId),
+        leg.fighterIndex,
+        new anchor.BN(leg.lamports),
+      )
+      .accounts({
+        bettor,
+        rumble: rumblePda,
+        vault: vaultPda,
+        treasury,
+        config: rumbleConfigPda,
+        sponsorshipAccount: sponsorshipPda,
+        bettorAccount: bettorAccountPda,
+        systemProgram: SystemProgram.programId,
+      })
+      .instruction();
+
+    tx.add(ix);
+  }
+
+  tx.feePayer = bettor;
+  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+  tx.recentBlockhash = blockhash;
+  tx.lastValidBlockHeight = lastValidBlockHeight;
+  return tx;
+}
+
+async function loadRumbleBetContext(
+  rumbleId: number,
+  conn: Connection,
+): Promise<{
+  rumbleConfigPda: PublicKey;
+  rumblePda: PublicKey;
+  vaultPda: PublicKey;
+  treasury: PublicKey;
+  fighterPubkeys: PublicKey[];
+}> {
+  const [rumbleConfigPda] = deriveRumbleConfigPda();
+  const [rumblePda] = deriveRumblePda(rumbleId);
+  const [vaultPda] = deriveVaultPda(rumbleId);
+
+  const [rumbleInfo, configInfo] = await Promise.all([
+    conn.getAccountInfo(rumblePda),
+    conn.getAccountInfo(rumbleConfigPda),
+  ]);
+  if (!rumbleInfo) throw new Error(`Rumble account not found: ${rumblePda}`);
+  if (!configInfo) throw new Error("Rumble config not found");
+
+  // Rumble layout: discriminator(8) + id(8) + state(1) + fighters(32*16=512)
+  const fighterOffsetBase = 8 + 8 + 1;
+  const fighterPubkeys: PublicKey[] = [];
+  for (let i = 0; i < 16; i++) {
+    const start = fighterOffsetBase + i * 32;
+    fighterPubkeys.push(new PublicKey(rumbleInfo.data.subarray(start, start + 32)));
+  }
+
+  // RumbleConfig: discriminator(8) + admin(32) + treasury(32)
+  const treasury = new PublicKey(configInfo.data.subarray(8 + 32, 8 + 32 + 32));
+
+  return {
+    rumbleConfigPda,
+    rumblePda,
+    vaultPda,
+    treasury,
+    fighterPubkeys,
+  };
 }
 
 /**
@@ -1121,7 +1489,6 @@ export async function reportResult(
 export async function buildClaimPayoutTx(
   bettor: PublicKey,
   rumbleId: number,
-  fighterIndex: number,
   connection?: Connection
 ): Promise<Transaction> {
   const provider = getProvider(connection);
@@ -1129,7 +1496,7 @@ export async function buildClaimPayoutTx(
 
   const [rumblePda] = deriveRumblePda(rumbleId);
   const [vaultPda] = deriveVaultPda(rumbleId);
-  const [bettorAccountPda] = deriveBettorPda(rumbleId, bettor, fighterIndex);
+  const [bettorAccountPda] = deriveBettorPda(rumbleId, bettor);
 
   const conn = connection ?? getConnection();
 
@@ -1140,6 +1507,7 @@ export async function buildClaimPayoutTx(
       rumble: rumblePda,
       vault: vaultPda,
       bettorAccount: bettorAccountPda,
+      systemProgram: SystemProgram.programId,
     })
     .transaction();
 
@@ -1150,6 +1518,59 @@ export async function buildClaimPayoutTx(
   tx.recentBlockhash = blockhash;
   tx.lastValidBlockHeight = lastValidBlockHeight;
 
+  return tx;
+}
+
+/**
+ * Build one transaction with multiple claim_payout instructions so a wallet
+ * can claim all ready rumble wins in a single signature.
+ */
+export async function buildClaimPayoutBatchTx(
+  bettor: PublicKey,
+  rumbleIds: number[],
+  connection?: Connection,
+): Promise<Transaction> {
+  if (!Array.isArray(rumbleIds) || rumbleIds.length === 0) {
+    throw new Error("At least one rumble id is required for batch claim");
+  }
+
+  const uniqueRumbleIds = [...new Set(
+    rumbleIds.filter((id) => Number.isInteger(id) && id > 0),
+  )];
+  if (uniqueRumbleIds.length === 0) {
+    throw new Error("No valid rumble ids provided for batch claim");
+  }
+
+  const provider = getProvider(connection);
+  const program = getRumbleEngineProgram(provider);
+  const conn = connection ?? getConnection();
+  const tx = new Transaction();
+
+  // Batch claim instructions can exceed the default compute cap.
+  tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 900_000 }));
+
+  for (const rumbleId of uniqueRumbleIds) {
+    const [rumblePda] = deriveRumblePda(rumbleId);
+    const [vaultPda] = deriveVaultPda(rumbleId);
+    const [bettorAccountPda] = deriveBettorPda(rumbleId, bettor);
+
+    const ix = await (program.methods as any)
+      .claimPayout()
+      .accounts({
+        bettor,
+        rumble: rumblePda,
+        vault: vaultPda,
+        bettorAccount: bettorAccountPda,
+        systemProgram: SystemProgram.programId,
+      })
+      .instruction();
+    tx.add(ix);
+  }
+
+  tx.feePayer = bettor;
+  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+  tx.recentBlockhash = blockhash;
+  tx.lastValidBlockHeight = lastValidBlockHeight;
   return tx;
 }
 
@@ -1174,6 +1595,7 @@ export async function buildClaimSponsorshipTx(
       fighterOwner,
       fighter: fighterPubkey,
       sponsorshipAccount: sponsorshipPda,
+      systemProgram: SystemProgram.programId,
     })
     .transaction();
 
@@ -1185,6 +1607,40 @@ export async function buildClaimSponsorshipTx(
   tx.lastValidBlockHeight = lastValidBlockHeight;
 
   return tx;
+}
+
+/**
+ * Read the fighter account authority from Fighter Registry account data.
+ * Returns null if account is missing or malformed.
+ */
+export async function readFighterAuthority(
+  fighterPubkey: PublicKey,
+  connection?: Connection,
+): Promise<PublicKey | null> {
+  const conn = connection ?? getConnection();
+  const info = await conn.getAccountInfo(fighterPubkey, "confirmed");
+  if (!info || info.data.length < 40) return null;
+  if (!info.owner.equals(FIGHTER_REGISTRY_ID)) return null;
+  return new PublicKey(info.data.subarray(8, 40));
+}
+
+/**
+ * Read currently claimable sponsorship lamports for a fighter's sponsorship PDA.
+ * Returns max(vault_lamports - rent_exempt_minimum, 0).
+ */
+export async function readSponsorshipClaimableLamports(
+  fighterPubkey: PublicKey,
+  connection?: Connection,
+): Promise<bigint> {
+  const conn = connection ?? getConnection();
+  const [sponsorshipPda] = deriveSponsorshipPda(fighterPubkey);
+  const [info, rentMin] = await Promise.all([
+    conn.getAccountInfo(sponsorshipPda, "confirmed"),
+    conn.getMinimumBalanceForRentExemption(0, "confirmed"),
+  ]);
+  if (!info) return 0n;
+  const available = BigInt(info.lamports) - BigInt(rentMin);
+  return available > 0n ? available : 0n;
 }
 
 /**
@@ -1252,6 +1708,7 @@ export async function sweepTreasury(
       rumble: rumblePda,
       vault: vaultPda,
       treasury,
+      systemProgram: SystemProgram.programId,
     })
     .rpc();
 
@@ -1376,9 +1833,12 @@ export async function readArenaConfig(
   totalDistributed: bigint;
   totalRumblesCompleted: bigint;
   baseReward: bigint;
+  seasonReward: bigint;
+  effectiveReward: bigint;
   ichorShowerPool: bigint;
   treasuryVault: bigint;
   bump: number;
+  accountDataLen: number;
   /** @deprecated Use totalDistributed */
   totalMinted: bigint;
 } | null> {
@@ -1406,6 +1866,11 @@ export async function readArenaConfig(
   const treasuryVault = d.readBigUInt64LE(offset);
   offset += 8;
   const bump = d[offset];
+  // season_reward was added in ArenaConfig V2. Legacy accounts (V1) end at bump.
+  const seasonRewardOffset = offset + 1;
+  const seasonReward =
+    d.length >= seasonRewardOffset + 8 ? d.readBigUInt64LE(seasonRewardOffset) : 0n;
+  const effectiveReward = seasonReward > 0n ? seasonReward : baseReward;
 
   return {
     admin,
@@ -1414,9 +1879,12 @@ export async function readArenaConfig(
     totalDistributed,
     totalRumblesCompleted,
     baseReward,
+    seasonReward,
+    effectiveReward,
     ichorShowerPool,
     treasuryVault,
     bump,
+    accountDataLen: d.length,
     totalMinted: totalDistributed, // backwards compat alias
   };
 }

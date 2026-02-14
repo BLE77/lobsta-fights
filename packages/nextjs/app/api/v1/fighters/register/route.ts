@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Redirect alias - people might try /api/v1/fighters/register
 // Actual endpoint is /api/fighter/register
 

@@ -83,7 +83,24 @@ export interface SlotData {
 interface RumbleSlotProps {
   slot: SlotData;
   onPlaceBet?: (slotIndex: number, fighterId: string, amount: number) => void;
-  myBetFighterIds?: Set<string>;
+  onPlaceBatchBet?: (
+    slotIndex: number,
+    bets: Array<{ fighterId: string; amount: number }>,
+  ) => Promise<void> | void;
+  myBetAmounts?: Map<string, number>;
+  lastCompletedResult?: {
+    rumbleId: string;
+    settledAtIso: string;
+    placements: Array<{
+      fighterId: string;
+      fighterName: string;
+      imageUrl: string | null;
+      placement: number;
+      hp: number;
+      damageDealt: number;
+    }>;
+    payout: SlotPayout;
+  };
 }
 
 function getStateLabel(state: SlotData["state"]): {
@@ -121,6 +138,13 @@ function getStateLabel(state: SlotData["state"]): {
         bgColor: "bg-green-900/10",
         borderColor: "border-green-700/40",
       };
+    default:
+      return {
+        text: "IDLE",
+        color: "text-stone-500",
+        bgColor: "bg-stone-900/50",
+        borderColor: "border-stone-800",
+      };
   }
 }
 
@@ -132,8 +156,15 @@ interface ActiveElimination {
   totalFighters: number;
 }
 
-export default function RumbleSlot({ slot, onPlaceBet, myBetFighterIds }: RumbleSlotProps) {
+export default function RumbleSlot({
+  slot,
+  onPlaceBet,
+  onPlaceBatchBet,
+  myBetAmounts,
+  lastCompletedResult,
+}: RumbleSlotProps) {
   const label = getStateLabel(slot.state);
+  const myBetFighterIds = myBetAmounts ? new Set(myBetAmounts.keys()) : undefined;
   const [activeEliminations, setActiveEliminations] = useState<
     ActiveElimination[]
   >([]);
@@ -213,16 +244,32 @@ export default function RumbleSlot({ slot, onPlaceBet, myBetFighterIds }: Rumble
       <div className="p-4">
         {/* IDLE state */}
         {slot.state === "idle" && (
-          <div className="flex items-center justify-center h-32">
-            <div className="text-center">
-              <p className="font-mono text-sm text-stone-600">
-                Waiting for fighters...
-              </p>
-              <p className="font-mono text-[10px] text-stone-700 mt-1">
-                Rumble starts when queue fills
-              </p>
+          lastCompletedResult ? (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between text-[10px] font-mono uppercase">
+                <span className="text-stone-500">Last Rumble Result</span>
+                <span className="text-stone-600">
+                  Waiting for next fighters
+                </span>
+              </div>
+              <PayoutDisplay
+                placements={lastCompletedResult.placements}
+                payout={lastCompletedResult.payout}
+                myBetFighterIds={myBetFighterIds}
+              />
             </div>
-          </div>
+          ) : (
+            <div className="flex items-center justify-center h-32">
+              <div className="text-center">
+                <p className="font-mono text-sm text-stone-600">
+                  Waiting for fighters...
+                </p>
+                <p className="font-mono text-[10px] text-stone-700 mt-1">
+                  Rumble starts when queue fills
+                </p>
+              </div>
+            </div>
+          )
         )}
 
         {/* BETTING state */}
@@ -233,6 +280,8 @@ export default function RumbleSlot({ slot, onPlaceBet, myBetFighterIds }: Rumble
             totalPool={slot.totalPool}
             deadline={slot.bettingDeadline}
             onPlaceBet={onPlaceBet}
+            onPlaceBatchBet={onPlaceBatchBet}
+            myBetAmounts={myBetAmounts}
           />
         )}
 

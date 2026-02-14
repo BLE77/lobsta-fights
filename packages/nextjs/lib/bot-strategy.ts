@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Clawdbot AI Fighter Strategy
  *

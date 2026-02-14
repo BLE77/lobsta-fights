@@ -1,14 +1,16 @@
 /** @type {import('next').NextConfig} */
+const ALLOW_LENIENT_BUILD = process.env.ALLOW_LENIENT_BUILD === "1";
+
 const nextConfig = {
   reactStrictMode: true,
   images: {
     unoptimized: true,
   },
   typescript: {
-    ignoreBuildErrors: true,
+    ignoreBuildErrors: ALLOW_LENIENT_BUILD,
   },
   eslint: {
-    ignoreDuringBuilds: true,
+    ignoreDuringBuilds: ALLOW_LENIENT_BUILD,
   },
   async headers() {
     return [

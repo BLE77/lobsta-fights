@@ -1,6 +1,7 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Burn, Mint, MintTo, SetAuthority, Token, TokenAccount, Transfer};
+use anchor_lang::system_program;
 use anchor_spl::token::spl_token::instruction::AuthorityType;
+use anchor_spl::token::{self, Burn, Mint, MintTo, SetAuthority, Token, TokenAccount, Transfer};
 
 declare_id!("925GAeqjKMX4B5MDANB91SZCvrx8HpEgmPJwHJzxKJx1");
 
@@ -21,6 +22,12 @@ const SHOWER_POOL_CUT: u64 = 100_000_000;
 
 /// Ichor Shower trigger chance: 1 in 500
 const SHOWER_CHANCE: u64 = 500;
+
+/// Seasonal split model (matches current betting.ts season math).
+const BETTOR_SHARE_BPS: u64 = 1_000; // 10%
+const FIGHTER_SHARE_BPS: u64 = 8_000; // 80%
+const SHOWER_SHARE_BPS: u64 = 1_000; // 10%
+const FIGHTER_FIRST_SHARE_BPS: u64 = 4_000; // 40% of fighter share => 32% of total reward
 
 /// Halving schedule boundaries (by rumble count)
 const HALVING_1: u64 = 2_100_000;
@@ -105,18 +112,56 @@ pub mod ichor_token {
         Ok(())
     }
 
-    /// Distribute rewards from the vault after a completed Rumble.
-    /// Transfers ICHOR from the distribution vault to the winner and shower pool.
+    /// Distribute the on-chain core reward from the vault after a completed Rumble.
+    ///
+    /// This instruction transfers:
+    /// - 1st fighter share (32% of seasonal reward)
+    /// - shower pool contribution (10% of seasonal reward + fixed 0.2 ICHOR)
+    ///
+    /// Remaining seasonal splits (winner bettors + non-1st fighters) are sent
+    /// on-chain by orchestrator via `admin_distribute`.
     pub fn distribute_reward(ctx: Context<DistributeReward>) -> Result<()> {
         let arena_info = ctx.accounts.arena_config.to_account_info();
         let arena = &mut ctx.accounts.arena_config;
 
         // Calculate reward (season-based flat reward, no halving)
-        let reward = calculate_reward(arena.base_reward, arena.total_rumbles_completed, arena.season_reward);
+        let reward = calculate_reward(
+            arena.base_reward,
+            arena.total_rumbles_completed,
+            arena.season_reward,
+        );
 
-        // Total emission = reward + shower bonus
-        let total_emission = reward
+        let _bettor_pool = reward
+            .checked_mul(BETTOR_SHARE_BPS)
+            .ok_or(IchorError::MathOverflow)?
+            .checked_div(10_000)
+            .ok_or(IchorError::MathOverflow)?;
+
+        let fighter_pool = reward
+            .checked_mul(FIGHTER_SHARE_BPS)
+            .ok_or(IchorError::MathOverflow)?
+            .checked_div(10_000)
+            .ok_or(IchorError::MathOverflow)?;
+
+        let winner_amount = fighter_pool
+            .checked_mul(FIGHTER_FIRST_SHARE_BPS)
+            .ok_or(IchorError::MathOverflow)?
+            .checked_div(10_000)
+            .ok_or(IchorError::MathOverflow)?;
+
+        let shower_from_reward = reward
+            .checked_mul(SHOWER_SHARE_BPS)
+            .ok_or(IchorError::MathOverflow)?
+            .checked_div(10_000)
+            .ok_or(IchorError::MathOverflow)?;
+
+        let shower_addition = shower_from_reward
             .checked_add(SHOWER_BONUS_EMISSION)
+            .ok_or(IchorError::MathOverflow)?;
+
+        // This instruction emits only the core on-chain portion.
+        let total_emission = winner_amount
+            .checked_add(shower_addition)
             .ok_or(IchorError::MathOverflow)?;
 
         // Check vault has enough balance
@@ -124,19 +169,6 @@ pub mod ichor_token {
             ctx.accounts.distribution_vault.amount >= total_emission,
             IchorError::VaultInsufficientBalance
         );
-
-        // Amount going to winner = reward - shower pool cut
-        // Gracefully degrade at deep halvings: if reward < SHOWER_POOL_CUT, entire
-        // reward goes to pool and winner gets zero (prevents underflow DOS -- C-1 fix).
-        let pool_cut = reward.min(SHOWER_POOL_CUT);
-        let winner_amount = reward
-            .checked_sub(pool_cut)
-            .ok_or(IchorError::MathOverflow)?;
-
-        // Shower pool gets: cut from reward + bonus emission
-        let shower_addition = pool_cut
-            .checked_add(SHOWER_BONUS_EMISSION)
-            .ok_or(IchorError::MathOverflow)?;
 
         // Build PDA signer seeds
         let bump = &[arena.bump];
@@ -191,7 +223,7 @@ pub mod ichor_token {
             .ok_or(IchorError::MathOverflow)?;
 
         msg!(
-            "Rumble #{} reward: {} to winner, {} to shower pool. Total distributed: {}",
+            "Rumble #{} on-chain core emission: {} to 1st fighter, {} to shower pool. Total distributed: {}",
             arena.total_rumbles_completed,
             winner_amount,
             shower_addition,
@@ -286,17 +318,19 @@ pub mod ichor_token {
 
         // Validate entropy_config PDA if provided (L-4 defense-in-depth fix).
         if let Some(ref cfg) = ctx.accounts.entropy_config {
-            let (expected_key, _) = Pubkey::find_program_address(
-                &[ENTROPY_CONFIG_SEED],
-                ctx.program_id,
-            );
+            let (expected_key, _) =
+                Pubkey::find_program_address(&[ENTROPY_CONFIG_SEED], ctx.program_id);
             require!(cfg.key() == expected_key, IchorError::InvalidEntropyConfig);
         }
 
         // Auto-reset expired requests whose slot hashes have evicted (M-3 fix).
         // SlotHashes retains ~512 entries; past that, legacy settlement is impossible.
         const SLOT_HASH_EVICTION_WINDOW: u64 = 512;
-        if slot > request.target_slot_b.saturating_add(SLOT_HASH_EVICTION_WINDOW) {
+        if slot
+            > request
+                .target_slot_b
+                .saturating_add(SLOT_HASH_EVICTION_WINDOW)
+        {
             let is_entropy = ctx
                 .accounts
                 .entropy_config
@@ -547,6 +581,79 @@ pub mod ichor_token {
         Ok(())
     }
 
+    /// One-time migration helper for legacy ArenaConfig accounts that predate
+    /// `season_reward`. Reallocates the PDA and writes an explicit season reward.
+    pub fn migrate_arena_config_v2(
+        ctx: Context<MigrateArenaConfigV2>,
+        season_reward: u64,
+    ) -> Result<()> {
+        require!(
+            season_reward >= SHOWER_POOL_CUT && season_reward <= 10_000 * ONE_ICHOR,
+            IchorError::InvalidSeasonReward
+        );
+
+        const ARENA_V1_LEN: usize = 8 + 32 + 32 + 32 + 8 + 8 + 8 + 8 + 8 + 1; // 145
+        const ARENA_V2_LEN: usize = 8 + ArenaConfig::INIT_SPACE; // 153
+
+        let arena_info = ctx.accounts.arena_config.to_account_info();
+        require!(
+            arena_info.owner == ctx.program_id,
+            IchorError::InvalidArenaConfig
+        );
+
+        {
+            let data = arena_info.try_borrow_data()?;
+            require!(data.len() >= ARENA_V1_LEN, IchorError::InvalidArenaConfig);
+            require!(
+                &data[..8] == ArenaConfig::DISCRIMINATOR,
+                IchorError::InvalidArenaConfig
+            );
+            let admin_bytes: [u8; 32] = data[8..40]
+                .try_into()
+                .map_err(|_| error!(IchorError::InvalidArenaConfig))?;
+            let admin = Pubkey::new_from_array(admin_bytes);
+            require!(
+                admin == ctx.accounts.authority.key(),
+                IchorError::Unauthorized
+            );
+        }
+
+        if arena_info.data_len() < ARENA_V2_LEN {
+            let rent = Rent::get()?;
+            let min_balance = rent.minimum_balance(ARENA_V2_LEN);
+            let current = arena_info.lamports();
+            if min_balance > current {
+                let topup = min_balance
+                    .checked_sub(current)
+                    .ok_or(IchorError::MathOverflow)?;
+                system_program::transfer(
+                    CpiContext::new(
+                        ctx.accounts.system_program.to_account_info(),
+                        system_program::Transfer {
+                            from: ctx.accounts.authority.to_account_info(),
+                            to: arena_info.clone(),
+                        },
+                    ),
+                    topup,
+                )?;
+            }
+            arena_info.realloc(ARENA_V2_LEN, false)?;
+        }
+
+        {
+            let mut data = arena_info.try_borrow_mut_data()?;
+            let season_offset = ARENA_V1_LEN;
+            data[season_offset..season_offset + 8].copy_from_slice(&season_reward.to_le_bytes());
+        }
+
+        msg!(
+            "ArenaConfig migrated. account_len={}, season_reward={}",
+            arena_info.data_len(),
+            season_reward
+        );
+        Ok(())
+    }
+
     /// Admin: configure external entropy source for shower settlement.
     ///
     /// When enabled, check_ichor_shower settlement uses the entropy var account's
@@ -566,8 +673,14 @@ pub mod ichor_token {
                 entropy_program_id != Pubkey::default(),
                 IchorError::InvalidEntropyConfig
             );
-            require!(entropy_var != Pubkey::default(), IchorError::InvalidEntropyConfig);
-            require!(provider != Pubkey::default(), IchorError::InvalidEntropyConfig);
+            require!(
+                entropy_var != Pubkey::default(),
+                IchorError::InvalidEntropyConfig
+            );
+            require!(
+                provider != Pubkey::default(),
+                IchorError::InvalidEntropyConfig
+            );
             require!(
                 var_authority != Pubkey::default(),
                 IchorError::InvalidEntropyConfig
@@ -616,7 +729,11 @@ pub mod ichor_token {
         pending.proposed_at = Clock::get()?.slot;
         pending.bump = ctx.bumps.pending_admin;
 
-        msg!("Admin transfer proposed: {} -> {}", ctx.accounts.arena_config.admin, new_admin);
+        msg!(
+            "Admin transfer proposed: {} -> {}",
+            ctx.accounts.arena_config.admin,
+            new_admin
+        );
         Ok(())
     }
 
@@ -739,7 +856,10 @@ pub mod ichor_token {
             None,
         )?;
 
-        msg!("Mint authority permanently revoked. Supply fixed at {} ICHOR.", MAX_SUPPLY / ONE_ICHOR);
+        msg!(
+            "Mint authority permanently revoked. Supply fixed at {} ICHOR.",
+            MAX_SUPPLY / ONE_ICHOR
+        );
         Ok(())
     }
 }
@@ -823,8 +943,11 @@ fn parse_entropy_var(
         }
 
         let provider_offset = base + 40;
-        let provider =
-            Pubkey::new_from_array(data[provider_offset..provider_offset + 32].try_into().ok()?);
+        let provider = Pubkey::new_from_array(
+            data[provider_offset..provider_offset + 32]
+                .try_into()
+                .ok()?,
+        );
         if provider != *expected_provider {
             continue;
         }
@@ -1149,6 +1272,24 @@ pub struct AdminOnly<'info> {
 }
 
 #[derive(Accounts)]
+pub struct MigrateArenaConfigV2<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    /// CHECK: Legacy ArenaConfig PDA (possibly old layout). Seeds + owner are verified
+    /// in constraints/handler before migration write.
+    #[account(
+        mut,
+        seeds = [ARENA_SEED],
+        bump,
+        owner = crate::ID,
+    )]
+    pub arena_config: AccountInfo<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
 pub struct UpsertEntropyConfig<'info> {
     #[account(
         mut,
@@ -1295,34 +1436,34 @@ pub struct ArenaConfig {
 #[account]
 #[derive(InitSpace)]
 pub struct EntropyConfig {
-    pub initialized: bool,        // 1
-    pub enabled: bool,            // 1
-    pub bump: u8,                 // 1
+    pub initialized: bool,          // 1
+    pub enabled: bool,              // 1
+    pub bump: u8,                   // 1
     pub entropy_program_id: Pubkey, // 32
-    pub entropy_var: Pubkey,      // 32
-    pub provider: Pubkey,         // 32
-    pub var_authority: Pubkey,    // 32
+    pub entropy_var: Pubkey,        // 32
+    pub provider: Pubkey,           // 32
+    pub var_authority: Pubkey,      // 32
 }
 
 #[account]
 #[derive(InitSpace)]
 pub struct ShowerRequest {
-    pub initialized: bool,            // 1
-    pub active: bool,                 // 1
-    pub bump: u8,                     // 1
-    pub request_nonce: u64,           // 8
-    pub requested_slot: u64,          // 8
-    pub target_slot_a: u64,           // 8
-    pub target_slot_b: u64,           // 8
+    pub initialized: bool,               // 1
+    pub active: bool,                    // 1
+    pub bump: u8,                        // 1
+    pub request_nonce: u64,              // 8
+    pub requested_slot: u64,             // 8
+    pub target_slot_a: u64,              // 8
+    pub target_slot_b: u64,              // 8
     pub recipient_token_account: Pubkey, // 32
 }
 
 #[account]
 #[derive(InitSpace)]
 pub struct PendingAdmin {
-    pub proposed_admin: Pubkey,       // 32
-    pub proposed_at: u64,             // 8
-    pub bump: u8,                     // 1
+    pub proposed_admin: Pubkey, // 32
+    pub proposed_at: u64,       // 8
+    pub bump: u8,               // 1
 }
 
 // ---------------------------------------------------------------------------
@@ -1420,6 +1561,9 @@ pub enum IchorError {
     #[msg("Invalid distribution vault")]
     InvalidVault,
 
+    #[msg("Invalid arena config account")]
+    InvalidArenaConfig,
+
     #[msg("Distribute amount must be greater than zero")]
     ZeroDistributeAmount,
 
@@ -1463,8 +1607,8 @@ mod tests {
         let provider = Pubkey::new_unique();
         let data = build_entropy_var_bytes(0, &authority, &provider);
 
-        let parsed = parse_entropy_var(&data, &authority, &provider)
-            .expect("expected entropy var parse");
+        let parsed =
+            parse_entropy_var(&data, &authority, &provider).expect("expected entropy var parse");
 
         assert_eq!(parsed.seed, [1u8; 32]);
         assert_eq!(parsed.slot_hash, [2u8; 32]);
@@ -1528,6 +1672,40 @@ mod tests {
         // When season_reward is 0, falls back to base_reward
         let reward = calculate_reward(ONE_ICHOR, 0, 0);
         assert_eq!(reward, ONE_ICHOR);
+    }
+
+    #[test]
+    fn season_split_matches_betting_model() {
+        let reward = 2_500 * ONE_ICHOR;
+
+        let fighter_pool = reward
+            .checked_mul(FIGHTER_SHARE_BPS)
+            .unwrap()
+            .checked_div(10_000)
+            .unwrap();
+        let winner_amount = fighter_pool
+            .checked_mul(FIGHTER_FIRST_SHARE_BPS)
+            .unwrap()
+            .checked_div(10_000)
+            .unwrap();
+        let shower_from_reward = reward
+            .checked_mul(SHOWER_SHARE_BPS)
+            .unwrap()
+            .checked_div(10_000)
+            .unwrap();
+        let shower_addition = shower_from_reward
+            .checked_add(SHOWER_BONUS_EMISSION)
+            .unwrap();
+        let bettor_pool = reward
+            .checked_mul(BETTOR_SHARE_BPS)
+            .unwrap()
+            .checked_div(10_000)
+            .unwrap();
+
+        assert_eq!(fighter_pool, 2_000 * ONE_ICHOR); // 80%
+        assert_eq!(winner_amount, 800 * ONE_ICHOR); // 32% total
+        assert_eq!(bettor_pool, 250 * ONE_ICHOR); // 10%
+        assert_eq!(shower_addition, 250 * ONE_ICHOR + SHOWER_BONUS_EMISSION); // 10% + 0.2
     }
 
     #[test]

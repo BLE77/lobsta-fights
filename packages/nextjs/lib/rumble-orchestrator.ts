@@ -34,7 +34,6 @@ import {
   placeBet as placeBetInPool,
   calculatePayouts,
   calculateOdds,
-  getSeasonReward,
   summarizePayouts,
   ADMIN_FEE_RATE,
   SPONSORSHIP_RATE,
@@ -45,6 +44,8 @@ import {
 import { METER_PER_TURN, SPECIAL_METER_COST, resolveCombat } from "./combat";
 
 import * as persist from "./rumble-persistence";
+import { getRumblePayoutMode } from "./rumble-payout-mode";
+import { parseOnchainRumbleIdNumber } from "./rumble-id";
 
 import {
   distributeReward as distributeRewardOnChain,
@@ -55,11 +56,11 @@ import {
   reportResult as reportResultOnChain,
   completeRumble as completeRumbleOnChain,
   sweepTreasury as sweepTreasuryOnChain,
-  updateFighterRecord as updateFighterRecordOnChain,
   ensureAta as ensureAtaOnChain,
   getIchorMint,
   deriveArenaConfigPda,
   readArenaConfig,
+  readRumbleAccountState,
   readShowerRequest,
 } from "./solana-programs";
 import { PublicKey } from "@solana/web3.js";
@@ -170,8 +171,50 @@ interface SlotCombatState {
 // ---------------------------------------------------------------------------
 
 const NUM_SLOTS = 3;
-const COMBAT_TICK_INTERVAL_MS = 3_000; // one turn every ~3 seconds
+
+function readIntervalMs(
+  envName: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const raw = Number(process.env[envName] ?? "");
+  if (!Number.isFinite(raw)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(raw)));
+}
+
+const COMBAT_TICK_INTERVAL_MS = readIntervalMs(
+  "RUMBLE_COMBAT_TICK_INTERVAL_MS",
+  3_000,
+  1_000,
+  15_000,
+);
 const SHOWER_SETTLEMENT_POLL_MS = 12_000;
+const ONCHAIN_FINALIZATION_DELAY_MS = 30_000;
+const ONCHAIN_FINALIZATION_RETRY_MS = 10_000;
+const MAX_FINALIZATION_ATTEMPTS = 30;
+const ONCHAIN_CREATE_RECOVERY_DEADLINE_SKEW_SEC = 5;
+
+interface PendingFinalization {
+  rumbleId: string;
+  rumbleIdNum: number;
+  nextAttemptAt: number;
+  attempts: number;
+  completeDone: boolean;
+}
+
+function formatError(err: unknown): string {
+  if (err instanceof Error) return `${err.name}: ${err.message}`;
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
+}
+
+function hasErrorToken(err: unknown, token: string): boolean {
+  return formatError(err).toLowerCase().includes(token.toLowerCase());
+}
 
 // ---------------------------------------------------------------------------
 // Orchestrator
@@ -200,6 +243,8 @@ export class RumbleOrchestrator {
 
   // Dedup: track rumble IDs that have been settled on-chain to prevent double payouts
   private settledRumbleIds: Map<string, number> = new Map(); // rumbleId → timestamp
+  private pendingFinalizations: Map<string, PendingFinalization> = new Map();
+  private tickInFlight: Promise<void> | null = null;
 
   constructor(queueManager: RumbleQueueManager) {
     this.queueManager = queueManager;
@@ -245,6 +290,17 @@ export class RumbleOrchestrator {
    * awaited on-chain calls) completes for this tick.
    */
   async tick(): Promise<void> {
+    if (this.tickInFlight) {
+      return this.tickInFlight;
+    }
+
+    this.tickInFlight = this.tickInternal().finally(() => {
+      this.tickInFlight = null;
+    });
+    return this.tickInFlight;
+  }
+
+  private async tickInternal(): Promise<void> {
     // Let the queue manager handle state transitions (idle→betting, betting→combat, etc.)
     this.queueManager.advanceSlots();
 
@@ -257,7 +313,96 @@ export class RumbleOrchestrator {
     // Await all slot processing; individual errors are caught inside processSlot
     await Promise.all(slotPromises);
 
+    await this.processPendingRumbleFinalizations();
     this.pollPendingIchorShower();
+  }
+
+  private enqueueRumbleFinalization(rumbleId: string, rumbleIdNum: number, delayMs: number): void {
+    const existing = this.pendingFinalizations.get(rumbleId);
+    if (existing) {
+      existing.nextAttemptAt = Math.min(existing.nextAttemptAt, Date.now() + delayMs);
+      return;
+    }
+    this.pendingFinalizations.set(rumbleId, {
+      rumbleId,
+      rumbleIdNum,
+      nextAttemptAt: Date.now() + delayMs,
+      attempts: 0,
+      completeDone: false,
+    });
+  }
+
+  private async processPendingRumbleFinalizations(): Promise<void> {
+    if (this.pendingFinalizations.size === 0) return;
+    const now = Date.now();
+    const due = [...this.pendingFinalizations.values()].filter((entry) => entry.nextAttemptAt <= now);
+    if (due.length === 0) return;
+    await Promise.all(due.map((entry) => this.finalizeRumbleOnChain(entry)));
+  }
+
+  private async finalizeRumbleOnChain(entry: PendingFinalization): Promise<void> {
+    entry.attempts += 1;
+
+    // 1) completeRumble
+    if (!entry.completeDone) {
+      try {
+        const completeSig = await completeRumbleOnChain(entry.rumbleIdNum);
+        if (completeSig) {
+          console.log(`[OnChain] completeRumble succeeded: ${completeSig}`);
+          persist.updateRumbleTxSignature(entry.rumbleId, "completeRumble", completeSig);
+          entry.completeDone = true;
+        } else {
+          throw new Error("completeRumble returned null");
+        }
+      } catch (err) {
+        const onchainState = await readRumbleAccountState(entry.rumbleIdNum).catch(() => null);
+        if (onchainState?.state === "complete") {
+          entry.completeDone = true;
+          console.log(
+            `[OnChain] completeRumble already finalized for ${entry.rumbleId}; skipping duplicate complete call`
+          );
+        } else {
+          if (entry.attempts >= MAX_FINALIZATION_ATTEMPTS) {
+            this.pendingFinalizations.delete(entry.rumbleId);
+            console.error(`[OnChain] completeRumble failed permanently for ${entry.rumbleId}:`, err);
+            return;
+          }
+          entry.nextAttemptAt = Date.now() + ONCHAIN_FINALIZATION_RETRY_MS;
+          console.warn(
+            `[OnChain] completeRumble retry ${entry.attempts}/${MAX_FINALIZATION_ATTEMPTS} for ${entry.rumbleId} (${formatError(err)})`
+          );
+          return;
+        }
+      }
+    }
+
+    // 2) sweepTreasury
+    try {
+      const sweepSig = await sweepTreasuryOnChain(entry.rumbleIdNum);
+      if (sweepSig) {
+        console.log(`[OnChain] sweepTreasury succeeded: ${sweepSig}`);
+        persist.updateRumbleTxSignature(entry.rumbleId, "sweepTreasury", sweepSig);
+      } else {
+        throw new Error("sweepTreasury returned null");
+      }
+      this.pendingFinalizations.delete(entry.rumbleId);
+    } catch (err) {
+      // If the vault is already drained, finalization is effectively complete.
+      if (hasErrorToken(err, "NothingToClaim") || hasErrorToken(err, "InsufficientVaultFunds")) {
+        console.log(`[OnChain] sweepTreasury already drained for ${entry.rumbleId}; marking finalization complete`);
+        this.pendingFinalizations.delete(entry.rumbleId);
+        return;
+      }
+      if (entry.attempts >= MAX_FINALIZATION_ATTEMPTS) {
+        this.pendingFinalizations.delete(entry.rumbleId);
+        console.error(`[OnChain] sweepTreasury failed permanently for ${entry.rumbleId}:`, err);
+        return;
+      }
+      entry.nextAttemptAt = Date.now() + ONCHAIN_FINALIZATION_RETRY_MS;
+      console.warn(
+        `[OnChain] sweepTreasury retry ${entry.attempts}/${MAX_FINALIZATION_ATTEMPTS} for ${entry.rumbleId} (${formatError(err)})`
+      );
+    }
   }
 
   private pollPendingIchorShower(): void {
@@ -347,7 +492,13 @@ export class RumbleOrchestrator {
       });
 
       // On-chain: create rumble (awaited, but failures don't block the game)
-      await this.createRumbleOnChain(slot);
+      await this.createRumbleOnChain(
+        slot.id,
+        slot.fighters,
+        slot.bettingDeadline
+          ? Math.floor(slot.bettingDeadline.getTime() / 1000)
+          : Math.floor(Date.now() / 1000) + 60,
+      );
     }
   }
 
@@ -355,46 +506,96 @@ export class RumbleOrchestrator {
    * Create a rumble on-chain when betting opens.
    * Awaited but failures do not block the off-chain game loop.
    */
-  private async createRumbleOnChain(slot: RumbleSlot): Promise<void> {
-    const rumbleIdNum = parseInt(slot.id.replace(/\D/g, ""), 10);
-    if (isNaN(rumbleIdNum)) {
-      console.warn(`[OnChain] Cannot parse rumbleId "${slot.id}" for createRumble`);
-      return;
+  private async createRumbleOnChain(
+    rumbleId: string,
+    fighterIds: string[],
+    bettingDeadlineUnix: number,
+  ): Promise<boolean> {
+    const rumbleIdNum = parseOnchainRumbleIdNumber(rumbleId);
+    if (rumbleIdNum === null) {
+      console.warn(`[OnChain] Cannot parse rumbleId "${rumbleId}" for createRumble`);
+      return false;
     }
 
     // Resolve fighter names to wallet pubkeys via Supabase lookup
-    const walletMap = await persist.lookupFighterWallets(slot.fighters);
+    const walletMap = await persist.lookupFighterWallets(fighterIds);
     const fighterPubkeys: PublicKey[] = [];
-    for (const fid of slot.fighters) {
+    for (const fid of fighterIds) {
       const walletAddr = walletMap.get(fid);
       if (walletAddr) {
         try {
           fighterPubkeys.push(new PublicKey(walletAddr));
         } catch {
           console.warn(`[OnChain] Invalid wallet for "${fid}": ${walletAddr}`);
-          return;
+          return false;
         }
       } else {
         console.log(`[OnChain] No wallet for "${fid}", skipping createRumble`);
-        return;
+        return false;
       }
     }
 
-    const deadline = slot.bettingDeadline
-      ? Math.floor(slot.bettingDeadline.getTime() / 1000)
-      : Math.floor(Date.now() / 1000) + 60;
-
     try {
-      const sig = await createRumbleOnChain(rumbleIdNum, fighterPubkeys, deadline);
+      const sig = await createRumbleOnChain(rumbleIdNum, fighterPubkeys, bettingDeadlineUnix);
       if (sig) {
         console.log(`[OnChain] createRumble succeeded: ${sig}`);
-        persist.updateRumbleTxSignature(slot.id, "createRumble", sig);
+        persist.updateRumbleTxSignature(rumbleId, "createRumble", sig);
+        return true;
       } else {
         console.warn(`[OnChain] createRumble returned null — continuing off-chain`);
+        return false;
       }
     } catch (err) {
       console.error(`[OnChain] createRumble error:`, err);
+      return false;
     }
+  }
+
+  private async ensureOnchainRumbleExists(
+    rumbleId: string,
+    fighterIds: string[],
+    bettingDeadlineUnix: number,
+  ): Promise<boolean> {
+    const rumbleIdNum = parseOnchainRumbleIdNumber(rumbleId);
+    if (rumbleIdNum === null) return false;
+
+    const existing = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+    if (existing) return true;
+
+    const created = await this.createRumbleOnChain(rumbleId, fighterIds, bettingDeadlineUnix);
+    if (!created) return false;
+
+    const after = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+    return !!after;
+  }
+
+  private async ensureOnchainRumbleIsCombatReady(
+    rumbleId: string,
+    fighterIds: string[],
+    bettingDeadlineUnix: number,
+  ): Promise<Awaited<ReturnType<typeof readRumbleAccountState>>> {
+    const rumbleIdNum = parseOnchainRumbleIdNumber(rumbleId);
+    if (rumbleIdNum === null) return null;
+
+    const exists = await this.ensureOnchainRumbleExists(rumbleId, fighterIds, bettingDeadlineUnix);
+    if (!exists) return null;
+
+    let state = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+    if (!state) return null;
+
+    if (state.state === "betting") {
+      try {
+        const sig = await startCombatOnChain(rumbleIdNum);
+        if (sig) {
+          console.log(`[OnChain] startCombat (recovery) succeeded: ${sig}`);
+          persist.updateRumbleTxSignature(rumbleId, "startCombat", sig);
+        }
+      } catch (err) {
+        console.warn(`[OnChain] startCombat (recovery) failed for ${rumbleId}: ${formatError(err)}`);
+      }
+      state = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+    }
+    return state;
   }
 
   /**
@@ -402,8 +603,23 @@ export class RumbleOrchestrator {
    * Awaited but failures do not block the off-chain game loop.
    */
   private async startCombatOnChain(slot: RumbleSlot): Promise<void> {
-    const rumbleIdNum = parseInt(slot.id.replace(/\D/g, ""), 10);
-    if (isNaN(rumbleIdNum)) return;
+    const rumbleIdNum = parseOnchainRumbleIdNumber(slot.id);
+    if (rumbleIdNum === null) return;
+
+    const onchainState = await this.ensureOnchainRumbleIsCombatReady(
+      slot.id,
+      slot.fighters,
+      slot.bettingDeadline
+        ? Math.floor(slot.bettingDeadline.getTime() / 1000)
+        : Math.floor(Date.now() / 1000) + 60,
+    );
+    if (!onchainState) {
+      console.warn(`[OnChain] startCombat skipped: rumble ${slot.id} does not exist on-chain yet`);
+      return;
+    }
+    if (onchainState.state === "combat" || onchainState.state === "payout" || onchainState.state === "complete") {
+      return;
+    }
 
     try {
       const sig = await startCombatOnChain(rumbleIdNum);
@@ -428,61 +644,70 @@ export class RumbleOrchestrator {
     fighterId: string,
     solAmount: number,
   ): { accepted: boolean; reason?: string } {
+    return this.placeBets(slotIndex, bettorId, [{ fighterId, solAmount }]);
+  }
+
+  /**
+   * External API: place multiple bets in one request for the same slot.
+   * Returns { accepted: true } or { accepted: false, reason: string }.
+   */
+  placeBets(
+    slotIndex: number,
+    bettorId: string,
+    bets: Array<{ fighterId: string; solAmount: number }>,
+  ): { accepted: boolean; reason?: string } {
+    if (!bets.length) {
+      return { accepted: false, reason: "No bets provided." };
+    }
+
     const slot = this.queueManager.getSlot(slotIndex);
     if (!slot) {
-      console.log(`[placeBet] REJECTED: slot ${slotIndex} not found`);
+      console.log(`[placeBets] REJECTED: slot ${slotIndex} not found`);
       return { accepted: false, reason: "Slot not found." };
     }
     if (slot.state !== "betting") {
-      console.log(`[placeBet] REJECTED: slot ${slotIndex} state=${slot.state} (not betting)`);
+      console.log(`[placeBets] REJECTED: slot ${slotIndex} state=${slot.state} (not betting)`);
       return { accepted: false, reason: "Betting is not open for this slot." };
     }
 
-    // Validate fighter is in this rumble
-    if (!slot.fighters.includes(fighterId)) {
-      console.log(`[placeBet] REJECTED: fighter ${fighterId} not in slot fighters: [${slot.fighters.join(", ")}]`);
-      return { accepted: false, reason: "Fighter is not in this Rumble." };
+    for (const bet of bets) {
+      if (!slot.fighters.includes(bet.fighterId)) {
+        console.log(
+          `[placeBets] REJECTED: fighter ${bet.fighterId} not in slot fighters: [${slot.fighters.join(", ")}]`,
+        );
+        return { accepted: false, reason: "Fighter is not in this Rumble." };
+      }
+      if (!Number.isFinite(bet.solAmount) || bet.solAmount <= 0) {
+        return { accepted: false, reason: "Bet amount must be positive." };
+      }
     }
 
     const pool = this.bettingPools.get(slotIndex);
     if (!pool || pool.rumbleId !== slot.id) {
-      console.log(`[placeBet] REJECTED: no pool for slot ${slotIndex} or rumbleId mismatch`);
+      console.log(`[placeBets] REJECTED: no pool for slot ${slotIndex} or rumbleId mismatch`);
       return { accepted: false, reason: "Betting pool not available." };
     }
 
-    // Duplicate bet prevention: reject if this wallet already bet on a DIFFERENT fighter
-    const existingBetOnOther = pool.bets.find(
-      (b) => b.bettorId === bettorId && b.fighterId !== fighterId,
-    );
-    if (existingBetOnOther) {
-      console.log(
-        `[placeBet] REJECTED: wallet ${bettorId} already bet on ${existingBetOnOther.fighterId} in slot ${slotIndex}, cannot also bet on ${fighterId}`,
-      );
-      return {
-        accepted: false,
-        reason:
-          "You already bet on a different fighter in this slot. One fighter per wallet per Rumble.",
-      };
+    for (const bet of bets) {
+      placeBetInPool(pool, bettorId, bet.fighterId, bet.solAmount);
+
+      // Also record in the queue manager's betting pool (for its own tracking)
+      this.queueManager.placeBet(slotIndex, bettorId, bet.solAmount);
+
+      // Persist: save each bet to Supabase
+      const adminFee = bet.solAmount * ADMIN_FEE_RATE;
+      const sponsorFee = bet.solAmount * SPONSORSHIP_RATE;
+      const netAmount = bet.solAmount - adminFee - sponsorFee;
+      persist.saveBet({
+        rumbleId: slot.id,
+        walletAddress: bettorId,
+        fighterId: bet.fighterId,
+        grossAmount: bet.solAmount,
+        netAmount,
+        adminFee,
+        sponsorFee,
+      });
     }
-
-    placeBetInPool(pool, bettorId, fighterId, solAmount);
-
-    // Also record in the queue manager's betting pool (for its own tracking)
-    this.queueManager.placeBet(slotIndex, bettorId, solAmount);
-
-    // Persist: save bet to Supabase
-    const adminFee = solAmount * ADMIN_FEE_RATE;
-    const sponsorFee = solAmount * SPONSORSHIP_RATE;
-    const netAmount = solAmount - adminFee - sponsorFee;
-    persist.saveBet({
-      rumbleId: slot.id,
-      walletAddress: bettorId,
-      fighterId,
-      grossAmount: solAmount,
-      netAmount,
-      adminFee,
-      sponsorFee,
-    });
 
     return { accepted: true };
   }
@@ -772,51 +997,6 @@ export class RumbleOrchestrator {
       result,
     });
 
-    // On-chain settlement: awaited so we get proper logging and error tracking.
-    // settleOnChain has internal try/catch per step — failures are logged but
-    // do not throw, so the off-chain game loop continues regardless.
-    await this.settleOnChain(slot.id, winner, result.placements, state.fighters);
-  }
-
-  // ---------------------------------------------------------------------------
-  // Placement-based ICHOR reward split
-  // ---------------------------------------------------------------------------
-
-  // Percentage of distributable ICHOR (after shower cut) by placement.
-  // 1st=40%, 2nd=25%, 3rd=15%, remaining 20% split evenly among losers.
-  private static PLACEMENT_SPLITS = [0.40, 0.25, 0.15];
-  private static PARTICIPATION_POOL_PCT = 0.20;
-
-  /**
-   * Calculate ICHOR amounts for each fighter based on placement.
-   * Returns a map of fighterId → ICHOR amount (in raw lamports, 9 decimals).
-   */
-  private calculatePlacementRewards(
-    placements: Array<{ id: string; placement: number }>,
-    totalDistributable: bigint,
-  ): Map<string, bigint> {
-    const rewards = new Map<string, bigint>();
-    const sorted = [...placements].sort((a, b) => a.placement - b.placement);
-
-    // Top 3 get fixed percentages
-    for (let i = 0; i < Math.min(3, sorted.length); i++) {
-      const pct = RumbleOrchestrator.PLACEMENT_SPLITS[i];
-      const amount = (totalDistributable * BigInt(Math.round(pct * 10000))) / 10000n;
-      rewards.set(sorted[i].id, amount);
-    }
-
-    // Remaining fighters split the participation pool evenly
-    const losers = sorted.slice(3);
-    if (losers.length > 0) {
-      const participationTotal =
-        (totalDistributable * BigInt(Math.round(RumbleOrchestrator.PARTICIPATION_POOL_PCT * 10000))) / 10000n;
-      const perLoser = participationTotal / BigInt(losers.length);
-      for (const loser of losers) {
-        rewards.set(loser.id, perLoser);
-      }
-    }
-
-    return rewards;
   }
 
   /**
@@ -840,6 +1020,27 @@ export class RumbleOrchestrator {
     }
   }
 
+  private toIchorLamports(amountIchor: number): bigint {
+    if (!Number.isFinite(amountIchor) || amountIchor <= 0) return 0n;
+    return BigInt(Math.max(0, Math.floor(amountIchor * 1_000_000_000)));
+  }
+
+  private pickWeightedWinnerBettorWallet(payoutResult: PayoutResult): string | null {
+    const winners = payoutResult.winnerBettors.filter(
+      row => Number.isFinite(row.solDeployed) && row.solDeployed > 0 && typeof row.bettorId === "string",
+    );
+    if (!winners.length) return null;
+    const totalWeight = winners.reduce((sum, row) => sum + row.solDeployed, 0);
+    if (!(totalWeight > 0)) return null;
+    const roll = secureRandom() * totalWeight;
+    let acc = 0;
+    for (const row of winners) {
+      acc += row.solDeployed;
+      if (roll <= acc) return row.bettorId;
+    }
+    return winners[winners.length - 1]?.bettorId ?? null;
+  }
+
   /**
    * Settle a completed rumble on-chain:
    * 1. Report result on-chain (placements)
@@ -854,7 +1055,8 @@ export class RumbleOrchestrator {
     rumbleId: string,
     winnerId: string,
     placements: Array<{ id: string; placement: number }>,
-    fighters: RumbleFighter[],
+    payoutResult: PayoutResult,
+    fighterOrder: string[],
   ): Promise<void> {
     // Dedup guard: prevent double on-chain settlement for the same rumble
     if (this.settledRumbleIds.has(rumbleId)) {
@@ -863,23 +1065,69 @@ export class RumbleOrchestrator {
     }
     this.settledRumbleIds.set(rumbleId, Date.now());
 
-    const rumbleIdNum = parseInt(rumbleId.replace(/\D/g, ""), 10);
-    if (isNaN(rumbleIdNum)) {
+    const rumbleIdNum = parseOnchainRumbleIdNumber(rumbleId);
+    if (rumbleIdNum === null) {
       console.warn(`[Orchestrator] Cannot parse rumbleId "${rumbleId}" as number, skipping on-chain`);
       return;
     }
 
-    // 1. Report result on-chain
+    // 1. Report result on-chain.
+    // IMPORTANT: placement vector must be aligned to the rumble's ORIGINAL
+    // fighter order used in create_rumble, not ranked order.
     try {
-      const placementArray = placements.map((p) => p.placement);
-      const winnerIndex = placements.findIndex((p) => p.placement === 1);
+      const placementById = new Map<string, number>();
+      for (const row of placements) {
+        if (typeof row.id === "string" && Number.isInteger(row.placement) && row.placement > 0) {
+          placementById.set(row.id, row.placement);
+        }
+      }
+
+      const placementArray: number[] = [];
+      for (const fighterId of fighterOrder) {
+        const placement = placementById.get(fighterId) ?? 0;
+        if (!placement) {
+          throw new Error(
+            `[OnChain] reportResult skipped for ${rumbleId}: missing placement for fighter ${fighterId}`,
+          );
+        }
+        placementArray.push(placement);
+      }
+
+      const winnerIndex = placementArray.findIndex((p) => p === 1);
       if (winnerIndex >= 0) {
-        const sig = await reportResultOnChain(rumbleIdNum, placementArray, winnerIndex);
-        if (sig) {
-          console.log(`[OnChain] reportResult succeeded: ${sig}`);
-          persist.updateRumbleTxSignature(rumbleId, "reportResult", sig);
+        let onchainState = await this.ensureOnchainRumbleIsCombatReady(
+          rumbleId,
+          fighterOrder,
+          Math.floor(Date.now() / 1000) - ONCHAIN_CREATE_RECOVERY_DEADLINE_SKEW_SEC,
+        );
+        if (!onchainState) {
+          throw new Error(
+            `[OnChain] reportResult skipped for ${rumbleId}: on-chain rumble unavailable`,
+          );
+        }
+        if (onchainState.state === "payout" || onchainState.state === "complete") {
+          console.log(
+            `[OnChain] reportResult already applied for ${rumbleId} (state=${onchainState.state}), skipping`,
+          );
         } else {
-          console.warn(`[OnChain] reportResult returned null — continuing off-chain`);
+          if (onchainState.state === "betting") {
+            // best effort: transition before reporting
+            await startCombatOnChain(rumbleIdNum).catch(() => null);
+            onchainState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+          }
+          if (onchainState?.state !== "combat") {
+            console.warn(
+              `[OnChain] reportResult skipped for ${rumbleId}: unexpected state=${onchainState?.state ?? "unknown"}`,
+            );
+          } else {
+            const sig = await reportResultOnChain(rumbleIdNum, placementArray, winnerIndex);
+            if (sig) {
+              console.log(`[OnChain] reportResult succeeded: ${sig}`);
+              persist.updateRumbleTxSignature(rumbleId, "reportResult", sig);
+            } else {
+              console.warn(`[OnChain] reportResult returned null — continuing off-chain`);
+            }
+          }
         }
       }
     } catch (err) {
@@ -899,11 +1147,12 @@ export class RumbleOrchestrator {
         console.warn(`[Orchestrator] Failed to create shower vault ATA:`, ataErr);
       }
 
-      // Resolve winner wallet for the distributeReward call (handles shower + rumble counter)
+      // Resolve winner wallet for the distributeReward call (1st fighter share + shower pool accounting).
       const winnerWallet = await this.resolveFighterWallet(winnerId);
+      let winnerAta: PublicKey | null = null;
 
       if (winnerWallet) {
-        const winnerAta = getAssociatedTokenAddressSync(ichorMint, winnerWallet);
+        winnerAta = getAssociatedTokenAddressSync(ichorMint, winnerWallet);
         try {
           await ensureAtaOnChain(ichorMint, winnerWallet);
         } catch (ataErr) {
@@ -920,67 +1169,74 @@ export class RumbleOrchestrator {
         }
       }
 
-      // Read arena config to calculate placement rewards from base_reward
-      const arenaConfig = await readArenaConfig();
-      if (arenaConfig && placements.length > 1) {
-        // The base reward determines how much ICHOR goes to non-1st fighters.
-        // distributeReward already handled 1st + shower. We use adminDistribute
-        // for 2nd, 3rd, and participation based on the base reward.
-        const baseReward = arenaConfig.baseReward;
-        // Distributable to 2nd/3rd/losers: 60% of base reward (1st got 40% via distributeReward)
-        const nonFirstPool = (baseReward * 60n) / 100n;
+      // Distribute non-1st fighter ICHOR shares from payout distribution.
+      for (const [fighterId, ichorAmount] of payoutResult.ichorDistribution.fighters.entries()) {
+        if (fighterId === winnerId) continue;
+        const amountLamports = this.toIchorLamports(ichorAmount);
+        if (amountLamports <= 0n) continue;
 
-        // Split: 2nd=25/60, 3rd=15/60, losers=20/60 of nonFirstPool
-        const sorted = [...placements].sort((a, b) => a.placement - b.placement);
+        const fighterWallet = await this.resolveFighterWallet(fighterId);
+        if (!fighterWallet) {
+          console.log(`[Orchestrator] No wallet for "${fighterId}", skipping fighter ICHOR reward`);
+          continue;
+        }
 
-        for (let i = 1; i < sorted.length; i++) {
-          let amount: bigint;
-          if (i === 1) {
-            // 2nd place: 25% of total = 25/60 of nonFirstPool
-            amount = (nonFirstPool * 2500n) / 6000n;
-          } else if (i === 2) {
-            // 3rd place: 15% of total = 15/60 of nonFirstPool
-            amount = (nonFirstPool * 1500n) / 6000n;
+        try {
+          await ensureAtaOnChain(ichorMint, fighterWallet);
+          const ata = getAssociatedTokenAddressSync(ichorMint, fighterWallet);
+          const sig = await adminDistributeOnChain(ata, amountLamports);
+          if (sig) {
+            console.log(`[OnChain] adminDistribute fighter reward to ${fighterId} succeeded: ${sig}`);
           } else {
-            // Participation: 20% of total split among remaining
-            const loserCount = BigInt(sorted.length - 3);
-            if (loserCount <= 0n) continue;
-            const participationPool = (nonFirstPool * 2000n) / 6000n;
-            amount = participationPool / loserCount;
+            console.warn(`[OnChain] adminDistribute fighter reward to ${fighterId} returned null`);
           }
+        } catch (err) {
+          console.error(`[OnChain] adminDistribute fighter reward for ${fighterId} error:`, err);
+        }
+      }
 
-          if (amount <= 0n) continue;
+      // Distribute winner-bettor ICHOR shares from payout distribution.
+      for (const [bettorWalletStr, ichorAmount] of payoutResult.ichorDistribution.winningBettors.entries()) {
+        const amountLamports = this.toIchorLamports(ichorAmount);
+        if (amountLamports <= 0n) continue;
 
-          const fighterWallet = await this.resolveFighterWallet(sorted[i].id);
-          if (!fighterWallet) {
-            console.log(`[Orchestrator] No wallet for "${sorted[i].id}", skipping ICHOR placement reward`);
-            continue;
+        let bettorWallet: PublicKey;
+        try {
+          bettorWallet = new PublicKey(bettorWalletStr);
+        } catch {
+          console.warn(`[OnChain] Skipping bettor ICHOR reward for invalid wallet "${bettorWalletStr}"`);
+          continue;
+        }
+
+        try {
+          await ensureAtaOnChain(ichorMint, bettorWallet);
+          const ata = getAssociatedTokenAddressSync(ichorMint, bettorWallet);
+          const sig = await adminDistributeOnChain(ata, amountLamports);
+          if (sig) {
+            console.log(`[OnChain] adminDistribute bettor reward to ${bettorWalletStr} succeeded: ${sig}`);
+          } else {
+            console.warn(`[OnChain] adminDistribute bettor reward to ${bettorWalletStr} returned null`);
           }
-
-          try {
-            await ensureAtaOnChain(ichorMint, fighterWallet);
-            const ata = getAssociatedTokenAddressSync(ichorMint, fighterWallet);
-            const sig = await adminDistributeOnChain(ata, amount);
-            if (sig) {
-              console.log(
-                `[OnChain] adminDistribute (place ${sorted[i].placement}) to ${sorted[i].id} succeeded: ${sig}`
-              );
-            } else {
-              console.warn(
-                `[OnChain] adminDistribute (place ${sorted[i].placement}) to ${sorted[i].id} returned null — continuing off-chain`
-              );
-            }
-          } catch (err) {
-            console.error(`[OnChain] adminDistribute for ${sorted[i].id} error:`, err);
-          }
+        } catch (err) {
+          console.error(`[OnChain] adminDistribute bettor reward for ${bettorWalletStr} error:`, err);
         }
       }
 
       // 3. Check Ichor Shower (state machine: request first, then settle later)
-      if (winnerWallet) {
+      if (winnerAta) {
         try {
-          const winnerAta = getAssociatedTokenAddressSync(ichorMint, winnerWallet);
           let showerRecipientAta = winnerAta;
+          const chosenBettorWallet = this.pickWeightedWinnerBettorWallet(payoutResult);
+          if (chosenBettorWallet) {
+            try {
+              const bettorPk = new PublicKey(chosenBettorWallet);
+              await ensureAtaOnChain(ichorMint, bettorPk);
+              showerRecipientAta = getAssociatedTokenAddressSync(ichorMint, bettorPk);
+            } catch (err) {
+              console.warn(`[OnChain] Failed to use bettor shower recipient "${chosenBettorWallet}":`, err);
+            }
+          }
+
           const pendingShower = await readShowerRequest().catch(() => null);
           if (
             pendingShower?.active &&
@@ -1006,31 +1262,8 @@ export class RumbleOrchestrator {
       console.error(`[OnChain] ICHOR distribution error:`, err);
     }
 
-    // 4. Complete rumble on-chain
-    try {
-      const sig = await completeRumbleOnChain(rumbleIdNum);
-      if (sig) {
-        console.log(`[OnChain] completeRumble succeeded: ${sig}`);
-        persist.updateRumbleTxSignature(rumbleId, "completeRumble", sig);
-      } else {
-        console.warn(`[OnChain] completeRumble returned null — continuing off-chain`);
-      }
-    } catch (err) {
-      console.error(`[OnChain] completeRumble error:`, err);
-    }
-
-    // 5. Sweep remaining vault SOL to treasury
-    try {
-      const sig = await sweepTreasuryOnChain(rumbleIdNum);
-      if (sig) {
-        console.log(`[OnChain] sweepTreasury succeeded: ${sig}`);
-        persist.updateRumbleTxSignature(rumbleId, "sweepTreasury", sig);
-      } else {
-        console.warn(`[OnChain] sweepTreasury returned null — continuing off-chain`);
-      }
-    } catch (err) {
-      console.error(`[OnChain] sweepTreasury error:`, err);
-    }
+    // 4-5. completeRumble + sweepTreasury are finalized asynchronously after claim window.
+    this.enqueueRumbleFinalization(rumbleId, rumbleIdNum, ONCHAIN_FINALIZATION_DELAY_MS);
   }
 
   // ---- Payout phase --------------------------------------------------------
@@ -1088,100 +1321,93 @@ export class RumbleOrchestrator {
       return;
     }
 
-    // Calculate ICHOR block reward based on total rumbles completed
-    const blockReward = getSeasonReward();
-
-    // Calculate payouts if there's a betting pool with bets
-    if (pool && pool.bets.length > 0) {
-      const placementIds = placements.map((p) => p.id);
-      const payoutResult = calculatePayouts(
-        pool,
-        placementIds,
-        blockReward,
-        this.ichorShowerPool,
+    const winnerFighterId = placements
+      .slice()
+      .sort((a, b) => a.placement - b.placement)[0]?.id;
+    if (winnerFighterId) {
+      // Ensure DB has a complete winner/placements record even if in-memory
+      // pool state was lost during a restart.
+      const persistedTurns =
+        slot.rumbleResult?.turns ?? combatState?.turns ?? [];
+      const persistedTotalTurns =
+        slot.rumbleResult?.totalTurns ?? combatState?.turns.length ?? 0;
+      await persist.completeRumbleRecord(
+        slot.id,
+        winnerFighterId,
+        placements,
+        persistedTurns,
+        persistedTotalTurns,
       );
+    }
 
-      // Accumulate ICHOR shower pool
-      const showerPoolIncrement = payoutResult.ichorDistribution.showerPoolAccumulation;
-      this.ichorShowerPool += showerPoolIncrement;
+    // Read block reward from on-chain arena config (season_reward > base_reward fallback).
+    const arenaConfig = await readArenaConfig().catch(() => null);
+    const rewardLamports = arenaConfig?.effectiveReward ?? 2_500n * 1_000_000_000n;
+    const blockReward = Number(rewardLamports) / 1_000_000_000;
 
-      // Persist: atomically increment ichor shower pool
-      if (showerPoolIncrement > 0) {
-        persist.updateIchorShowerPool(showerPoolIncrement);
-      }
+    const placementIds = placements.map((p) => p.id);
+    const payoutPool = pool ?? createBettingPool(slot.id);
+    const payoutResult = calculatePayouts(
+      payoutPool,
+      placementIds,
+      blockReward,
+      this.ichorShowerPool,
+    );
 
-      // Handle Ichor Shower
-      if (payoutResult.ichorShowerTriggered && payoutResult.ichorShowerWinner) {
-        this.emit("ichor_shower", {
-          slotIndex,
-          rumbleId: slot.id,
-          winnerId: payoutResult.ichorShowerWinner,
-          amount: payoutResult.ichorShowerAmount ?? 0,
-        });
+    // Ichor Shower trigger is fully on-chain; keep API state from on-chain flow.
+    payoutResult.ichorShowerTriggered = false;
+    payoutResult.ichorShowerAmount = undefined;
+    payoutResult.ichorShowerWinner = undefined;
+    payoutResult.totalBurned = 0;
 
-        // Persist: trigger ichor shower
-        persist.triggerIchorShower(
-          slot.id,
-          payoutResult.ichorShowerWinner,
-          payoutResult.ichorShowerAmount ?? 0,
-        );
+    // Accumulate ICHOR shower pool
+    const showerPoolIncrement = payoutResult.ichorDistribution.showerPoolAccumulation;
+    this.ichorShowerPool += showerPoolIncrement;
 
-        // Reset shower pool after payout
-        this.ichorShowerPool = 0;
-      }
+    // Persist: atomically increment ichor shower pool
+    if (showerPoolIncrement > 0) {
+      persist.updateIchorShowerPool(showerPoolIncrement);
+    }
 
-      // Persist: mark losing bets
-      const topThreeIds = new Set(placements.slice(0, 3).map((p) => p.id));
-      const losingFighterIds = placements
-        .filter((p) => !topThreeIds.has(p.id))
-        .map((p) => p.id);
-      persist.markLosingBets(slot.id, losingFighterIds);
+    // Persist: increment aggregate stats
+    persist.incrementStats(
+      payoutPool.totalDeployed,
+      payoutResult.ichorDistribution.totalMined,
+      payoutResult.totalBurned,
+    );
 
-      // Persist: increment aggregate stats
-      persist.incrementStats(
-        pool.totalDeployed,
-        payoutResult.ichorDistribution.totalMined,
-        payoutResult.totalBurned,
+    // Store payout result for status API
+    this.payoutResults.set(slotIndex, payoutResult);
+
+    // Log payout summary
+    const summary = summarizePayouts(payoutResult);
+    console.log(`[Orchestrator] Payout for ${slot.id}:`, summary);
+
+    this.emit("payout_complete", {
+      slotIndex,
+      rumbleId: slot.id,
+      payout: payoutResult,
+    });
+
+    // On-chain settlement uses the same computed payout distribution as source of truth.
+    if (winnerFighterId) {
+      await this.settleOnChain(
+        slot.id,
+        winnerFighterId,
+        placements,
+        payoutResult,
+        slot.fighters,
       );
+    }
 
-      // Store payout result for status API
-      this.payoutResults.set(slotIndex, payoutResult);
-
-      // Log payout summary
-      const summary = summarizePayouts(payoutResult);
-      console.log(`[Orchestrator] Payout for ${slot.id}:`, summary);
-
-      this.emit("payout_complete", {
-        slotIndex,
-        rumbleId: slot.id,
-        payout: payoutResult,
-      });
-    } else {
-      // No bets were placed; store a zero payout result for the status API
-      console.log(`[Orchestrator] No bets for ${slot.id}, skipping SOL payout`);
-
-      this.payoutResults.set(slotIndex, {
-        rumbleId: slot.id,
-        winnerBettors: [],
-        placeBettors: [],
-        showBettors: [],
-        losingBettors: [],
-        treasuryVault: 0,
-        totalBurned: 0,
-        sponsorships: new Map(),
-        ichorDistribution: {
-          totalMined: 0,
-          winningBettors: new Map(),
-          secondPlaceBettors: new Map(),
-          thirdPlaceBettors: new Map(),
-          fighters: new Map(),
-          showerPoolAccumulation: 0,
-        },
-        ichorShowerTriggered: false,
-      });
-
-      // Persist: still increment rumble count even without bets
-      persist.incrementStats(0, 0, 0);
+    // Always settle persisted bet rows if we have a winner id, even when the
+    // in-memory betting pool is empty after a server restart.
+    if (winnerFighterId) {
+      await persist.settleWinnerTakeAllBets(
+        slot.id,
+        winnerFighterId,
+        getRumblePayoutMode(),
+      );
     }
 
     this.totalRumblesCompleted++;
@@ -1433,15 +1659,58 @@ export class RumbleOrchestrator {
 // and a separate Orchestrator, causing state to diverge across routes.
 // ---------------------------------------------------------------------------
 
-const g = globalThis as unknown as { __rumbleOrchestrator?: RumbleOrchestrator };
+const g = globalThis as unknown as {
+  __rumbleOrchestrator?: RumbleOrchestrator;
+  __rumbleAutoTickTimer?: ReturnType<typeof setInterval>;
+};
+
+function shouldAutoTick(): boolean {
+  const envToggle = process.env.RUMBLE_AUTO_TICK;
+  if (envToggle === "true") return true;
+  if (envToggle === "false") return false;
+  return process.env.NODE_ENV !== "production";
+}
+
+function autoTickIntervalMs(): number {
+  const raw = Number(process.env.RUMBLE_AUTO_TICK_INTERVAL_MS ?? "2000");
+  if (!Number.isFinite(raw)) return 2000;
+  return Math.max(1000, Math.floor(raw));
+}
+
+function canUnrefTimer(timer: unknown): timer is { unref: () => void } {
+  return typeof timer === "object" && timer !== null && "unref" in timer;
+}
+
+function ensureAutoTick(orchestrator: RumbleOrchestrator): void {
+  if (!shouldAutoTick()) return;
+  if (g.__rumbleAutoTickTimer) return;
+
+  const intervalMs = autoTickIntervalMs();
+  g.__rumbleAutoTickTimer = setInterval(() => {
+    orchestrator.tick().catch((err) => {
+      console.error("[RumbleAutoTick] Tick error:", err);
+    });
+  }, intervalMs);
+
+  if (canUnrefTimer(g.__rumbleAutoTickTimer) && typeof g.__rumbleAutoTickTimer.unref === "function") {
+    g.__rumbleAutoTickTimer.unref();
+  }
+
+  console.log(`[RumbleAutoTick] Enabled (${intervalMs}ms interval)`);
+}
 
 export function getOrchestrator(): RumbleOrchestrator {
   if (!g.__rumbleOrchestrator) {
     g.__rumbleOrchestrator = new RumbleOrchestrator(getQueueManager());
   }
+  ensureAutoTick(g.__rumbleOrchestrator);
   return g.__rumbleOrchestrator;
 }
 
 export function resetOrchestrator(): void {
+  if (g.__rumbleAutoTickTimer) {
+    clearInterval(g.__rumbleAutoTickTimer);
+    g.__rumbleAutoTickTimer = undefined;
+  }
   g.__rumbleOrchestrator = undefined;
 }

@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * UCF Art Style - Master Prompt System
  *

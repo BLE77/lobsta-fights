@@ -67,10 +67,10 @@ export interface RecoveryResult {
  *  2. Load active rumbles (status in betting, combat, payout).
  *     - For rumbles in "betting": RESTORE the slot state with fighters,
  *       a fresh betting deadline, and any existing bets from Supabase.
- *     - For rumbles stuck in "combat": we cannot reliably reconstruct
- *       mid-combat turn state (fighter HP, meter, elimination order).
- *       Mark these as complete with the current standings to avoid
- *       stuck matches. The fighters will be freed back to queue.
+ *     - For rumbles stuck in "combat": DO NOT synthesize fake results in
+ *       production. Leaving these untouched avoids off-chain/on-chain payout
+ *       drift that can break claim flows. A separate on-chain reconciliation
+ *       pass handles completed rumbles whose report_result was missed.
  *     - For rumbles in "payout": mark as complete.
  *  3. Mark recovery as done so subsequent ticks skip this step.
  */
@@ -117,19 +117,28 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
         const fighters = rumble.fighters as Array<{ id: string; name: string }>;
 
         if (rumble.status === "combat") {
-          // Mid-combat rumbles cannot be reliably resumed because we lose
-          // in-memory fighter HP/meter/turn state on cold start.
-          // Mark them as complete so fighters are freed.
-          console.log(
-            `[StateRecovery] Rumble ${rumble.id} was mid-combat — marking complete (stale)`
-          );
+          // Never fabricate outcomes for mid-combat rounds in production:
+          // doing so can create off-chain payouts with on-chain rumbles still
+          // in combat state, causing claim failures.
+          const unsafeFallbackEnabled =
+            process.env.RUMBLE_ALLOW_UNSAFE_COMBAT_RECOVERY === "true" &&
+            process.env.NODE_ENV !== "production";
 
-          const winnerId = fighters.length > 0 ? fighters[0].id : "unknown";
-          const placements = fighters.map((f, i) => ({ id: f.id, placement: i + 1 }));
-          await persist.completeRumbleRecord(rumble.id, winnerId, placements, [], 0);
-
-          for (const f of fighters) {
-            await persist.removeQueueFighter(f.id);
+          if (unsafeFallbackEnabled) {
+            console.warn(
+              `[StateRecovery] UNSAFE fallback enabled; marking mid-combat rumble ${rumble.id} complete`,
+            );
+            const winnerId = fighters.length > 0 ? fighters[0].id : "unknown";
+            const placements = fighters.map((f, i) => ({ id: f.id, placement: i + 1 }));
+            await persist.completeRumbleRecord(rumble.id, winnerId, placements, [], 0);
+            for (const f of fighters) {
+              await persist.removeQueueFighter(f.id);
+            }
+          } else {
+            const msg =
+              `[StateRecovery] Rumble ${rumble.id} is mid-combat; preserving state for reconciliation (no synthetic completion).`;
+            console.warn(msg);
+            result.errors.push(msg);
           }
 
           result.staleMidCombat++;

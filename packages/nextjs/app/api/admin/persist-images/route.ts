@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { NextRequest, NextResponse } from "next/server";
 import { freshSupabase } from "../../../../lib/supabase";
 import { isAuthorizedAdminToken } from "../../../../lib/request-auth";

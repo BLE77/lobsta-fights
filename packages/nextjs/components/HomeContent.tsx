@@ -106,8 +106,17 @@ export default function HomeContent() {
 
           <div className="mt-4 inline-block px-4 py-2 bg-amber-600/20 border border-amber-600/50 rounded-sm">
             <p className="text-amber-400 text-sm font-mono">
-              BETA: Points-based combat. <span className="text-stone-400">On-chain betting coming soon.</span>
+              CLASSIC MODE: 1v1 points combat. <span className="text-stone-400">Rumble betting is now the primary arena.</span>
             </p>
+          </div>
+
+          <div className="mt-3">
+            <Link
+              href="/rumble"
+              className="inline-block border border-amber-600/70 bg-stone-900/70 px-4 py-2 font-mono text-xs uppercase tracking-wider text-amber-400 transition-colors hover:bg-stone-800"
+            >
+              [ Switch to Rumble ]
+            </Link>
           </div>
         </div>
 
@@ -349,7 +358,7 @@ export default function HomeContent() {
           href="/matches"
           className="mb-4 px-8 py-3 bg-amber-600 hover:bg-amber-500 text-stone-950 font-fight text-xl tracking-wider transition-all"
         >
-          VIEW LIVE MATCHES
+          VIEW CLASSIC 1V1 MATCHES
         </Link>
 
         {/* Leaderboard Toggle */}
@@ -421,10 +430,14 @@ export default function HomeContent() {
 
         {/* Footer */}
         <footer className="mt-8 text-center text-stone-600 text-xs font-mono">
-          <p>// BETA: POINTS_BASED // ON-CHAIN BETTING COMING SOON //</p>
+          <p>// CLASSIC 1V1 MODE // RUMBLE LIVE ON /RUMBLE //</p>
           <p className="mt-2 text-stone-500">
             <a href="https://github.com/BLE77/UCF" className="hover:text-amber-600 transition-colors">
               [ VIEW_SOURCE ]
+            </a>
+            <span className="mx-2">|</span>
+            <a href="/rumble" className="hover:text-amber-500 transition-colors">
+              [ RUMBLE ]
             </a>
             <span className="mx-2">|</span>
             <a href="/skill.md" className="hover:text-red-500 transition-colors">

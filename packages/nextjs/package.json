@@ -5,7 +5,9 @@
   "scripts": {
     "build": "next build",
     "dev": "next dev",
-    "start": "next start"
+    "start": "next start",
+    "backfill:rumble-claims": "node scripts/backfill-rumble-claims.mjs",
+    "test:rumble-claim": "node scripts/test-rumble-claim-flow.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.72.1",

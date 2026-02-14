@@ -20,6 +20,11 @@ interface BettingPanelProps {
   totalPool: number;
   deadline: string | null;
   onPlaceBet?: (slotIndex: number, fighterId: string, amount: number) => void;
+  onPlaceBatchBet?: (
+    slotIndex: number,
+    bets: Array<{ fighterId: string; amount: number }>,
+  ) => Promise<void> | void;
+  myBetAmounts?: Map<string, number>;
 }
 
 export default function BettingPanel({
@@ -28,8 +33,9 @@ export default function BettingPanel({
   totalPool,
   deadline,
   onPlaceBet,
+  onPlaceBatchBet,
+  myBetAmounts,
 }: BettingPanelProps) {
-  // Map of fighterId -> bet amount (allows betting on multiple fighters)
   const [bets, setBets] = useState<Map<string, string>>(new Map());
   const [timeLeft, setTimeLeft] = useState("");
   const [deploying, setDeploying] = useState<Set<string>>(new Set());
@@ -58,11 +64,11 @@ export default function BettingPanel({
   const toggleFighter = (fighterId: string) => {
     setBets((prev) => {
       const next = new Map(prev);
-      if (next.has(fighterId)) {
+      if (prev.has(fighterId)) {
         next.delete(fighterId);
-      } else {
-        next.set(fighterId, "0.05");
+        return next;
       }
+      next.set(fighterId, prev.get(fighterId) ?? "0.05");
       return next;
     });
   };
@@ -84,7 +90,7 @@ export default function BettingPanel({
     setDeploying((prev) => new Set(prev).add(fighterId));
     try {
       await onPlaceBet(slotIndex, fighterId, amount);
-      // Remove from bets after successful deploy
+      // Clear selection after submit to avoid accidental re-sending in later batch deploys.
       setBets((prev) => {
         const next = new Map(prev);
         next.delete(fighterId);
@@ -100,30 +106,27 @@ export default function BettingPanel({
   };
 
   const handleDeployAll = async () => {
-    if (!onPlaceBet || bets.size === 0) return;
-    // Deploy each bet sequentially (each needs a separate tx)
-    const entries = [...bets.entries()];
-    for (const [fighterId, amountStr] of entries) {
-      const amount = parseFloat(amountStr);
-      if (isNaN(amount) || amount <= 0) continue;
-      setDeploying((prev) => new Set(prev).add(fighterId));
-      try {
-        await onPlaceBet(slotIndex, fighterId, amount);
-        setBets((prev) => {
-          const next = new Map(prev);
-          next.delete(fighterId);
-          return next;
-        });
-      } catch {
-        // Stop on first failure
-        break;
-      } finally {
-        setDeploying((prev) => {
-          const next = new Set(prev);
-          next.delete(fighterId);
-          return next;
-        });
+    const entries = [...bets.entries()]
+      .map(([fighterId, amountStr]) => ({
+        fighterId,
+        amount: parseFloat(amountStr),
+      }))
+      .filter((e) => Number.isFinite(e.amount) && e.amount > 0);
+    if (entries.length === 0) return;
+
+    setDeploying(new Set(entries.map((e) => e.fighterId)));
+    try {
+      if (onPlaceBatchBet) {
+        await onPlaceBatchBet(slotIndex, entries);
+      } else if (onPlaceBet) {
+        for (const leg of entries) {
+          await onPlaceBet(slotIndex, leg.fighterId, leg.amount);
+        }
       }
+      // Clear submitted selections so subsequent bets only include newly selected fighters.
+      setBets(new Map());
+    } finally {
+      setDeploying(new Set());
     }
   };
 
@@ -131,6 +134,9 @@ export default function BettingPanel({
     (sum, v) => sum + (parseFloat(v) || 0),
     0
   );
+  const myStakeEntries = myBetAmounts ? [...myBetAmounts.entries()] : [];
+  const myStakeTotal = myStakeEntries.reduce((sum, [, amount]) => sum + amount, 0);
+  const deployableCount = [...bets.values()].filter(v => (parseFloat(v) || 0) > 0).length;
 
   const isClosed = timeLeft === "CLOSED";
 
@@ -164,11 +170,41 @@ export default function BettingPanel({
         </p>
       </div>
 
+      {myStakeEntries.length > 0 && (
+        <div className="bg-stone-950/80 border border-amber-700/30 rounded-sm p-2">
+          <p className="font-mono text-[10px] text-cyan-400 uppercase">
+            Your Active Bets
+          </p>
+          <div className="space-y-1 mt-1">
+            {myStakeEntries
+              .sort((a, b) => b[1] - a[1])
+              .map(([fighterId, amount]) => {
+                const fighterName =
+                  fighters.find(f => f.fighterId === fighterId)?.fighterName ?? fighterId;
+                return (
+                  <div key={fighterId} className="flex items-center justify-between">
+                    <span className="font-mono text-[11px] text-stone-300 truncate max-w-[70%]">
+                      {fighterName}
+                    </span>
+                    <span className="font-mono text-[11px] text-cyan-300">
+                      {amount.toFixed(3)} SOL
+                    </span>
+                  </div>
+                );
+              })}
+          </div>
+          <p className="font-mono text-[10px] text-stone-500 mt-2">
+            TOTAL STAKED: <span className="text-cyan-300">{myStakeTotal.toFixed(3)} SOL</span>
+          </p>
+        </div>
+      )}
+
       {/* Fighter Odds List — click to toggle selection */}
       <div className="space-y-1 max-h-80 overflow-y-auto">
         {fighters.map((f) => {
           const isSelected = bets.has(f.fighterId);
           const isDeploying = deploying.has(f.fighterId);
+          const myStake = myBetAmounts?.get(f.fighterId) ?? 0;
 
           return (
             <div key={f.fighterId} className="space-y-0">
@@ -197,6 +233,11 @@ export default function BettingPanel({
                   <p className="font-mono text-[10px] text-stone-600">
                     {f.solDeployed.toFixed(2)} SOL
                   </p>
+                  {myStake > 0 && (
+                    <p className="font-mono text-[10px] text-cyan-400">
+                      YOU: {myStake.toFixed(3)} SOL
+                    </p>
+                  )}
                 </div>
               </button>
 
@@ -241,20 +282,20 @@ export default function BettingPanel({
       </div>
 
       {/* Deploy All button when multiple selected */}
-      {bets.size > 1 && (
+      {deployableCount > 1 && (
         <button
           onClick={handleDeployAll}
-          disabled={isClosed || !onPlaceBet || deploying.size > 0}
+          disabled={isClosed || (!onPlaceBet && !onPlaceBatchBet) || deploying.size > 0}
           className="w-full py-2 bg-amber-600 hover:bg-amber-500 disabled:bg-stone-700 disabled:text-stone-500 text-stone-950 font-mono text-sm font-bold uppercase transition-all rounded-sm"
         >
           {deploying.size > 0
             ? "DEPLOYING..."
-            : `DEPLOY ALL (${bets.size} fighters · ${totalBetAmount.toFixed(2)} SOL)`}
+            : `DEPLOY ALL (${deployableCount} fighters · ${totalBetAmount.toFixed(2)} SOL)`}
         </button>
       )}
 
       <p className="text-[10px] text-stone-600 font-mono text-center">
-        Tap fighters to select · 1% admin + 5% sponsorship deducted
+        Select one or more fighters · 1% admin + 5% sponsorship deducted
       </p>
     </div>
   );

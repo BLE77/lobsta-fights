@@ -4,7 +4,6 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import {
   PublicKey,
-  SystemProgram,
   Transaction,
   LAMPORTS_PER_SOL,
   Connection,
@@ -12,6 +11,9 @@ import {
 import RumbleSlot, { SlotData } from "./components/RumbleSlot";
 import QueueSidebar from "./components/QueueSidebar";
 import IchorShowerPool from "./components/IchorShowerPool";
+import ClaimBalancePanel from "./components/ClaimBalancePanel";
+import CommentaryPlayer from "./components/CommentaryPlayer";
+import type { CommentarySSEEvent } from "~~/lib/commentary";
 
 // ---------------------------------------------------------------------------
 // Types for the status API response
@@ -35,19 +37,127 @@ interface RumbleStatus {
   };
 }
 
+interface PendingRumbleClaim {
+  rumble_id: string;
+  claimable_sol: number;
+  onchain_claimable_sol: number | null;
+  claim_method: "onchain" | "offchain";
+  onchain_rumble_state?: "betting" | "combat" | "payout" | "complete" | null;
+  onchain_payout_ready?: boolean;
+}
+
+interface ClaimBalanceStatus {
+  payout_mode: "instant" | "accrue_claim";
+  claimable_sol: number;
+  legacy_claimable_sol: number;
+  total_pending_claimable_sol: number;
+  claimed_sol: number;
+  unsettled_sol: number;
+  orphaned_stale_sol?: number;
+  onchain_claimable_sol_total: number;
+  onchain_pending_not_ready_sol?: number;
+  onchain_claim_ready: boolean;
+  pending_rumbles: PendingRumbleClaim[];
+}
+
+interface MyBetsSlot {
+  slot_index: number;
+  rumble_id: string;
+  total_sol: number;
+  bets: Array<{
+    fighter_id: string;
+    sol_amount: number;
+    bet_count: number;
+  }>;
+}
+
+interface MyBetsResponse {
+  wallet: string;
+  slots: MyBetsSlot[];
+  total_sol: number;
+}
+
+interface LastCompletedSlotResult {
+  rumbleId: string;
+  settledAtIso: string;
+  placements: Array<{
+    fighterId: string;
+    fighterName: string;
+    imageUrl: string | null;
+    placement: number;
+    hp: number;
+    damageDealt: number;
+  }>;
+  payout: NonNullable<SlotData["payout"]>;
+}
+
 // ---------------------------------------------------------------------------
 // SSE event types for live updates
 // ---------------------------------------------------------------------------
 
 interface SSEEvent {
   type:
+    | OrchestratorSseName
     | "turn"
     | "elimination"
     | "slot_state_change"
-    | "bet_placed"
-    | "ichor_shower";
+    | "bet_placed";
   slotIndex: number;
   data: any;
+}
+
+type OrchestratorSseName =
+  | "turn_resolved"
+  | "fighter_eliminated"
+  | "rumble_complete"
+  | "ichor_shower"
+  | "betting_open"
+  | "betting_closed"
+  | "combat_started"
+  | "payout_complete"
+  | "slot_recycled";
+
+const ORCHESTRATOR_SSE_EVENTS = [
+  "turn_resolved",
+  "fighter_eliminated",
+  "rumble_complete",
+  "ichor_shower",
+  "betting_open",
+  "betting_closed",
+  "combat_started",
+  "payout_complete",
+  "slot_recycled",
+] as const satisfies ReadonlyArray<OrchestratorSseName>;
+
+const LEGACY_EVENT_MAP: Partial<Record<SSEEvent["type"], OrchestratorSseName>> = {
+  turn: "turn_resolved",
+  elimination: "fighter_eliminated",
+};
+
+function isSlotState(value: unknown): value is SlotData["state"] {
+  return value === "idle" || value === "betting" || value === "combat" || value === "payout";
+}
+
+function buildLastCompletedResult(slot: SlotData): LastCompletedSlotResult | null {
+  if (!slot.payout) return null;
+  const placements = slot.fighters
+    .filter((fighter) => fighter.placement > 0)
+    .sort((a, b) => a.placement - b.placement)
+    .map((fighter) => ({
+      fighterId: fighter.id,
+      fighterName: fighter.name,
+      imageUrl: fighter.imageUrl,
+      placement: fighter.placement,
+      hp: fighter.hp,
+      damageDealt: fighter.totalDamageDealt,
+    }));
+  if (placements.length === 0) return null;
+  return {
+    rumbleId: slot.rumbleId,
+    settledAtIso: new Date().toISOString(),
+    placements,
+    payout: slot.payout,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -61,11 +171,20 @@ export default function RumblePage() {
   const [sseConnected, setSseConnected] = useState(false);
   const [betPending, setBetPending] = useState(false);
   const [solBalance, setSolBalance] = useState<number | null>(null);
+  const [claimBalance, setClaimBalance] = useState<ClaimBalanceStatus | null>(null);
+  const [claimLoading, setClaimLoading] = useState(false);
+  const [claimPending, setClaimPending] = useState(false);
+  const [claimError, setClaimError] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const [lastSseEvent, setLastSseEvent] = useState<CommentarySSEEvent | null>(null);
+  const [sseEventSeq, setSseEventSeq] = useState(0);
+  const [lastCompletedBySlot, setLastCompletedBySlot] = useState<Map<number, LastCompletedSlotResult>>(new Map());
 
-  // Track which fighters the user bet on per slot (persists through combat/payout)
-  // Map<slotIndex, Set<fighterId>>
-  const [myBets, setMyBets] = useState<Map<number, Set<string>>>(new Map());
+  // Track user stake per fighter per slot.
+  // Map<slotIndex, Map<fighterId, totalSolStaked>>
+  const [myBetAmountsBySlot, setMyBetAmountsBySlot] = useState<Map<number, Map<string, number>>>(new Map());
+  const claimFetchInFlightRef = useRef(false);
+  const claimBalanceRef = useRef<ClaimBalanceStatus | null>(null);
 
   // ---- Direct Phantom wallet management (no wallet adapter) ----
   const [phantomProvider, setPhantomProvider] = useState<any>(null);
@@ -127,6 +246,8 @@ export default function RumblePage() {
     }
     setPublicKey(null);
     setSolBalance(null);
+    setClaimBalance(null);
+    setClaimError(null);
   }, [phantomProvider]);
 
   // Fetch SOL balance when wallet connects
@@ -148,6 +269,10 @@ export default function RumblePage() {
     return () => clearInterval(interval);
   }, [publicKey, connection]);
 
+  useEffect(() => {
+    claimBalanceRef.current = claimBalance;
+  }, [claimBalance]);
+
   // Fetch full status via polling
   const fetchStatus = useCallback(async () => {
     try {
@@ -159,8 +284,31 @@ export default function RumblePage() {
       setStatus(data);
       setError(null);
 
-      // Clear bet tracking for slots that returned to idle
-      setMyBets((prev) => {
+      // Keep the latest completed payout visible while slots wait for the next fighters.
+      setLastCompletedBySlot((prev) => {
+        let changed = false;
+        const next = new Map(prev);
+        for (const slot of data.slots) {
+          if (slot.state === "betting" || slot.state === "combat") {
+            if (next.delete(slot.slotIndex)) {
+              changed = true;
+            }
+            continue;
+          }
+
+          const completed = buildLastCompletedResult(slot);
+          if (!completed) continue;
+          const existing = next.get(slot.slotIndex);
+          if (!existing || existing.rumbleId !== completed.rumbleId) {
+            next.set(slot.slotIndex, completed);
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+
+      // Clear local bet-tracking for slots that returned to idle.
+      setMyBetAmountsBySlot((prev) => {
         let changed = false;
         const next = new Map(prev);
         for (const slot of data.slots) {
@@ -179,6 +327,81 @@ export default function RumblePage() {
     }
   }, []);
 
+  const fetchClaimBalance = useCallback(async () => {
+    if (!publicKey) {
+      setClaimBalance(null);
+      setClaimError(null);
+      return;
+    }
+    if (claimFetchInFlightRef.current) return;
+    claimFetchInFlightRef.current = true;
+
+    const firstLoad = !claimBalanceRef.current;
+    if (firstLoad) {
+      setClaimLoading(true);
+    }
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort("timeout"), 4_500);
+    try {
+      const wallet = encodeURIComponent(publicKey.toBase58());
+      const res = await fetch(`/api/rumble/balance?wallet=${wallet}&_t=${Date.now()}`, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error ?? `Balance ${res.status}`);
+      }
+      setClaimBalance(data as ClaimBalanceStatus);
+      setClaimError(null);
+    } catch (e: any) {
+      if (e?.name === "AbortError") {
+        if (!claimBalanceRef.current) {
+          setClaimError("Balance refresh timed out. Retrying...");
+        }
+        return;
+      }
+      setClaimError(e?.message ?? "Failed to load claim balance");
+    } finally {
+      clearTimeout(timeout);
+      claimFetchInFlightRef.current = false;
+      if (firstLoad) {
+        setClaimLoading(false);
+      }
+    }
+  }, [publicKey]);
+
+  const fetchMyBets = useCallback(async () => {
+    if (!publicKey) {
+      setMyBetAmountsBySlot(new Map());
+      return;
+    }
+    try {
+      const wallet = encodeURIComponent(publicKey.toBase58());
+      const res = await fetch(`/api/rumble/my-bets?wallet=${wallet}&_t=${Date.now()}`, {
+        cache: "no-store",
+      });
+      const data = await res.json();
+      if (!res.ok) return;
+      const payload = data as MyBetsResponse;
+      const next = new Map<number, Map<string, number>>();
+      for (const slot of payload.slots ?? []) {
+        const fighterMap = new Map<string, number>();
+        for (const bet of slot.bets ?? []) {
+          const amount = Number(bet.sol_amount ?? 0);
+          if (!Number.isFinite(amount) || amount <= 0) continue;
+          fighterMap.set(String(bet.fighter_id), amount);
+        }
+        if (fighterMap.size > 0) {
+          next.set(slot.slot_index, fighterMap);
+        }
+      }
+      setMyBetAmountsBySlot(next);
+    } catch {
+      // keep last known values on transient errors
+    }
+  }, [publicKey]);
+
   // Connect to SSE for real-time combat updates
   const connectSSE = useCallback(() => {
     if (eventSourceRef.current) {
@@ -194,12 +417,33 @@ export default function RumblePage() {
 
     es.onmessage = (event) => {
       try {
-        const sseEvent: SSEEvent = JSON.parse(event.data);
-        handleSSEEvent(sseEvent);
+        // Backward compatibility for unnamed/default events.
+        const parsed = JSON.parse(event.data);
+        if (parsed?.type && typeof parsed?.slotIndex === "number") {
+          handleSSEEvent(parsed as SSEEvent);
+        }
       } catch {
         // Ignore parse errors from keepalive pings
       }
     };
+
+    const bindNamedEvent = (eventName: OrchestratorSseName) => {
+      es.addEventListener(eventName, (event) => {
+        try {
+          const data = JSON.parse((event as MessageEvent).data);
+          if (typeof data?.slotIndex !== "number") return;
+          handleSSEEvent({
+            type: eventName,
+            slotIndex: data.slotIndex,
+            data,
+          });
+        } catch {
+          // Ignore malformed payloads
+        }
+      });
+    };
+
+    ORCHESTRATOR_SSE_EVENTS.forEach(bindNamedEvent);
 
     es.onerror = () => {
       setSseConnected(false);
@@ -210,7 +454,27 @@ export default function RumblePage() {
   }, []);
 
   // Handle incoming SSE events by patching local state
-  const handleSSEEvent = useCallback((event: SSEEvent) => {
+  const handleSSEEvent = useCallback((rawEvent: SSEEvent) => {
+    const eventType = LEGACY_EVENT_MAP[rawEvent.type] ?? rawEvent.type;
+    const event: SSEEvent = { ...rawEvent, type: eventType };
+
+    if (event.type === "betting_open") {
+      setLastCompletedBySlot((prev) => {
+        if (!prev.has(event.slotIndex)) return prev;
+        const next = new Map(prev);
+        next.delete(event.slotIndex);
+        return next;
+      });
+    }
+
+    // Forward to commentary player
+    setLastSseEvent({
+      type: event.type,
+      slotIndex: event.slotIndex,
+      data: event.data,
+    });
+    setSseEventSeq((s) => s + 1);
+
     setStatus((prev) => {
       if (!prev) return prev;
 
@@ -224,24 +488,58 @@ export default function RumblePage() {
 
       switch (event.type) {
         case "turn":
+        case "turn_resolved": {
+          const turn = event.data?.turn ?? event.data;
+          if (!turn || typeof turn.turnNumber !== "number") break;
           // Append new turn data
-          slot.turns = [...slot.turns, event.data.turn];
-          slot.currentTurn = event.data.turn.turnNumber;
-          // Update fighter HPs from the event
-          if (event.data.fighters) {
-            slot.fighters = event.data.fighters;
+          if (!slot.turns.some((t) => t.turnNumber === turn.turnNumber)) {
+            slot.turns = [...slot.turns, turn];
           }
+          slot.currentTurn = Math.max(slot.currentTurn, turn.turnNumber);
           break;
+        }
 
         case "elimination":
-          // Update fighter state
-          if (event.data.fighters) {
-            slot.fighters = event.data.fighters;
-          }
+        case "fighter_eliminated":
+          // Elimination details are reflected from polled status snapshots.
+          break;
+
+        case "betting_open":
+          slot.state = "betting";
+          slot.rumbleId = typeof event.data?.rumbleId === "string" ? event.data.rumbleId : slot.rumbleId;
+          slot.turns = [];
+          slot.currentTurn = 0;
+          slot.payout = null;
+          break;
+
+        case "betting_closed":
+          // Betting is closed but slot remains in pre-combat transition.
+          break;
+
+        case "combat_started":
+          slot.state = "combat";
+          break;
+
+        case "rumble_complete":
+          slot.state = "payout";
+          break;
+
+        case "payout_complete":
+          slot.state = "payout";
+          break;
+
+        case "slot_recycled":
+          slot.state = "idle";
+          slot.turns = [];
+          slot.currentTurn = 0;
+          slot.totalPool = 0;
+          slot.payout = null;
           break;
 
         case "slot_state_change":
-          slot.state = event.data.state;
+          if (isSlotState(event.data?.state)) {
+            slot.state = event.data.state;
+          }
           if (event.data.payout) {
             slot.payout = event.data.payout;
           }
@@ -266,6 +564,9 @@ export default function RumblePage() {
             ichorShower: event.data,
             slots: slots,
           };
+
+        default:
+          break;
       }
 
       slots[slotIdx] = slot;
@@ -289,19 +590,136 @@ export default function RumblePage() {
     };
   }, [fetchStatus, connectSSE]);
 
-  // Handle bet placement with wallet SOL transfer
-  const handlePlaceBet = async (
+  // Wallet payout/claimable balance polling
+  useEffect(() => {
+    if (!publicKey) {
+      setClaimBalance(null);
+      setClaimError(null);
+      setMyBetAmountsBySlot(new Map());
+      return;
+    }
+    fetchClaimBalance();
+    fetchMyBets();
+    const interval = setInterval(() => {
+      fetchClaimBalance();
+      fetchMyBets();
+    }, 12_000);
+    return () => clearInterval(interval);
+  }, [publicKey, fetchClaimBalance, fetchMyBets]);
+
+  const decodeBase64Tx = (base64: string): Transaction => {
+    const binary = atob(base64);
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    return Transaction.from(bytes);
+  };
+
+  const handleClaimWinnings = useCallback(async () => {
+    if (!publicKey || !phantomProvider || !walletConnected) {
+      setClaimError("Connect your Phantom wallet first.");
+      return;
+    }
+    if (!claimBalance?.onchain_claim_ready || (claimBalance.onchain_claimable_sol_total ?? 0) <= 0) {
+      setClaimError("No on-chain claimable payout is ready yet.");
+      return;
+    }
+
+    setClaimPending(true);
+    setClaimError(null);
+
+    try {
+      const prepareRes = await fetch("/api/rumble/claim/prepare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wallet_address: publicKey.toBase58() }),
+      });
+      const prepared = await prepareRes.json();
+      if (!prepareRes.ok) {
+        throw new Error(prepared?.error ?? "Failed to prepare claim transaction");
+      }
+
+      const tx = decodeBase64Tx(prepared.transaction_base64);
+      tx.feePayer = publicKey;
+
+      const signed = await phantomProvider.signTransaction(tx);
+      const rawTx = signed.serialize();
+      const txSig = await connection.sendRawTransaction(rawTx, {
+        skipPreflight: false,
+        preflightCommitment: "confirmed",
+      });
+
+      let blockhash = tx.recentBlockhash;
+      let lastValidBlockHeight = tx.lastValidBlockHeight;
+      if (!blockhash || typeof lastValidBlockHeight !== "number") {
+        const latest = await connection.getLatestBlockhash("confirmed");
+        blockhash = latest.blockhash;
+        lastValidBlockHeight = latest.lastValidBlockHeight;
+      }
+
+      await connection.confirmTransaction(
+        {
+          signature: txSig,
+          blockhash,
+          lastValidBlockHeight,
+        },
+        "confirmed",
+      );
+
+      const confirmRes = await fetch("/api/rumble/claim/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          wallet_address: publicKey.toBase58(),
+          rumble_id: prepared.rumble_id,
+          rumble_ids: Array.isArray(prepared.rumble_ids)
+            ? prepared.rumble_ids
+            : [prepared.rumble_id].filter(Boolean),
+          tx_signature: txSig,
+        }),
+      });
+      const confirmData = await confirmRes.json();
+      if (!confirmRes.ok) {
+        throw new Error(confirmData?.error ?? "Failed to confirm claim");
+      }
+
+      await Promise.all([fetchClaimBalance(), fetchStatus()]);
+      const newBalance = await connection.getBalance(publicKey, "confirmed");
+      setSolBalance(newBalance / LAMPORTS_PER_SOL);
+    } catch (e: any) {
+      if (e?.message?.includes("User rejected")) {
+        setClaimError("Claim canceled in wallet.");
+      } else {
+        setClaimError(e?.message ?? "Claim failed");
+      }
+    } finally {
+      setClaimPending(false);
+    }
+  }, [
+    connection,
+    claimBalance,
+    fetchClaimBalance,
+    fetchStatus,
+    phantomProvider,
+    publicKey,
+    walletConnected,
+  ]);
+
+  // Handle single or batched bet placement with one wallet tx.
+  const submitBets = useCallback(async (
     slotIndex: number,
-    fighterId: string,
-    amount: number
+    bets: Array<{ fighterId: string; amount: number }>,
   ) => {
     if (!publicKey || !phantomProvider || !walletConnected) {
       alert("Connect your Phantom wallet first to place bets.");
       throw new Error("Wallet not connected");
     }
-    if (amount <= 0 || amount > 10) {
-      alert("Bet must be between 0.01 and 10 SOL");
-      throw new Error("Invalid amount");
+    if (!bets.length) {
+      throw new Error("No bets selected.");
+    }
+    for (const bet of bets) {
+      if (!Number.isFinite(bet.amount) || bet.amount <= 0 || bet.amount > 10) {
+        alert("Each bet must be between 0.01 and 10 SOL");
+        throw new Error("Invalid amount");
+      }
     }
 
     // 0. Pre-validate: check slot is still in betting state before sending SOL
@@ -310,63 +728,84 @@ export default function RumblePage() {
       alert("Betting is not open for this slot right now.");
       throw new Error("Betting closed");
     }
-    const fighterInSlot = slotData.fighters?.some(
-      (f: any) => f.id === fighterId || f.fighterId === fighterId
-    );
-    if (!fighterInSlot) {
-      alert("This fighter is not in the current rumble.");
-      throw new Error("Fighter not in rumble");
+    for (const bet of bets) {
+      const fighterInSlot = slotData.fighters?.some(
+        (f: any) => f.id === bet.fighterId || f.fighterId === bet.fighterId
+      );
+      if (!fighterInSlot) {
+        alert("One or more selected fighters are not in the current rumble.");
+        throw new Error("Fighter not in rumble");
+      }
     }
 
     setBetPending(true);
     try {
-
-      // 1. Build SOL transfer to treasury/vault
-      const treasuryAddress = process.env.NEXT_PUBLIC_TREASURY_ADDRESS
-        || "FXvriUM1dTwDeVXaWTSqGo14jPQk7363FQsQaUP1tvdE"; // deployer wallet as vault for devnet
-      const vaultPubkey = new PublicKey(treasuryAddress);
-      const lamports = Math.round(amount * LAMPORTS_PER_SOL);
-
-      const transaction = new Transaction().add(
-        SystemProgram.transfer({
-          fromPubkey: publicKey,
-          toPubkey: vaultPubkey,
-          lamports,
+      // 1) Build on-chain place_bet tx (single or batch).
+      const prepareRes = await fetch("/api/rumble/bet/prepare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          slot_index: slotIndex,
+          wallet_address: publicKey.toBase58(),
+          bets: bets.map((b) => ({
+            fighter_id: b.fighterId,
+            sol_amount: b.amount,
+          })),
         }),
-      );
+      });
+      const prepared = await prepareRes.json();
+      if (!prepareRes.ok) {
+        throw new Error(prepared?.error ?? "Failed to prepare bet transaction");
+      }
 
-      const { blockhash, lastValidBlockHeight } =
-        await connection.getLatestBlockhash("confirmed");
-      transaction.recentBlockhash = blockhash;
-      transaction.lastValidBlockHeight = lastValidBlockHeight;
-      transaction.feePayer = publicKey;
+      const tx = decodeBase64Tx(prepared.transaction_base64);
+      tx.feePayer = publicKey;
 
-      // 2. Sign with Phantom directly
-      const signed = await phantomProvider.signTransaction(transaction);
+      // 2) Sign with Phantom
+      const signed = await phantomProvider.signTransaction(tx);
 
-      // 3. Send to Solana
+      // 3) Send to Solana
       const rawTx = signed.serialize();
       const txSig = await connection.sendRawTransaction(rawTx, {
         skipPreflight: false,
         preflightCommitment: "confirmed",
       });
 
-      // 4. Wait for confirmation
+      // 4) Wait for confirmation
+      let blockhash = tx.recentBlockhash;
+      let lastValidBlockHeight = tx.lastValidBlockHeight;
+      if (!blockhash || typeof lastValidBlockHeight !== "number") {
+        const latest = await connection.getLatestBlockhash("confirmed");
+        blockhash = latest.blockhash;
+        lastValidBlockHeight = latest.lastValidBlockHeight;
+      }
       await connection.confirmTransaction(
         { signature: txSig, blockhash, lastValidBlockHeight },
         "confirmed",
       );
 
-      // 5. Register the bet with the API (wallet auth, no API key needed)
+      // 5) Register all bet legs in off-chain orchestrator/persistence.
+      const preparedLegs: Array<{
+        fighter_id: string;
+        fighter_index?: number;
+        sol_amount: number;
+      }> =
+        Array.isArray(prepared?.bets) && prepared.bets.length > 0
+          ? prepared.bets
+          : bets.map((b) => ({ fighter_id: b.fighterId, sol_amount: b.amount }));
       const res = await fetch("/api/rumble/bet", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           slot_index: slotIndex,
-          fighter_id: fighterId,
-          sol_amount: amount,
+          fighter_id: preparedLegs[0]?.fighter_id,
+          sol_amount: preparedLegs[0]?.sol_amount,
+          bets: preparedLegs,
           wallet_address: publicKey.toBase58(),
           tx_signature: txSig,
+          tx_kind: prepared.tx_kind ?? "rumble_place_bet",
+          rumble_id: prepared.rumble_id,
+          fighter_index: preparedLegs[0]?.fighter_index ?? prepared.fighter_index,
         }),
       });
 
@@ -376,17 +815,24 @@ export default function RumblePage() {
         return;
       }
 
-      // Track this bet for "YOUR BET" indicators
-      setMyBets((prev) => {
+      // Optimistic local update for clear "your stake" UI.
+      setMyBetAmountsBySlot((prev) => {
         const next = new Map(prev);
-        const existing = next.get(slotIndex) ?? new Set<string>();
-        existing.add(fighterId);
+        const existing = new Map(next.get(slotIndex) ?? new Map<string, number>());
+        for (const leg of preparedLegs) {
+          const fighter = String(leg.fighter_id);
+          const amount = Number(leg.sol_amount ?? 0);
+          if (!Number.isFinite(amount) || amount <= 0) continue;
+          existing.set(fighter, (existing.get(fighter) ?? 0) + amount);
+        }
         next.set(slotIndex, existing);
         return next;
       });
 
       // Refresh status + balance
       fetchStatus();
+      fetchClaimBalance();
+      fetchMyBets();
       const newBalance = await connection.getBalance(publicKey, "confirmed");
       setSolBalance(newBalance / LAMPORTS_PER_SOL);
     } catch (e: any) {
@@ -399,7 +845,31 @@ export default function RumblePage() {
     } finally {
       setBetPending(false);
     }
-  };
+  }, [
+    connection,
+    fetchClaimBalance,
+    fetchMyBets,
+    fetchStatus,
+    phantomProvider,
+    publicKey,
+    status?.slots,
+    walletConnected,
+  ]);
+
+  const handlePlaceBet = useCallback(async (
+    slotIndex: number,
+    fighterId: string,
+    amount: number,
+  ) => {
+    await submitBets(slotIndex, [{ fighterId, amount }]);
+  }, [submitBets]);
+
+  const handlePlaceBatchBet = useCallback(async (
+    slotIndex: number,
+    bets: Array<{ fighterId: string; amount: number }>,
+  ) => {
+    await submitBets(slotIndex, bets);
+  }, [submitBets]);
 
   const ichorShower = status?.ichorShower ?? {
     currentPool: 0,
@@ -444,6 +914,13 @@ export default function RumblePage() {
             </div>
 
             <div className="flex items-center gap-3">
+              {/* AI Commentary */}
+              <CommentaryPlayer
+                slots={status?.slots as any}
+                lastEvent={lastSseEvent}
+                eventSeq={sseEventSeq}
+              />
+
               {/* Connection indicator */}
               <div className="flex items-center gap-1.5">
                 <span
@@ -482,10 +959,10 @@ export default function RumblePage() {
               )}
 
               <Link
-                href="/matches"
+                href="/classic"
                 className="font-mono text-xs text-stone-500 hover:text-stone-300 transition-colors"
               >
-                1v1 Matches
+                Classic 1v1
               </Link>
             </div>
           </div>
@@ -529,7 +1006,9 @@ export default function RumblePage() {
                     key={slot.slotIndex}
                     slot={slot}
                     onPlaceBet={handlePlaceBet}
-                    myBetFighterIds={myBets.get(slot.slotIndex)}
+                    onPlaceBatchBet={handlePlaceBatchBet}
+                    myBetAmounts={myBetAmountsBySlot.get(slot.slotIndex)}
+                    lastCompletedResult={lastCompletedBySlot.get(slot.slotIndex)}
                   />
                 ))}
 
@@ -562,6 +1041,16 @@ export default function RumblePage() {
 
               {/* Sidebar: Queue + Ichor Shower */}
               <div className="w-64 flex-shrink-0 space-y-4 hidden lg:block">
+                {walletConnected && (
+                  <ClaimBalancePanel
+                    balance={claimBalance}
+                    loading={claimLoading}
+                    pending={claimPending}
+                    error={claimError}
+                    onClaim={handleClaimWinnings}
+                  />
+                )}
+
                 <QueueSidebar
                   queue={status?.queue ?? []}
                   totalLength={status?.queueLength ?? 0}
@@ -580,6 +1069,15 @@ export default function RumblePage() {
         <div className="lg:hidden max-w-7xl mx-auto px-4 pb-6 space-y-4">
           {status && (
             <>
+              {walletConnected && (
+                <ClaimBalancePanel
+                  balance={claimBalance}
+                  loading={claimLoading}
+                  pending={claimPending}
+                  error={claimError}
+                  onClaim={handleClaimWinnings}
+                />
+              )}
               <QueueSidebar
                 queue={status.queue}
                 totalLength={status.queueLength}
