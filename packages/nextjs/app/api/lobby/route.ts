@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { NextResponse } from "next/server";
 import { freshSupabase } from "../../../lib/supabase";
-import { getApiKeyFromHeaders } from "../../../lib/request-auth";
+import { getApiKeyFromHeaders, authenticateFighterByApiKey } from "../../../lib/request-auth";
 import { checkFighterCooldown } from "../../../lib/fighter-cooldown";
 
 export const dynamic = "force-dynamic";
@@ -23,15 +23,15 @@ export async function POST(request: Request) {
       );
     }
 
-    // Verify fighter and API key
-    const { data: fighter, error: fighterError } = await supabase
-      .from("ucf_fighters")
-      .select("id, name, points, wins, losses, draws, matches_played, verified, webhook_url")
-      .eq("id", fighterId)
-      .eq("api_key", apiKey)
-      .single();
+    // Verify fighter and API key (hash-first with legacy fallback)
+    const fighter = await authenticateFighterByApiKey(
+      fighterId,
+      apiKey,
+      "id, name, points, wins, losses, draws, matches_played, verified, webhook_url",
+      freshSupabase,
+    );
 
-    if (fighterError || !fighter) {
+    if (!fighter) {
       return NextResponse.json({ error: "Invalid fighter or API key" }, { status: 401 });
     }
 

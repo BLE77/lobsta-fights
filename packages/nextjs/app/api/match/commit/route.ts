@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { NextResponse } from "next/server";
 import { supabase, freshSupabase } from "../../../../lib/supabase";
+import { authenticateFighterByApiKey } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -34,15 +35,15 @@ export async function POST(request: Request) {
       );
     }
 
-    // Verify fighter credentials
-    const { data: fighter, error: authError } = await supabase
-      .from("ucf_fighters")
-      .select("id, name")
-      .eq("id", fighter_id)
-      .eq("api_key", api_key)
-      .single();
+    // Verify fighter credentials (hash-first with legacy fallback)
+    const fighter = await authenticateFighterByApiKey(
+      fighter_id,
+      api_key,
+      "id, name",
+      freshSupabase,
+    );
 
-    if (authError || !fighter) {
+    if (!fighter) {
       return NextResponse.json(
         { error: "Invalid fighter credentials" },
         { status: 401 }

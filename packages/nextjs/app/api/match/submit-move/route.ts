@@ -2,6 +2,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { freshSupabase } from "../../../../lib/supabase";
 import crypto from "crypto";
+import { authenticateFighterByApiKey } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -74,15 +75,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Verify credentials
-    const { data: fighter, error: fighterError } = await supabase
-      .from("ucf_fighters")
-      .select("id, name")
-      .eq("id", fighter_id)
-      .eq("api_key", api_key)
-      .single();
+    // Verify credentials (hash-first with legacy fallback)
+    const fighter = await authenticateFighterByApiKey(
+      fighter_id,
+      api_key,
+      "id, name",
+      freshSupabase,
+    );
 
-    if (fighterError || !fighter) {
+    if (!fighter) {
       return NextResponse.json(
         { error: "Invalid credentials" },
         { status: 401 }

@@ -37,24 +37,32 @@ export async function POST(request: Request) {
       bets: 0,
       rumbles: 0,
       queue: 0,
+      tx_signatures: 0,
     };
     if (resetDb) {
       const sb = serviceClient();
 
-      const [{ data: betRows, error: betsErr }, { data: rumbleRows, error: rumblesErr }, { data: queueRows, error: queueErr }] =
-        await Promise.all([
-          sb.from("ucf_bets").delete().gte("placed_at", "1970-01-01").select("id"),
-          sb.from("ucf_rumbles").delete().gte("created_at", "1970-01-01").select("id"),
-          sb.from("ucf_rumble_queue").delete().gte("joined_at", "1970-01-01").select("id"),
-        ]);
+      const [
+        { data: betRows, error: betsErr },
+        { data: rumbleRows, error: rumblesErr },
+        { data: queueRows, error: queueErr },
+        { data: txSigRows, error: txSigErr },
+      ] = await Promise.all([
+        sb.from("ucf_bets").delete().gte("placed_at", "1970-01-01").select("id"),
+        sb.from("ucf_rumbles").delete().gte("created_at", "1970-01-01").select("id"),
+        sb.from("ucf_rumble_queue").delete().gte("joined_at", "1970-01-01").select("id"),
+        sb.from("ucf_used_tx_signatures").delete().gte("created_at", "1970-01-01").select("tx_signature"),
+      ]);
       if (betsErr) throw betsErr;
       if (rumblesErr) throw rumblesErr;
       if (queueErr) throw queueErr;
+      if (txSigErr) throw txSigErr;
 
       deleted = {
         bets: betRows?.length ?? 0,
         rumbles: rumbleRows?.length ?? 0,
         queue: queueRows?.length ?? 0,
+        tx_signatures: txSigRows?.length ?? 0,
       };
 
       await Promise.all([

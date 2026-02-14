@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "../../../../lib/supabase";
-import { getApiKeyFromHeaders, isValidUUID } from "../../../../lib/request-auth";
+import { supabase, freshSupabase } from "../../../../lib/supabase";
+import { getApiKeyFromHeaders, isValidUUID, authenticateFighterByApiKey } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -34,15 +34,15 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Invalid fighter_id format" }, { status: 400 });
   }
 
-  // Verify credentials
-  const { data: fighter, error: fighterError } = await supabase
-    .from("ucf_fighters")
-    .select("id, name")
-    .eq("id", fighterId)
-    .eq("api_key", apiKey)
-    .single();
+  // Verify credentials (hash-first with legacy fallback)
+  const fighter = await authenticateFighterByApiKey(
+    fighterId,
+    apiKey,
+    "id, name",
+    freshSupabase,
+  );
 
-  if (fighterError || !fighter) {
+  if (!fighter) {
     return NextResponse.json(
       { error: "Invalid credentials" },
       { status: 401 }

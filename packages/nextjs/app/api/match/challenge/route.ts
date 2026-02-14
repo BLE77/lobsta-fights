@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { supabase, freshSupabase } from "../../../../lib/supabase";
 import { sendChallenge, notifyFighter } from "../../../../lib/webhook";
 import { checkFighterCooldown } from "../../../../lib/fighter-cooldown";
+import { authenticateFighterByApiKey } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -44,15 +45,15 @@ export async function POST(request: Request) {
       );
     }
 
-    // Verify challenger credentials
-    const { data: challenger, error: authError } = await supabase
-      .from("ucf_fighters")
-      .select("id, name, points, verified, is_active, webhook_url")
-      .eq("id", challenger_id)
-      .eq("api_key", api_key)
-      .single();
+    // Verify challenger credentials (hash-first with legacy fallback)
+    const challenger = await authenticateFighterByApiKey(
+      challenger_id,
+      api_key,
+      "id, name, points, verified, is_active, webhook_url",
+      freshSupabase,
+    );
 
-    if (authError || !challenger) {
+    if (!challenger) {
       return NextResponse.json(
         { error: "Invalid challenger credentials" },
         { status: 401 }

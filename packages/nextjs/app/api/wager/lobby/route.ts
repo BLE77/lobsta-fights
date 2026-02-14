@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { NextResponse } from "next/server";
 import { supabase, freshSupabase } from "../../../../lib/supabase";
+import { authenticateFighterByApiKey } from "../../../../lib/request-auth";
 import {
   getFighterBalance,
   getFighterWallet,
@@ -57,15 +58,15 @@ export async function POST(request: Request) {
       );
     }
 
-    // Verify fighter and API key
-    const { data: fighter, error: fighterError } = await supabase
-      .from("ucf_fighters")
-      .select("id, name, verified")
-      .eq("id", fighterId)
-      .eq("api_key", apiKey)
-      .single();
+    // Verify fighter and API key (hash-first with legacy fallback)
+    const fighter = await authenticateFighterByApiKey(
+      fighterId,
+      apiKey,
+      "id, name, verified",
+      freshSupabase,
+    );
 
-    if (fighterError || !fighter) {
+    if (!fighter) {
       return NextResponse.json({ error: "Invalid fighter or API key" }, { status: 401 });
     }
 
