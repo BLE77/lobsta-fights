@@ -15,9 +15,15 @@ import {
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 import { hashApiKey } from "~~/lib/api-key";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
+import { hasRecovered, recoverOrchestratorState } from "~~/lib/rumble-state-recovery";
 
 export const dynamic = "force-dynamic";
 const ALLOW_OFFCHAIN_BETS = String(process.env.RUMBLE_ALLOW_OFFCHAIN_BETS ?? "false").toLowerCase() === "true";
+
+async function ensureRecovered(): Promise<void> {
+  if (hasRecovered()) return;
+  await recoverOrchestratorState();
+}
 
 function isMissingTxSignatureTableError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
@@ -72,6 +78,7 @@ export async function GET(request: Request) {
       );
     }
 
+    await ensureRecovered();
     const orchestrator = getOrchestrator();
     const status = orchestrator.getStatus();
     const slot = status.find((s) => s.slotIndex === slotIndex);
@@ -209,6 +216,8 @@ export async function POST(request: Request) {
     if (parsedBets.length === 0) {
       return NextResponse.json({ error: "No valid bets provided." }, { status: 400 });
     }
+
+    await ensureRecovered();
 
     let resolvedWallet: string;
     let verifiedRumbleId: string | null = null;

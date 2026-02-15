@@ -5,8 +5,14 @@ import { buildPlaceBetBatchTx, buildPlaceBetTx } from "~~/lib/solana-programs";
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 import { MAX_BET_SOL, MIN_BET_SOL } from "~~/lib/tx-verify";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
+import { hasRecovered, recoverOrchestratorState } from "~~/lib/rumble-state-recovery";
 
 export const dynamic = "force-dynamic";
+
+async function ensureRecovered(): Promise<void> {
+  if (hasRecovered()) return;
+  await recoverOrchestratorState();
+}
 
 export async function POST(request: Request) {
   const rlKey = getRateLimitKey(request);
@@ -34,6 +40,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Invalid wallet address" }, { status: 400 });
     }
 
+    await ensureRecovered();
     const orchestrator = getOrchestrator();
     const slot = orchestrator.getStatus().find((s) => s.slotIndex === parsedSlotIndex);
     if (!slot) {
