@@ -32,6 +32,7 @@ export interface QueueManager {
   removeFromQueue(fighterId: string): boolean;
   getQueuePosition(fighterId: string): number | null;
   getQueueLength(): number;
+  getQueueEntries(): QueueEntry[];
   getSlots(): RumbleSlot[];
   getSlot(slotIndex: number): RumbleSlot | null;
   advanceSlots(): void;
@@ -169,6 +170,10 @@ export class RumbleQueueManager implements QueueManager {
 
   getQueueLength(): number {
     return this.queue.length;
+  }
+
+  getQueueEntries(): QueueEntry[] {
+    return this.queue.map((entry) => ({ ...entry }));
   }
 
   /**

@@ -221,6 +221,17 @@ const MAX_COMBAT_TURNS = readInt(
   20,
   2_000,
 );
+const HOUSE_BOT_IDS = (process.env.RUMBLE_HOUSE_BOT_IDS ?? "")
+  .split(",")
+  .map((id) => id.trim())
+  .filter((id) => id.length > 0);
+const HOUSE_BOTS_ENABLED = process.env.RUMBLE_HOUSE_BOTS_ENABLED === "true" && HOUSE_BOT_IDS.length > 0;
+const HOUSE_BOT_TARGET_POPULATION = readInt(
+  "RUMBLE_HOUSE_BOT_TARGET_POPULATION",
+  8,
+  0,
+  64,
+);
 const SHOWER_SETTLEMENT_POLL_MS = 12_000;
 const ONCHAIN_FINALIZATION_DELAY_MS = 30_000;
 const ONCHAIN_FINALIZATION_RETRY_MS = 10_000;
@@ -254,6 +265,8 @@ function hasErrorToken(err: unknown, token: string): boolean {
 
 export class RumbleOrchestrator {
   private queueManager: RumbleQueueManager;
+  private readonly houseBotIds = HOUSE_BOT_IDS;
+  private readonly houseBotSet = new Set(HOUSE_BOT_IDS);
 
   // Betting pools indexed by slot
   private bettingPools: Map<number, BettingPool> = new Map();
@@ -333,6 +346,8 @@ export class RumbleOrchestrator {
   }
 
   private async tickInternal(): Promise<void> {
+    await this.maintainHouseBotQueue();
+
     // Let the queue manager handle state transitions (idle→betting, betting→combat, etc.)
     this.queueManager.advanceSlots();
 
@@ -347,6 +362,63 @@ export class RumbleOrchestrator {
 
     await this.processPendingRumbleFinalizations();
     this.pollPendingIchorShower();
+  }
+
+  /**
+   * Keep "house bots" queued when no real fighters are present.
+   *
+   * Behavior:
+   * - If at least one non-house fighter exists in queue or active slots:
+   *   remove waiting house bots so real fighters get priority.
+   * - If no real fighters are present:
+   *   fill house bots up to RUMBLE_HOUSE_BOT_TARGET_POPULATION
+   *   (counting queued + active).
+   */
+  private async maintainHouseBotQueue(): Promise<void> {
+    if (!HOUSE_BOTS_ENABLED) return;
+
+    const slots = this.queueManager.getSlots();
+    const queueEntries = this.queueManager.getQueueEntries();
+    const queuedIds = queueEntries.map((entry) => entry.fighterId);
+    const queuedSet = new Set(queuedIds);
+    const activeSet = new Set(
+      slots
+        .filter((slot) => slot.state !== "idle")
+        .flatMap((slot) => slot.fighters),
+    );
+
+    const presentIds = new Set<string>([...queuedIds, ...activeSet]);
+    const realFighterPresent = [...presentIds].some((id) => !this.houseBotSet.has(id));
+
+    if (realFighterPresent) {
+      // Drain only queued house bots; active matches continue uninterrupted.
+      for (const fighterId of queuedIds) {
+        if (!this.houseBotSet.has(fighterId)) continue;
+        const removed = this.queueManager.removeFromQueue(fighterId);
+        if (removed) {
+          await persist.removeQueueFighter(fighterId);
+        }
+      }
+      return;
+    }
+
+    const currentHousePopulation = [...presentIds].filter((id) => this.houseBotSet.has(id)).length;
+    const missing = Math.max(0, HOUSE_BOT_TARGET_POPULATION - currentHousePopulation);
+    if (missing === 0) return;
+
+    let added = 0;
+    for (const fighterId of this.houseBotIds) {
+      if (added >= missing) break;
+      if (queuedSet.has(fighterId) || activeSet.has(fighterId)) continue;
+      try {
+        this.queueManager.addToQueue(fighterId, false);
+        await persist.saveQueueFighter(fighterId, "waiting", false);
+        queuedSet.add(fighterId);
+        added += 1;
+      } catch (err) {
+        console.warn(`[HouseBots] Failed to queue ${fighterId}: ${formatError(err)}`);
+      }
+    }
   }
 
   private enqueueRumbleFinalization(rumbleId: string, rumbleIdNum: number, delayMs: number): void {
