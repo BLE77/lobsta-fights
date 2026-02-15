@@ -73,6 +73,16 @@ interface DashboardData {
   timestamp: string;
 }
 
+interface HouseBotControlStatus {
+  configuredEnabled: boolean;
+  configuredHouseBotCount: number;
+  paused: boolean;
+  targetPopulation: number;
+  targetPopulationSource: "env" | "runtime_override";
+  lastRestartAt: string | null;
+  timestamp?: string;
+}
+
 interface OnChainData {
   arenaConfig: {
     admin: string;
@@ -210,6 +220,10 @@ export default function AdminPage() {
   const [tab, setTab] = useState<Tab>("overview");
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [onChain, setOnChain] = useState<OnChainData | null>(null);
+  const [houseBotStatus, setHouseBotStatus] = useState<HouseBotControlStatus | null>(null);
+  const [houseBotTargetInput, setHouseBotTargetInput] = useState("8");
+  const [actionBusy, setActionBusy] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState("");
   const [loading, setLoading] = useState(false);
   const secretRef = useRef("");
 
@@ -291,21 +305,106 @@ export default function AdminPage() {
     }
   }, [headers]);
 
+  const fetchHouseBotStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/admin/rumble/house-bots", {
+        headers: headers(),
+        cache: "no-store",
+      });
+      if (res.status === 401) {
+        setAuthenticated(false);
+        sessionStorage.removeItem("ucf_admin_secret");
+        return;
+      }
+      if (!res.ok) return;
+      const data = await res.json();
+      setHouseBotStatus(data);
+      if (typeof data?.targetPopulation === "number") {
+        setHouseBotTargetInput(String(data.targetPopulation));
+      }
+    } catch {
+      // silent
+    }
+  }, [headers]);
+
+  const runAdminAction = useCallback(
+    async (label: string, fn: () => Promise<Response>) => {
+      setActionBusy(label);
+      setActionMessage("");
+      try {
+        const res = await fn();
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setActionMessage(`${label} failed (${res.status})${data?.error ? `: ${data.error}` : ""}`);
+          return;
+        }
+        setActionMessage(
+          `${label} complete${data?.timestamp ? ` @ ${new Date(data.timestamp).toLocaleTimeString()}` : ""}`,
+        );
+        await Promise.all([fetchDashboard(), fetchOnChain(), fetchHouseBotStatus()]);
+      } catch (err: any) {
+        setActionMessage(`${label} failed: ${err?.message ?? "unknown error"}`);
+      } finally {
+        setActionBusy(null);
+      }
+    },
+    [fetchDashboard, fetchOnChain, fetchHouseBotStatus],
+  );
+
+  const runTickNow = useCallback(async () => {
+    await runAdminAction("Tick", () =>
+      fetch("/api/admin/rumble/tick", {
+        method: "POST",
+        headers: headers(),
+      }),
+    );
+  }, [headers, runAdminAction]);
+
+  const runHouseBotAction = useCallback(
+    async (action: string, payload?: Record<string, any>) => {
+      await runAdminAction(`House bots ${action}`, () =>
+        fetch("/api/admin/rumble/house-bots", {
+          method: "POST",
+          headers: { ...headers(), "Content-Type": "application/json" },
+          body: JSON.stringify({ action, ...(payload ?? {}) }),
+        }),
+      );
+    },
+    [headers, runAdminAction],
+  );
+
+  const runHardReset = useCallback(async () => {
+    const confirmed = window.confirm(
+      "Hard reset rumble DB + in-memory state? This clears active rumbles, bets, and queue.",
+    );
+    if (!confirmed) return;
+    await runAdminAction("Hard reset", () =>
+      fetch("/api/admin/rumble/reset", {
+        method: "POST",
+        headers: { ...headers(), "Content-Type": "application/json" },
+        body: JSON.stringify({ reset_db: true, reset_session_floor: true }),
+      }),
+    );
+  }, [headers, runAdminAction]);
+
   // Polling
   useEffect(() => {
     if (!authenticated) return;
 
     fetchDashboard();
     fetchOnChain();
+    fetchHouseBotStatus();
 
     const dashInterval = setInterval(fetchDashboard, 5000);
     const chainInterval = setInterval(fetchOnChain, 30000);
+    const houseBotInterval = setInterval(fetchHouseBotStatus, 5000);
 
     return () => {
       clearInterval(dashInterval);
       clearInterval(chainInterval);
+      clearInterval(houseBotInterval);
     };
-  }, [authenticated, fetchDashboard, fetchOnChain]);
+  }, [authenticated, fetchDashboard, fetchOnChain, fetchHouseBotStatus]);
 
   // ---- Login screen ----
   if (!authenticated) {
@@ -408,6 +507,100 @@ export default function AdminPage() {
 
       {/* Content */}
       <div className="max-w-7xl mx-auto px-4 py-6">
+        <Section title="Rumble Controls">
+          <div className="bg-stone-900/60 border border-stone-800 rounded p-4 space-y-3">
+            <div className="flex flex-wrap gap-2 items-center">
+              <button
+                onClick={runTickNow}
+                disabled={!!actionBusy}
+                className="px-3 py-2 rounded bg-blue-700 hover:bg-blue-600 disabled:opacity-50 font-mono text-xs"
+              >
+                Tick Now
+              </button>
+              <button
+                onClick={() => runHouseBotAction("restart")}
+                disabled={!!actionBusy}
+                className="px-3 py-2 rounded bg-amber-700 hover:bg-amber-600 disabled:opacity-50 font-mono text-xs"
+              >
+                Restart House Bots
+              </button>
+              <button
+                onClick={() => runHouseBotAction("pause")}
+                disabled={!!actionBusy}
+                className="px-3 py-2 rounded bg-stone-700 hover:bg-stone-600 disabled:opacity-50 font-mono text-xs"
+              >
+                Pause House Bots
+              </button>
+              <button
+                onClick={() => runHouseBotAction("resume")}
+                disabled={!!actionBusy}
+                className="px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 font-mono text-xs"
+              >
+                Resume House Bots
+              </button>
+              <button
+                onClick={runHardReset}
+                disabled={!!actionBusy}
+                className="px-3 py-2 rounded bg-red-700 hover:bg-red-600 disabled:opacity-50 font-mono text-xs"
+              >
+                Hard Reset Rumble
+              </button>
+            </div>
+
+            <div className="flex flex-wrap gap-2 items-center">
+              <input
+                type="number"
+                min={0}
+                max={64}
+                value={houseBotTargetInput}
+                onChange={(e) => setHouseBotTargetInput(e.target.value)}
+                className="w-24 bg-stone-800 border border-stone-700 rounded px-2 py-1.5 font-mono text-xs"
+              />
+              <button
+                onClick={() =>
+                  runHouseBotAction("set_target", {
+                    target_population: Number(houseBotTargetInput),
+                  })
+                }
+                disabled={!!actionBusy}
+                className="px-3 py-1.5 rounded bg-violet-700 hover:bg-violet-600 disabled:opacity-50 font-mono text-xs"
+              >
+                Set Target
+              </button>
+              <button
+                onClick={() => runHouseBotAction("clear_target_override")}
+                disabled={!!actionBusy}
+                className="px-3 py-1.5 rounded bg-stone-700 hover:bg-stone-600 disabled:opacity-50 font-mono text-xs"
+              >
+                Use Env Target
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
+              <StatCard label="House Enabled" value={houseBotStatus?.configuredEnabled ? "YES" : "NO"} />
+              <StatCard label="House Count" value={houseBotStatus?.configuredHouseBotCount ?? "-"} />
+              <StatCard label="Paused" value={houseBotStatus?.paused ? "YES" : "NO"} />
+              <StatCard label="Target Pop" value={houseBotStatus?.targetPopulation ?? "-"} />
+              <StatCard
+                label="Target Source"
+                value={houseBotStatus?.targetPopulationSource?.toUpperCase?.() ?? "-"}
+              />
+              <StatCard
+                label="Last Restart"
+                value={houseBotStatus?.lastRestartAt ? new Date(houseBotStatus.lastRestartAt).toLocaleTimeString() : "-"}
+              />
+            </div>
+
+            {actionMessage ? (
+              <p className="font-mono text-xs text-amber-400">{actionMessage}</p>
+            ) : (
+              <p className="font-mono text-[10px] text-stone-600">
+                Run all rumble ops from here. No terminal needed.
+              </p>
+            )}
+          </div>
+        </Section>
+
         {tab === "overview" && (
           <OverviewTab
             stats={stats}
