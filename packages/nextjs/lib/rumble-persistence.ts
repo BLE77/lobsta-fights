@@ -370,28 +370,31 @@ export interface SaveBetInput {
 
 export async function saveBets(inputs: SaveBetInput[]): Promise<boolean> {
   if (inputs.length === 0) return true;
-  try {
-    const sb = freshServiceClient();
-    const { error } = await sb
-      .from("ucf_bets")
-      .insert(
-        inputs.map((input) => ({
-          rumble_id: input.rumbleId,
-          wallet_address: input.walletAddress,
-          fighter_id: input.fighterId,
-          gross_amount: input.grossAmount,
-          net_amount: input.netAmount,
-          admin_fee: input.adminFee,
-          sponsor_fee: input.sponsorFee,
-        })),
-      )
-      .select();
-    if (error) throw error;
-    return true;
-  } catch (err) {
-    logError("saveBets failed", err);
-    return false;
+  const rows = inputs.map((input) => ({
+    rumble_id: input.rumbleId,
+    wallet_address: input.walletAddress,
+    fighter_id: input.fighterId,
+    gross_amount: input.grossAmount,
+    net_amount: input.netAmount,
+    admin_fee: input.adminFee,
+    sponsor_fee: input.sponsorFee,
+  }));
+
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const sb = freshServiceClient();
+      const { error } = await sb.from("ucf_bets").insert(rows).select();
+      if (error) throw error;
+      return true;
+    } catch (err) {
+      const isLastAttempt = attempt === maxAttempts;
+      logError(`saveBets failed (attempt ${attempt}/${maxAttempts})`, err);
+      if (isLastAttempt) return false;
+      await new Promise(resolve => setTimeout(resolve, 150 * attempt));
+    }
   }
+  return false;
 }
 
 export async function saveBet(input: SaveBetInput): Promise<void> {

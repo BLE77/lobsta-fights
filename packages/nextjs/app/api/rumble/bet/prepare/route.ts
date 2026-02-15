@@ -8,6 +8,7 @@ import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 import { hasRecovered, recoverOrchestratorState } from "~~/lib/rumble-state-recovery";
 
 export const dynamic = "force-dynamic";
+const BETTING_CLOSE_GUARD_MS = Math.max(1000, Number(process.env.RUMBLE_BETTING_CLOSE_GUARD_MS ?? "12000"));
 
 async function ensureRecovered(): Promise<void> {
   if (hasRecovered()) return;
@@ -162,6 +163,21 @@ export async function POST(request: Request) {
         { status: 409 },
       );
     }
+    const onchainDeadlineMs = Number(onchainRumble.bettingDeadlineTs) * 1000;
+    if (Number.isFinite(onchainDeadlineMs) && onchainDeadlineMs > 0) {
+      const nowMs = Date.now();
+      if (nowMs >= onchainDeadlineMs - BETTING_CLOSE_GUARD_MS) {
+        return NextResponse.json(
+          {
+            error: "Betting is closing right now. Wait for the next rumble to avoid a failed transaction.",
+            onchain_state: onchainRumble.state,
+            onchain_betting_deadline: new Date(onchainDeadlineMs).toISOString(),
+            guard_ms: BETTING_CLOSE_GUARD_MS,
+          },
+          { status: 409 },
+        );
+      }
+    }
     const maxPreparedIndex = preparedBets.reduce(
       (max, bet) => Math.max(max, bet.fighter_index),
       -1,
@@ -215,6 +231,11 @@ export async function POST(request: Request) {
         total_lamports: preparedBets.reduce((sum, b) => sum + b.lamports, 0),
         wallet: wallet.toBase58(),
         onchain_state: onchainRumble.state,
+        onchain_betting_deadline:
+          Number.isFinite(onchainDeadlineMs) && onchainDeadlineMs > 0
+            ? new Date(onchainDeadlineMs).toISOString()
+            : null,
+        guard_ms: BETTING_CLOSE_GUARD_MS,
         tx_kind: txKind,
         transaction_base64: txBase64,
         timestamp: new Date().toISOString(),

@@ -186,6 +186,9 @@ export interface RumbleAccountState {
   state: OnchainRumbleState;
   fighterCount: number;
   winnerIndex: number | null;
+  bettingDeadlineTs: bigint;
+  combatStartedAtTs: bigint;
+  completedAtTs: bigint;
 }
 
 /**
@@ -197,7 +200,8 @@ export async function readRumbleAccountState(
 ): Promise<RumbleAccountState | null> {
   const conn = connection ?? getConnection();
   const [rumblePda] = deriveRumblePda(rumbleId);
-  const info = await conn.getAccountInfo(rumblePda, "confirmed");
+  // Use processed commitment to minimize stale reads around betting close.
+  const info = await conn.getAccountInfo(rumblePda, "processed");
   if (!info || info.data.length < 17) return null;
 
   const data = info.data;
@@ -206,15 +210,25 @@ export async function readRumbleAccountState(
   const state = ONCHAIN_RUMBLE_STATES[rawState];
   if (!state) return null;
 
-  // discriminator(8) + id(8) + state(1) + fighters(32*16=512)
-  const fighterCountOffset = 8 + 8 + 1 + 32 * 16;
+  const fightersOffset = 8 + 8 + 1;
+  const fighterCountOffset = fightersOffset + 32 * 16;
   const fighterCount = data[fighterCountOffset] ?? 0;
-  // winner index offset from Rumble account layout:
-  // disc(8)+id(8)+state(1)+fighters(512)+count(1)+pools(128)+totals(24)+placements(16)
-  const winnerIndexOffset = 8 + 8 + 1 + 32 * 16 + 1 + 8 * 16 + 8 + 8 + 8 + 16;
+  const bettingPoolsOffset = fighterCountOffset + 1;
+  const totalDeployedOffset = bettingPoolsOffset + 8 * 16;
+  const adminFeeCollectedOffset = totalDeployedOffset + 8;
+  const sponsorshipPaidOffset = adminFeeCollectedOffset + 8;
+  const placementsOffset = sponsorshipPaidOffset + 8;
+  const winnerIndexOffset = placementsOffset + 16;
+  const bettingDeadlineOffset = winnerIndexOffset + 1;
+  const combatStartedAtOffset = bettingDeadlineOffset + 8;
+  const completedAtOffset = combatStartedAtOffset + 8;
+
   const winnerIndexRaw = data.length > winnerIndexOffset ? data[winnerIndexOffset] : undefined;
   const winnerIndex =
     typeof winnerIndexRaw === "number" && winnerIndexRaw < 16 ? winnerIndexRaw : null;
+  const bettingDeadlineTs = data.length >= bettingDeadlineOffset + 8 ? readI64LE(data, bettingDeadlineOffset) : 0n;
+  const combatStartedAtTs = data.length >= combatStartedAtOffset + 8 ? readI64LE(data, combatStartedAtOffset) : 0n;
+  const completedAtTs = data.length >= completedAtOffset + 8 ? readI64LE(data, completedAtOffset) : 0n;
 
   return {
     address: rumblePda,
@@ -222,6 +236,9 @@ export async function readRumbleAccountState(
     state,
     fighterCount,
     winnerIndex,
+    bettingDeadlineTs,
+    combatStartedAtTs,
+    completedAtTs,
   };
 }
 
