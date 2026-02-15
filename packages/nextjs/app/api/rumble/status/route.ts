@@ -5,6 +5,7 @@ import { getQueueManager } from "~~/lib/queue-manager";
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 import {
   loadQueueState,
+  loadActiveRumbles,
   getIchorShowerState,
   getStats,
 } from "~~/lib/rumble-persistence";
@@ -77,7 +78,7 @@ export async function GET(request: Request) {
 
     // ---- Build slots from in-memory orchestrator ----------------------------
     const orchStatus = orchestrator.getStatus();
-    const slots = orchStatus.map((slotInfo) => {
+    let slots = orchStatus.map((slotInfo) => {
       const combatState = orchestrator.getCombatState(slotInfo.slotIndex);
 
       // Fighter name lookup for this slot
@@ -203,6 +204,72 @@ export async function GET(request: Request) {
       position: index + 1,
     }));
 
+    // ---------------------------------------------------------------------
+    // Serverless cold-start fallback:
+    // If in-memory orchestrator is empty, hydrate visible slot state from DB.
+    // This keeps UI accurate even when /status runs on a different lambda
+    // instance than /tick.
+    // ---------------------------------------------------------------------
+    const inMemoryLooksIdle = slots.every((s) => s.state === "idle" && s.fighters.length === 0);
+    if (inMemoryLooksIdle) {
+      const persistedActive = await loadActiveRumbles();
+      if (persistedActive.length > 0) {
+        const base = new Map(slots.map((s) => [s.slotIndex, s]));
+        for (const row of persistedActive) {
+          const slotIndex = Number(row.slot_index);
+          if (!Number.isInteger(slotIndex)) continue;
+          const fighterRows = Array.isArray(row.fighters)
+            ? (row.fighters as Array<{ id?: string; name?: string }>)
+            : [];
+          const fighterIds = fighterRows
+            .map((f) => String(f?.id ?? "").trim())
+            .filter(Boolean);
+          const fighters = fighterIds.map((fid) => ({
+            id: fid,
+            name: fighterName(lookup, fid),
+            hp: 100,
+            maxHp: 100,
+            imageUrl: fighterImage(lookup, fid),
+            meter: 0,
+            totalDamageDealt: 0,
+            totalDamageTaken: 0,
+            eliminatedOnTurn: null,
+            placement: 0,
+          }));
+          const fighterNames: Record<string, string> = {};
+          for (const fid of fighterIds) fighterNames[fid] = fighterName(lookup, fid);
+
+          const existing = base.get(slotIndex);
+          if (!existing) continue;
+          base.set(slotIndex, {
+            ...existing,
+            rumbleId: row.id,
+            state: (row.status as "idle" | "betting" | "combat" | "payout") ?? "idle",
+            fighters,
+            odds: fighterIds.map((fid) => ({
+              fighterId: fid,
+              fighterName: fighterName(lookup, fid),
+              imageUrl: fighterImage(lookup, fid),
+              hp: 100,
+              solDeployed: 0,
+              betCount: 0,
+              impliedProbability: fighterIds.length > 0 ? 1 / fighterIds.length : 0,
+              potentialReturn: fighterIds.length || 1,
+            })),
+            totalPool: 0,
+            bettingDeadline: null,
+            nextTurnAt: null,
+            turnIntervalMs: null,
+            currentTurn: 0,
+            turns: [],
+            payout: null,
+            fighterNames,
+          });
+        }
+        slots = [...base.values()].sort((a, b) => a.slotIndex - b.slotIndex);
+      }
+    }
+
     // ---- Ichor shower state ------------------------------------------------
     const showerState = await getIchorShowerState();
     const arenaConfig = await readArenaConfig().catch(() => null);
@@ -211,10 +278,11 @@ export async function GET(request: Request) {
 
     // ---- nextRumbleIn estimate ---------------------------------------------
     const inMemoryQueueLen = qm.getQueueLength();
+    const effectiveQueueLen = Math.max(inMemoryQueueLen, queueEntries.length);
     let nextRumbleIn: string | null = null;
-    if (inMemoryQueueLen > 0 && inMemoryQueueLen < 8) {
-      nextRumbleIn = `Need ${8 - inMemoryQueueLen} more fighters`;
-    } else if (inMemoryQueueLen >= 8) {
+    if (effectiveQueueLen > 0 && effectiveQueueLen < 8) {
+      nextRumbleIn = `Need ${8 - effectiveQueueLen} more fighters`;
+    } else if (effectiveQueueLen >= 8) {
       const hasIdleSlot = slots.some((s) => s.state === "idle");
       nextRumbleIn = hasIdleSlot ? "Starting soon..." : "All slots active";
     }
