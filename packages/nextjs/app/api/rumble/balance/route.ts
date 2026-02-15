@@ -2,9 +2,41 @@ import { NextResponse } from "next/server";
 import { PublicKey } from "@solana/web3.js";
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 import { getRumblePayoutMode } from "~~/lib/rumble-payout-mode";
-import { discoverOnchainWalletPayoutSnapshot } from "~~/lib/rumble-onchain-claims";
+import {
+  discoverOnchainWalletPayoutSnapshot,
+  type OnchainClaimableRumble,
+} from "~~/lib/rumble-onchain-claims";
+import { getConnection } from "~~/lib/solana-connection";
+import { buildClaimPayoutTx } from "~~/lib/solana-programs";
 
 export const dynamic = "force-dynamic";
+const MAX_EXECUTABLE_CHECKS = 80;
+
+async function filterExecutableClaims(
+  wallet: PublicKey,
+  rows: OnchainClaimableRumble[],
+): Promise<OnchainClaimableRumble[]> {
+  if (rows.length === 0) return [];
+
+  const connection = getConnection();
+  const executable: OnchainClaimableRumble[] = [];
+
+  for (const row of rows.slice(0, MAX_EXECUTABLE_CHECKS)) {
+    try {
+      const tx = await buildClaimPayoutTx(wallet, row.rumbleIdNum, connection);
+      const sim = await (connection as any).simulateTransaction(tx, {
+        sigVerify: false,
+        replaceRecentBlockhash: true,
+        commitment: "processed",
+      });
+      if (!sim.value.err) executable.push(row);
+    } catch {
+      // Non-executable candidates are intentionally omitted from claimable totals.
+    }
+  }
+
+  return executable;
+}
 
 export async function GET(request: Request) {
   const rlKey = getRateLimitKey(request);
@@ -31,11 +63,11 @@ export async function GET(request: Request) {
 
     const payoutMode = getRumblePayoutMode();
     const snapshot = await discoverOnchainWalletPayoutSnapshot(walletPk, 80);
-    const pendingRumbles = snapshot.claimableRumbles.map((row) => ({
+    const executableClaims = await filterExecutableClaims(walletPk, snapshot.claimableRumbles);
+    const pendingRumbles = executableClaims.map((row) => ({
       rumble_id: row.rumbleId,
-      claimable_sol: row.inferredClaimableSol,
-      onchain_claimable_sol:
-        row.onchainClaimableSol > 0 ? row.onchainClaimableSol : row.inferredClaimableSol,
+      claimable_sol: row.onchainClaimableSol > 0 ? row.onchainClaimableSol : row.inferredClaimableSol,
+      onchain_claimable_sol: row.onchainClaimableSol > 0 ? row.onchainClaimableSol : null,
       onchain_claimed_sol: null,
       onchain_rumble_exists: true,
       onchain_rumble_state: row.onchainState,
@@ -44,7 +76,10 @@ export async function GET(request: Request) {
       claim_method: "onchain" as const,
     }));
 
-    const onchainClaimableSolTotal = snapshot.totalClaimableSol;
+    const onchainClaimableSolTotal = pendingRumbles.reduce(
+      (sum, row) => sum + row.claimable_sol,
+      0,
+    );
     const onchainPendingNotReadySol = snapshot.pendingNotReadySol;
     const onchainClaimReady = onchainClaimableSolTotal > 0;
 
