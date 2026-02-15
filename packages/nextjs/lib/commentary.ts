@@ -25,6 +25,7 @@ export interface CommentarySSEEvent {
 /** Slot data shape (subset needed for commentary decisions) */
 export interface CommentarySlotData {
   slotIndex: number;
+  rumbleId?: string;
   state: "idle" | "betting" | "combat" | "payout";
   fighters: Array<{
     id: string;
@@ -47,6 +48,7 @@ export interface CommentarySlotData {
 // ---------------------------------------------------------------------------
 
 export type CommentaryEventType =
+  | "betting_open"
   | "big_hit"
   | "elimination"
   | "combat_start"
@@ -58,9 +60,32 @@ interface CommentaryCandidate {
   eventType: CommentaryEventType;
   context: string;
   allowedNames: string[];
+  clipKey: string;
 }
 
 const BIG_HIT_THRESHOLD = 18;
+
+function normalizeKeyPart(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9:_-]+/g, "_")
+    .replace(/_+/g, "_")
+    .slice(0, 120);
+}
+
+function clipKeyFor(
+  slot: CommentarySlotData,
+  phase: string,
+  marker?: string | number | null,
+): string {
+  const rumbleIdRaw = typeof slot.rumbleId === "string" && slot.rumbleId.trim().length > 0
+    ? slot.rumbleId
+    : `slot-${slot.slotIndex}`;
+  const rumbleId = normalizeKeyPart(rumbleIdRaw);
+  const suffix = marker === undefined || marker === null ? "" : `:${normalizeKeyPart(String(marker))}`;
+  return `${rumbleId}:${normalizeKeyPart(phase)}${suffix}`;
+}
 
 function isLikelyIdentifier(value: string | null | undefined): boolean {
   if (!value) return true;
@@ -98,6 +123,15 @@ function collectAllowedNames(slot: CommentarySlotData): string[] {
   return [...uniq];
 }
 
+function statFromName(name: string, salt: number, min: number, max: number): number {
+  let hash = 0;
+  for (let i = 0; i < name.length; i += 1) {
+    hash = (hash * 31 + name.charCodeAt(i) + salt) % 1000003;
+  }
+  const span = max - min + 1;
+  return min + (Math.abs(hash) % span);
+}
+
 /**
  * Evaluate an SSE event and return a commentary candidate if it's interesting,
  * or null if it should be skipped.
@@ -118,6 +152,7 @@ export function evaluateEvent(
 
       // Check for eliminations first (highest priority)
       if (eliminations.length > 0) {
+        const turnNumber = Number(turn?.turnNumber ?? slot.currentTurn);
         const eliminated = eliminations
           .map((id: string) => {
             return resolveFighterName(slot, id) ?? "a fighter";
@@ -150,7 +185,12 @@ export function evaluateEvent(
             ? `${killerInfo.join(". ")}. ${remaining} fighters remain in slot ${slot.slotIndex + 1}.`
             : `${eliminated} eliminated! ${remaining} fighters remain.`;
 
-        return { eventType: "elimination", context, allowedNames };
+        return {
+          eventType: "elimination",
+          context,
+          allowedNames,
+          clipKey: clipKeyFor(slot, "turn-elimination", turnNumber),
+        };
       }
 
       // Check for big hits
@@ -158,6 +198,7 @@ export function evaluateEvent(
         (p) => p.damageToA >= BIG_HIT_THRESHOLD || p.damageToB >= BIG_HIT_THRESHOLD,
       );
       if (bigHits.length > 0) {
+        const turnNumber = Number(turn?.turnNumber ?? slot.currentTurn);
         const descriptions = bigHits.map((p) => {
           const fighterAName = resolveFighterName(slot, p.fighterA, p.fighterAName) ?? "a fighter";
           const fighterBName = resolveFighterName(slot, p.fighterB, p.fighterBName) ?? "a fighter";
@@ -173,10 +214,42 @@ export function evaluateEvent(
           eventType: "big_hit",
           context: `Turn ${turn?.turnNumber ?? slot.currentTurn}: ${descriptions.join(". ")}.`,
           allowedNames,
+          clipKey: clipKeyFor(slot, "turn-big-hit", turnNumber),
         };
       }
 
-      return null; // Boring turn
+      // Keep commentary alive every combat turn, even without eliminations/big-hit threshold.
+      if (pairings.length > 0) {
+        const turnNumber = Number(turn?.turnNumber ?? slot.currentTurn);
+        const topExchange = [...pairings].sort((a, b) => {
+          const aTotal = Number(a.damageToA ?? 0) + Number(a.damageToB ?? 0);
+          const bTotal = Number(b.damageToA ?? 0) + Number(b.damageToB ?? 0);
+          return bTotal - aTotal;
+        })[0];
+        const fighterAName =
+          resolveFighterName(slot, topExchange.fighterA, topExchange.fighterAName) ?? "a fighter";
+        const fighterBName =
+          resolveFighterName(slot, topExchange.fighterB, topExchange.fighterBName) ?? "a fighter";
+        const remaining =
+          typeof event.data?.remainingFighters === "number"
+            ? Math.max(0, Math.floor(event.data.remainingFighters))
+            : slot.fighters.filter((f) => !f.eliminatedOnTurn).length;
+        const context = `Turn ${turn?.turnNumber ?? slot.currentTurn}: ${fighterAName} hit ${fighterBName} for ${Number(topExchange.damageToB ?? 0)} and ${fighterBName} answered for ${Number(topExchange.damageToA ?? 0)}. ${remaining} fighters remain.`;
+        return {
+          eventType: "big_hit",
+          context,
+          allowedNames,
+          clipKey: clipKeyFor(slot, "turn-exchange", turnNumber),
+        };
+      }
+
+      const turnNumber = Number(turn?.turnNumber ?? slot.currentTurn);
+      return {
+        eventType: "big_hit",
+        context: `Turn ${turn?.turnNumber ?? slot.currentTurn} resolved. ${slot.fighters.filter((f) => !f.eliminatedOnTurn).length} fighters remain.`,
+        allowedNames,
+        clipKey: clipKeyFor(slot, "turn-resolved", turnNumber),
+      };
     }
 
     case "elimination":
@@ -193,6 +266,11 @@ export function evaluateEvent(
         eventType: "elimination",
         context: `${name} has been eliminated! ${remaining} fighters remain in slot ${slot.slotIndex + 1}.`,
         allowedNames,
+        clipKey: clipKeyFor(
+          slot,
+          "fighter-eliminated",
+          `${event.data?.turnNumber ?? slot.currentTurn}-${event.data?.fighterId ?? name}`,
+        ),
       };
     }
 
@@ -202,6 +280,32 @@ export function evaluateEvent(
         eventType: "combat_start",
         context: `Combat begins in slot ${slot.slotIndex + 1}! ${slot.fighters.length} fighters enter: ${fighterNames}.`,
         allowedNames,
+        clipKey: clipKeyFor(slot, "combat-start"),
+      };
+    }
+
+    case "betting_open": {
+      const namedFighters = slot.fighters
+        .map((f) => f.name?.trim())
+        .filter((name): name is string => !!name && !isLikelyIdentifier(name));
+
+      const statLines = namedFighters.slice(0, 4).map((name) => {
+        const aggression = statFromName(name, 11, 55, 99);
+        const armor = statFromName(name, 29, 45, 95);
+        const clutch = statFromName(name, 47, 50, 98);
+        return `${name} AGG ${aggression} ARM ${armor} CLT ${clutch}`;
+      });
+
+      const statsText =
+        statLines.length > 0
+          ? ` Stat board: ${statLines.join("; ")}.`
+          : "";
+
+      return {
+        eventType: "betting_open",
+        context: `Betting is OPEN in slot ${slot.slotIndex + 1}. Place your bets now.${statsText}`,
+        allowedNames,
+        clipKey: clipKeyFor(slot, "betting-open"),
       };
     }
 
@@ -221,6 +325,7 @@ export function evaluateEvent(
         eventType: "payout",
         context: `Rumble in slot ${slot.slotIndex + 1} is over! ${winner} wins. Total SOL pool: ${pool.toFixed(2)} SOL.`,
         allowedNames,
+        clipKey: clipKeyFor(slot, "payout"),
       };
     }
 
@@ -233,6 +338,26 @@ export function evaluateEvent(
           eventType: "combat_start",
           context: `Combat begins in slot ${slot.slotIndex + 1}! ${slot.fighters.length} fighters enter the arena: ${fighterNames}.`,
           allowedNames,
+          clipKey: clipKeyFor(slot, "combat-start"),
+        };
+      }
+
+      if (newState === "betting") {
+        const namedFighters = slot.fighters
+          .map((f) => f.name?.trim())
+          .filter((name): name is string => !!name && !isLikelyIdentifier(name));
+        const statLines = namedFighters.slice(0, 4).map((name) => {
+          const aggression = statFromName(name, 11, 55, 99);
+          const armor = statFromName(name, 29, 45, 95);
+          const clutch = statFromName(name, 47, 50, 98);
+          return `${name} AGG ${aggression} ARM ${armor} CLT ${clutch}`;
+        });
+        const statsText = statLines.length > 0 ? ` Stat board: ${statLines.join("; ")}.` : "";
+        return {
+          eventType: "betting_open",
+          context: `Betting is OPEN in slot ${slot.slotIndex + 1}. Place your bets now.${statsText}`,
+          allowedNames,
+          clipKey: clipKeyFor(slot, "betting-open"),
         };
       }
 
@@ -246,6 +371,7 @@ export function evaluateEvent(
           eventType: "payout",
           context: `Rumble in slot ${slot.slotIndex + 1} is over! ${winnerName} takes the crown. Total SOL pool: ${pool.toFixed(2)} SOL.`,
           allowedNames,
+          clipKey: clipKeyFor(slot, "payout"),
         };
       }
 
@@ -258,6 +384,7 @@ export function evaluateEvent(
         eventType: "ichor_shower",
         context: `ICHOR SHOWER TRIGGERED! ${amount} ICHOR rains down on the winners! The legendary jackpot has been hit!`,
         allowedNames,
+        clipKey: clipKeyFor(slot, "ichor-shower", amount),
       };
     }
 

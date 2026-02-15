@@ -8,6 +8,7 @@ import {
   verifyRumblePlaceBetTransaction,
   isSignatureUsed,
   markSignatureUsed,
+  unmarkSignatureUsed,
   MIN_BET_SOL,
   MAX_BET_SOL,
 } from "~~/lib/tx-verify";
@@ -17,6 +18,30 @@ import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 
 export const dynamic = "force-dynamic";
 const ALLOW_OFFCHAIN_BETS = String(process.env.RUMBLE_ALLOW_OFFCHAIN_BETS ?? "false").toLowerCase() === "true";
+
+function isMissingTxSignatureTableError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const code = (err as { code?: string }).code;
+  return code === "42P01" || code === "PGRST205";
+}
+
+type BetSignatureLock = { mode: "db" | "memory"; txSignature: string } | null;
+
+async function releaseBetSignatureLock(lock: BetSignatureLock): Promise<void> {
+  if (!lock) return;
+  if (lock.mode === "memory") {
+    unmarkSignatureUsed(lock.txSignature);
+    return;
+  }
+  const { error } = await freshSupabase()
+    .from("ucf_used_tx_signatures")
+    .delete()
+    .eq("tx_signature", lock.txSignature)
+    .eq("kind", "rumble_bet");
+  if (error) {
+    console.error("[rumble/bet] Failed to release signature lock:", error);
+  }
+}
 
 /**
  * GET /api/rumble/bet?slot_index=0
@@ -88,6 +113,9 @@ export async function POST(request: Request) {
   const rlKey = getRateLimitKey(request);
   const rl = checkRateLimit("PUBLIC_WRITE", rlKey);
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+
+  let signatureLock: BetSignatureLock = null;
+  let betRegistered = false;
 
   try {
     const body = await request.json();
@@ -194,7 +222,7 @@ export async function POST(request: Request) {
         .eq("tx_signature", txSignature)
         .maybeSingle();
       if (existingSignatureError) {
-        if ((existingSignatureError as any).code === "42P01") {
+        if (isMissingTxSignatureTableError(existingSignatureError)) {
           // Migration not applied yet; fall back to process-memory replay guard.
           useMemoryReplayGuard = true;
           if (isSignatureUsed(txSignature)) {
@@ -311,6 +339,7 @@ export async function POST(request: Request) {
             { status: 400 },
           );
         }
+        signatureLock = { mode: "memory", txSignature };
       } else {
         const { error: signatureInsertError } = await freshSupabase()
           .from("ucf_used_tx_signatures")
@@ -330,16 +359,27 @@ export async function POST(request: Request) {
             },
           });
         if (signatureInsertError) {
-          if ((signatureInsertError as any).code === "23505") {
+          if (isMissingTxSignatureTableError(signatureInsertError)) {
+            if (markSignatureUsed(txSignature)) {
+              return NextResponse.json(
+                { error: "This transaction signature has already been used for a bet." },
+                { status: 400 },
+              );
+            }
+            signatureLock = { mode: "memory", txSignature };
+          } else if ((signatureInsertError as any).code === "23505") {
             return NextResponse.json(
               { error: "This transaction signature has already been used for a bet." },
               { status: 400 },
             );
+          } else {
+            return NextResponse.json(
+              { error: "Failed to persist transaction signature usage." },
+              { status: 500 },
+            );
           }
-          return NextResponse.json(
-            { error: "Failed to persist transaction signature usage." },
-            { status: 500 },
-          );
+        } else {
+          signatureLock = { mode: "db", txSignature };
         }
       }
 
@@ -398,18 +438,21 @@ export async function POST(request: Request) {
         );
       }
     }
-    const result = orchestrator.placeBets(
+    const result = await orchestrator.placeBets(
       parsedSlotIndex,
       resolvedWallet,
       parsedBets.map((b) => ({ fighterId: b.fighterId, solAmount: b.solAmount })),
     );
 
     if (!result.accepted) {
+      await releaseBetSignatureLock(signatureLock);
+      signatureLock = null;
       return NextResponse.json(
         { error: result.reason ?? "Bet rejected." },
-        { status: 400 },
+        { status: result.reason?.includes("retry with the same signed transaction") ? 503 : 400 },
       );
     }
+    betRegistered = true;
 
     const updatedOdds = orchestrator.getOdds(parsedSlotIndex);
 
@@ -425,6 +468,9 @@ export async function POST(request: Request) {
       updated_odds: updatedOdds,
     });
   } catch (error: any) {
+    if (!betRegistered) {
+      await releaseBetSignatureLock(signatureLock);
+    }
     return NextResponse.json({ error: "Failed to place bet" }, { status: 500 });
   }
 }

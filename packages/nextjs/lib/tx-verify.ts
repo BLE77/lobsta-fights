@@ -57,6 +57,15 @@ export function isSignatureUsed(sig: string): boolean {
   return usedSignatures.has(sig);
 }
 
+/**
+ * Remove an in-memory replay lock when bet registration fails and we need to
+ * allow safe retry with the same already-confirmed signature.
+ */
+export function unmarkSignatureUsed(sig: string): void {
+  cleanupSignatures();
+  usedSignatures.delete(sig);
+}
+
 // ---------------------------------------------------------------------------
 // Transaction verification
 // ---------------------------------------------------------------------------

@@ -66,7 +66,7 @@ const COMBAT_DURATION_MS = readDurationMs(
   "RUMBLE_COMBAT_DURATION_MS",
   5 * 60 * 1000,
   60 * 1000,
-  20 * 60 * 1000,
+  2 * 60 * 60 * 1000,
 );
 const PAYOUT_DURATION_MS = readDurationMs(
   "RUMBLE_PAYOUT_DURATION_MS",
@@ -206,7 +206,7 @@ export class RumbleQueueManager implements QueueManager {
    * State machine per slot:
    *   idle -> betting (when fighters available)
    *   betting -> combat (when betting deadline passes)
-   *   combat -> payout (when combat duration expires or rumbleResult is set)
+   *   combat -> payout (when rumbleResult is set)
    *   payout -> idle (after payout duration, then auto-requeue fighters)
    */
   advanceSlots(): void {
@@ -231,16 +231,8 @@ export class RumbleQueueManager implements QueueManager {
           break;
 
         case "combat":
-          // Combat ends when rumbleResult is set externally (by the engine)
-          // OR when the max combat duration has elapsed (safety net).
+          // Combat ends only when rumbleResult is set externally by the engine.
           if (slot.rumbleResult) {
-            this.transitionToPayout(slot);
-          } else if (
-            slot.combatStartedAt &&
-            now.getTime() - slot.combatStartedAt.getTime() >= COMBAT_DURATION_MS
-          ) {
-            // Safety: force transition even if no result.
-            // In production the rumble engine would have reported a result by now.
             this.transitionToPayout(slot);
           }
           break;

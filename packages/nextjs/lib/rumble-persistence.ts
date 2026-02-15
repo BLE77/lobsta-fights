@@ -353,25 +353,34 @@ export interface SaveBetInput {
   sponsorFee: number;
 }
 
-export async function saveBet(input: SaveBetInput): Promise<void> {
+export async function saveBets(inputs: SaveBetInput[]): Promise<boolean> {
+  if (inputs.length === 0) return true;
   try {
     const sb = freshServiceClient();
     const { error } = await sb
       .from("ucf_bets")
-      .insert({
-        rumble_id: input.rumbleId,
-        wallet_address: input.walletAddress,
-        fighter_id: input.fighterId,
-        gross_amount: input.grossAmount,
-        net_amount: input.netAmount,
-        admin_fee: input.adminFee,
-        sponsor_fee: input.sponsorFee,
-      })
+      .insert(
+        inputs.map((input) => ({
+          rumble_id: input.rumbleId,
+          wallet_address: input.walletAddress,
+          fighter_id: input.fighterId,
+          gross_amount: input.grossAmount,
+          net_amount: input.netAmount,
+          admin_fee: input.adminFee,
+          sponsor_fee: input.sponsorFee,
+        })),
+      )
       .select();
     if (error) throw error;
+    return true;
   } catch (err) {
-    logError("saveBet failed", err);
+    logError("saveBets failed", err);
+    return false;
   }
+}
+
+export async function saveBet(input: SaveBetInput): Promise<void> {
+  await saveBets([input]);
 }
 
 export async function loadBetsForRumble(

@@ -183,11 +183,28 @@ function readIntervalMs(
   return Math.min(max, Math.max(min, Math.floor(raw)));
 }
 
+function readInt(
+  envName: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const raw = Number(process.env[envName] ?? "");
+  if (!Number.isFinite(raw)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(raw)));
+}
+
 const COMBAT_TICK_INTERVAL_MS = readIntervalMs(
   "RUMBLE_COMBAT_TICK_INTERVAL_MS",
   3_000,
   1_000,
-  15_000,
+  120_000,
+);
+const MAX_COMBAT_TURNS = readInt(
+  "RUMBLE_MAX_COMBAT_TURNS",
+  120,
+  20,
+  2_000,
 );
 const SHOWER_SETTLEMENT_POLL_MS = 12_000;
 const ONCHAIN_FINALIZATION_DELAY_MS = 30_000;
@@ -643,7 +660,7 @@ export class RumbleOrchestrator {
     bettorId: string,
     fighterId: string,
     solAmount: number,
-  ): { accepted: boolean; reason?: string } {
+  ): Promise<{ accepted: boolean; reason?: string }> {
     return this.placeBets(slotIndex, bettorId, [{ fighterId, solAmount }]);
   }
 
@@ -651,11 +668,11 @@ export class RumbleOrchestrator {
    * External API: place multiple bets in one request for the same slot.
    * Returns { accepted: true } or { accepted: false, reason: string }.
    */
-  placeBets(
+  async placeBets(
     slotIndex: number,
     bettorId: string,
     bets: Array<{ fighterId: string; solAmount: number }>,
-  ): { accepted: boolean; reason?: string } {
+  ): Promise<{ accepted: boolean; reason?: string }> {
     if (!bets.length) {
       return { accepted: false, reason: "No bets provided." };
     }
@@ -688,25 +705,31 @@ export class RumbleOrchestrator {
       return { accepted: false, reason: "Betting pool not available." };
     }
 
+    const persisted = await persist.saveBets(
+      bets.map((bet) => {
+        const adminFee = bet.solAmount * ADMIN_FEE_RATE;
+        const sponsorFee = bet.solAmount * SPONSORSHIP_RATE;
+        const netAmount = bet.solAmount - adminFee - sponsorFee;
+        return {
+          rumbleId: slot.id,
+          walletAddress: bettorId,
+          fighterId: bet.fighterId,
+          grossAmount: bet.solAmount,
+          netAmount,
+          adminFee,
+          sponsorFee,
+        };
+      }),
+    );
+    if (!persisted) {
+      return { accepted: false, reason: "Bet registration failed. Please retry with the same signed transaction." };
+    }
+
     for (const bet of bets) {
       placeBetInPool(pool, bettorId, bet.fighterId, bet.solAmount);
 
       // Also record in the queue manager's betting pool (for its own tracking)
       this.queueManager.placeBet(slotIndex, bettorId, bet.solAmount);
-
-      // Persist: save each bet to Supabase
-      const adminFee = bet.solAmount * ADMIN_FEE_RATE;
-      const sponsorFee = bet.solAmount * SPONSORSHIP_RATE;
-      const netAmount = bet.solAmount - adminFee - sponsorFee;
-      persist.saveBet({
-        rumbleId: slot.id,
-        walletAddress: bettorId,
-        fighterId: bet.fighterId,
-        grossAmount: bet.solAmount,
-        netAmount,
-        adminFee,
-        sponsorFee,
-      });
     }
 
     return { accepted: true };
@@ -806,8 +829,6 @@ export class RumbleOrchestrator {
   }
 
   private async runCombatTurn(slot: RumbleSlot, state: SlotCombatState): Promise<void> {
-    const MAX_TURNS = 20;
-
     const alive = state.fighters.filter((f) => f.hp > 0);
 
     // If only 0-1 fighters remain, rumble is complete
@@ -816,13 +837,15 @@ export class RumbleOrchestrator {
       return;
     }
 
-    // If we've hit max turns, end the rumble
-    if (state.turns.length >= MAX_TURNS) {
-      await this.finishCombat(slot, state);
-      return;
-    }
-
     const turnNumber = state.turns.length + 1;
+    const overtimeTurns = Math.max(0, turnNumber - MAX_COMBAT_TURNS);
+    const suddenDeathActive = overtimeTurns > 0;
+    const suddenDeathBonus = suddenDeathActive ? Math.min(20, Math.max(1, Math.floor((overtimeTurns + 1) / 2))) : 0;
+    if (suddenDeathActive && overtimeTurns === 1) {
+      console.log(
+        `[Orchestrator] Slot ${slot.slotIndex} entering sudden death at turn ${turnNumber}; no HP-ranked winner until elimination.`,
+      );
+    }
     const aliveIds = alive.map((f) => f.id);
 
     // Create pairings (shuffle and pair)
@@ -848,28 +871,40 @@ export class RumbleOrchestrator {
       const moveB = selectMove(fB, alive.filter((f) => f.id !== fB.id), state.turns as any);
 
       const result = resolveCombat(moveA, moveB, fA.meter, fB.meter);
+      let damageToA = result.damageToA;
+      let damageToB = result.damageToB;
+
+      // Sudden death: combat must converge to true elimination, never HP ranking.
+      if (suddenDeathActive) {
+        if (damageToA > 0) damageToA += suddenDeathBonus;
+        if (damageToB > 0) damageToB += suddenDeathBonus;
+        if (damageToA === 0 && damageToB === 0) {
+          damageToA = suddenDeathBonus;
+          damageToB = suddenDeathBonus;
+        }
+      }
 
       // Apply meter usage
       fA.meter = Math.max(0, fA.meter - result.meterUsedA);
       fB.meter = Math.max(0, fB.meter - result.meterUsedB);
 
       // Apply damage
-      fA.hp = Math.max(0, fA.hp - result.damageToA);
-      fB.hp = Math.max(0, fB.hp - result.damageToB);
+      fA.hp = Math.max(0, fA.hp - damageToA);
+      fB.hp = Math.max(0, fB.hp - damageToB);
 
       // Track stats
-      fA.totalDamageDealt += result.damageToB;
-      fA.totalDamageTaken += result.damageToA;
-      fB.totalDamageDealt += result.damageToA;
-      fB.totalDamageTaken += result.damageToB;
+      fA.totalDamageDealt += damageToB;
+      fA.totalDamageTaken += damageToA;
+      fB.totalDamageDealt += damageToA;
+      fB.totalDamageTaken += damageToB;
 
       turnPairings.push({
         fighterA: idA,
         fighterB: idB,
         moveA,
         moveB,
-        damageToA: result.damageToA,
-        damageToB: result.damageToB,
+        damageToA,
+        damageToB,
       });
 
       const key = idA < idB ? `${idA}:${idB}` : `${idB}:${idA}`;
@@ -931,7 +966,7 @@ export class RumbleOrchestrator {
     }
 
     // Check if combat is done
-    if (remaining <= 1 || state.turns.length >= MAX_TURNS) {
+    if (remaining <= 1) {
       await this.finishCombat(slot, state);
     }
   }
@@ -1604,13 +1639,20 @@ export class RumbleOrchestrator {
     turnCount: number;
     remainingFighters: number;
     bettingDeadline: Date | null;
+    nextTurnAt: Date | null;
+    turnIntervalMs: number | null;
   }> {
     const slots = this.queueManager.getSlots();
+    const now = Date.now();
     return slots.map((slot) => {
       const combatState = this.combatStates.get(slot.slotIndex);
       const remaining = combatState
         ? combatState.fighters.filter((f) => f.hp > 0).length
         : slot.fighters.length;
+      const nextTurnAt =
+        slot.state === "combat" && combatState
+          ? new Date(Math.max(now, combatState.lastTickAt + COMBAT_TICK_INTERVAL_MS))
+          : null;
 
       return {
         slotIndex: slot.slotIndex,
@@ -1620,6 +1662,8 @@ export class RumbleOrchestrator {
         turnCount: combatState?.turns.length ?? 0,
         remainingFighters: remaining,
         bettingDeadline: slot.bettingDeadline,
+        nextTurnAt,
+        turnIntervalMs: slot.state === "combat" && combatState ? COMBAT_TICK_INTERVAL_MS : null,
       };
     });
   }

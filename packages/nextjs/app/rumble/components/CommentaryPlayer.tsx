@@ -26,8 +26,10 @@ interface CommentaryPlayerProps {
 // ---------------------------------------------------------------------------
 
 const STORAGE_KEY = "ucf_commentary";
-const STORAGE_VOICE_KEY = "ucf_commentary_voice";
-const COOLDOWN_MS = 7_000; // Keep safely under API rate limits (10/min)
+const COOLDOWN_MS = 3_500;
+const BETTING_HYPE_INTERVAL_MS = 20_000;
+const BETTING_HYPE_CHECK_MS = 3_000;
+const PLAYBACK_RATE = 1.12;
 
 // ---------------------------------------------------------------------------
 // Audio queue — plays mp3 clips sequentially
@@ -39,16 +41,25 @@ class AudioQueue {
     context: string;
     voiceId: string;
     allowedNames: string[];
+    clipKey?: string;
+    retries: number;
   }> = [];
   private playing = false;
   private audioEl: HTMLAudioElement | null = null;
   private currentUrl: string | null = null;
+  private currentClipKey: string | null = null;
   private _onStateChange: () => void;
   private _onUnavailable: (message: string) => void;
+  private _onPlaybackBlocked: () => void;
 
-  constructor(onStateChange: () => void, onUnavailable: (message: string) => void) {
+  constructor(
+    onStateChange: () => void,
+    onUnavailable: (message: string) => void,
+    onPlaybackBlocked: () => void,
+  ) {
     this._onStateChange = onStateChange;
     this._onUnavailable = onUnavailable;
+    this._onPlaybackBlocked = onPlaybackBlocked;
   }
 
   get isPlaying() {
@@ -59,15 +70,27 @@ class AudioQueue {
     return this.queue.length;
   }
 
+  dropPendingCombatNarration() {
+    this.queue = this.queue.filter(
+      (item) => item.eventType !== "big_hit" && item.eventType !== "elimination",
+    );
+    this._onStateChange();
+  }
+
   enqueue(
     eventType: CommentaryEventType,
     context: string,
     voiceId: string,
     allowedNames: string[],
+    clipKey?: string,
   ) {
+    if (clipKey) {
+      if (this.currentClipKey === clipKey) return;
+      if (this.queue.some((queued) => queued.clipKey === clipKey)) return;
+    }
     // Cap queue at 3 to avoid backlog
     if (this.queue.length >= 3) return;
-    this.queue.push({ eventType, context, voiceId, allowedNames });
+    this.queue.push({ eventType, context, voiceId, allowedNames, clipKey, retries: 0 });
     if (!this.playing) this.playNext();
   }
 
@@ -78,12 +101,17 @@ class AudioQueue {
       this.audioEl.src = "";
     }
     this.cleanup();
+    this.currentClipKey = null;
     this.playing = false;
     this._onStateChange();
   }
 
   setVolume(vol: number) {
     if (this.audioEl) this.audioEl.volume = vol;
+  }
+
+  resume() {
+    if (!this.playing) this.playNext();
   }
 
   private cleanup() {
@@ -97,11 +125,13 @@ class AudioQueue {
     const item = this.queue.shift();
     if (!item) {
       this.playing = false;
+      this.currentClipKey = null;
       this._onStateChange();
       return;
     }
 
     this.playing = true;
+    this.currentClipKey = item.clipKey ?? null;
     this._onStateChange();
 
     try {
@@ -113,20 +143,46 @@ class AudioQueue {
           context: item.context,
           voiceId: item.voiceId,
           allowedNames: item.allowedNames,
+          clipKey: item.clipKey,
         }),
       });
 
       if (!res.ok) {
         if (res.status === 503) {
           const payload = await res.json().catch(() => null);
+          const code = typeof payload?.code === "string" ? payload.code : "";
+          // Only hard-disable on configuration errors. Provider outages are transient.
+          if (code === "COMMENTARY_NOT_CONFIGURED") {
+            const msg =
+              payload?.error && typeof payload.error === "string"
+                ? payload.error
+                : "Commentary service is unavailable.";
+            this.queue = [];
+            this.playing = false;
+            this._onStateChange();
+            this._onUnavailable(msg);
+            return;
+          }
+
+          const nextRetry = item.retries + 1;
+          if (nextRetry <= 5) {
+            const retryAfterMs = Math.min(8_000, 1_000 * nextRetry);
+            this.queue.unshift({ ...item, retries: nextRetry });
+            this.playing = false;
+            this.currentClipKey = null;
+            this._onStateChange();
+            setTimeout(() => {
+              if (!this.playing) this.playNext();
+            }, retryAfterMs);
+            return;
+          }
+
           const msg =
             payload?.error && typeof payload.error === "string"
               ? payload.error
               : "Commentary service is unavailable.";
-          this.queue = [];
-          this.playing = false;
-          this._onStateChange();
-          this._onUnavailable(msg);
+          console.warn("[commentary] dropping item after repeated 503s:", msg);
+          setTimeout(() => this.playNext(), 300);
           return;
         }
         if (res.status === 429) {
@@ -135,6 +191,7 @@ class AudioQueue {
           // Requeue the dropped item and retry later instead of hammering the API.
           this.queue.unshift(item);
           this.playing = false;
+          this.currentClipKey = null;
           this._onStateChange();
           setTimeout(() => {
             if (!this.playing) this.playNext();
@@ -153,18 +210,31 @@ class AudioQueue {
 
       const audio = new Audio(url);
       this.audioEl = audio;
+      audio.playbackRate = PLAYBACK_RATE;
 
       audio.onended = () => {
         this.cleanup();
+        this.currentClipKey = null;
         this.playNext();
       };
       audio.onerror = () => {
         this.cleanup();
+        this.currentClipKey = null;
         this.playNext();
       };
 
       await audio.play();
     } catch (err) {
+      const errMsg = String((err as any)?.message ?? "").toLowerCase();
+      const errName = String((err as any)?.name ?? "").toLowerCase();
+      if (errName.includes("notallowed") || errMsg.includes("not allowed")) {
+        this.queue.unshift(item);
+        this.playing = false;
+        this.currentClipKey = null;
+        this._onStateChange();
+        this._onPlaybackBlocked();
+        return;
+      }
       console.warn("[commentary] playback error:", err);
       this.cleanup();
       this.playNext();
@@ -181,23 +251,25 @@ export default function CommentaryPlayer({
   lastEvent,
   eventSeq,
 }: CommentaryPlayerProps) {
-  const [enabled, setEnabled] = useState(false);
-  const [voice, setVoice] = useState<"A" | "B">("A");
+  const [enabled, setEnabled] = useState(true);
   const [volume, setVolume] = useState(0.8);
   const [isPlaying, setIsPlaying] = useState(false);
   const [serviceError, setServiceError] = useState<string | null>(null);
+  const [needsAudioUnlock, setNeedsAudioUnlock] = useState(false);
 
   const queueRef = useRef<AudioQueue | null>(null);
   const lastRequestTime = useRef(0);
   const prevSeq = useRef(-1);
+  const announcedBettingRumblesRef = useRef<Set<string>>(new Set());
+  const announcedCombatRumblesRef = useRef<Set<string>>(new Set());
+  const lastBettingHypeAtByRumbleRef = useRef<Map<string, number>>(new Map());
+  const lastTurnSeenByRumbleRef = useRef<Map<string, number>>(new Map());
 
   // Load persisted prefs
   useEffect(() => {
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored === "true") setEnabled(true);
-      const storedVoice = localStorage.getItem(STORAGE_VOICE_KEY);
-      if (storedVoice === "B") setVoice("B");
+      // Keep commentary on by default every load unless user disables in-session.
+      setEnabled(true);
     } catch {}
   }, []);
 
@@ -209,7 +281,9 @@ export default function CommentaryPlayer({
       },
       (message) => {
         setServiceError(message);
-        setEnabled(false);
+      },
+      () => {
+        setNeedsAudioUnlock(true);
       },
     );
     return () => {
@@ -229,22 +303,42 @@ export default function CommentaryPlayer({
     }
   }, [enabled]);
 
+  const unlockAudio = useCallback(() => {
+    setNeedsAudioUnlock(false);
+    queueRef.current?.resume();
+  }, []);
+
+  const getVoiceId = useCallback(() => {
+    return process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_A ?? "";
+  }, []);
+
+  const enqueueCandidate = useCallback((candidate: {
+    eventType: CommentaryEventType;
+    context: string;
+    allowedNames?: string[];
+    clipKey?: string;
+  } | null) => {
+    if (!candidate) return;
+    const now = Date.now();
+    if (now - lastRequestTime.current < COOLDOWN_MS) return;
+    lastRequestTime.current = now;
+    queueRef.current?.enqueue(
+      candidate.eventType,
+      candidate.context,
+      getVoiceId(),
+      candidate.allowedNames ?? [],
+      candidate.clipKey,
+    );
+  }, [getVoiceId]);
+
   const toggleEnabled = useCallback(() => {
-    if (serviceError) return;
     setEnabled((prev) => {
       const next = !prev;
+      if (next) {
+        setServiceError(null);
+      }
       try {
         localStorage.setItem(STORAGE_KEY, String(next));
-      } catch {}
-      return next;
-    });
-  }, [serviceError]);
-
-  const toggleVoice = useCallback(() => {
-    setVoice((prev) => {
-      const next = prev === "A" ? "B" : "A";
-      try {
-        localStorage.setItem(STORAGE_VOICE_KEY, next);
       } catch {}
       return next;
     });
@@ -256,26 +350,101 @@ export default function CommentaryPlayer({
     prevSeq.current = eventSeq;
 
     const slot = slots?.find((s) => s.slotIndex === lastEvent.slotIndex);
+    if (lastEvent.type === "turn_resolved") {
+      const slotAny = slot as (CommentarySlotData & { rumbleId?: string }) | undefined;
+      const rumbleId =
+        typeof slotAny?.rumbleId === "string" && slotAny.rumbleId.length > 0
+          ? slotAny.rumbleId
+          : `slot-${lastEvent.slotIndex}`;
+      const turnNum = Number(lastEvent.data?.turn?.turnNumber ?? lastEvent.data?.turnNumber ?? 0);
+      const prevTurn = lastTurnSeenByRumbleRef.current.get(rumbleId) ?? 0;
+      if (turnNum > prevTurn) {
+        queueRef.current?.dropPendingCombatNarration();
+        lastTurnSeenByRumbleRef.current.set(rumbleId, turnNum);
+      }
+    }
     const candidate = evaluateEvent(lastEvent, slot as CommentarySlotData | undefined);
-    if (!candidate) return;
+    enqueueCandidate(candidate);
+  }, [enabled, lastEvent, eventSeq, slots, enqueueCandidate]);
 
-    // Enforce cooldown
-    const now = Date.now();
-    if (now - lastRequestTime.current < COOLDOWN_MS) return;
-    lastRequestTime.current = now;
+  // Fallback: announce betting/combat from polled slot state in case SSE open/start events were missed.
+  useEffect(() => {
+    if (!enabled || !slots?.length) return;
 
-    const voiceId =
-      voice === "B"
-        ? process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_B ?? ""
-        : process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_A ?? "";
+    for (const slot of slots) {
+      const slotAny = slot as CommentarySlotData & { rumbleId?: string };
+      const rumbleId = typeof slotAny.rumbleId === "string" ? slotAny.rumbleId : "";
+      if (!rumbleId) continue;
 
-    queueRef.current?.enqueue(
-      candidate.eventType,
-      candidate.context,
-      voiceId,
-      candidate.allowedNames ?? [],
-    );
-  }, [enabled, lastEvent, eventSeq, slots, voice]);
+      if (slotAny.state === "betting" && !announcedBettingRumblesRef.current.has(rumbleId)) {
+        const candidate = evaluateEvent({ type: "betting_open", slotIndex: slotAny.slotIndex, data: {} }, slotAny);
+        enqueueCandidate(candidate);
+        announcedBettingRumblesRef.current.add(rumbleId);
+      }
+
+      if (slotAny.state === "combat" && !announcedCombatRumblesRef.current.has(rumbleId)) {
+        const candidate = evaluateEvent({ type: "combat_started", slotIndex: slotAny.slotIndex, data: {} }, slotAny);
+        enqueueCandidate(candidate);
+        announcedCombatRumblesRef.current.add(rumbleId);
+      }
+    }
+  }, [enabled, slots, enqueueCandidate]);
+
+  // Continuous hype while betting is open so commentary stays alive pre-fight.
+  useEffect(() => {
+    if (!enabled || !slots?.length) return;
+
+    const timer = setInterval(() => {
+      const now = Date.now();
+      const bettingSlots = slots
+        .filter((slot) => slot.state === "betting")
+        .map((slot) => slot as CommentarySlotData & {
+          rumbleId?: string;
+          bettingDeadline?: string | Date | null;
+          totalPool?: number;
+          odds?: Array<{ fighterName?: string; solDeployed?: number }>;
+        })
+        .filter((slot) => typeof slot.rumbleId === "string" && slot.rumbleId.length > 0);
+
+      if (bettingSlots.length === 0) return;
+
+      const target = bettingSlots.sort((a, b) => {
+        const aDeadline = a.bettingDeadline ? new Date(a.bettingDeadline).getTime() : Number.MAX_SAFE_INTEGER;
+        const bDeadline = b.bettingDeadline ? new Date(b.bettingDeadline).getTime() : Number.MAX_SAFE_INTEGER;
+        return aDeadline - bDeadline;
+      })[0];
+
+      const rumbleId = target.rumbleId!;
+      const lastAt = lastBettingHypeAtByRumbleRef.current.get(rumbleId) ?? 0;
+      if (now - lastAt < BETTING_HYPE_INTERVAL_MS) return;
+
+      const deadlineMs = target.bettingDeadline ? new Date(target.bettingDeadline).getTime() : now;
+      const secondsLeft = Math.max(0, Math.ceil((deadlineMs - now) / 1000));
+      const pool = Number(target.totalPool ?? 0);
+
+      const leaders = (target.odds ?? [])
+        .filter((odd) => typeof odd.fighterName === "string" && odd.fighterName.trim().length > 0)
+        .sort((a, b) => Number(b.solDeployed ?? 0) - Number(a.solDeployed ?? 0))
+        .slice(0, 2)
+        .map((odd) => `${odd.fighterName} (${Number(odd.solDeployed ?? 0).toFixed(2)} SOL)`);
+
+      const leaderText = leaders.length > 0 ? ` Current action leaders: ${leaders.join(", ")}.` : "";
+      const context = `Betting is still open in slot ${target.slotIndex + 1}. ${secondsLeft}s until lock. Pool stands at ${pool.toFixed(2)} SOL.${leaderText} Place your bets now.`;
+      const allowedNames = target.fighters
+        .map((fighter) => fighter.name?.trim())
+        .filter((name): name is string => Boolean(name));
+
+      enqueueCandidate({
+        eventType: "betting_open",
+        context,
+        allowedNames,
+        clipKey: `hype:${rumbleId}:${Math.floor(secondsLeft / 20)}`,
+      });
+      lastBettingHypeAtByRumbleRef.current.set(rumbleId, now);
+    }, BETTING_HYPE_CHECK_MS);
+
+    return () => clearInterval(timer);
+  }, [enabled, slots, enqueueCandidate]);
 
   return (
     <div className="flex items-center gap-2 bg-stone-900/80 border border-stone-700 rounded-sm px-2 py-1">
@@ -283,15 +452,11 @@ export default function CommentaryPlayer({
       <button
         onClick={toggleEnabled}
         className={`flex items-center gap-1.5 font-mono text-[10px] transition-colors ${
-          serviceError
-            ? "text-stone-700 cursor-not-allowed"
-            : enabled
-              ? "text-amber-400"
-              : "text-stone-600 hover:text-stone-400"
+          enabled ? "text-amber-400" : "text-stone-600 hover:text-stone-400"
         }`}
         title={
           serviceError
-            ? serviceError
+            ? `Commentary issue: ${serviceError}`
             : enabled
               ? "Disable AI commentary"
               : "Enable AI commentary"
@@ -321,24 +486,25 @@ export default function CommentaryPlayer({
             />
           )}
         </svg>
-        <span>{serviceError ? "COMM OFF" : enabled ? "LIVE" : "COMMENTARY"}</span>
+        <span>{enabled ? "LIVE" : "COMMENTARY"}</span>
       </button>
 
       {enabled && (
         <>
+          {needsAudioUnlock && (
+            <button
+              onClick={unlockAudio}
+              className="font-mono text-[9px] text-amber-400 border border-amber-700 rounded-sm px-1 transition-colors hover:text-amber-300"
+              title="Tap to enable announcer audio"
+            >
+              TAP AUDIO
+            </button>
+          )}
+
           {/* Playing indicator */}
           {isPlaying && (
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
           )}
-
-          {/* Voice A/B toggle */}
-          <button
-            onClick={toggleVoice}
-            className="font-mono text-[9px] text-stone-500 hover:text-stone-300 border border-stone-700 rounded-sm px-1 transition-colors"
-            title="Switch announcer voice"
-          >
-            {voice}
-          </button>
 
           {/* Volume */}
           <input
