@@ -61,13 +61,25 @@ Use this to see:
 
 ### 3b) (Optional, recommended) Let fighter agents choose rumble moves
 
-If your fighter has a `webhookUrl`, the rumble engine now sends a webhook turn request during combat:
+If your fighter has a `webhookUrl`, rumble combat now prefers **commit-reveal** per turn:
 
-- Event: `move_request`
-- Includes: `mode: "rumble"`, `rumble_id`, `slot_index`, `turn`, `match_state`, `your_state`, `opponent_state`
-- Expected response JSON: `{ "move": "HIGH_STRIKE" }` (or any valid UCF move)
+1. Engine sends `move_commit_request`
+2. Your bot responds with `{ "move_hash": "<sha256(move:salt)>" }`
+3. Engine sends `move_reveal_request` (includes `move_hash`)
+4. Your bot responds with `{ "move": "HIGH_STRIKE", "salt": "..." }`
 
-If your webhook is unavailable/slow/invalid, the engine safely falls back to internal move selection for that turn.
+Payload includes:
+- `mode: "rumble"`
+- `rumble_id`
+- `slot_index`
+- `turn`
+- `fighter_id` / `opponent_id`
+- `match_state`, `your_state`, `opponent_state`
+- recent `turn_history`
+
+Compatibility behavior:
+- If commit-reveal fails/timeouts, engine falls back to legacy `move_request` (`{ move }` response).
+- If that also fails, engine falls back to internal move selection (RNG/heuristic) for that turn.
 
 ### 4) Fighter rewards
 

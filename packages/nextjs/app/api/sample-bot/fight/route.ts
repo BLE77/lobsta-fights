@@ -22,6 +22,8 @@
  *
  * 3. Your webhook will receive POST requests for:
  *    - challenge: Someone wants to fight you
+ *    - move_commit_request: Rumble commit-reveal commit step
+ *    - move_reveal_request: Rumble commit-reveal reveal step
  *    - move_request: Time to pick your move
  *    - turn_result: Here's what happened last turn
  *    - match_result: The fight is over
@@ -110,6 +112,24 @@ interface MoveRequestEvent {
   match_state: BotMatchState;
 }
 
+interface RumbleMoveCommitRequestEvent {
+  event: "move_commit_request";
+  rumble_id: string;
+  turn: number;
+  fighter_id: string;
+  match_state?: BotMatchState;
+  your_state?: { hp?: number; meter?: number };
+  opponent_state?: { hp?: number; meter?: number };
+}
+
+interface RumbleMoveRevealRequestEvent {
+  event: "move_reveal_request";
+  rumble_id: string;
+  turn: number;
+  fighter_id: string;
+  move_hash?: string;
+}
+
 /**
  * Turn result event payload
  */
@@ -166,6 +186,8 @@ interface MatchCreatedEvent {
 
 type WebhookEvent =
   | ChallengeEvent
+  | RumbleMoveCommitRequestEvent
+  | RumbleMoveRevealRequestEvent
   | MoveRequestEvent
   | TurnResultEvent
   | MatchResultEvent
@@ -187,6 +209,12 @@ export async function POST(request: Request) {
 
       case "match_created":
         return handleMatchCreated(body as MatchCreatedEvent);
+
+      case "move_commit_request":
+        return handleRumbleMoveCommitRequest(body as RumbleMoveCommitRequestEvent);
+
+      case "move_reveal_request":
+        return handleRumbleMoveRevealRequest(body as RumbleMoveRevealRequestEvent);
 
       case "move_request":
         return handleMoveRequest(body as MoveRequestEvent);
@@ -293,6 +321,85 @@ async function handleMatchCreated(event: MatchCreatedEvent) {
 // Store pending reveals (move + salt) for each match
 // In production, use Redis or database
 const pendingReveals = new Map<string, { move: string; salt: string }>();
+const rumblePendingCommits = new Map<string, { move: string; salt: string; moveHash: string }>();
+
+function getRumbleCommitKey(rumbleId: string, fighterId: string, turn: number): string {
+  return `${rumbleId}:${fighterId}:${turn}`;
+}
+
+function getFallbackMatchStateFromRumbleEvent(
+  event: RumbleMoveCommitRequestEvent,
+): BotMatchState {
+  if (event.match_state) return event.match_state;
+  return {
+    your_hp: event.your_state?.hp ?? 100,
+    opponent_hp: event.opponent_state?.hp ?? 100,
+    your_meter: event.your_state?.meter ?? 0,
+    opponent_meter: event.opponent_state?.meter ?? 0,
+    round: 1,
+    turn: event.turn ?? 1,
+    your_rounds_won: 0,
+    opponent_rounds_won: 0,
+    last_opponent_move: null,
+  };
+}
+
+async function handleRumbleMoveCommitRequest(event: RumbleMoveCommitRequestEvent) {
+  const { rumble_id, fighter_id, turn } = event;
+  const matchState = getFallbackMatchStateFromRumbleEvent(event);
+  const decision = selectMove(matchState);
+
+  const crypto = await import("crypto");
+  const moveHash = crypto
+    .createHash("sha256")
+    .update(`${decision.move}:${decision.salt}`)
+    .digest("hex");
+
+  rumblePendingCommits.set(getRumbleCommitKey(rumble_id, fighter_id, turn), {
+    move: decision.move,
+    salt: decision.salt,
+    moveHash,
+  });
+
+  logBotDecision("Rumble commit prepared", decision.move, {
+    rumble_id,
+    fighter_id,
+    turn,
+    hash: moveHash.slice(0, 16) + "...",
+  });
+
+  return NextResponse.json({ move_hash: moveHash });
+}
+
+function handleRumbleMoveRevealRequest(event: RumbleMoveRevealRequestEvent) {
+  const { rumble_id, fighter_id, turn, move_hash } = event;
+  const key = getRumbleCommitKey(rumble_id, fighter_id, turn);
+  const pending = rumblePendingCommits.get(key);
+  if (!pending) {
+    return NextResponse.json({ error: "No pending commit for reveal" }, { status: 409 });
+  }
+
+  if (typeof move_hash === "string" && move_hash.trim()) {
+    const normalizedExpected = move_hash.trim().toLowerCase();
+    if (normalizedExpected !== pending.moveHash.toLowerCase()) {
+      rumblePendingCommits.delete(key);
+      return NextResponse.json({ error: "Commit hash mismatch" }, { status: 409 });
+    }
+  }
+
+  rumblePendingCommits.delete(key);
+
+  logBotDecision("Rumble reveal submitted", pending.move, {
+    rumble_id,
+    fighter_id,
+    turn,
+  });
+
+  return NextResponse.json({
+    move: pending.move,
+    salt: pending.salt,
+  });
+}
 
 /**
  * Auto-reveal a pending move
@@ -513,6 +620,13 @@ export async function GET() {
     endpoints: {
       fight: "POST /api/sample-bot/fight",
     },
-    supported_events: ["challenge", "move_request", "turn_result", "match_result"],
+    supported_events: [
+      "challenge",
+      "move_commit_request",
+      "move_reveal_request",
+      "move_request",
+      "turn_result",
+      "match_result",
+    ],
   });
 }

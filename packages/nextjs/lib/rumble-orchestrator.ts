@@ -41,8 +41,13 @@ import {
   type PayoutResult,
   type FighterOdds,
 } from "./betting";
-import { METER_PER_TURN, SPECIAL_METER_COST, resolveCombat } from "./combat";
-import { isValidMove } from "./combat";
+import {
+  METER_PER_TURN,
+  SPECIAL_METER_COST,
+  resolveCombat,
+  isValidMove,
+  createMoveHash,
+} from "./combat";
 import { notifyFighter } from "./webhook";
 import type { MoveType } from "./types";
 
@@ -833,31 +838,33 @@ export class RumbleOrchestrator {
     return selectMove(fighter, alive.filter((f) => f.id !== fighter.id), turnHistory as any);
   }
 
-  private async requestFighterMove(
+  private async requestWebhookWithTimeout(
+    webhookUrl: string,
+    event: string,
+    payload: Record<string, any>,
+  ): Promise<Record<string, any> | null> {
+    const timeoutPromise = new Promise<null>((resolve) =>
+      setTimeout(() => resolve(null), AGENT_MOVE_TIMEOUT_MS),
+    );
+    const webhookPromise = notifyFighter(webhookUrl, event, payload)
+      .then((res) => {
+        if (!res.success) return null;
+        if (!res.data || typeof res.data !== "object") return null;
+        return res.data as Record<string, any>;
+      })
+      .catch(() => null);
+    return Promise.race([webhookPromise, timeoutPromise]);
+  }
+
+  private async requestFighterMoveCommitReveal(
     slot: RumbleSlot,
     state: SlotCombatState,
     fighter: RumbleFighter,
     opponent: RumbleFighter,
-    alive: RumbleFighter[],
+    webhookUrl: string,
     turnNumber: number,
-  ): Promise<MoveType> {
-    const fallback = this.fallbackMoveForFighter(fighter, alive, state.turns);
-    const profile = state.fighterProfiles.get(fighter.id);
-    const webhookUrl = profile?.webhookUrl;
-    if (!webhookUrl) return fallback;
-
-    const matchState = {
-      your_hp: fighter.hp,
-      opponent_hp: opponent.hp,
-      your_meter: fighter.meter,
-      opponent_meter: opponent.meter,
-      round: 1,
-      turn: turnNumber,
-      your_rounds_won: 0,
-      opponent_rounds_won: 0,
-    };
-
-    const payload = {
+  ): Promise<MoveType | null> {
+    const sharedState = {
       mode: "rumble",
       rumble_id: slot.id,
       slot_index: slot.slotIndex,
@@ -867,7 +874,16 @@ export class RumbleOrchestrator {
       opponent_id: opponent.id,
       opponent_name: opponent.name,
       match_id: slot.id,
-      match_state: matchState,
+      match_state: {
+        your_hp: fighter.hp,
+        opponent_hp: opponent.hp,
+        your_meter: fighter.meter,
+        opponent_meter: opponent.meter,
+        round: 1,
+        turn: turnNumber,
+        your_rounds_won: 0,
+        opponent_rounds_won: 0,
+      },
       your_state: {
         hp: fighter.hp,
         meter: fighter.meter,
@@ -891,20 +907,98 @@ export class RumbleOrchestrator {
       timeout_ms: AGENT_MOVE_TIMEOUT_MS,
     };
 
-    const timeoutPromise = new Promise<null>((resolve) =>
-      setTimeout(() => resolve(null), AGENT_MOVE_TIMEOUT_MS),
+    const commitResp = await this.requestWebhookWithTimeout(
+      webhookUrl,
+      "move_commit_request",
+      {
+        ...sharedState,
+        hash_format: "sha256(move:salt)",
+      },
     );
-    const webhookPromise = notifyFighter(webhookUrl, "move_request", payload)
-      .then((res) => (res.success ? res.data : null))
-      .catch(() => null);
+    const commitHashRaw = typeof commitResp?.move_hash === "string" ? commitResp.move_hash.trim() : "";
+    const commitHash = commitHashRaw.toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(commitHash)) return null;
 
-    const responseData = await Promise.race([webhookPromise, timeoutPromise]);
-    const rawMove =
-      (responseData && typeof responseData === "object" && (responseData as any).move) || null;
-    const normalized = typeof rawMove === "string" ? rawMove.trim().toUpperCase() : "";
-    if (isValidMove(normalized)) {
-      return normalized as MoveType;
-    }
+    const revealResp = await this.requestWebhookWithTimeout(
+      webhookUrl,
+      "move_reveal_request",
+      {
+        ...sharedState,
+        move_hash: commitHash,
+      },
+    );
+    const rawMove = typeof revealResp?.move === "string" ? revealResp.move.trim().toUpperCase() : "";
+    const salt = typeof revealResp?.salt === "string" ? revealResp.salt.trim() : "";
+    if (!isValidMove(rawMove) || !salt) return null;
+
+    const recomputed = createMoveHash(rawMove as MoveType, salt).toLowerCase();
+    if (recomputed !== commitHash) return null;
+    return rawMove as MoveType;
+  }
+
+  private async requestFighterMove(
+    slot: RumbleSlot,
+    state: SlotCombatState,
+    fighter: RumbleFighter,
+    opponent: RumbleFighter,
+    alive: RumbleFighter[],
+    turnNumber: number,
+  ): Promise<MoveType> {
+    const fallback = this.fallbackMoveForFighter(fighter, alive, state.turns);
+    const profile = state.fighterProfiles.get(fighter.id);
+    const webhookUrl = profile?.webhookUrl;
+    if (!webhookUrl) return fallback;
+
+    // Preferred mode: commit-reveal (same spirit as 1v1 anti-cheat flow).
+    const committedMove = await this.requestFighterMoveCommitReveal(
+      slot,
+      state,
+      fighter,
+      opponent,
+      webhookUrl,
+      turnNumber,
+    );
+    if (committedMove) return committedMove;
+
+    // Backward compatibility: legacy single-step move_request.
+    const responseData = await this.requestWebhookWithTimeout(
+      webhookUrl,
+      "move_request",
+      {
+        mode: "rumble",
+        rumble_id: slot.id,
+        slot_index: slot.slotIndex,
+        turn: turnNumber,
+        fighter_id: fighter.id,
+        fighter_name: fighter.name,
+        opponent_id: opponent.id,
+        opponent_name: opponent.name,
+        match_id: slot.id,
+        match_state: {
+          your_hp: fighter.hp,
+          opponent_hp: opponent.hp,
+          your_meter: fighter.meter,
+          opponent_meter: opponent.meter,
+          round: 1,
+          turn: turnNumber,
+          your_rounds_won: 0,
+          opponent_rounds_won: 0,
+        },
+        your_state: {
+          hp: fighter.hp,
+          meter: fighter.meter,
+        },
+        opponent_state: {
+          hp: opponent.hp,
+          meter: opponent.meter,
+        },
+        turn_history: state.turns.slice(-6),
+        timeout_ms: AGENT_MOVE_TIMEOUT_MS,
+      },
+    );
+    const directMove = typeof responseData?.move === "string" ? responseData.move.trim().toUpperCase() : "";
+    if (isValidMove(directMove)) return directMove as MoveType;
+
     return fallback;
   }
 
