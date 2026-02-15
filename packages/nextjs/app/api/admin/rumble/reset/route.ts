@@ -8,6 +8,12 @@ import { setRumbleSessionNow } from "~~/lib/rumble-session";
 
 export const dynamic = "force-dynamic";
 
+function isMissingTableError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const code = (err as { code?: string }).code;
+  return code === "42P01" || code === "PGRST205";
+}
+
 function serviceClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -42,21 +48,24 @@ export async function POST(request: Request) {
     if (resetDb) {
       const sb = serviceClient();
 
-      const [
-        { data: betRows, error: betsErr },
-        { data: rumbleRows, error: rumblesErr },
-        { data: queueRows, error: queueErr },
-        { data: txSigRows, error: txSigErr },
-      ] = await Promise.all([
+      const [{ data: betRows, error: betsErr }, { data: rumbleRows, error: rumblesErr }, { data: queueRows, error: queueErr }] =
+        await Promise.all([
         sb.from("ucf_bets").delete().gte("placed_at", "1970-01-01").select("id"),
         sb.from("ucf_rumbles").delete().gte("created_at", "1970-01-01").select("id"),
         sb.from("ucf_rumble_queue").delete().gte("joined_at", "1970-01-01").select("id"),
-        sb.from("ucf_used_tx_signatures").delete().gte("created_at", "1970-01-01").select("tx_signature"),
       ]);
       if (betsErr) throw betsErr;
       if (rumblesErr) throw rumblesErr;
       if (queueErr) throw queueErr;
-      if (txSigErr) throw txSigErr;
+
+      let txSigRows: Array<{ tx_signature: string }> | null = null;
+      const { data: txRows, error: txSigErr } = await sb
+        .from("ucf_used_tx_signatures")
+        .delete()
+        .gte("created_at", "1970-01-01")
+        .select("tx_signature");
+      if (txSigErr && !isMissingTableError(txSigErr)) throw txSigErr;
+      txSigRows = txRows;
 
       deleted = {
         bets: betRows?.length ?? 0,

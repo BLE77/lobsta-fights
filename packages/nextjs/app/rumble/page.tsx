@@ -9,6 +9,7 @@ import {
   Connection,
 } from "@solana/web3.js";
 import RumbleSlot, { SlotData } from "./components/RumbleSlot";
+import PayoutDisplay from "./components/PayoutDisplay";
 import QueueSidebar from "./components/QueueSidebar";
 import IchorShowerPool from "./components/IchorShowerPool";
 import ClaimBalancePanel from "./components/ClaimBalancePanel";
@@ -882,7 +883,7 @@ export default function RumblePage() {
       <div
         className="fixed inset-0 z-0"
         style={{
-          backgroundImage: "url('/arena-bg.png')",
+          backgroundImage: "url('/rumble-arena.png')",
           backgroundSize: "cover",
           backgroundPosition: "center",
           backgroundAttachment: "fixed",
@@ -997,71 +998,135 @@ export default function RumblePage() {
               </div>
             </div>
           ) : (
-            <div className="flex gap-6">
-              {/* Main content: 3 Rumble Slots */}
-              <div className="flex-1 space-y-4">
-                {/* Slots */}
-                {status?.slots.map((slot) => (
-                  <RumbleSlot
-                    key={slot.slotIndex}
-                    slot={slot}
-                    onPlaceBet={handlePlaceBet}
-                    onPlaceBatchBet={handlePlaceBatchBet}
-                    myBetAmounts={myBetAmountsBySlot.get(slot.slotIndex)}
-                    lastCompletedResult={lastCompletedBySlot.get(slot.slotIndex)}
-                  />
-                ))}
+            (() => {
+              // Pick the most interesting slot to feature
+              const STATE_PRIORITY: Record<string, number> = { combat: 0, betting: 1, payout: 2, idle: 3 };
+              const slots = status?.slots ?? [];
+              const sorted = [...slots].sort(
+                (a, b) => (STATE_PRIORITY[a.state] ?? 9) - (STATE_PRIORITY[b.state] ?? 9),
+              );
+              const featured = sorted[0] as SlotData | undefined;
+              const allIdle = !featured || featured.state === "idle";
 
-                {/* Show placeholder slots if no data */}
-                {(!status?.slots || status.slots.length === 0) && (
-                  <div className="space-y-4">
-                    {[0, 1, 2].map((i) => (
-                      <div
-                        key={i}
-                        className="bg-stone-900/50 border border-stone-800 rounded-sm p-4 backdrop-blur-sm"
-                      >
-                        <div className="flex items-center gap-2 mb-4">
-                          <span className="font-mono text-xs text-stone-600">
-                            SLOT {i + 1}
-                          </span>
-                          <span className="font-mono text-xs text-stone-700">
-                            [IDLE]
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-center h-24">
-                          <p className="font-mono text-sm text-stone-700">
-                            Waiting for fighters...
-                          </p>
-                        </div>
+              return (
+                <div className="flex gap-6">
+                  {/* Main content: Single featured rumble */}
+                  <div className="flex-1">
+                    {/* Slot selector pills (only if multiple active) */}
+                    {slots.filter((s) => s.state !== "idle").length > 1 && (
+                      <div className="flex items-center gap-2 mb-3">
+                        {slots
+                          .filter((s) => s.state !== "idle")
+                          .map((s) => {
+                            const active = s.slotIndex === featured?.slotIndex;
+                            const stateColor =
+                              s.state === "combat"
+                                ? "border-red-600 text-red-400"
+                                : s.state === "betting"
+                                  ? "border-amber-600 text-amber-400"
+                                  : "border-green-600 text-green-400";
+                            return (
+                              <button
+                                key={s.slotIndex}
+                                onClick={() => {
+                                  // Scroll to ensure visible — slot auto-selected by priority
+                                }}
+                                className={`font-mono text-[10px] px-2 py-0.5 border rounded-sm transition-all ${
+                                  active
+                                    ? `${stateColor} bg-stone-900/80`
+                                    : "border-stone-700 text-stone-500 hover:text-stone-300"
+                                }`}
+                              >
+                                SLOT {s.slotIndex + 1} [{s.state.toUpperCase()}]
+                              </button>
+                            );
+                          })}
                       </div>
-                    ))}
+                    )}
+
+                    {/* Arena preview when idle */}
+                    {allIdle ? (
+                      <div className="relative rounded-sm overflow-hidden border border-stone-800 bg-stone-950/60">
+                        <div className="relative">
+                          <img
+                            src="/rumble-arena.png"
+                            alt="UCF Rumble Arena"
+                            className="w-full h-auto max-h-[420px] object-contain mx-auto opacity-70"
+                          />
+                          <div className="absolute inset-0 bg-gradient-to-t from-stone-950 via-stone-950/40 to-transparent" />
+                          <div className="absolute inset-0 flex flex-col items-center justify-end pb-8">
+                            <h2 className="font-fight-glow text-3xl text-amber-400 mb-2">
+                              THE CAGE AWAITS
+                            </h2>
+                            <p className="font-mono text-sm text-stone-400 mb-1">
+                              {status?.queueLength
+                                ? `${status.queueLength} fighter${status.queueLength !== 1 ? "s" : ""} in queue`
+                                : "No fighters queued"}
+                            </p>
+                            <p className="font-mono text-[10px] text-stone-600">
+                              {status?.queueLength && status.queueLength >= 8
+                                ? "NEXT RUMBLE STARTING SOON"
+                                : "Need 8+ fighters to start a rumble"}
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Show last completed result if available */}
+                        {(() => {
+                          const lastResult = lastCompletedBySlot.size > 0
+                            ? [...lastCompletedBySlot.values()][0]
+                            : null;
+                          if (!lastResult) return null;
+                          return (
+                            <div className="p-4 border-t border-stone-800">
+                              <p className="font-mono text-[10px] text-stone-500 uppercase mb-2">
+                                Last Rumble Result
+                              </p>
+                              <PayoutDisplay
+                                placements={lastResult.placements}
+                                payout={lastResult.payout}
+                                myBetFighterIds={undefined}
+                              />
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    ) : featured ? (
+                      <RumbleSlot
+                        slot={featured}
+                        onPlaceBet={handlePlaceBet}
+                        onPlaceBatchBet={handlePlaceBatchBet}
+                        myBetAmounts={myBetAmountsBySlot.get(featured.slotIndex)}
+                        lastCompletedResult={lastCompletedBySlot.get(featured.slotIndex)}
+                      />
+                    ) : null}
                   </div>
-                )}
-              </div>
 
-              {/* Sidebar: Queue + Ichor Shower */}
-              <div className="w-64 flex-shrink-0 space-y-4 hidden lg:block">
-                {walletConnected && (
-                  <ClaimBalancePanel
-                    balance={claimBalance}
-                    loading={claimLoading}
-                    pending={claimPending}
-                    error={claimError}
-                    onClaim={handleClaimWinnings}
-                  />
-                )}
+                  {/* Sidebar: Queue + Ichor Shower */}
+                  <div className="w-64 flex-shrink-0 space-y-4 hidden lg:block">
+                    {walletConnected && (
+                      <ClaimBalancePanel
+                        balance={claimBalance}
+                        loading={claimLoading}
+                        pending={claimPending}
+                        error={claimError}
+                        onClaim={handleClaimWinnings}
+                      />
+                    )}
 
-                <QueueSidebar
-                  queue={status?.queue ?? []}
-                  totalLength={status?.queueLength ?? 0}
-                  nextRumbleIn={status?.nextRumbleIn ?? null}
-                />
+                    <QueueSidebar
+                      queue={status?.queue ?? []}
+                      totalLength={status?.queueLength ?? 0}
+                      nextRumbleIn={status?.nextRumbleIn ?? null}
+                    />
 
-                <IchorShowerPool
-                  currentPool={ichorShower.currentPool}
-                />
-              </div>
-            </div>
+                    <IchorShowerPool
+                      currentPool={ichorShower.currentPool}
+                    />
+                  </div>
+                </div>
+              );
+            })()
           )}
         </div>
 

@@ -185,6 +185,8 @@ export async function GET(request: Request) {
         odds,
         totalPool,
         bettingDeadline: slotInfo.bettingDeadline?.toISOString() ?? null,
+        nextTurnAt: slotInfo.nextTurnAt?.toISOString() ?? null,
+        turnIntervalMs: slotInfo.turnIntervalMs ?? null,
         currentTurn: combatState?.turns.length ?? 0,
         turns,
         payout,

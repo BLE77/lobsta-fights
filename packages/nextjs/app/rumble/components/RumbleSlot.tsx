@@ -70,10 +70,19 @@ export interface SlotData {
   odds: SlotOdds[];
   totalPool: number;
   bettingDeadline: string | null;
+  nextTurnAt?: string | null;
+  turnIntervalMs?: number | null;
   currentTurn: number;
   turns: SlotTurn[];
   payout: SlotPayout | null;
   fighterNames: Record<string, string>;
+}
+
+function formatCountdown(secondsRemaining: number): string {
+  const safe = Math.max(0, Math.floor(secondsRemaining));
+  const minutes = Math.floor(safe / 60);
+  const seconds = safe % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +178,37 @@ export default function RumbleSlot({
     ActiveElimination[]
   >([]);
   const seenTurnsRef = useRef<number>(0);
+  const [countdownNow, setCountdownNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const trackCombat = slot.state === "combat" && !!slot.nextTurnAt;
+    const trackBetting = slot.state === "betting" && !!slot.bettingDeadline;
+    if (!trackCombat && !trackBetting) return;
+    const timer = setInterval(() => setCountdownNow(Date.now()), 1_000);
+    return () => clearInterval(timer);
+  }, [slot.state, slot.nextTurnAt, slot.bettingDeadline]);
+
+  const liveCountdown = (() => {
+    if (slot.state === "combat" && slot.nextTurnAt) {
+      const targetMs = new Date(slot.nextTurnAt).getTime();
+      if (!Number.isFinite(targetMs)) return null;
+      return {
+        label: "NEXT TURN",
+        seconds: Math.max(0, Math.ceil((targetMs - countdownNow) / 1_000)),
+      };
+    }
+    if (slot.state === "betting" && slot.bettingDeadline) {
+      const targetMs = new Date(slot.bettingDeadline).getTime();
+      if (!Number.isFinite(targetMs)) return null;
+      return {
+        label: "FIRST TURN",
+        seconds: Math.max(0, Math.ceil((targetMs - countdownNow) / 1_000)),
+      };
+    }
+    return null;
+  })();
+
+  const nextTurnCountdownSeconds = liveCountdown?.seconds ?? null;
 
   // Track new eliminations from incoming turns
   useEffect(() => {
@@ -235,9 +275,16 @@ export default function RumbleSlot({
             [{label.text}]
           </span>
         </div>
-        <span className="font-mono text-[10px] text-stone-600 truncate max-w-[120px]">
-          {slot.rumbleId}
-        </span>
+        <div className="flex items-center gap-3">
+          {liveCountdown && nextTurnCountdownSeconds !== null && (
+            <span className="font-mono text-[10px] text-amber-300 whitespace-nowrap">
+              {liveCountdown.label} {formatCountdown(nextTurnCountdownSeconds)}
+            </span>
+          )}
+          <span className="font-mono text-[10px] text-stone-600 truncate max-w-[120px]">
+            {slot.rumbleId}
+          </span>
+        </div>
       </div>
 
       {/* Content */}
