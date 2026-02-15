@@ -42,6 +42,9 @@ import {
   type FighterOdds,
 } from "./betting";
 import { METER_PER_TURN, SPECIAL_METER_COST, resolveCombat } from "./combat";
+import { isValidMove } from "./combat";
+import { notifyFighter } from "./webhook";
+import type { MoveType } from "./types";
 
 import * as persist from "./rumble-persistence";
 import { getRumblePayoutMode } from "./rumble-payout-mode";
@@ -160,6 +163,7 @@ type EventCallback<E extends OrchestratorEvent> = (data: EventData[E]) => void;
 interface SlotCombatState {
   rumbleId: string;
   fighters: RumbleFighter[];
+  fighterProfiles: Map<string, persist.RumbleFighterProfile>;
   turns: RumbleTurn[];
   eliminationOrder: string[];
   previousPairings: Set<string>;
@@ -199,6 +203,12 @@ const COMBAT_TICK_INTERVAL_MS = readIntervalMs(
   3_000,
   1_000,
   120_000,
+);
+const AGENT_MOVE_TIMEOUT_MS = readIntervalMs(
+  "RUMBLE_AGENT_MOVE_TIMEOUT_MS",
+  3_500,
+  500,
+  20_000,
 );
 const MAX_COMBAT_TURNS = readInt(
   "RUMBLE_MAX_COMBAT_TURNS",
@@ -752,7 +762,7 @@ export class RumbleOrchestrator {
 
     // Initialize combat state when we first enter combat
     if (!this.combatStates.has(idx) || this.combatStates.get(idx)!.rumbleId !== slot.id) {
-      this.initCombatState(slot);
+      await this.initCombatState(slot);
 
       // Emit betting closed event with final odds
       const pool = this.bettingPools.get(idx);
@@ -788,14 +798,14 @@ export class RumbleOrchestrator {
     state.lastTickAt = now;
   }
 
-  private initCombatState(slot: RumbleSlot): void {
-    // Build RumbleFighter array from slot's fighter IDs
-    // For now, use IDs as names (in production, look up fighter profiles)
+  private async initCombatState(slot: RumbleSlot): Promise<void> {
+    // Build RumbleFighter array from slot's fighter IDs.
     const MAX_HP = 100; // matches combat.ts default
+    const fighterProfiles = await persist.loadRumbleFighterProfiles(slot.fighters);
 
     const fighters: RumbleFighter[] = slot.fighters.map((id) => ({
       id,
-      name: id,
+      name: fighterProfiles.get(id)?.name ?? id,
       hp: MAX_HP,
       meter: 0,
       totalDamageDealt: 0,
@@ -807,11 +817,95 @@ export class RumbleOrchestrator {
     this.combatStates.set(slot.slotIndex, {
       rumbleId: slot.id,
       fighters,
+      fighterProfiles,
       turns: [],
       eliminationOrder: [],
       previousPairings: new Set(),
       lastTickAt: Date.now(),
     });
+  }
+
+  private fallbackMoveForFighter(
+    fighter: RumbleFighter,
+    alive: RumbleFighter[],
+    turnHistory: RumbleTurn[],
+  ): MoveType {
+    return selectMove(fighter, alive.filter((f) => f.id !== fighter.id), turnHistory as any);
+  }
+
+  private async requestFighterMove(
+    slot: RumbleSlot,
+    state: SlotCombatState,
+    fighter: RumbleFighter,
+    opponent: RumbleFighter,
+    alive: RumbleFighter[],
+    turnNumber: number,
+  ): Promise<MoveType> {
+    const fallback = this.fallbackMoveForFighter(fighter, alive, state.turns);
+    const profile = state.fighterProfiles.get(fighter.id);
+    const webhookUrl = profile?.webhookUrl;
+    if (!webhookUrl) return fallback;
+
+    const matchState = {
+      your_hp: fighter.hp,
+      opponent_hp: opponent.hp,
+      your_meter: fighter.meter,
+      opponent_meter: opponent.meter,
+      round: 1,
+      turn: turnNumber,
+      your_rounds_won: 0,
+      opponent_rounds_won: 0,
+    };
+
+    const payload = {
+      mode: "rumble",
+      rumble_id: slot.id,
+      slot_index: slot.slotIndex,
+      turn: turnNumber,
+      fighter_id: fighter.id,
+      fighter_name: fighter.name,
+      opponent_id: opponent.id,
+      opponent_name: opponent.name,
+      match_id: slot.id,
+      match_state: matchState,
+      your_state: {
+        hp: fighter.hp,
+        meter: fighter.meter,
+      },
+      opponent_state: {
+        hp: opponent.hp,
+        meter: opponent.meter,
+      },
+      turn_history: state.turns.slice(-6),
+      valid_moves: [
+        "HIGH_STRIKE",
+        "MID_STRIKE",
+        "LOW_STRIKE",
+        "GUARD_HIGH",
+        "GUARD_MID",
+        "GUARD_LOW",
+        "DODGE",
+        "CATCH",
+        "SPECIAL",
+      ],
+      timeout_ms: AGENT_MOVE_TIMEOUT_MS,
+    };
+
+    const timeoutPromise = new Promise<null>((resolve) =>
+      setTimeout(() => resolve(null), AGENT_MOVE_TIMEOUT_MS),
+    );
+    const webhookPromise = notifyFighter(webhookUrl, "move_request", payload)
+      .then((res) => (res.success ? res.data : null))
+      .catch(() => null);
+
+    const responseData = await Promise.race([webhookPromise, timeoutPromise]);
+    const rawMove =
+      (responseData && typeof responseData === "object" && (responseData as any).move) || null;
+    const normalized = typeof rawMove === "string" ? rawMove.trim().toUpperCase() : "";
+    if (isValidMove(normalized)) {
+      return normalized as MoveType;
+    }
+    return fallback;
   }
 
   /**
@@ -862,13 +956,21 @@ export class RumbleOrchestrator {
     const turnEliminations: string[] = [];
     const currentPairingsSet = new Set<string>();
 
-    for (const [idA, idB] of pairings) {
+    const pairingMoves = await Promise.all(
+      pairings.map(async ([idA, idB]) => {
+        const fA = state.fighters.find((f) => f.id === idA)!;
+        const fB = state.fighters.find((f) => f.id === idB)!;
+        const [moveA, moveB] = await Promise.all([
+          this.requestFighterMove(slot, state, fA, fB, alive, turnNumber),
+          this.requestFighterMove(slot, state, fB, fA, alive, turnNumber),
+        ]);
+        return { idA, idB, moveA, moveB };
+      }),
+    );
+
+    for (const { idA, idB, moveA, moveB } of pairingMoves) {
       const fA = state.fighters.find((f) => f.id === idA)!;
       const fB = state.fighters.find((f) => f.id === idB)!;
-
-      // Select moves (placeholder AI)
-      const moveA = selectMove(fA, alive.filter((f) => f.id !== fA.id), state.turns as any);
-      const moveB = selectMove(fB, alive.filter((f) => f.id !== fB.id), state.turns as any);
 
       const result = resolveCombat(moveA, moveB, fA.meter, fB.meter);
       let damageToA = result.damageToA;

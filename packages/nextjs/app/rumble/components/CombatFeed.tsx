@@ -44,16 +44,41 @@ function getMoveColor(move: string): string {
   return "text-stone-500";
 }
 
-function formatDamage(dmg: number): string {
-  if (dmg === 0) return "MISS";
-  return `-${dmg}`;
+function isStrike(move: string): boolean {
+  return move === "HIGH_STRIKE" || move === "MID_STRIKE" || move === "LOW_STRIKE";
 }
 
-function damageColor(dmg: number): string {
-  if (dmg === 0) return "text-stone-600";
-  if (dmg >= 20) return "text-red-400 font-bold";
-  if (dmg >= 10) return "text-orange-400";
-  return "text-yellow-400";
+function isGuard(move: string): boolean {
+  return move === "GUARD_HIGH" || move === "GUARD_MID" || move === "GUARD_LOW";
+}
+
+function isMatchingGuard(strike: string, guard: string): boolean {
+  return (
+    (strike === "HIGH_STRIKE" && guard === "GUARD_HIGH") ||
+    (strike === "MID_STRIKE" && guard === "GUARD_MID") ||
+    (strike === "LOW_STRIKE" && guard === "GUARD_LOW")
+  );
+}
+
+function describeDamage(
+  dmg: number,
+  attackerMove: string,
+  defenderMove: string,
+): { label: string; className: string } {
+  if (dmg > 0) {
+    if (dmg >= 20) return { label: `-${dmg}`, className: "text-red-400 font-bold" };
+    if (dmg >= 10) return { label: `-${dmg}`, className: "text-orange-400" };
+    return { label: `-${dmg}`, className: "text-yellow-400" };
+  }
+
+  // Explicit zero-damage outcomes so spectators can see why no damage landed.
+  if ((isStrike(attackerMove) || attackerMove === "SPECIAL") && defenderMove === "DODGE") {
+    return { label: "DODGED", className: "text-green-400 font-semibold" };
+  }
+  if (isStrike(attackerMove) && isGuard(defenderMove) && isMatchingGuard(attackerMove, defenderMove)) {
+    return { label: "BLOCKED", className: "text-blue-400 font-semibold" };
+  }
+  return { label: "MISS", className: "text-stone-600" };
 }
 
 export default function CombatFeed({
@@ -104,7 +129,10 @@ export default function CombatFeed({
           </div>
 
           {/* Pairings */}
-          {turn.pairings.map((p, i) => (
+          {turn.pairings.map((p, i) => {
+            const aToB = describeDamage(p.damageToB, p.moveA, p.moveB);
+            const bToA = describeDamage(p.damageToA, p.moveB, p.moveA);
+            return (
             <div
               key={`${turn.turnNumber}-${i}`}
               className="font-mono text-xs flex items-center gap-1 px-1"
@@ -116,15 +144,15 @@ export default function CombatFeed({
               <span className={getMoveColor(p.moveA)}>
                 {getMoveIcon(p.moveA)}
               </span>
-              <span className={`text-[10px] ${damageColor(p.damageToB)}`}>
-                {formatDamage(p.damageToB)}
+              <span className={`text-[10px] ${aToB.className}`}>
+                {aToB.label}
               </span>
 
               <span className="text-stone-700 mx-0.5">|</span>
 
               {/* Fighter B */}
-              <span className={`text-[10px] ${damageColor(p.damageToA)}`}>
-                {formatDamage(p.damageToA)}
+              <span className={`text-[10px] ${bToA.className}`}>
+                {bToA.label}
               </span>
               <span className={getMoveColor(p.moveB)}>
                 {getMoveIcon(p.moveB)}
@@ -133,7 +161,8 @@ export default function CombatFeed({
                 {p.fighterBName}
               </span>
             </div>
-          ))}
+            );
+          })}
 
           {/* Bye */}
           {turn.bye && (

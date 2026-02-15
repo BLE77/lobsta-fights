@@ -812,6 +812,49 @@ export async function lookupFighterWallets(
   return result;
 }
 
+export interface RumbleFighterProfile {
+  id: string;
+  name: string;
+  webhookUrl: string | null;
+}
+
+/**
+ * Load fighter profiles required by rumble combat orchestration.
+ */
+export async function loadRumbleFighterProfiles(
+  fighterIds: string[],
+): Promise<Map<string, RumbleFighterProfile>> {
+  const result = new Map<string, RumbleFighterProfile>();
+  if (fighterIds.length === 0) return result;
+
+  try {
+    const sb = freshServiceClient();
+    const uniqueIds = [...new Set(fighterIds.filter(Boolean))];
+    const { data, error } = await sb
+      .from("ucf_fighters")
+      .select("id, name, webhook_url")
+      .in("id", uniqueIds);
+    if (error) throw error;
+
+    for (const row of data ?? []) {
+      const id = String((row as any).id ?? "");
+      if (!id) continue;
+      result.set(id, {
+        id,
+        name: String((row as any).name ?? id),
+        webhookUrl:
+          typeof (row as any).webhook_url === "string" && (row as any).webhook_url.trim().length > 0
+            ? String((row as any).webhook_url)
+            : null,
+      });
+    }
+  } catch (err) {
+    logError("loadRumbleFighterProfiles failed", err);
+  }
+
+  return result;
+}
+
 export async function getStats(): Promise<{
   total_rumbles: number;
   total_sol_wagered: number;
