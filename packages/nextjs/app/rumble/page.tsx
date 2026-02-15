@@ -179,7 +179,31 @@ export default function RumblePage() {
   const eventSourceRef = useRef<EventSource | null>(null);
   const [lastSseEvent, setLastSseEvent] = useState<CommentarySSEEvent | null>(null);
   const [sseEventSeq, setSseEventSeq] = useState(0);
-  const [lastCompletedBySlot, setLastCompletedBySlot] = useState<Map<number, LastCompletedSlotResult>>(new Map());
+  const LAST_RESULT_STORAGE_KEY = "ucf_last_result";
+  const [lastCompletedBySlot, setLastCompletedBySlot] = useState<Map<number, LastCompletedSlotResult>>(() => {
+    try {
+      const stored = typeof window !== "undefined" ? localStorage.getItem(LAST_RESULT_STORAGE_KEY) : null;
+      if (stored) {
+        const parsed = JSON.parse(stored) as
+          | { slotIndex?: number; result?: LastCompletedSlotResult }
+          | LastCompletedSlotResult;
+        if (
+          parsed &&
+          typeof parsed === "object" &&
+          "result" in parsed &&
+          parsed.result?.rumbleId &&
+          Number.isInteger(parsed.slotIndex)
+        ) {
+          return new Map([[Number(parsed.slotIndex), parsed.result]]);
+        }
+        if ((parsed as LastCompletedSlotResult)?.rumbleId) {
+          // Backward compatibility with older local format (no slot index)
+          return new Map([[0, parsed as LastCompletedSlotResult]]);
+        }
+      }
+    } catch {}
+    return new Map();
+  });
 
   // Track user stake per fighter per slot.
   // Map<slotIndex, Map<fighterId, totalSolStaked>>
@@ -303,6 +327,19 @@ export default function RumblePage() {
           if (!existing || existing.rumbleId !== completed.rumbleId) {
             next.set(slot.slotIndex, completed);
             changed = true;
+          }
+        }
+        if (changed) {
+          // Persist most recent result for page-refresh survival
+          const latestEntry = [...next.entries()].pop();
+          if (latestEntry) {
+            const [slotIndex, result] = latestEntry;
+            try {
+              localStorage.setItem(
+                LAST_RESULT_STORAGE_KEY,
+                JSON.stringify({ slotIndex, result }),
+              );
+            } catch {}
           }
         }
         return changed ? next : prev;
