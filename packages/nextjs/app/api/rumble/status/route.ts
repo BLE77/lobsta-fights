@@ -9,7 +9,8 @@ import {
   getIchorShowerState,
   getStats,
 } from "~~/lib/rumble-persistence";
-import { readArenaConfig } from "~~/lib/solana-programs";
+import { readArenaConfig, readRumbleAccountState } from "~~/lib/solana-programs";
+import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 
 export const dynamic = "force-dynamic";
 
@@ -194,6 +195,23 @@ export async function GET(request: Request) {
         fighterNames,
       };
     });
+
+    // Cross-check betting slots against on-chain state so UI doesn't present
+    // a stale "Betting Open" phase after the program has already moved on.
+    slots = await Promise.all(
+      slots.map(async slot => {
+        if (slot.state !== "betting" || !slot.rumbleId) return slot;
+        const rumbleIdNum = parseOnchainRumbleIdNumber(slot.rumbleId);
+        if (rumbleIdNum === null) return slot;
+        const onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+        if (!onchain || onchain.state === "betting") return slot;
+        return {
+          ...slot,
+          state: onchain.state === "combat" ? "combat" : "payout",
+          bettingDeadline: null,
+        };
+      }),
+    );
 
     // ---- Build queue (QueueFighter[]) --------------------------------------
     const queueEntries = await loadQueueState();

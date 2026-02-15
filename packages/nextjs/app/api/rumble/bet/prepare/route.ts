@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import { getOrchestrator } from "~~/lib/rumble-orchestrator";
-import { buildPlaceBetBatchTx, buildPlaceBetTx } from "~~/lib/solana-programs";
+import { buildPlaceBetBatchTx, buildPlaceBetTx, readRumbleAccountState } from "~~/lib/solana-programs";
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 import { MAX_BET_SOL, MIN_BET_SOL } from "~~/lib/tx-verify";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
@@ -143,6 +143,39 @@ export async function POST(request: Request) {
       );
     }
 
+    // Source of truth guard: do not return a signable tx unless this rumble is
+    // still open on-chain. Prevents stale UI/off-chain state from producing a
+    // tx that will immediately fail simulation with BettingClosed.
+    const onchainRumble = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+    if (!onchainRumble) {
+      return NextResponse.json(
+        { error: "On-chain rumble is not available. Please refresh and try again." },
+        { status: 409 },
+      );
+    }
+    if (onchainRumble.state !== "betting") {
+      return NextResponse.json(
+        {
+          error: `On-chain betting is closed for this rumble (state: ${onchainRumble.state}).`,
+          onchain_state: onchainRumble.state,
+        },
+        { status: 409 },
+      );
+    }
+    const maxPreparedIndex = preparedBets.reduce(
+      (max, bet) => Math.max(max, bet.fighter_index),
+      -1,
+    );
+    if (onchainRumble.fighterCount > 0 && maxPreparedIndex >= onchainRumble.fighterCount) {
+      return NextResponse.json(
+        {
+          error: "Rumble fighter list changed on-chain. Refresh and place the bet again.",
+          onchain_fighter_count: onchainRumble.fighterCount,
+        },
+        { status: 409 },
+      );
+    }
+
     try {
       const tx =
         preparedBets.length === 1
@@ -181,6 +214,7 @@ export async function POST(request: Request) {
         total_sol_amount: preparedBets.reduce((sum, b) => sum + b.sol_amount, 0),
         total_lamports: preparedBets.reduce((sum, b) => sum + b.lamports, 0),
         wallet: wallet.toBase58(),
+        onchain_state: onchainRumble.state,
         tx_kind: txKind,
         transaction_base64: txBase64,
         timestamp: new Date().toISOString(),
