@@ -45,6 +45,11 @@ const RECOVERED_BETTING_DURATION_MS = 60 * 1000;
 // If a rumble was created > 5 minutes ago and is still in "betting", something
 // went wrong — mark it complete and re-queue fighters.
 const MAX_BETTING_AGE_MS = 5 * 60 * 1000;
+const MAX_COMBAT_STUCK_AGE_MS = (() => {
+  const raw = Number(process.env.RUMBLE_MAX_COMBAT_STUCK_AGE_MS ?? "");
+  if (!Number.isFinite(raw)) return 5 * 60 * 1000;
+  return Math.max(60 * 1000, Math.min(60 * 60 * 1000, Math.floor(raw)));
+})();
 
 // ---------------------------------------------------------------------------
 // Main recovery function
@@ -109,6 +114,14 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
     // ---- Step 2: Recover active rumbles ---------------------------------------
     const activeRumbles = await persist.loadActiveRumbles();
     result.activeRumbles = activeRumbles.length;
+    const newestCreatedAtBySlot = new Map<number, number>();
+    for (const rumble of activeRumbles) {
+      const slot = Number(rumble.slot_index);
+      if (!Number.isInteger(slot)) continue;
+      const createdAtMs = new Date(rumble.created_at).getTime();
+      const current = newestCreatedAtBySlot.get(slot) ?? 0;
+      if (createdAtMs > current) newestCreatedAtBySlot.set(slot, createdAtMs);
+    }
 
     const orchestrator = getOrchestrator();
 
@@ -117,6 +130,30 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
         const fighters = rumble.fighters as Array<{ id: string; name: string }>;
 
         if (rumble.status === "combat") {
+          const createdAtMs = new Date(rumble.created_at).getTime();
+          const ageMs = Date.now() - createdAtMs;
+          const newestForSlot = newestCreatedAtBySlot.get(Number(rumble.slot_index)) ?? createdAtMs;
+          const supersededByNewerSlotRumble = createdAtMs < newestForSlot;
+          const staleCombat = ageMs > MAX_COMBAT_STUCK_AGE_MS;
+
+          // Safety valve: if this combat rumble is stale/superseded and has no bets,
+          // we can close it without payout risk. This prevents old "combat" rows
+          // from piling up and making the system look stuck.
+          if (supersededByNewerSlotRumble || staleCombat) {
+            const betCount = await persist.countBetsForRumble(rumble.id);
+            if (betCount === 0) {
+              console.warn(
+                `[StateRecovery] Closing stale combat rumble ${rumble.id} (slot=${rumble.slot_index}, age=${Math.round(ageMs / 1000)}s, superseded=${supersededByNewerSlotRumble})`,
+              );
+              await persist.updateRumbleStatus(rumble.id, "complete");
+              for (const f of fighters) {
+                await persist.removeQueueFighter(f.id);
+              }
+              result.staleMidCombat++;
+              continue;
+            }
+          }
+
           // Never fabricate outcomes for mid-combat rounds in production:
           // doing so can create off-chain payouts with on-chain rumbles still
           // in combat state, causing claim failures.

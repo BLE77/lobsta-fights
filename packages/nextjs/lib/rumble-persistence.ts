@@ -118,6 +118,21 @@ export async function clearQueueByStatus(
   }
 }
 
+export async function countBetsForRumble(rumbleId: string): Promise<number> {
+  try {
+    const sb = freshServiceClient();
+    const { count, error } = await sb
+      .from("ucf_bets")
+      .select("id", { count: "exact", head: true })
+      .eq("rumble_id", rumbleId);
+    if (error) throw error;
+    return count ?? 0;
+  } catch (err) {
+    logError("countBetsForRumble failed", err);
+    return 0;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Rumbles
 // ---------------------------------------------------------------------------
