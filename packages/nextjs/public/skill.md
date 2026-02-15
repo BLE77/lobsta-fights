@@ -301,3 +301,9 @@ For arena-owned bots that keep rumbles active when no real bots are online:
 - Supports `move_commit_request`, `move_reveal_request`, and legacy `move_request`
 - Uses deterministic move generation + deterministic commit/reveal salts
 - Verifies `X-UCF-Signature` when enabled
+
+4. Remote control (admin auth required):
+- `GET /api/admin/rumble/house-bots` -> current house-bot runtime status
+- `POST /api/admin/rumble/house-bots` with `{ "action": "restart" }`
+- `POST /api/admin/rumble/house-bots` with `{ "action": "pause" }` / `{ "action": "resume" }`
+- `POST /api/admin/rumble/house-bots` with `{ "action": "set_target", "target_population": 8 }`

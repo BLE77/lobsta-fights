@@ -267,6 +267,9 @@ export class RumbleOrchestrator {
   private queueManager: RumbleQueueManager;
   private readonly houseBotIds = HOUSE_BOT_IDS;
   private readonly houseBotSet = new Set(HOUSE_BOT_IDS);
+  private houseBotsPaused = false;
+  private houseBotTargetPopulationOverride: number | null = null;
+  private houseBotsLastRestartAt: string | null = null;
 
   // Betting pools indexed by slot
   private bettingPools: Map<number, BettingPool> = new Map();
@@ -364,6 +367,24 @@ export class RumbleOrchestrator {
     this.pollPendingIchorShower();
   }
 
+  private getHouseBotTargetPopulation(): number {
+    return this.houseBotTargetPopulationOverride ?? HOUSE_BOT_TARGET_POPULATION;
+  }
+
+  private async removeQueuedHouseBots(): Promise<number> {
+    const queueEntries = this.queueManager.getQueueEntries();
+    let removedCount = 0;
+    for (const entry of queueEntries) {
+      const fighterId = entry.fighterId;
+      if (!this.houseBotSet.has(fighterId)) continue;
+      const removed = this.queueManager.removeFromQueue(fighterId);
+      if (!removed) continue;
+      removedCount += 1;
+      await persist.removeQueueFighter(fighterId);
+    }
+    return removedCount;
+  }
+
   /**
    * Keep "house bots" queued when no real fighters are present.
    *
@@ -376,6 +397,7 @@ export class RumbleOrchestrator {
    */
   private async maintainHouseBotQueue(): Promise<void> {
     if (!HOUSE_BOTS_ENABLED) return;
+    if (this.houseBotsPaused) return;
 
     const slots = this.queueManager.getSlots();
     const queueEntries = this.queueManager.getQueueEntries();
@@ -392,18 +414,12 @@ export class RumbleOrchestrator {
 
     if (realFighterPresent) {
       // Drain only queued house bots; active matches continue uninterrupted.
-      for (const fighterId of queuedIds) {
-        if (!this.houseBotSet.has(fighterId)) continue;
-        const removed = this.queueManager.removeFromQueue(fighterId);
-        if (removed) {
-          await persist.removeQueueFighter(fighterId);
-        }
-      }
+      await this.removeQueuedHouseBots();
       return;
     }
 
     const currentHousePopulation = [...presentIds].filter((id) => this.houseBotSet.has(id)).length;
-    const missing = Math.max(0, HOUSE_BOT_TARGET_POPULATION - currentHousePopulation);
+    const missing = Math.max(0, this.getHouseBotTargetPopulation() - currentHousePopulation);
     if (missing === 0) return;
 
     let added = 0;
@@ -419,6 +435,54 @@ export class RumbleOrchestrator {
         console.warn(`[HouseBots] Failed to queue ${fighterId}: ${formatError(err)}`);
       }
     }
+  }
+
+  async restartHouseBots(): Promise<{ removedQueuedHouseBots: number; restartedAt: string }> {
+    const removedQueuedHouseBots = await this.removeQueuedHouseBots();
+    this.houseBotsPaused = false;
+    this.houseBotsLastRestartAt = new Date().toISOString();
+    return {
+      removedQueuedHouseBots,
+      restartedAt: this.houseBotsLastRestartAt,
+    };
+  }
+
+  async pauseHouseBots(): Promise<{ removedQueuedHouseBots: number }> {
+    this.houseBotsPaused = true;
+    const removedQueuedHouseBots = await this.removeQueuedHouseBots();
+    return { removedQueuedHouseBots };
+  }
+
+  resumeHouseBots(): void {
+    this.houseBotsPaused = false;
+  }
+
+  setHouseBotTargetPopulation(target: number | null): number {
+    if (target === null) {
+      this.houseBotTargetPopulationOverride = null;
+      return this.getHouseBotTargetPopulation();
+    }
+    const safe = Math.max(0, Math.min(64, Math.floor(target)));
+    this.houseBotTargetPopulationOverride = safe;
+    return safe;
+  }
+
+  getHouseBotControlStatus(): {
+    configuredEnabled: boolean;
+    configuredHouseBotCount: number;
+    paused: boolean;
+    targetPopulation: number;
+    targetPopulationSource: "env" | "runtime_override";
+    lastRestartAt: string | null;
+  } {
+    return {
+      configuredEnabled: HOUSE_BOTS_ENABLED,
+      configuredHouseBotCount: this.houseBotIds.length,
+      paused: this.houseBotsPaused,
+      targetPopulation: this.getHouseBotTargetPopulation(),
+      targetPopulationSource: this.houseBotTargetPopulationOverride === null ? "env" : "runtime_override",
+      lastRestartAt: this.houseBotsLastRestartAt,
+    };
   }
 
   private enqueueRumbleFinalization(rumbleId: string, rumbleIdNum: number, delayMs: number): void {
