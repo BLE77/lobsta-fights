@@ -2,6 +2,7 @@
  * UCF Webhook System
  * Utility functions for notifying fighters via their webhook endpoints
  */
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 
@@ -21,12 +22,45 @@ export interface WebhookResponse {
 
 // Webhook timeout in milliseconds
 const WEBHOOK_TIMEOUT = 5000;
+const WEBHOOK_SHARED_SECRET = process.env.UCF_WEBHOOK_SHARED_SECRET?.trim() ?? "";
+const SIGNATURE_SCHEME = "v1";
 const BLOCKED_HOSTNAMES = new Set([
   "localhost",
   "metadata.google.internal",
   "metadata.google",
   "host.docker.internal",
 ]);
+
+function buildWebhookSignature(timestamp: string, rawBody: string): string | null {
+  if (!WEBHOOK_SHARED_SECRET) return null;
+  const mac = createHmac("sha256", WEBHOOK_SHARED_SECRET);
+  mac.update(`${timestamp}.${rawBody}`);
+  return `${SIGNATURE_SCHEME}=${mac.digest("hex")}`;
+}
+
+export function verifyWebhookSignature(
+  timestamp: string,
+  rawBody: string,
+  signatureHeader: string | null,
+  maxSkewSeconds = 300,
+): boolean {
+  if (!WEBHOOK_SHARED_SECRET) return true;
+  if (!signatureHeader) return false;
+
+  const nowMs = Date.now();
+  const tsMs = Date.parse(timestamp);
+  if (!Number.isFinite(tsMs)) return false;
+  const skewMs = Math.abs(nowMs - tsMs);
+  if (skewMs > maxSkewSeconds * 1000) return false;
+
+  const expected = buildWebhookSignature(timestamp, rawBody);
+  if (!expected) return false;
+
+  const a = Buffer.from(expected);
+  const b = Buffer.from(signatureHeader);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
 
 function isPrivateIpv4(address: string): boolean {
   const octets = address.split(".").map(part => Number.parseInt(part, 10));
@@ -134,6 +168,8 @@ export async function notifyFighter(
     timestamp: new Date().toISOString(),
     ...data,
   };
+  const rawBody = JSON.stringify(payload);
+  const signature = buildWebhookSignature(payload.timestamp, rawBody);
 
   try {
     const response = await fetch(webhookUrl, {
@@ -142,8 +178,9 @@ export async function notifyFighter(
         "Content-Type": "application/json",
         "X-UCF-Event": event,
         "X-UCF-Timestamp": payload.timestamp,
+        ...(signature ? { "X-UCF-Signature": signature } : {}),
       },
-      body: JSON.stringify(payload),
+      body: rawBody,
       redirect: "manual",
       signal: controller.signal,
     });

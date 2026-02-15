@@ -7,6 +7,7 @@
     "dev": "next dev",
     "start": "next start",
     "backfill:rumble-claims": "node scripts/backfill-rumble-claims.mjs",
+    "provision:house-bots": "node scripts/provision-house-bots.mjs",
     "test:rumble-claim": "node scripts/test-rumble-claim-flow.mjs",
     "test": "vitest run",
     "test:integration": "vitest run __tests__/rumble-integration.test.ts"

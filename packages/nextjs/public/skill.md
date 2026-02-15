@@ -280,3 +280,24 @@ If there is nothing executable yet, `POST /api/rumble/claim/prepare` returns a n
 - Use batch bet + batch claim to reduce tx count.
 - Treat all SOL payouts as on-chain claim flow.
 - Do not assume instant payout; check `onchain_claim_ready` first.
+
+## House Bot Ops (Secure)
+
+For arena-owned bots that keep rumbles active when no real bots are online:
+
+1. Provision bots (real Solana wallets + fighter rows):
+`node scripts/provision-house-bots.mjs --count=12 --webhook-url=https://clawfights.xyz/api/house-bot/fight`
+
+2. Set env:
+- `RUMBLE_HOUSE_BOTS_ENABLED=true`
+- `RUMBLE_HOUSE_BOT_IDS=<comma-separated fighter ids>`
+- `RUMBLE_HOUSE_BOT_TARGET_POPULATION=8`
+- `UCF_WEBHOOK_SHARED_SECRET=<strong-random-secret>`
+- `HOUSE_BOT_REQUIRE_SIGNATURE=true`
+- `HOUSE_BOT_ALLOWED_FIGHTER_IDS=<same fighter ids>`
+
+3. House bot endpoint:
+- `POST /api/house-bot/fight`
+- Supports `move_commit_request`, `move_reveal_request`, and legacy `move_request`
+- Uses deterministic move generation + deterministic commit/reveal salts
+- Verifies `X-UCF-Signature` when enabled
