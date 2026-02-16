@@ -6,6 +6,7 @@
     "build": "next build",
     "dev": "next dev",
     "start": "next start",
+    "keeper:rumble": "node scripts/run-rumble-keeper.mjs",
     "backfill:rumble-claims": "node scripts/backfill-rumble-claims.mjs",
     "provision:house-bots": "node scripts/provision-house-bots.mjs",
     "test:rumble-claim": "node scripts/test-rumble-claim-flow.mjs",
