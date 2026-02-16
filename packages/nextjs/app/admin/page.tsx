@@ -71,6 +71,20 @@ interface DashboardData {
   staleActiveRows?: number;
   recentRumbles: Rumble[];
   fighters: Fighter[];
+  runtimeHealth?: {
+    onchainAdmin?: {
+      ready: boolean;
+      reason: string | null;
+    };
+    onchainCreateFailures?: Array<{
+      rumbleId: string;
+      slotIndex: number | null;
+      reason: string;
+      attempts: number;
+      lastSeenAt: string;
+    }>;
+  };
+  systemWarnings?: string[];
   timestamp: string;
 }
 
@@ -953,6 +967,15 @@ export default function AdminPage() {
                 {(dashboard?.staleActiveRows ?? 0) + Math.max(0, activeRumbles.length - dedupedActiveRumbles.length)}
                 {" "}stale active row(s).
               </p>
+            ) : null}
+            {(dashboard?.systemWarnings?.length ?? 0) > 0 ? (
+              <div className="space-y-1">
+                {dashboard!.systemWarnings!.slice(0, 5).map((warning, idx) => (
+                  <p key={`${idx}-${warning}`} className="font-mono text-[10px] text-red-400">
+                    {warning}
+                  </p>
+                ))}
+              </div>
             ) : null}
           </div>
         </Section>

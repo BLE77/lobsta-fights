@@ -441,6 +441,21 @@ export async function GET(request: Request) {
     if (!runtimeHealth.onchainAdmin.ready && runtimeHealth.onchainAdmin.reason) {
       systemWarnings.push(`On-chain admin unavailable: ${runtimeHealth.onchainAdmin.reason}`);
     }
+    if (Array.isArray(runtimeHealth.onchainCreateFailures)) {
+      for (const failure of runtimeHealth.onchainCreateFailures.slice(0, 3)) {
+        const slotLabel =
+          typeof failure?.slotIndex === "number" && Number.isInteger(failure.slotIndex)
+            ? `slot ${failure.slotIndex}`
+            : "unknown slot";
+        const attempts = Number.isFinite(Number(failure?.attempts))
+          ? Number(failure.attempts)
+          : null;
+        const attemptsSuffix = attempts ? ` (attempt ${attempts})` : "";
+        const reason = typeof failure?.reason === "string" ? failure.reason : "unknown create_rumble failure";
+        const rumbleId = typeof failure?.rumbleId === "string" ? failure.rumbleId : "unknown";
+        systemWarnings.push(`On-chain create failed for ${slotLabel}, ${rumbleId}: ${reason}${attemptsSuffix}`);
+      }
+    }
 
     return NextResponse.json({
       slots,

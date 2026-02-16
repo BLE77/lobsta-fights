@@ -320,6 +320,17 @@ interface OnchainAdminHealth {
   rumbleAdmin: string | null;
 }
 
+interface OnchainCreateFailure {
+  rumbleId: string;
+  slotIndex: number | null;
+  fighterCount: number;
+  attempts: number;
+  firstSeenAt: number;
+  lastSeenAt: number;
+  reason: string;
+  nextRetryAt: number | null;
+}
+
 interface PendingFinalization {
   rumbleId: string;
   rumbleIdNum: number;
@@ -378,6 +389,7 @@ export class RumbleOrchestrator {
   private pendingFinalizations: Map<string, PendingFinalization> = new Map();
   private onchainRumbleCreateRetryAt: Map<string, number> = new Map();
   private onchainRumbleCreateStartedAt: Map<string, number> = new Map();
+  private onchainRumbleCreateLastError: Map<string, OnchainCreateFailure> = new Map();
   private warnedInvalidHouseBotIds: Set<string> = new Set();
   private onchainAdminHealth: OnchainAdminHealth = {
     checkedAt: 0,
@@ -636,8 +648,68 @@ export class RumbleOrchestrator {
     return this.onchainAdminHealth;
   }
 
-  getRuntimeHealth(): { onchainAdmin: OnchainAdminHealth } {
-    return { onchainAdmin: { ...this.onchainAdminHealth } };
+  private resolveSlotIndexForRumble(rumbleId: string): number | null {
+    const slot = this.queueManager.getSlots().find((entry) => entry.id === rumbleId);
+    return slot ? slot.slotIndex : null;
+  }
+
+  private recordOnchainCreateFailure(
+    rumbleId: string,
+    reason: string,
+    fighterCount: number,
+    slotIndex: number | null,
+  ): void {
+    const now = Date.now();
+    const existing = this.onchainRumbleCreateLastError.get(rumbleId);
+    const nextRetryAt = this.onchainRumbleCreateRetryAt.get(rumbleId) ?? null;
+
+    this.onchainRumbleCreateLastError.set(rumbleId, {
+      rumbleId,
+      slotIndex,
+      fighterCount,
+      attempts: (existing?.attempts ?? 0) + 1,
+      firstSeenAt: existing?.firstSeenAt ?? now,
+      lastSeenAt: now,
+      reason,
+      nextRetryAt,
+    });
+  }
+
+  private clearOnchainCreateFailure(rumbleId: string): void {
+    this.onchainRumbleCreateLastError.delete(rumbleId);
+  }
+
+  getRuntimeHealth(): {
+    onchainAdmin: OnchainAdminHealth;
+    onchainCreateFailures: Array<{
+      rumbleId: string;
+      slotIndex: number | null;
+      fighterCount: number;
+      attempts: number;
+      firstSeenAt: string;
+      lastSeenAt: string;
+      reason: string;
+      nextRetryAt: string | null;
+    }>;
+  } {
+    const onchainCreateFailures = [...this.onchainRumbleCreateLastError.values()]
+      .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
+      .slice(0, 8)
+      .map((entry) => ({
+        rumbleId: entry.rumbleId,
+        slotIndex: entry.slotIndex,
+        fighterCount: entry.fighterCount,
+        attempts: entry.attempts,
+        firstSeenAt: new Date(entry.firstSeenAt).toISOString(),
+        lastSeenAt: new Date(entry.lastSeenAt).toISOString(),
+        reason: entry.reason,
+        nextRetryAt: entry.nextRetryAt ? new Date(entry.nextRetryAt).toISOString() : null,
+      }));
+
+    return {
+      onchainAdmin: { ...this.onchainAdminHealth },
+      onchainCreateFailures,
+    };
   }
 
   private getHouseBotTargetPopulation(): number {
@@ -975,6 +1047,7 @@ export class RumbleOrchestrator {
     if (createdOrExists) {
       this.onchainRumbleCreateRetryAt.delete(rumbleId);
       this.onchainRumbleCreateStartedAt.delete(rumbleId);
+      this.clearOnchainCreateFailure(rumbleId);
       await this.armBettingWindowIfReady(slot);
     } else {
       this.onchainRumbleCreateRetryAt.set(rumbleId, now + ONCHAIN_CREATE_RETRY_MS);
@@ -1072,6 +1145,7 @@ export class RumbleOrchestrator {
 
     this.onchainRumbleCreateRetryAt.delete(rumbleId);
     this.onchainRumbleCreateStartedAt.delete(rumbleId);
+    this.clearOnchainCreateFailure(rumbleId);
     this.cleanupSlot(slotIndex, rumbleId);
 
     for (const fighterId of fighters) {
@@ -1100,9 +1174,16 @@ export class RumbleOrchestrator {
     fighterIds: string[],
     bettingDeadlineUnix: number,
   ): Promise<boolean> {
+    const slotIndex = this.resolveSlotIndexForRumble(rumbleId);
     const rumbleIdNum = parseOnchainRumbleIdNumber(rumbleId);
     if (rumbleIdNum === null) {
       console.warn(`[OnChain] Cannot parse rumbleId "${rumbleId}" for createRumble`);
+      this.recordOnchainCreateFailure(
+        rumbleId,
+        "Could not parse numeric rumble id",
+        fighterIds.length,
+        slotIndex,
+      );
       return false;
     }
 
@@ -1116,10 +1197,22 @@ export class RumbleOrchestrator {
           fighterPubkeys.push(new PublicKey(walletAddr));
         } catch {
           console.warn(`[OnChain] Invalid wallet for "${fid}": ${walletAddr}`);
+          this.recordOnchainCreateFailure(
+            rumbleId,
+            `Invalid fighter wallet for ${fid}`,
+            fighterIds.length,
+            slotIndex,
+          );
           return false;
         }
       } else {
         console.log(`[OnChain] No wallet for "${fid}", skipping createRumble`);
+        this.recordOnchainCreateFailure(
+          rumbleId,
+          `Missing fighter wallet for ${fid}`,
+          fighterIds.length,
+          slotIndex,
+        );
         return false;
       }
     }
@@ -1129,13 +1222,26 @@ export class RumbleOrchestrator {
       if (sig) {
         console.log(`[OnChain] createRumble succeeded: ${sig}`);
         persist.updateRumbleTxSignature(rumbleId, "createRumble", sig);
+        this.clearOnchainCreateFailure(rumbleId);
         return true;
       } else {
         console.warn(`[OnChain] createRumble returned null — continuing off-chain`);
+        this.recordOnchainCreateFailure(
+          rumbleId,
+          "createRumble RPC returned null signature",
+          fighterIds.length,
+          slotIndex,
+        );
         return false;
       }
     } catch (err) {
       console.error(`[OnChain] createRumble error:`, err);
+      this.recordOnchainCreateFailure(
+        rumbleId,
+        formatError(err),
+        fighterIds.length,
+        slotIndex,
+      );
       return false;
     }
   }
@@ -1145,17 +1251,40 @@ export class RumbleOrchestrator {
     fighterIds: string[],
     bettingDeadlineUnix: number,
   ): Promise<boolean> {
+    const slotIndex = this.resolveSlotIndexForRumble(rumbleId);
     const rumbleIdNum = parseOnchainRumbleIdNumber(rumbleId);
-    if (rumbleIdNum === null) return false;
+    if (rumbleIdNum === null) {
+      this.recordOnchainCreateFailure(
+        rumbleId,
+        "Could not parse numeric rumble id",
+        fighterIds.length,
+        slotIndex,
+      );
+      return false;
+    }
 
     const existing = await readRumbleAccountState(rumbleIdNum).catch(() => null);
-    if (existing) return true;
+    if (existing) {
+      this.clearOnchainCreateFailure(rumbleId);
+      return true;
+    }
 
     const created = await this.createRumbleOnChain(rumbleId, fighterIds, bettingDeadlineUnix);
     if (!created) return false;
 
     const after = await readRumbleAccountState(rumbleIdNum).catch(() => null);
-    return !!after;
+    if (!after) {
+      this.recordOnchainCreateFailure(
+        rumbleId,
+        "createRumble sent but PDA still not readable",
+        fighterIds.length,
+        slotIndex,
+      );
+      return false;
+    }
+
+    this.clearOnchainCreateFailure(rumbleId);
+    return true;
   }
 
   private async ensureOnchainRumbleIsCombatReady(
@@ -2747,6 +2876,7 @@ export class RumbleOrchestrator {
     this.payoutProcessed.delete(previousRumbleId);
     this.onchainRumbleCreateRetryAt.delete(previousRumbleId);
     this.onchainRumbleCreateStartedAt.delete(previousRumbleId);
+    this.clearOnchainCreateFailure(previousRumbleId);
     this.combatStates.delete(slotIndex);
     this.payoutResults.delete(slotIndex);
 
