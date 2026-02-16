@@ -286,15 +286,6 @@ export async function GET(request: Request) {
       slots.map(async slot => {
         if (!slot.rumbleId) return slot;
         if (slot.state === "idle" || slot.state === "payout") return slot;
-        if (slot.state === "betting" && !slot.bettingDeadline) {
-          // Slot entered betting in queue-manager but on-chain rumble is not
-          // confirmed yet. Avoid extra RPC pressure while orchestrator retries.
-          return {
-            ...slot,
-            nextTurnAt: null,
-            turnIntervalMs: null,
-          };
-        }
         const rumbleIdNum = parseOnchainRumbleIdNumber(slot.rumbleId);
         if (rumbleIdNum === null) return slot;
         const onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
