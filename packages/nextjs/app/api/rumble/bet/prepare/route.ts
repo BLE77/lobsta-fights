@@ -169,7 +169,14 @@ export async function POST(request: Request) {
 
     const conn = getConnection();
     const currentSlot = await conn.getSlot("processed");
-    const onchainCloseSlot = onchainRumble.bettingCloseSlot;
+    const onchainCloseSlot = (() => {
+      const compat = onchainRumble as unknown as {
+        bettingCloseSlot?: bigint;
+        bettingDeadlineTs?: bigint;
+      };
+      const slotValue = compat.bettingCloseSlot ?? compat.bettingDeadlineTs ?? 0n;
+      return slotValue > 0n ? slotValue : 0n;
+    })();
     const guardSlotThreshold = BigInt(currentSlot) + BigInt(BETTING_CLOSE_GUARD_SLOTS);
     const slotsUntilCloseBig = onchainCloseSlot > BigInt(currentSlot)
       ? onchainCloseSlot - BigInt(currentSlot)
