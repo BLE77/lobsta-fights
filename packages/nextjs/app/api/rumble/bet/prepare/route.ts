@@ -19,6 +19,10 @@ async function ensureRecovered(): Promise<void> {
   await recoverOrchestratorState();
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 export async function POST(request: Request) {
   const rlKey = getRateLimitKey(request);
   const rl = checkRateLimit("PUBLIC_WRITE", rlKey);
@@ -150,10 +154,24 @@ export async function POST(request: Request) {
     // Source of truth guard: do not return a signable tx unless this rumble is
     // still open on-chain. Prevents stale UI/off-chain state from producing a
     // tx that will immediately fail simulation with BettingClosed.
-    const onchainRumble = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+    let onchainRumble = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+    if (!onchainRumble) {
+      // Self-heal: if this slot is betting but the on-chain account is missing,
+      // trigger orchestrator recovery/create once and re-read before failing.
+      const recovered = await orchestrator
+        .ensureOnchainRumbleForSlot(parsedSlotIndex)
+        .catch(() => false);
+      if (recovered) {
+        await sleep(250);
+        onchainRumble = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+      }
+    }
     if (!onchainRumble) {
       return NextResponse.json(
-        { error: "On-chain rumble is not available. Please refresh and try again." },
+        {
+          error: "On-chain rumble is still initializing. Please retry in a few seconds.",
+          rumble_id: slotRumbleId,
+        },
         { status: 409 },
       );
     }

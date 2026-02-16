@@ -276,6 +276,7 @@ const HOUSE_BOT_TARGET_POPULATION = readInt(
 const SHOWER_SETTLEMENT_POLL_MS = 12_000;
 const ONCHAIN_FINALIZATION_DELAY_MS = 30_000;
 const ONCHAIN_FINALIZATION_RETRY_MS = 10_000;
+const ONCHAIN_CREATE_RETRY_MS = 5_000;
 const MAX_FINALIZATION_ATTEMPTS = 30;
 const ONCHAIN_CREATE_RECOVERY_DEADLINE_SKEW_SEC = 5;
 const ONCHAIN_TURN_AUTHORITY =
@@ -339,6 +340,7 @@ export class RumbleOrchestrator {
   // Dedup: track rumble IDs that have been settled on-chain to prevent double payouts
   private settledRumbleIds: Map<string, number> = new Map(); // rumbleId → timestamp
   private pendingFinalizations: Map<string, PendingFinalization> = new Map();
+  private onchainRumbleCreateRetryAt: Map<string, number> = new Map();
   private tickInFlight: Promise<void> | null = null;
 
   constructor(queueManager: RumbleQueueManager) {
@@ -818,16 +820,43 @@ export class RumbleOrchestrator {
         fighters: [...slot.fighters],
         deadline: slot.bettingDeadline!,
       });
-
-      // On-chain: create rumble (awaited, but failures don't block the game)
-      await this.createRumbleOnChain(
-        slot.id,
-        slot.fighters,
-        slot.bettingDeadline
-          ? Math.floor(slot.bettingDeadline.getTime() / 1000)
-          : Math.floor(Date.now() / 1000) + 60,
-      );
     }
+
+    // Keep trying to materialize the on-chain rumble account during betting.
+    // A transient failure on the first create attempt must not leave the slot
+    // permanently unbettable.
+    const now = Date.now();
+    const retryAt = this.onchainRumbleCreateRetryAt.get(slot.id) ?? 0;
+    if (now < retryAt) return;
+
+    const createdOrExists = await this.ensureOnchainRumbleExists(
+      slot.id,
+      slot.fighters,
+      slot.bettingDeadline
+        ? Math.floor(slot.bettingDeadline.getTime() / 1000)
+        : Math.floor(Date.now() / 1000) + 60,
+    );
+    if (createdOrExists) {
+      this.onchainRumbleCreateRetryAt.delete(slot.id);
+    } else {
+      this.onchainRumbleCreateRetryAt.set(slot.id, now + ONCHAIN_CREATE_RETRY_MS);
+    }
+  }
+
+  /**
+   * Public self-heal entrypoint for APIs that need a signable on-chain bet tx.
+   * Ensures the current betting slot's on-chain rumble exists.
+   */
+  async ensureOnchainRumbleForSlot(slotIndex: number): Promise<boolean> {
+    const slot = this.queueManager.getSlot(slotIndex);
+    if (!slot || slot.state !== "betting") return false;
+    return await this.ensureOnchainRumbleExists(
+      slot.id,
+      slot.fighters,
+      slot.bettingDeadline
+        ? Math.floor(slot.bettingDeadline.getTime() / 1000)
+        : Math.floor(Date.now() / 1000) + 60,
+    );
   }
 
   /**
@@ -2486,6 +2515,7 @@ export class RumbleOrchestrator {
     previousRumbleId: string,
   ): void {
     this.payoutProcessed.delete(previousRumbleId);
+    this.onchainRumbleCreateRetryAt.delete(previousRumbleId);
     this.combatStates.delete(slotIndex);
     this.payoutResults.delete(slotIndex);
 
