@@ -1401,7 +1401,8 @@ export async function createRumble(
   const [rumbleConfigPda] = deriveRumbleConfigPda();
   const [rumblePda] = deriveRumblePda(rumbleId);
   const nowUnix = Math.floor(Date.now() / 1000);
-  const deadlineMode = (process.env.RUMBLE_CREATE_DEADLINE_MODE ?? "unix").trim().toLowerCase();
+  const deadlineModeRaw = (process.env.RUMBLE_CREATE_DEADLINE_MODE ?? "slot").trim().toLowerCase();
+  const deadlineMode = deadlineModeRaw === "unix" ? "unix" : "slot";
   const currentSlot = await provider.connection.getSlot("processed");
   const slotMsEstimateRaw = Number(process.env.RUMBLE_SLOT_MS_ESTIMATE ?? "400");
   const slotMsEstimate = Number.isFinite(slotMsEstimateRaw)
@@ -1416,23 +1417,17 @@ export async function createRumble(
     ? Math.min(1_000, Math.max(0, Math.floor(closeSafetySlotsRaw)))
     : 45;
 
-  let bettingCloseSlot: bigint;
-  if (deadlineMode === "slot") {
-    bettingCloseSlot = BigInt(Math.floor(bettingDeadlineUnix));
-    if (bettingDeadlineUnix >= nowUnix - 60) {
-      const remainingMs = Math.max(1_000, (bettingDeadlineUnix - nowUnix) * 1_000);
-      const slotsRemainingBase = Math.ceil(remainingMs / slotMsEstimate);
-      const slotsRemaining = Math.max(minCloseSlots, slotsRemainingBase + closeSafetySlots);
-      bettingCloseSlot = BigInt(currentSlot) + BigInt(slotsRemaining);
-    }
-    if (bettingCloseSlot <= BigInt(currentSlot)) {
-      bettingCloseSlot = BigInt(currentSlot + minCloseSlots);
-    }
-  } else {
-    // Compatibility mode for deployments that still use unix timestamp
-    // validation inside create_rumble/place_bet.
-    const unixDeadline = Math.max(nowUnix + 15, Math.floor(bettingDeadlineUnix));
-    bettingCloseSlot = BigInt(unixDeadline);
+  // Rumble engine start_combat validates close against clock.slot, so new
+  // rumbles must always store close as a slot value.
+  let bettingCloseSlot = BigInt(Math.floor(bettingDeadlineUnix));
+  if (bettingDeadlineUnix >= nowUnix - 60) {
+    const remainingMs = Math.max(1_000, (bettingDeadlineUnix - nowUnix) * 1_000);
+    const slotsRemainingBase = Math.ceil(remainingMs / slotMsEstimate);
+    const slotsRemaining = Math.max(minCloseSlots, slotsRemainingBase + closeSafetySlots);
+    bettingCloseSlot = BigInt(currentSlot) + BigInt(slotsRemaining);
+  }
+  if (bettingCloseSlot <= BigInt(currentSlot)) {
+    bettingCloseSlot = BigInt(currentSlot + minCloseSlots);
   }
 
   try {
@@ -1459,7 +1454,8 @@ export async function createRumble(
       ` bettingCloseSlot=${bettingCloseSlot.toString()}` +
       ` bettingDeadlineUnix=${bettingDeadlineUnix}` +
       ` nowUnix=${nowUnix}` +
-      ` deadlineMode=${deadlineMode}` +
+      ` deadlineModeRaw=${deadlineModeRaw}` +
+      ` effectiveDeadlineMode=slot` +
       ` minCloseSlots=${minCloseSlots}` +
       ` closeSafetySlots=${closeSafetySlots}`;
     if (err instanceof Error) {
