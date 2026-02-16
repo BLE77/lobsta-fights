@@ -1,7 +1,7 @@
 // @ts-nocheck
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Link from "next/link";
 
 // ---------------------------------------------------------------------------
@@ -116,9 +116,11 @@ type Tab = "overview" | "rumbles" | "fighters" | "onchain";
 // ---------------------------------------------------------------------------
 
 const EXPLORER_BASE = "https://explorer.solana.com/tx";
-const AUTO_TICK_INTERVAL_DEFAULT_MS = 2_000;
-const AUTO_TICK_INTERVAL_MIN_MS = 500;
-const AUTO_TICK_INTERVAL_MAX_MS = 10_000;
+const AUTO_TICK_INTERVAL_DEFAULT_MS = 5_000;
+const AUTO_TICK_INTERVAL_MIN_MS = 2_000;
+const AUTO_TICK_INTERVAL_MAX_MS = 20_000;
+const AUTO_TICK_LOCK_KEY = "ucf_admin_auto_tick_lock_v1";
+const AUTO_TICK_LOCK_STALE_MS = 15_000;
 
 function explorerUrl(sig: string): string {
   return `${EXPLORER_BASE}/${sig}?cluster=devnet`;
@@ -235,10 +237,12 @@ export default function AdminPage() {
   const [autoTickLastAt, setAutoTickLastAt] = useState<string | null>(null);
   const [autoTickError, setAutoTickError] = useState("");
   const autoTickInFlightRef = useRef(false);
+  const autoTickOwnerIdRef = useRef("");
   const secretRef = useRef("");
 
   // Restore session
   useEffect(() => {
+    autoTickOwnerIdRef.current = `tab_${Math.random().toString(36).slice(2)}`;
     const saved = sessionStorage.getItem("ucf_admin_secret");
     const savedAutoTickEnabled = sessionStorage.getItem("ucf_admin_auto_tick_enabled");
     const savedAutoTickInterval = sessionStorage.getItem("ucf_admin_auto_tick_interval_ms");
@@ -387,13 +391,39 @@ export default function AdminPage() {
 
   const runAutoTickNow = useCallback(async () => {
     if (autoTickInFlightRef.current) return;
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+    if (!autoTickOwnerIdRef.current) return;
+
+    const now = Date.now();
+    try {
+      const raw = localStorage.getItem(AUTO_TICK_LOCK_KEY);
+      let owner = "";
+      let updatedAt = 0;
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        owner = String(parsed?.owner ?? "");
+        updatedAt = Number(parsed?.updatedAt ?? 0);
+      }
+      const lockIsFresh = owner && now - updatedAt < AUTO_TICK_LOCK_STALE_MS;
+      if (lockIsFresh && owner !== autoTickOwnerIdRef.current) {
+        setAutoTickError("Auto Tick is active in another admin tab.");
+        return;
+      }
+      localStorage.setItem(
+        AUTO_TICK_LOCK_KEY,
+        JSON.stringify({ owner: autoTickOwnerIdRef.current, updatedAt: now }),
+      );
+    } catch {
+      // Ignore lock parse/storage errors and continue.
+    }
+
     autoTickInFlightRef.current = true;
     try {
-      const ticksPerCall = 2;
+      const ticksPerCall = 1;
       const res = await fetch("/api/admin/rumble/tick", {
         method: "POST",
         headers: { ...headers(), "Content-Type": "application/json" },
-        body: JSON.stringify({ ticks: ticksPerCall, interval_ms: 200 }),
+        body: JSON.stringify({ ticks: ticksPerCall, interval_ms: 0 }),
       });
       if (res.status === 401) {
         setAuthenticated(false);
@@ -407,15 +437,18 @@ export default function AdminPage() {
         return;
       }
       setAutoTickError("");
-      setAutoTickRuns((n) => n + 1);
+      const nextRuns = autoTickRuns + 1;
+      setAutoTickRuns(nextRuns);
       setAutoTickLastAt(data?.timestamp ?? new Date().toISOString());
-      await fetchDashboard();
+      if (nextRuns % 2 === 0) {
+        await fetchDashboard();
+      }
     } catch (err: any) {
       setAutoTickError(err?.message ?? "Auto tick failed");
     } finally {
       autoTickInFlightRef.current = false;
     }
-  }, [fetchDashboard, headers]);
+  }, [autoTickRuns, fetchDashboard, headers]);
 
   const runHouseBotAction = useCallback(
     async (action: string, payload?: Record<string, any>) => {
@@ -486,8 +519,37 @@ export default function AdminPage() {
     if (!autoTickEnabled) {
       sessionStorage.setItem("ucf_admin_auto_tick_enabled", "0");
       autoTickInFlightRef.current = false;
+      try {
+        const raw = localStorage.getItem(AUTO_TICK_LOCK_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (String(parsed?.owner ?? "") === autoTickOwnerIdRef.current) {
+            localStorage.removeItem(AUTO_TICK_LOCK_KEY);
+          }
+        }
+      } catch {
+        // ignore
+      }
     }
   }, [autoTickEnabled]);
+
+  useEffect(() => {
+    const onBeforeUnload = () => {
+      try {
+        const raw = localStorage.getItem(AUTO_TICK_LOCK_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (String(parsed?.owner ?? "") === autoTickOwnerIdRef.current) {
+            localStorage.removeItem(AUTO_TICK_LOCK_KEY);
+          }
+        }
+      } catch {
+        // ignore
+      }
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, []);
 
   // ---- Login screen ----
   if (!authenticated) {
@@ -522,10 +584,26 @@ export default function AdminPage() {
   const stats = dashboard?.stats ?? null;
   const q = dashboard?.queue ?? [];
   const activeRumbles = dashboard?.activeRumbles ?? [];
+  const dedupedActiveRumbles = useMemo(() => {
+    const bySlot = new Map<number, Rumble>();
+    for (const row of activeRumbles) {
+      const slotIndex = Number((row as any)?.slot_index);
+      if (!Number.isInteger(slotIndex) || slotIndex < 0 || slotIndex > 2) continue;
+      const existing = bySlot.get(slotIndex);
+      if (!existing) {
+        bySlot.set(slotIndex, row);
+        continue;
+      }
+      const existingTs = new Date(existing.created_at).getTime();
+      const rowTs = new Date(row.created_at).getTime();
+      if (rowTs > existingTs) bySlot.set(slotIndex, row);
+    }
+    return [...bySlot.values()].sort((a, b) => a.slot_index - b.slot_index);
+  }, [activeRumbles]);
   const recentRumbles = dashboard?.recentRumbles ?? [];
   const fighters = dashboard?.fighters ?? [];
   const shower = dashboard?.ichorShower ?? null;
-  const allRumbles = [...activeRumbles, ...recentRumbles];
+  const allRumbles = [...dedupedActiveRumbles, ...recentRumbles];
 
   const tabs: Array<{ id: Tab; label: string }> = [
     { id: "overview", label: "Overview" },
@@ -724,9 +802,11 @@ export default function AdminPage() {
                 Run all rumble ops from here. No terminal needed.
               </p>
             )}
-            {(dashboard?.staleActiveRows ?? 0) > 0 ? (
+            {(dashboard?.staleActiveRows ?? 0) > 0 || activeRumbles.length > dedupedActiveRumbles.length ? (
               <p className="font-mono text-[10px] text-amber-500">
-                Admin cleaned view: hiding {dashboard?.staleActiveRows} stale active row(s).
+                Admin cleaned view: hiding{" "}
+                {(dashboard?.staleActiveRows ?? 0) + Math.max(0, activeRumbles.length - dedupedActiveRumbles.length)}
+                {" "}stale active row(s).
               </p>
             ) : null}
           </div>
@@ -737,7 +817,7 @@ export default function AdminPage() {
             stats={stats}
             queue={q}
             shower={shower}
-            activeRumbles={activeRumbles}
+            activeRumbles={dedupedActiveRumbles}
             recentRumbles={recentRumbles}
           />
         )}
