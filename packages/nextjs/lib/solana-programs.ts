@@ -59,6 +59,8 @@ const RUMBLE_SEED = Buffer.from("rumble");
 const VAULT_SEED = Buffer.from("vault");
 const BETTOR_SEED = Buffer.from("bettor");
 const SPONSORSHIP_SEED = Buffer.from("sponsorship");
+const MOVE_COMMIT_SEED = Buffer.from("move_commit");
+const COMBAT_STATE_SEED = Buffer.from("combat_state");
 const SLOT_HASHES_SYSVAR_ID = new PublicKey(
   "SysvarS1otHashes111111111111111111111111111"
 );
@@ -147,6 +149,30 @@ export function deriveSponsorshipPda(
   );
 }
 
+export function deriveMoveCommitmentPda(
+  rumbleId: bigint | number,
+  fighter: PublicKey,
+  turn: number,
+): [PublicKey, number] {
+  const rumbleBuf = Buffer.alloc(8);
+  rumbleBuf.writeBigUInt64LE(BigInt(rumbleId));
+  const turnBuf = Buffer.alloc(4);
+  turnBuf.writeUInt32LE(turn >>> 0);
+  return PublicKey.findProgramAddressSync(
+    [MOVE_COMMIT_SEED, rumbleBuf, fighter.toBuffer(), turnBuf],
+    RUMBLE_ENGINE_ID,
+  );
+}
+
+export function deriveCombatStatePda(rumbleId: bigint | number): [PublicKey, number] {
+  const buf = Buffer.alloc(8);
+  buf.writeBigUInt64LE(BigInt(rumbleId));
+  return PublicKey.findProgramAddressSync(
+    [COMBAT_STATE_SEED, buf],
+    RUMBLE_ENGINE_ID,
+  );
+}
+
 function readU64LE(data: Uint8Array, offset: number): bigint {
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   return view.getBigUint64(offset, true);
@@ -185,10 +211,33 @@ export interface RumbleAccountState {
   rumbleId: bigint;
   state: OnchainRumbleState;
   fighterCount: number;
+  placements: number[];
   winnerIndex: number | null;
+  bettingCloseSlot: bigint;
+  // Legacy compatibility field: this account offset previously represented
+  // unix timestamp and is now used as on-chain slot close.
   bettingDeadlineTs: bigint;
   combatStartedAtTs: bigint;
   completedAtTs: bigint;
+}
+
+export interface RumbleCombatAccountState {
+  address: PublicKey;
+  rumbleId: bigint;
+  fighterCount: number;
+  currentTurn: number;
+  turnOpenSlot: bigint;
+  commitCloseSlot: bigint;
+  revealCloseSlot: bigint;
+  turnResolved: boolean;
+  remainingFighters: number;
+  winnerIndex: number | null;
+  hp: number[];
+  meter: number[];
+  eliminationRank: number[];
+  totalDamageDealt: bigint[];
+  totalDamageTaken: bigint[];
+  bump: number;
 }
 
 /**
@@ -226,7 +275,13 @@ export async function readRumbleAccountState(
   const winnerIndexRaw = data.length > winnerIndexOffset ? data[winnerIndexOffset] : undefined;
   const winnerIndex =
     typeof winnerIndexRaw === "number" && winnerIndexRaw < 16 ? winnerIndexRaw : null;
-  const bettingDeadlineTs = data.length >= bettingDeadlineOffset + 8 ? readI64LE(data, bettingDeadlineOffset) : 0n;
+  const placements: number[] = [];
+  for (let i = 0; i < 16; i++) {
+    const offset = placementsOffset + i;
+    placements.push(offset < data.length ? data[offset] ?? 0 : 0);
+  }
+  const bettingDeadlineRaw = data.length >= bettingDeadlineOffset + 8 ? readI64LE(data, bettingDeadlineOffset) : 0n;
+  const bettingCloseSlot = bettingDeadlineRaw > 0n ? bettingDeadlineRaw : 0n;
   const combatStartedAtTs = data.length >= combatStartedAtOffset + 8 ? readI64LE(data, combatStartedAtOffset) : 0n;
   const completedAtTs = data.length >= completedAtOffset + 8 ? readI64LE(data, completedAtOffset) : 0n;
 
@@ -235,10 +290,100 @@ export async function readRumbleAccountState(
     rumbleId: parsedRumbleId,
     state,
     fighterCount,
+    placements,
     winnerIndex,
-    bettingDeadlineTs,
+    bettingCloseSlot,
+    bettingDeadlineTs: bettingDeadlineRaw,
     combatStartedAtTs,
     completedAtTs,
+  };
+}
+
+/**
+ * Read the combat state PDA for a rumble directly from chain.
+ */
+export async function readRumbleCombatState(
+  rumbleId: bigint | number,
+  connection?: Connection,
+): Promise<RumbleCombatAccountState | null> {
+  const conn = connection ?? getConnection();
+  const [combatStatePda] = deriveCombatStatePda(rumbleId);
+  const info = await conn.getAccountInfo(combatStatePda, "processed");
+  if (!info || info.data.length < 8 + 8 + 1 + 4 + 8 + 8 + 8 + 1 + 1 + 1) return null;
+
+  const data = info.data;
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  let offset = 8; // discriminator
+
+  const parsedRumbleId = view.getBigUint64(offset, true);
+  offset += 8;
+  const fighterCount = data[offset] ?? 0;
+  offset += 1;
+  const currentTurn = view.getUint32(offset, true);
+  offset += 4;
+  const turnOpenSlot = view.getBigUint64(offset, true);
+  offset += 8;
+  const commitCloseSlot = view.getBigUint64(offset, true);
+  offset += 8;
+  const revealCloseSlot = view.getBigUint64(offset, true);
+  offset += 8;
+  const turnResolved = data[offset] === 1;
+  offset += 1;
+  const remainingFighters = data[offset] ?? 0;
+  offset += 1;
+  const winnerIndexRaw = data[offset] ?? 255;
+  offset += 1;
+
+  const hp: number[] = [];
+  for (let i = 0; i < 16; i++) {
+    hp.push(view.getUint16(offset, true));
+    offset += 2;
+  }
+
+  const meter: number[] = [];
+  for (let i = 0; i < 16; i++) {
+    meter.push(data[offset] ?? 0);
+    offset += 1;
+  }
+
+  const eliminationRank: number[] = [];
+  for (let i = 0; i < 16; i++) {
+    eliminationRank.push(data[offset] ?? 0);
+    offset += 1;
+  }
+
+  const totalDamageDealt: bigint[] = [];
+  for (let i = 0; i < 16; i++) {
+    totalDamageDealt.push(view.getBigUint64(offset, true));
+    offset += 8;
+  }
+
+  const totalDamageTaken: bigint[] = [];
+  for (let i = 0; i < 16; i++) {
+    totalDamageTaken.push(view.getBigUint64(offset, true));
+    offset += 8;
+  }
+
+  const bump = data[offset] ?? 0;
+  const winnerIndex = winnerIndexRaw < 16 ? winnerIndexRaw : null;
+
+  return {
+    address: combatStatePda,
+    rumbleId: parsedRumbleId,
+    fighterCount,
+    currentTurn,
+    turnOpenSlot,
+    commitCloseSlot,
+    revealCloseSlot,
+    turnResolved,
+    remainingFighters,
+    winnerIndex,
+    hp,
+    meter,
+    eliminationRank,
+    totalDamageDealt,
+    totalDamageTaken,
+    bump,
   };
 }
 
@@ -1250,12 +1395,28 @@ export async function createRumble(
 
   const [rumbleConfigPda] = deriveRumbleConfigPda();
   const [rumblePda] = deriveRumblePda(rumbleId);
+  const nowUnix = Math.floor(Date.now() / 1000);
+  const currentSlot = await provider.connection.getSlot("processed");
+  const slotMsEstimateRaw = Number(process.env.RUMBLE_SLOT_MS_ESTIMATE ?? "400");
+  const slotMsEstimate = Number.isFinite(slotMsEstimateRaw)
+    ? Math.min(1_000, Math.max(250, Math.floor(slotMsEstimateRaw)))
+    : 400;
+
+  let bettingCloseSlot = BigInt(Math.floor(bettingDeadlineUnix));
+  if (bettingDeadlineUnix >= nowUnix - 60) {
+    const remainingMs = Math.max(1_000, (bettingDeadlineUnix - nowUnix) * 1_000);
+    const slotsRemaining = Math.max(2, Math.ceil(remainingMs / slotMsEstimate));
+    bettingCloseSlot = BigInt(currentSlot) + BigInt(slotsRemaining);
+  }
+  if (bettingCloseSlot <= BigInt(currentSlot)) {
+    bettingCloseSlot = BigInt(currentSlot + 2);
+  }
 
   const tx = await (program.methods as any)
     .createRumble(
       new anchor.BN(rumbleId),
       fighters,
-      new anchor.BN(bettingDeadlineUnix)
+      new anchor.BN(bettingCloseSlot.toString())
     )
     .accounts({
       admin: admin.publicKey,
@@ -1265,6 +1426,140 @@ export async function createRumble(
     })
     .rpc();
 
+  return tx;
+}
+
+/**
+ * Compute on-chain move commitment hash.
+ * Mirrors rumble-engine hash: sha256("rumble:v1", rumble_id, turn, fighter_pubkey, move_code, salt32).
+ */
+export function computeMoveCommitmentHash(
+  rumbleId: number | bigint,
+  turn: number,
+  fighter: PublicKey,
+  moveCode: number,
+  salt32: Uint8Array,
+): Uint8Array {
+  if (salt32.length !== 32) {
+    throw new Error("salt32 must be exactly 32 bytes");
+  }
+  const rumbleBuf = Buffer.alloc(8);
+  rumbleBuf.writeBigUInt64LE(BigInt(rumbleId));
+  const turnBuf = Buffer.alloc(4);
+  turnBuf.writeUInt32LE(turn >>> 0);
+  const moveBuf = Buffer.from([moveCode & 0xff]);
+  const payload = Buffer.concat([
+    Buffer.from("rumble:v1"),
+    rumbleBuf,
+    turnBuf,
+    fighter.toBuffer(),
+    moveBuf,
+    Buffer.from(salt32),
+  ]);
+  return createHash("sha256").update(payload).digest();
+}
+
+/**
+ * Build a commit_move transaction for fighter signer flow.
+ */
+export async function buildCommitMoveTx(
+  fighter: PublicKey,
+  rumbleId: number,
+  turn: number,
+  moveHash: Uint8Array | string,
+  connection?: Connection,
+): Promise<Transaction> {
+  if (!Number.isInteger(turn) || turn <= 0) {
+    throw new Error("turn must be a positive integer");
+  }
+  const hashBytes =
+    typeof moveHash === "string"
+      ? Uint8Array.from(Buffer.from(moveHash.replace(/^0x/i, ""), "hex"))
+      : moveHash;
+  if (hashBytes.length !== 32) {
+    throw new Error("moveHash must be 32 bytes");
+  }
+
+  const provider = getProvider(connection);
+  const program = getRumbleEngineProgram(provider);
+  const [rumblePda] = deriveRumblePda(rumbleId);
+  const [combatStatePda] = deriveCombatStatePda(rumbleId);
+  const [moveCommitmentPda] = deriveMoveCommitmentPda(rumbleId, fighter, turn);
+  const conn = connection ?? getConnection();
+
+  const tx = await (program.methods as any)
+    .commitMove(
+      new anchor.BN(rumbleId),
+      turn,
+      Array.from(hashBytes),
+    )
+    .accounts({
+      fighter,
+      rumble: rumblePda,
+      combatState: combatStatePda,
+      moveCommitment: moveCommitmentPda,
+      systemProgram: SystemProgram.programId,
+    })
+    .transaction();
+
+  tx.feePayer = fighter;
+  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+  tx.recentBlockhash = blockhash;
+  tx.lastValidBlockHeight = lastValidBlockHeight;
+  return tx;
+}
+
+/**
+ * Build a reveal_move transaction for fighter signer flow.
+ */
+export async function buildRevealMoveTx(
+  fighter: PublicKey,
+  rumbleId: number,
+  turn: number,
+  moveCode: number,
+  salt32: Uint8Array | string,
+  connection?: Connection,
+): Promise<Transaction> {
+  if (!Number.isInteger(turn) || turn <= 0) {
+    throw new Error("turn must be a positive integer");
+  }
+  if (!Number.isInteger(moveCode) || moveCode < 0 || moveCode > 255) {
+    throw new Error("moveCode must be a u8 value");
+  }
+  const saltBytes =
+    typeof salt32 === "string"
+      ? Uint8Array.from(Buffer.from(salt32.replace(/^0x/i, ""), "hex"))
+      : salt32;
+  if (saltBytes.length !== 32) {
+    throw new Error("salt32 must be 32 bytes");
+  }
+
+  const provider = getProvider(connection);
+  const program = getRumbleEngineProgram(provider);
+  const [rumblePda] = deriveRumblePda(rumbleId);
+  const [combatStatePda] = deriveCombatStatePda(rumbleId);
+  const [moveCommitmentPda] = deriveMoveCommitmentPda(rumbleId, fighter, turn);
+  const conn = connection ?? getConnection();
+
+  const tx = await (program.methods as any)
+    .revealMove(
+      new anchor.BN(rumbleId),
+      turn,
+      moveCode,
+      Array.from(saltBytes),
+    )
+    .accounts({
+      fighter,
+      rumble: rumblePda,
+      combatState: combatStatePda,
+      moveCommitment: moveCommitmentPda,
+    })
+    .transaction();
+
+  tx.feePayer = fighter;
+  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+  tx.recentBlockhash = blockhash;
+  tx.lastValidBlockHeight = lastValidBlockHeight;
   return tx;
 }
 
@@ -1454,6 +1749,7 @@ export async function startCombat(
 
   const [rumbleConfigPda] = deriveRumbleConfigPda();
   const [rumblePda] = deriveRumblePda(rumbleId);
+  const [combatStatePda] = deriveCombatStatePda(rumbleId);
 
   const tx = await (program.methods as any)
     .startCombat()
@@ -1461,10 +1757,132 @@ export async function startCombat(
       admin: admin.publicKey,
       config: rumbleConfigPda,
       rumble: rumblePda,
+      combatState: combatStatePda,
+      systemProgram: SystemProgram.programId,
     })
     .rpc();
 
   return tx;
+}
+
+/**
+ * Open the first on-chain turn window (permissionless, admin keeper used here).
+ */
+export async function openTurn(
+  rumbleId: number,
+  connection?: Connection,
+): Promise<string | null> {
+  const provider = getAdminProvider(connection);
+  if (!provider) {
+    console.warn("[solana-programs] No admin keypair, skipping openTurn");
+    return null;
+  }
+  const program = getRumbleEngineProgram(provider);
+  const admin = getAdminKeypair()!;
+  const [rumblePda] = deriveRumblePda(rumbleId);
+  const [combatStatePda] = deriveCombatStatePda(rumbleId);
+
+  return await (program.methods as any)
+    .openTurn()
+    .accounts({
+      keeper: admin.publicKey,
+      rumble: rumblePda,
+      combatState: combatStatePda,
+    })
+    .rpc();
+}
+
+/**
+ * Resolve the active on-chain turn. Optional remaining accounts can include
+ * move commitment PDAs to use revealed moves instead of fallback.
+ */
+export async function resolveTurnOnChain(
+  rumbleId: number,
+  moveCommitmentAccounts: PublicKey[] = [],
+  connection?: Connection,
+): Promise<string | null> {
+  const provider = getAdminProvider(connection);
+  if (!provider) {
+    console.warn("[solana-programs] No admin keypair, skipping resolveTurnOnChain");
+    return null;
+  }
+  const program = getRumbleEngineProgram(provider);
+  const admin = getAdminKeypair()!;
+  const [rumblePda] = deriveRumblePda(rumbleId);
+  const [combatStatePda] = deriveCombatStatePda(rumbleId);
+
+  let method = (program.methods as any).resolveTurn();
+  if (moveCommitmentAccounts.length > 0) {
+    method = method.remainingAccounts(
+      moveCommitmentAccounts.map((pubkey) => ({
+        pubkey,
+        isWritable: false,
+        isSigner: false,
+      })),
+    );
+  }
+
+  return await method
+    .accounts({
+      keeper: admin.publicKey,
+      rumble: rumblePda,
+      combatState: combatStatePda,
+    })
+    .rpc();
+}
+
+/**
+ * Advance to the next on-chain turn window.
+ */
+export async function advanceTurnOnChain(
+  rumbleId: number,
+  connection?: Connection,
+): Promise<string | null> {
+  const provider = getAdminProvider(connection);
+  if (!provider) {
+    console.warn("[solana-programs] No admin keypair, skipping advanceTurnOnChain");
+    return null;
+  }
+  const program = getRumbleEngineProgram(provider);
+  const admin = getAdminKeypair()!;
+  const [rumblePda] = deriveRumblePda(rumbleId);
+  const [combatStatePda] = deriveCombatStatePda(rumbleId);
+
+  return await (program.methods as any)
+    .advanceTurn()
+    .accounts({
+      keeper: admin.publicKey,
+      rumble: rumblePda,
+      combatState: combatStatePda,
+    })
+    .rpc();
+}
+
+/**
+ * Finalize rumble result from on-chain combat state.
+ */
+export async function finalizeRumbleOnChain(
+  rumbleId: number,
+  connection?: Connection,
+): Promise<string | null> {
+  const provider = getAdminProvider(connection);
+  if (!provider) {
+    console.warn("[solana-programs] No admin keypair, skipping finalizeRumbleOnChain");
+    return null;
+  }
+  const program = getRumbleEngineProgram(provider);
+  const admin = getAdminKeypair()!;
+  const [rumblePda] = deriveRumblePda(rumbleId);
+  const [combatStatePda] = deriveCombatStatePda(rumbleId);
+
+  return await (program.methods as any)
+    .finalizeRumble()
+    .accounts({
+      keeper: admin.publicKey,
+      rumble: rumblePda,
+      combatState: combatStatePda,
+    })
+    .rpc();
 }
 
 /**

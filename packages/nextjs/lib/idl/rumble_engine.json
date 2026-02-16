@@ -8,6 +8,85 @@
   },
   "instructions": [
     {
+      "name": "advance_turn",
+      "docs": [
+        "Advance to next turn after a resolved turn.",
+        "Permissionless keeper call."
+      ],
+      "discriminator": [
+        20,
+        108,
+        166,
+        78,
+        43,
+        211,
+        57,
+        29
+      ],
+      "accounts": [
+        {
+          "name": "keeper",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "rumble",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.id",
+                "account": "Rumble"
+              }
+            ]
+          }
+        },
+        {
+          "name": "combat_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  109,
+                  98,
+                  97,
+                  116,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.id",
+                "account": "Rumble"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "claim_payout",
       "docs": [
         "Bettor claims their payout if their fighter placed 1st (winner-takes-all).",
@@ -180,6 +259,139 @@
       "args": []
     },
     {
+      "name": "commit_move",
+      "docs": [
+        "Fighter commits a move hash for the active rumble turn.",
+        "Hash format: sha256(\"rumble:v1\", rumble_id, turn, fighter_pubkey, move_code, salt)"
+      ],
+      "discriminator": [
+        27,
+        16,
+        69,
+        212,
+        175,
+        110,
+        123,
+        189
+      ],
+      "accounts": [
+        {
+          "name": "fighter",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "rumble",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "rumble_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "combat_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  109,
+                  98,
+                  97,
+                  116,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "rumble_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "move_commitment",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  111,
+                  118,
+                  101,
+                  95,
+                  99,
+                  111,
+                  109,
+                  109,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "rumble_id"
+              },
+              {
+                "kind": "account",
+                "path": "fighter"
+              },
+              {
+                "kind": "arg",
+                "path": "turn"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "rumble_id",
+          "type": "u64"
+        },
+        {
+          "name": "turn",
+          "type": "u32"
+        },
+        {
+          "name": "move_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
       "name": "complete_rumble",
       "docs": [
         "Admin transitions rumble to Complete state after all payouts processed."
@@ -256,7 +468,8 @@
     {
       "name": "create_rumble",
       "docs": [
-        "Create a new rumble with a list of fighters and a betting deadline."
+        "Create a new rumble with a list of fighters and an on-chain betting close slot.",
+        "`betting_deadline` is interpreted as a slot number for backward compatibility."
       ],
       "discriminator": [
         66,
@@ -345,6 +558,84 @@
       ]
     },
     {
+      "name": "finalize_rumble",
+      "docs": [
+        "Permissionless deterministic finalization from on-chain combat state."
+      ],
+      "discriminator": [
+        39,
+        133,
+        2,
+        89,
+        92,
+        94,
+        131,
+        85
+      ],
+      "accounts": [
+        {
+          "name": "keeper",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "rumble",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.id",
+                "account": "Rumble"
+              }
+            ]
+          }
+        },
+        {
+          "name": "combat_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  109,
+                  98,
+                  97,
+                  116,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.id",
+                "account": "Rumble"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "initialize",
       "docs": [
         "Initialize the rumble engine configuration.",
@@ -398,6 +689,85 @@
         {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "open_turn",
+      "docs": [
+        "Open the first turn window after combat starts.",
+        "Permissionless keeper call; correctness is slot-gated on-chain."
+      ],
+      "discriminator": [
+        78,
+        206,
+        19,
+        149,
+        237,
+        34,
+        191,
+        82
+      ],
+      "accounts": [
+        {
+          "name": "keeper",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "rumble",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.id",
+                "account": "Rumble"
+              }
+            ]
+          }
+        },
+        {
+          "name": "combat_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  109,
+                  98,
+                  97,
+                  116,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.id",
+                "account": "Rumble"
+              }
+            ]
+          }
         }
       ],
       "args": []
@@ -583,10 +953,7 @@
     {
       "name": "report_result",
       "docs": [
-        "Report the final result of a rumble.",
-        "Admin submits placements (1st through last). Transitions to Payout state.",
-        "placements[i] = the placement (1-indexed) of fighter at index i.",
-        "e.g. placements[0] = 1 means fighter 0 came in 1st place."
+        "Deprecated: result is now finalized permissionlessly from on-chain combat state."
       ],
       "discriminator": [
         195,
@@ -657,20 +1024,231 @@
       ],
       "args": [
         {
-          "name": "placements",
+          "name": "_placements",
           "type": "bytes"
         },
         {
-          "name": "winner_index",
+          "name": "_winner_index",
           "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "resolve_turn",
+      "docs": [
+        "Resolve the active turn from revealed move commitments.",
+        "If a fighter didn't reveal, deterministic fallback move is used."
+      ],
+      "discriminator": [
+        97,
+        96,
+        32,
+        80,
+        136,
+        41,
+        228,
+        44
+      ],
+      "accounts": [
+        {
+          "name": "keeper",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "rumble",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.id",
+                "account": "Rumble"
+              }
+            ]
+          }
+        },
+        {
+          "name": "combat_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  109,
+                  98,
+                  97,
+                  116,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.id",
+                "account": "Rumble"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "reveal_move",
+      "docs": [
+        "Fighter reveals move + salt for a previously committed move hash."
+      ],
+      "discriminator": [
+        30,
+        133,
+        198,
+        26,
+        106,
+        44,
+        55,
+        149
+      ],
+      "accounts": [
+        {
+          "name": "fighter",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "rumble",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "rumble_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "combat_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  109,
+                  98,
+                  97,
+                  116,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "rumble_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "move_commitment",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  111,
+                  118,
+                  101,
+                  95,
+                  99,
+                  111,
+                  109,
+                  109,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "rumble_id"
+              },
+              {
+                "kind": "account",
+                "path": "fighter"
+              },
+              {
+                "kind": "arg",
+                "path": "turn"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "rumble_id",
+          "type": "u64"
+        },
+        {
+          "name": "turn",
+          "type": "u32"
+        },
+        {
+          "name": "move_code",
+          "type": "u8"
+        },
+        {
+          "name": "salt",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
         }
       ]
     },
     {
       "name": "start_combat",
       "docs": [
-        "Transition rumble from Betting to Combat.",
-        "Only callable by admin after the betting deadline."
+        "Transition rumble from Betting to Combat and initialize on-chain combat state.",
+        "Callable by admin after betting deadline."
       ],
       "discriminator": [
         1,
@@ -737,6 +1315,40 @@
               }
             ]
           }
+        },
+        {
+          "name": "combat_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  109,
+                  98,
+                  97,
+                  116,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.id",
+                "account": "Rumble"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
         }
       ],
       "args": []
@@ -861,6 +1473,19 @@
       ]
     },
     {
+      "name": "MoveCommitment",
+      "discriminator": [
+        86,
+        55,
+        88,
+        157,
+        101,
+        93,
+        13,
+        220
+      ]
+    },
+    {
       "name": "Rumble",
       "discriminator": [
         121,
@@ -871,6 +1496,19 @@
         146,
         171,
         5
+      ]
+    },
+    {
+      "name": "RumbleCombatState",
+      "discriminator": [
+        81,
+        24,
+        234,
+        237,
+        157,
+        188,
+        177,
+        99
       ]
     },
     {
@@ -915,6 +1553,45 @@
       ]
     },
     {
+      "name": "MoveCommittedEvent",
+      "discriminator": [
+        130,
+        227,
+        39,
+        167,
+        69,
+        166,
+        46,
+        58
+      ]
+    },
+    {
+      "name": "MoveRevealedEvent",
+      "discriminator": [
+        222,
+        125,
+        249,
+        197,
+        153,
+        224,
+        154,
+        195
+      ]
+    },
+    {
+      "name": "OnchainResultFinalizedEvent",
+      "discriminator": [
+        21,
+        179,
+        226,
+        227,
+        81,
+        166,
+        134,
+        152
+      ]
+    },
+    {
       "name": "PayoutClaimedEvent",
       "discriminator": [
         69,
@@ -951,6 +1628,45 @@
         20,
         40,
         73
+      ]
+    },
+    {
+      "name": "TurnOpenedEvent",
+      "discriminator": [
+        238,
+        182,
+        39,
+        46,
+        65,
+        103,
+        251,
+        51
+      ]
+    },
+    {
+      "name": "TurnPairResolvedEvent",
+      "discriminator": [
+        54,
+        113,
+        239,
+        4,
+        224,
+        197,
+        37,
+        186
+      ]
+    },
+    {
+      "name": "TurnResolvedEvent",
+      "discriminator": [
+        22,
+        62,
+        113,
+        93,
+        44,
+        52,
+        175,
+        46
       ]
     }
   ],
@@ -1054,6 +1770,81 @@
       "code": 6019,
       "name": "InvalidBettorAccount",
       "msg": "Invalid bettor account data"
+    },
+    {
+      "code": 6020,
+      "name": "InvalidTurn",
+      "msg": "Invalid turn index"
+    },
+    {
+      "code": 6021,
+      "name": "InvalidMoveCommitment",
+      "msg": "Invalid move commitment"
+    },
+    {
+      "code": 6022,
+      "name": "InvalidMoveCode",
+      "msg": "Invalid move code"
+    },
+    {
+      "code": 6023,
+      "name": "AlreadyRevealedMove",
+      "msg": "Move already revealed"
+    },
+    {
+      "code": 6024,
+      "name": "TurnAlreadyOpen",
+      "msg": "Turn is already open"
+    },
+    {
+      "code": 6025,
+      "name": "TurnNotOpen",
+      "msg": "Turn is not open"
+    },
+    {
+      "code": 6026,
+      "name": "TurnAlreadyResolved",
+      "msg": "Turn already resolved"
+    },
+    {
+      "code": 6027,
+      "name": "TurnNotResolved",
+      "msg": "Turn is not resolved yet"
+    },
+    {
+      "code": 6028,
+      "name": "CommitWindowClosed",
+      "msg": "Commit window is closed"
+    },
+    {
+      "code": 6029,
+      "name": "RevealWindowClosed",
+      "msg": "Reveal window is closed"
+    },
+    {
+      "code": 6030,
+      "name": "RevealWindowActive",
+      "msg": "Reveal window is still active"
+    },
+    {
+      "code": 6031,
+      "name": "CombatAlreadyFinished",
+      "msg": "Combat already finished"
+    },
+    {
+      "code": 6032,
+      "name": "CombatStillActive",
+      "msg": "Combat is still active"
+    },
+    {
+      "code": 6033,
+      "name": "MaxTurnsReached",
+      "msg": "Max combat turns reached"
+    },
+    {
+      "code": 6034,
+      "name": "DeprecatedInstruction",
+      "msg": "Instruction is deprecated"
     }
   ],
   "types": [
@@ -1146,6 +1937,127 @@
           {
             "name": "rumble_id",
             "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MoveCommitment",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "rumble_id",
+            "type": "u64"
+          },
+          {
+            "name": "fighter",
+            "type": "pubkey"
+          },
+          {
+            "name": "turn",
+            "type": "u32"
+          },
+          {
+            "name": "move_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "revealed_move",
+            "type": "u8"
+          },
+          {
+            "name": "revealed",
+            "type": "bool"
+          },
+          {
+            "name": "committed_slot",
+            "type": "u64"
+          },
+          {
+            "name": "revealed_slot",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MoveCommittedEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "rumble_id",
+            "type": "u64"
+          },
+          {
+            "name": "fighter",
+            "type": "pubkey"
+          },
+          {
+            "name": "turn",
+            "type": "u32"
+          },
+          {
+            "name": "committed_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MoveRevealedEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "rumble_id",
+            "type": "u64"
+          },
+          {
+            "name": "fighter",
+            "type": "pubkey"
+          },
+          {
+            "name": "turn",
+            "type": "u32"
+          },
+          {
+            "name": "move_code",
+            "type": "u8"
+          },
+          {
+            "name": "revealed_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OnchainResultFinalizedEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "rumble_id",
+            "type": "u64"
+          },
+          {
+            "name": "winner_index",
+            "type": "u8"
           },
           {
             "name": "timestamp",
@@ -1286,6 +2198,99 @@
       }
     },
     {
+      "name": "RumbleCombatState",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "rumble_id",
+            "type": "u64"
+          },
+          {
+            "name": "fighter_count",
+            "type": "u8"
+          },
+          {
+            "name": "current_turn",
+            "type": "u32"
+          },
+          {
+            "name": "turn_open_slot",
+            "type": "u64"
+          },
+          {
+            "name": "commit_close_slot",
+            "type": "u64"
+          },
+          {
+            "name": "reveal_close_slot",
+            "type": "u64"
+          },
+          {
+            "name": "turn_resolved",
+            "type": "bool"
+          },
+          {
+            "name": "remaining_fighters",
+            "type": "u8"
+          },
+          {
+            "name": "winner_index",
+            "type": "u8"
+          },
+          {
+            "name": "hp",
+            "type": {
+              "array": [
+                "u16",
+                16
+              ]
+            }
+          },
+          {
+            "name": "meter",
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "elimination_rank",
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "total_damage_dealt",
+            "type": {
+              "array": [
+                "u64",
+                16
+              ]
+            }
+          },
+          {
+            "name": "total_damage_taken",
+            "type": {
+              "array": [
+                "u64",
+                16
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
       "name": "RumbleConfig",
       "type": {
         "kind": "struct",
@@ -1345,6 +2350,94 @@
           {
             "name": "amount",
             "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TurnOpenedEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "rumble_id",
+            "type": "u64"
+          },
+          {
+            "name": "turn",
+            "type": "u32"
+          },
+          {
+            "name": "turn_open_slot",
+            "type": "u64"
+          },
+          {
+            "name": "commit_close_slot",
+            "type": "u64"
+          },
+          {
+            "name": "reveal_close_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TurnPairResolvedEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "rumble_id",
+            "type": "u64"
+          },
+          {
+            "name": "turn",
+            "type": "u32"
+          },
+          {
+            "name": "fighter_a",
+            "type": "pubkey"
+          },
+          {
+            "name": "fighter_b",
+            "type": "pubkey"
+          },
+          {
+            "name": "move_a",
+            "type": "u8"
+          },
+          {
+            "name": "move_b",
+            "type": "u8"
+          },
+          {
+            "name": "damage_to_a",
+            "type": "u16"
+          },
+          {
+            "name": "damage_to_b",
+            "type": "u16"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TurnResolvedEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "rumble_id",
+            "type": "u64"
+          },
+          {
+            "name": "turn",
+            "type": "u32"
+          },
+          {
+            "name": "remaining_fighters",
+            "type": "u8"
           }
         ]
       }
