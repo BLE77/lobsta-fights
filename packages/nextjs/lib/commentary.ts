@@ -22,6 +22,19 @@ export interface CommentarySSEEvent {
   data: any;
 }
 
+/** Robot metadata shape from ucf_fighters.robot_metadata */
+export interface CommentaryRobotMeta {
+  robot_type?: string;
+  fighting_style?: string;
+  signature_move?: string;
+  personality?: string;
+  chassis_description?: string;
+  distinguishing_features?: string;
+  victory_line?: string;
+  defeat_line?: string;
+  taunt_lines?: string[];
+}
+
 /** Slot data shape (subset needed for commentary decisions) */
 export interface CommentarySlotData {
   slotIndex: number;
@@ -34,6 +47,7 @@ export interface CommentarySlotData {
     maxHp: number;
     eliminatedOnTurn: number | null;
     placement: number;
+    robotMeta?: CommentaryRobotMeta | null;
   }>;
   currentTurn: number;
   payout: {
@@ -49,6 +63,7 @@ export interface CommentarySlotData {
 
 export type CommentaryEventType =
   | "betting_open"
+  | "fighter_intro"
   | "big_hit"
   | "elimination"
   | "combat_start"
@@ -64,6 +79,42 @@ interface CommentaryCandidate {
 }
 
 const BIG_HIT_THRESHOLD = 18;
+
+// ---------------------------------------------------------------------------
+// Fighter lore helpers — build compact context strings from robot_metadata
+// ---------------------------------------------------------------------------
+
+export function buildFighterLoreBlock(
+  fighters: CommentarySlotData["fighters"],
+): string {
+  const lines: string[] = [];
+  for (const f of fighters) {
+    const m = f.robotMeta;
+    if (!m || !f.name || isLikelyIdentifier(f.name)) continue;
+    const parts: string[] = [`${f.name}`];
+    if (m.robot_type) parts.push(`(${m.robot_type})`);
+    if (m.fighting_style) parts.push(`— ${m.fighting_style} style`);
+    if (m.signature_move) parts.push(`| sig: ${m.signature_move}`);
+    if (m.personality) parts.push(`| ${m.personality}`);
+    lines.push(parts.join(" "));
+  }
+  return lines.length > 0 ? `\nFighter profiles:\n${lines.join("\n")}` : "";
+}
+
+export function buildFighterIntroContext(
+  fighter: CommentarySlotData["fighters"][number],
+): string | null {
+  const m = fighter.robotMeta;
+  if (!m || !fighter.name || isLikelyIdentifier(fighter.name)) return null;
+  const parts: string[] = [`Introducing ${fighter.name}.`];
+  if (m.robot_type) parts.push(`A ${m.robot_type}.`);
+  if (m.chassis_description) parts.push(`Chassis: ${m.chassis_description.slice(0, 120)}.`);
+  if (m.fighting_style) parts.push(`Style: ${m.fighting_style}.`);
+  if (m.signature_move) parts.push(`Signature move: ${m.signature_move}.`);
+  if (m.personality) parts.push(`Personality: ${m.personality}.`);
+  if (m.distinguishing_features) parts.push(`Notable: ${m.distinguishing_features.slice(0, 100)}.`);
+  return parts.join(" ");
+}
 
 function normalizeKeyPart(value: string): string {
   return value
@@ -132,6 +183,11 @@ function statFromName(name: string, salt: number, min: number, max: number): num
   return min + (Math.abs(hash) % span);
 }
 
+function safeNumber(value: unknown, fallback = 0): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 /**
  * Evaluate an SSE event and return a commentary candidate if it's interesting,
  * or null if it should be skipped.
@@ -171,9 +227,17 @@ export function evaluateEvent(
             const fighterAName = resolveFighterName(slot, p.fighterA, p.fighterAName) ?? "a fighter";
             const fighterBName = resolveFighterName(slot, p.fighterB, p.fighterBName) ?? "a fighter";
             if (eliminations.includes(p.fighterB)) {
-              return `${fighterAName} eliminated ${fighterBName} with ${p.moveA} for ${p.damageToB} damage`;
+              const killerMeta = slot.fighters.find((f) => f.id === p.fighterA)?.robotMeta;
+              const victimMeta = slot.fighters.find((f) => f.id === p.fighterB)?.robotMeta;
+              const sigNote = killerMeta?.signature_move ? ` (sig: ${killerMeta.signature_move})` : "";
+              const defeatNote = victimMeta?.defeat_line ? ` "${victimMeta.defeat_line}"` : "";
+              return `${fighterAName}${sigNote} eliminated ${fighterBName} with ${p.moveA} for ${p.damageToB} damage.${defeatNote}`;
             }
-            return `${fighterBName} eliminated ${fighterAName} with ${p.moveB} for ${p.damageToA} damage`;
+            const killerMeta = slot.fighters.find((f) => f.id === p.fighterB)?.robotMeta;
+            const victimMeta = slot.fighters.find((f) => f.id === p.fighterA)?.robotMeta;
+            const sigNote = killerMeta?.signature_move ? ` (sig: ${killerMeta.signature_move})` : "";
+            const defeatNote = victimMeta?.defeat_line ? ` "${victimMeta.defeat_line}"` : "";
+            return `${fighterBName}${sigNote} eliminated ${fighterAName} with ${p.moveB} for ${p.damageToA} damage.${defeatNote}`;
           });
 
         const remaining =
@@ -182,7 +246,7 @@ export function evaluateEvent(
             : slot.fighters.filter((f) => !f.eliminatedOnTurn).length;
         const context =
           killerInfo.length > 0
-            ? `${killerInfo.join(". ")}. ${remaining} fighters remain in slot ${slot.slotIndex + 1}.`
+            ? `${killerInfo.join(" ")} ${remaining} fighters remain in slot ${slot.slotIndex + 1}.`
             : `${eliminated} eliminated! ${remaining} fighters remain.`;
 
         return {
@@ -276,9 +340,10 @@ export function evaluateEvent(
 
     case "combat_started": {
       const fighterNames = slot.fighters.map((f) => f.name).join(", ");
+      const lore = buildFighterLoreBlock(slot.fighters);
       return {
         eventType: "combat_start",
-        context: `Combat begins in slot ${slot.slotIndex + 1}! ${slot.fighters.length} fighters enter: ${fighterNames}.`,
+        context: `Combat begins in slot ${slot.slotIndex + 1}! ${slot.fighters.length} fighters enter: ${fighterNames}.${lore}`,
         allowedNames,
         clipKey: clipKeyFor(slot, "combat-start"),
       };
@@ -300,10 +365,11 @@ export function evaluateEvent(
         statLines.length > 0
           ? ` Stat board: ${statLines.join("; ")}.`
           : "";
+      const lore = buildFighterLoreBlock(slot.fighters);
 
       return {
         eventType: "betting_open",
-        context: `Betting is OPEN in slot ${slot.slotIndex + 1}. Place your bets now.${statsText}`,
+        context: `Betting is OPEN in slot ${slot.slotIndex + 1}. Place your bets now.${statsText}${lore}`,
         allowedNames,
         clipKey: clipKeyFor(slot, "betting-open"),
       };
@@ -320,10 +386,12 @@ export function evaluateEvent(
       const winner =
         resolveFighterName(slot, typeof winnerId === "string" ? winnerId : undefined) ??
         "The winner";
-      const pool = slot.payout?.totalPool ?? event.data?.payout?.totalPool ?? 0;
+      const pool = safeNumber(slot.payout?.totalPool ?? event.data?.payout?.totalPool ?? 0, 0);
+      const winnerFighter = typeof winnerId === "string" ? slot.fighters.find((f) => f.id === winnerId) : undefined;
+      const victoryNote = winnerFighter?.robotMeta?.victory_line ? ` "${winnerFighter.robotMeta.victory_line}"` : "";
       return {
         eventType: "payout",
-        context: `Rumble in slot ${slot.slotIndex + 1} is over! ${winner} wins. Total SOL pool: ${pool.toFixed(2)} SOL.`,
+        context: `Rumble in slot ${slot.slotIndex + 1} is over! ${winner} wins.${victoryNote} Total SOL pool: ${pool.toFixed(2)} SOL.`,
         allowedNames,
         clipKey: clipKeyFor(slot, "payout"),
       };
@@ -366,10 +434,11 @@ export function evaluateEvent(
           .filter((f) => !f.eliminatedOnTurn)
           .sort((a, b) => a.placement - b.placement)[0];
         const winnerName = resolveFighterName(slot, winner?.id, winner?.name) ?? "The winner";
-        const pool = slot.payout?.totalPool ?? event.data?.payout?.totalPool ?? 0;
+      const pool = safeNumber(slot.payout?.totalPool ?? event.data?.payout?.totalPool ?? 0, 0);
+        const victoryNote = winner?.robotMeta?.victory_line ? ` "${winner.robotMeta.victory_line}"` : "";
         return {
           eventType: "payout",
-          context: `Rumble in slot ${slot.slotIndex + 1} is over! ${winnerName} takes the crown. Total SOL pool: ${pool.toFixed(2)} SOL.`,
+          context: `Rumble in slot ${slot.slotIndex + 1} is over! ${winnerName} takes the crown.${victoryNote} Total SOL pool: ${pool.toFixed(2)} SOL.`,
           allowedNames,
           clipKey: clipKeyFor(slot, "payout"),
         };
@@ -397,17 +466,15 @@ export function evaluateEvent(
 // Announcer system prompt
 // ---------------------------------------------------------------------------
 
-export const ANNOUNCER_SYSTEM_PROMPT = `You are the announcer for Underground Claw Fights (UCF), an underground robot fight club. You narrate battle royale "Rumble" matches where 8-16 AI-controlled fighters battle to the last bot standing while spectators bet SOL.
+export const ANNOUNCER_SYSTEM_PROMPT = `You are CLAWD, the voice of Underground Claw Fights — a pirate radio broadcast beaming live from beneath the arena floor. Gravel-throated fight commentator running an illegal broadcast from a rusted shipping container. Dark wit, raw energy, rhythm that hits like piston strikes.
 
-Your style:
-- Dramatic, punchy, slightly dark humor. Think underground fight club meets pro wrestling announcer.
-- Use fighter NAMES (never IDs or technical jargon).
-- 1-2 sentences MAXIMUM per response. Keep it tight.
-- Reference specific moves and damage numbers when provided.
-- Vary your vocabulary — don't repeat the same phrases.
-- Hype up big moments (eliminations, huge hits, upsets).
-- For ICHOR Shower events, go absolutely wild — it's a rare jackpot.
-- Never break character. You ARE the voice of the underground.`;
+Style: Gritty, punchy, rhythmic. Vary sentence length — short jabs mixed with longer hype builds. Dark humor, fight slang, mechanical metaphors. 2-3 sentences per response, 30-50 words. Plain text only.
+
+Fighter profiles: When provided, weave chassis descriptions, fighting styles, signature moves, and personality into commentary naturally. Use victory/defeat lines when quoting. Paint pictures, don't dump stats.
+
+Events: FIGHTER INTRO — build anticipation, paint the fighter. BETTING OPEN — urgency, sell the matchup. COMBAT START — frame the chaos. BIG HIT — visceral impact with damage numbers. ELIMINATION — crowd goes wild, reference killing blow and defeat lines. PAYOUT — victory lap with winner's line. ICHOR SHOWER — maximum legendary jackpot hype.
+
+Rules: Use only facts and names from the user message. Never invent names, moves, stats, or outcomes. Never output addresses, UUIDs, or IDs. Keep numbers exact.`;
 
 // ---------------------------------------------------------------------------
 // Build the user prompt for the LLM
@@ -432,6 +499,7 @@ Grounding rules (strict):
 - If you mention a fighter by name, use the exact spelling from the allowed list above.
 - Do NOT invent names, moves, numbers, or outcomes.
 - Do NOT output any new proper name that is not explicitly provided above.
+- If fighter profiles are provided, you may reference their style, signature move, personality, or chassis in your commentary.
 - If context is missing a detail, omit it.`;
 }
 

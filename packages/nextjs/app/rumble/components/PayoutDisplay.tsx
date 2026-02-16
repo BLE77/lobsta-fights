@@ -69,6 +69,16 @@ export default function PayoutDisplay({
   payout,
   myBetFighterIds,
 }: PayoutDisplayProps) {
+  const winnerBettorsPayout = Number.isFinite(Number(payout.winnerBettorsPayout))
+    ? Number(payout.winnerBettorsPayout)
+    : 0;
+  const treasuryVault = Number.isFinite(Number(payout.treasuryVault))
+    ? Number(payout.treasuryVault)
+    : 0;
+  const ichorMined = Number.isFinite(Number(payout.ichorMined)) ? Number(payout.ichorMined) : 0;
+  const ichorShowerAmount = Number.isFinite(Number(payout.ichorShowerAmount))
+    ? Number(payout.ichorShowerAmount)
+    : 0;
   const winner = placements[0];
   const iWon = winner && myBetFighterIds?.has(winner.fighterId);
   const iLost = myBetFighterIds && myBetFighterIds.size > 0 && !iWon;
@@ -78,7 +88,7 @@ export default function PayoutDisplay({
       {/* Season Badge */}
       <div className="text-center">
         <span className="font-mono text-[10px] text-amber-600 bg-amber-900/30 border border-amber-700/30 px-2 py-0.5 rounded-sm">
-          TRAINING SEASON — {payout.ichorMined.toLocaleString()} ICHOR/FIGHT
+          TRAINING SEASON — {ichorMined.toLocaleString()} ICHOR/FIGHT
         </span>
       </div>
 
@@ -207,13 +217,13 @@ export default function PayoutDisplay({
               Winner Bettors (100%)
             </span>
             <span className="text-green-400 font-bold">
-              {payout.winnerBettorsPayout.toFixed(4)} SOL
+              {winnerBettorsPayout.toFixed(4)} SOL
             </span>
           </div>
           <div className="border-t border-stone-800 pt-1 flex justify-between text-xs font-mono">
             <span className="text-stone-600">Treasury (1%)</span>
             <span className="text-stone-600">
-              {payout.treasuryVault.toFixed(4)} SOL
+              {treasuryVault.toFixed(4)} SOL
             </span>
           </div>
         </div>
@@ -228,7 +238,7 @@ export default function PayoutDisplay({
             ICHOR Mined
           </span>
           <span className="font-mono text-xs text-amber-400 font-bold">
-            {payout.ichorMined.toLocaleString()} ICHOR
+            {ichorMined.toLocaleString()} ICHOR
           </span>
         </div>
       </div>
@@ -240,7 +250,7 @@ export default function PayoutDisplay({
             ICHOR SHOWER
           </p>
           <p className="font-mono text-sm text-amber-300 mt-1">
-            {payout.ichorShowerAmount?.toFixed(4)} ICHOR jackpot triggered!
+            {ichorShowerAmount.toFixed(4)} ICHOR jackpot triggered!
           </p>
         </div>
       )}

@@ -134,6 +134,7 @@ const LEGACY_EVENT_MAP: Partial<Record<SSEEvent["type"], OrchestratorSseName>> =
   turn: "turn_resolved",
   elimination: "fighter_eliminated",
 };
+const CLIENT_BET_CLOSE_GUARD_MS = 12_000;
 
 function isSlotState(value: unknown): value is SlotData["state"] {
   return value === "idle" || value === "betting" || value === "combat" || value === "payout";
@@ -158,6 +159,152 @@ function buildLastCompletedResult(slot: SlotData): LastCompletedSlotResult | nul
     settledAtIso: new Date().toISOString(),
     placements,
     payout: slot.payout,
+  };
+}
+
+function safeNumber(value: unknown, fallback = 0): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function safeString(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : fallback;
+}
+
+function normalizeSlotState(value: unknown): SlotData["state"] {
+  return value === "idle" || value === "betting" || value === "combat" || value === "payout"
+    ? value
+    : "idle";
+}
+
+function normalizeTurn(raw: any): SlotData["turns"][number] | null {
+  if (!raw || typeof raw !== "object") return null;
+  const pairings = Array.isArray(raw.pairings)
+    ? raw.pairings.map((p: any) => ({
+        fighterA: safeString(p?.fighterA),
+        fighterB: safeString(p?.fighterB),
+        fighterAName: safeString(p?.fighterAName, safeString(p?.fighterA, "Unknown")),
+        fighterBName: safeString(p?.fighterBName, safeString(p?.fighterB, "Unknown")),
+        moveA: safeString(p?.moveA),
+        moveB: safeString(p?.moveB),
+        damageToA: safeNumber(p?.damageToA, 0),
+        damageToB: safeNumber(p?.damageToB, 0),
+      }))
+    : [];
+  return {
+    turnNumber: safeNumber(raw.turnNumber, 0),
+    pairings,
+    eliminations: Array.isArray(raw.eliminations)
+      ? raw.eliminations.map((id: any) => safeString(id)).filter(Boolean)
+      : [],
+    bye: raw.bye ? safeString(raw.bye) : undefined,
+  };
+}
+
+function normalizeStatusPayload(raw: any): RumbleStatus {
+  const slots: SlotData[] = Array.isArray(raw?.slots)
+    ? raw.slots.map((slot: any, index: number) => {
+        const fightersRaw = Array.isArray(slot?.fighters) ? slot.fighters : [];
+        const fighters = fightersRaw.map((f: any) => ({
+          id: safeString(f?.id),
+          name: safeString(f?.name, safeString(f?.id)),
+          hp: safeNumber(f?.hp, 100),
+          maxHp: safeNumber(f?.maxHp, 100),
+          imageUrl: typeof f?.imageUrl === "string" ? f.imageUrl : null,
+          meter: safeNumber(f?.meter, 0),
+          totalDamageDealt: safeNumber(f?.totalDamageDealt, 0),
+          totalDamageTaken: safeNumber(f?.totalDamageTaken, 0),
+          eliminatedOnTurn:
+            f?.eliminatedOnTurn === null || f?.eliminatedOnTurn === undefined
+              ? null
+              : safeNumber(f?.eliminatedOnTurn, 0),
+          placement: safeNumber(f?.placement, 0),
+        }));
+
+        const oddsRaw = Array.isArray(slot?.odds) ? slot.odds : [];
+        const odds = oddsRaw.map((o: any) => ({
+          fighterId: safeString(o?.fighterId),
+          fighterName: safeString(o?.fighterName, safeString(o?.fighterId)),
+          imageUrl: typeof o?.imageUrl === "string" ? o.imageUrl : null,
+          hp: safeNumber(o?.hp, 100),
+          solDeployed: safeNumber(o?.solDeployed, 0),
+          betCount: safeNumber(o?.betCount, 0),
+          impliedProbability: safeNumber(o?.impliedProbability, 0),
+          potentialReturn: safeNumber(o?.potentialReturn, 0),
+        }));
+
+        const turns = Array.isArray(slot?.turns)
+          ? slot.turns
+              .map((turn: any) => normalizeTurn(turn))
+              .filter(
+                (turn: SlotData["turns"][number] | null): turn is SlotData["turns"][number] =>
+                  Boolean(turn),
+              )
+          : [];
+
+        const payoutRaw = slot?.payout && typeof slot.payout === "object" ? slot.payout : null;
+        const payout = payoutRaw
+          ? {
+              winnerBettorsPayout: safeNumber(payoutRaw.winnerBettorsPayout, 0),
+              placeBettorsPayout: safeNumber(payoutRaw.placeBettorsPayout, 0),
+              showBettorsPayout: safeNumber(payoutRaw.showBettorsPayout, 0),
+              treasuryVault: safeNumber(payoutRaw.treasuryVault, 0),
+              totalPool: safeNumber(payoutRaw.totalPool, 0),
+              ichorMined: safeNumber(payoutRaw.ichorMined, 0),
+              ichorShowerTriggered: Boolean(payoutRaw.ichorShowerTriggered),
+              ichorShowerAmount:
+                payoutRaw.ichorShowerAmount === undefined || payoutRaw.ichorShowerAmount === null
+                  ? undefined
+                  : safeNumber(payoutRaw.ichorShowerAmount, 0),
+            }
+          : null;
+
+        const fighterNamesRaw =
+          slot?.fighterNames && typeof slot.fighterNames === "object" ? slot.fighterNames : {};
+        const fighterNames: Record<string, string> = {};
+        for (const [k, v] of Object.entries(fighterNamesRaw)) {
+          fighterNames[String(k)] = safeString(v, String(k));
+        }
+
+        return {
+          slotIndex: safeNumber(slot?.slotIndex, index),
+          rumbleId: safeString(slot?.rumbleId, `slot_${index}`),
+          state: normalizeSlotState(slot?.state),
+          fighters,
+          odds,
+          totalPool: safeNumber(slot?.totalPool, 0),
+          bettingDeadline: typeof slot?.bettingDeadline === "string" ? slot.bettingDeadline : null,
+          nextTurnAt: typeof slot?.nextTurnAt === "string" ? slot.nextTurnAt : null,
+          turnIntervalMs:
+            slot?.turnIntervalMs === undefined || slot?.turnIntervalMs === null
+              ? null
+              : safeNumber(slot?.turnIntervalMs, 0),
+          currentTurn: safeNumber(slot?.currentTurn, 0),
+          turns,
+          payout,
+          fighterNames,
+        };
+      })
+    : [];
+
+  const queue: QueueFighter[] = Array.isArray(raw?.queue)
+    ? raw.queue.map((item: any, index: number) => ({
+        fighterId: safeString(item?.fighterId, `queue_${index}`),
+        name: safeString(item?.name, safeString(item?.fighterId)),
+        imageUrl: typeof item?.imageUrl === "string" ? item.imageUrl : null,
+        position: safeNumber(item?.position, index + 1),
+      }))
+    : [];
+
+  return {
+    slots,
+    queue,
+    queueLength: safeNumber(raw?.queueLength, queue.length),
+    nextRumbleIn: typeof raw?.nextRumbleIn === "string" ? raw.nextRumbleIn : null,
+    ichorShower: {
+      currentPool: safeNumber(raw?.ichorShower?.currentPool, 0),
+      rumblesSinceLastTrigger: safeNumber(raw?.ichorShower?.rumblesSinceLastTrigger, 0),
+    },
   };
 }
 
@@ -305,7 +452,8 @@ export default function RumblePage() {
         cache: "no-store",
       });
       if (!res.ok) throw new Error(`Status ${res.status}`);
-      const data: RumbleStatus = await res.json();
+      const raw = await res.json();
+      const data = normalizeStatusPayload(raw);
       setStatus(data);
       setError(null);
 
@@ -527,7 +675,7 @@ export default function RumblePage() {
       switch (event.type) {
         case "turn":
         case "turn_resolved": {
-          const turn = event.data?.turn ?? event.data;
+          const turn = normalizeTurn(event.data?.turn ?? event.data);
           if (!turn || typeof turn.turnNumber !== "number") break;
           // Append new turn data
           if (!slot.turns.some((t) => t.turnNumber === turn.turnNumber)) {
@@ -578,20 +726,27 @@ export default function RumblePage() {
           if (isSlotState(event.data?.state)) {
             slot.state = event.data.state;
           }
-          if (event.data.payout) {
+          if (event.data?.payout && typeof event.data.payout === "object") {
             slot.payout = event.data.payout;
           }
-          if (event.data.odds) {
+          if (Array.isArray(event.data?.odds)) {
             slot.odds = event.data.odds;
           }
-          if (event.data.fighters) {
-            slot.fighters = event.data.fighters;
+          if (Array.isArray(event.data?.fighters)) {
+            // Preserve robotMeta from existing slot data when SSE patches fighters
+            const existingMetaMap = new Map(
+              slot.fighters.map((f: any) => [f.id, f.robotMeta]),
+            );
+            slot.fighters = event.data.fighters.map((f: any) => ({
+              ...f,
+              robotMeta: f.robotMeta ?? existingMetaMap.get(f.id) ?? null,
+            }));
           }
           break;
 
         case "bet_placed":
-          slot.totalPool = event.data.totalPool;
-          if (event.data.odds) {
+          slot.totalPool = safeNumber(event.data?.totalPool, slot.totalPool);
+          if (Array.isArray(event.data?.odds)) {
             slot.odds = event.data.odds;
           }
           break;
@@ -599,7 +754,13 @@ export default function RumblePage() {
         case "ichor_shower":
           return {
             ...prev,
-            ichorShower: event.data,
+            ichorShower: {
+              currentPool: safeNumber(event.data?.currentPool, prev.ichorShower.currentPool),
+              rumblesSinceLastTrigger: safeNumber(
+                event.data?.rumblesSinceLastTrigger,
+                prev.ichorShower.rumblesSinceLastTrigger,
+              ),
+            },
             slots: slots,
           };
 
@@ -795,6 +956,17 @@ export default function RumblePage() {
       if (!prepareRes.ok) {
         throw new Error(prepared?.error ?? "Failed to prepare bet transaction");
       }
+      const onchainDeadlineMs =
+        prepared?.onchain_betting_deadline
+          ? new Date(String(prepared.onchain_betting_deadline)).getTime()
+          : Number.NaN;
+      const closeGuardMs =
+        Number.isFinite(Number(prepared?.guard_ms)) && Number(prepared.guard_ms) > 0
+          ? Number(prepared.guard_ms)
+          : CLIENT_BET_CLOSE_GUARD_MS;
+      if (Number.isFinite(onchainDeadlineMs) && Date.now() >= onchainDeadlineMs - closeGuardMs) {
+        throw new Error("Betting just closed on-chain. Wait for the next rumble.");
+      }
 
       const tx = decodeBase64Tx(prepared.transaction_base64);
       tx.feePayer = publicKey;
@@ -874,11 +1046,15 @@ export default function RumblePage() {
       const newBalance = await connection.getBalance(publicKey, "confirmed");
       setSolBalance(newBalance / LAMPORTS_PER_SOL);
     } catch (e: any) {
-      if (e?.message?.includes("User rejected")) {
+      const message = String(e?.message ?? "");
+      if (message.includes("User rejected")) {
         // User cancelled in wallet, no alert needed
+      } else if (message.includes("BettingClosed") || message.includes("0x1771")) {
+        fetchStatus();
+        alert("Betting just closed on-chain for that rumble. No bet was placed.");
       } else {
         console.error("Failed to place bet:", e);
-        alert(e?.message || "Failed to place bet");
+        alert(message || "Failed to place bet");
       }
     } finally {
       setBetPending(false);
@@ -954,7 +1130,7 @@ export default function RumblePage() {
             <div className="flex items-center gap-3">
               {/* AI Commentary */}
               <CommentaryPlayer
-                slots={status?.slots as any}
+                slots={Array.isArray(status?.slots) ? status.slots : []}
                 lastEvent={lastSseEvent}
                 eventSeq={sseEventSeq}
               />
@@ -996,12 +1172,6 @@ export default function RumblePage() {
                 </button>
               )}
 
-              <Link
-                href="/classic"
-                className="font-mono text-xs text-stone-500 hover:text-stone-300 transition-colors"
-              >
-                Classic 1v1
-              </Link>
             </div>
           </div>
         </header>

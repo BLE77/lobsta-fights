@@ -26,33 +26,35 @@ interface CombatFeedProps {
   fighterNames: Record<string, string>;
 }
 
-function getMoveIcon(move: string): string {
-  if (move.includes("STRIKE")) return ">>>";
-  if (move.includes("GUARD")) return "[=]";
-  if (move === "DODGE") return "~~~";
-  if (move === "CATCH") return "<< ";
-  if (move === "SPECIAL") return "***";
+function getMoveIcon(move: string | undefined | null): string {
+  const safeMove = typeof move === "string" ? move : "";
+  if (safeMove.includes("STRIKE")) return ">>>";
+  if (safeMove.includes("GUARD")) return "[=]";
+  if (safeMove === "DODGE") return "~~~";
+  if (safeMove === "CATCH") return "<< ";
+  if (safeMove === "SPECIAL") return "***";
   return "???";
 }
 
-function getMoveColor(move: string): string {
-  if (move.includes("STRIKE")) return "text-red-400";
-  if (move.includes("GUARD")) return "text-blue-400";
-  if (move === "DODGE") return "text-green-400";
-  if (move === "CATCH") return "text-purple-400";
-  if (move === "SPECIAL") return "text-amber-400";
+function getMoveColor(move: string | undefined | null): string {
+  const safeMove = typeof move === "string" ? move : "";
+  if (safeMove.includes("STRIKE")) return "text-red-400";
+  if (safeMove.includes("GUARD")) return "text-blue-400";
+  if (safeMove === "DODGE") return "text-green-400";
+  if (safeMove === "CATCH") return "text-purple-400";
+  if (safeMove === "SPECIAL") return "text-amber-400";
   return "text-stone-500";
 }
 
-function isStrike(move: string): boolean {
+function isStrike(move: string | undefined | null): boolean {
   return move === "HIGH_STRIKE" || move === "MID_STRIKE" || move === "LOW_STRIKE";
 }
 
-function isGuard(move: string): boolean {
+function isGuard(move: string | undefined | null): boolean {
   return move === "GUARD_HIGH" || move === "GUARD_MID" || move === "GUARD_LOW";
 }
 
-function isMatchingGuard(strike: string, guard: string): boolean {
+function isMatchingGuard(strike: string | undefined | null, guard: string | undefined | null): boolean {
   return (
     (strike === "HIGH_STRIKE" && guard === "GUARD_HIGH") ||
     (strike === "MID_STRIKE" && guard === "GUARD_MID") ||

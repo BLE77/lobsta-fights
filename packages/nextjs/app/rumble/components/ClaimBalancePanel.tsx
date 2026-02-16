@@ -41,6 +41,7 @@ export default function ClaimBalancePanel({
   const payoutMode = balance?.payout_mode ?? "accrue_claim";
   const onchainClaimable = balance?.claimable_sol ?? 0;
   const onchainPendingNotReady = balance?.onchain_pending_not_ready_sol ?? 0;
+  const pendingRumbles = Array.isArray(balance?.pending_rumbles) ? balance.pending_rumbles : [];
   const canClaim =
     payoutMode === "accrue_claim" &&
     (balance?.onchain_claim_ready ?? false) &&
@@ -92,11 +93,11 @@ export default function ClaimBalancePanel({
         </div>
       )}
 
-      {balance && balance.pending_rumbles.length > 0 && (
+      {balance && pendingRumbles.length > 0 && (
         <div className="border border-stone-800 rounded-sm p-2 bg-stone-950/40">
           <p className="font-mono text-[10px] text-stone-500 mb-1 uppercase">Pending Rumbles</p>
           <div className="space-y-1">
-            {balance.pending_rumbles.slice(0, 3).map((entry) => (
+            {pendingRumbles.slice(0, 3).map((entry) => (
               <div key={entry.rumble_id} className="flex items-center justify-between gap-2 font-mono text-[10px]">
                 <span className="text-stone-500 truncate max-w-[110px]">{entry.rumble_id}</span>
                 <span

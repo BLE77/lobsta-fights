@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   evaluateEvent,
+  buildFighterIntroContext,
   type CommentarySSEEvent,
   type CommentarySlotData,
   type CommentaryEventType,
@@ -26,35 +27,75 @@ interface CommentaryPlayerProps {
 // ---------------------------------------------------------------------------
 
 const STORAGE_KEY = "ucf_commentary";
-const COOLDOWN_MS = 3_500;
+const COOLDOWN_MS = 2_000;
 const BETTING_HYPE_INTERVAL_MS = 20_000;
 const BETTING_HYPE_CHECK_MS = 3_000;
 const PLAYBACK_RATE = 1.12;
 
+const AMBIENT_GAIN = 0.15;
+const AMBIENT_DUCK_GAIN = 0.08;
+const SFX_GAIN = 0.5;
+const VOICE_GAIN = 1.0;
+
+/** SFX map: eventType (+ optional threshold) → wav file */
+const SFX_MAP: Record<string, string> = {
+  combat_start: "/sounds/round-start.wav",
+  elimination: "/sounds/ko-explosion.wav",
+  big_hit_heavy: "/sounds/hit-heavy.wav",
+  big_hit_light: "/sounds/hit-light.wav",
+  payout: "/sounds/crowd-cheer.wav",
+  ichor_shower: "/sounds/crowd-cheer.wav",
+  fighter_intro: "/sounds/round-start.wav",
+};
+
+const ALL_SOUND_URLS = [
+  "/sounds/ambient-arena.wav",
+  "/sounds/round-start.wav",
+  "/sounds/ko-explosion.wav",
+  "/sounds/hit-heavy.wav",
+  "/sounds/hit-light.wav",
+  "/sounds/crowd-cheer.wav",
+  "/sounds/radio-static.wav",
+];
+
+// Priority events that jump ahead in queue
+const HIGH_PRIORITY_EVENTS = new Set<CommentaryEventType>(["elimination", "ichor_shower"]);
+
 // ---------------------------------------------------------------------------
-// Audio queue — plays mp3 clips sequentially
+// RadioMixer — Web Audio API based audio engine
 // ---------------------------------------------------------------------------
 
-class AudioQueue {
-  private queue: Array<{
+class RadioMixer {
+  private ctx: AudioContext | null = null;
+  private masterGain: GainNode | null = null;
+  private ambientGain: GainNode | null = null;
+  private sfxGain: GainNode | null = null;
+  private voiceGain: GainNode | null = null;
+  private ambientSource: AudioBufferSourceNode | null = null;
+  private voicePlaying = false;
+
+  private bufferCache = new Map<string, AudioBuffer>();
+  private preloaded = false;
+
+  private voiceQueue: Array<{
     eventType: CommentaryEventType;
     context: string;
     voiceId: string;
     allowedNames: string[];
     clipKey?: string;
     retries: number;
+    priority: boolean;
   }> = [];
-  private playing = false;
-  private audioEl: HTMLAudioElement | null = null;
-  private currentUrl: string | null = null;
+  private processingVoice = false;
   private currentClipKey: string | null = null;
+
   private _onStateChange: () => void;
-  private _onUnavailable: (message: string) => void;
+  private _onUnavailable: (msg: string) => void;
   private _onPlaybackBlocked: () => void;
 
   constructor(
     onStateChange: () => void,
-    onUnavailable: (message: string) => void,
+    onUnavailable: (msg: string) => void,
     onPlaybackBlocked: () => void,
   ) {
     this._onStateChange = onStateChange;
@@ -63,15 +104,214 @@ class AudioQueue {
   }
 
   get isPlaying() {
-    return this.playing;
+    return this.voicePlaying;
   }
 
   get queueLength() {
-    return this.queue.length;
+    return this.voiceQueue.length;
   }
 
+  get isAmbientPlaying() {
+    return this.ambientSource !== null;
+  }
+
+  // --- Init & Teardown ---
+
+  async init() {
+    if (this.ctx) return;
+    const AudioContextCtor =
+      (globalThis as any).AudioContext ?? (globalThis as any).webkitAudioContext;
+    if (!AudioContextCtor) {
+      throw new Error("Web Audio API is not supported in this browser.");
+    }
+    const ctx = new AudioContextCtor();
+    this.ctx = ctx;
+
+    const masterGain = ctx.createGain();
+    masterGain.gain.value = 0.8;
+    masterGain.connect(ctx.destination);
+    this.masterGain = masterGain;
+
+    const ambientGain = ctx.createGain();
+    ambientGain.gain.value = 0;
+    ambientGain.connect(masterGain);
+    this.ambientGain = ambientGain;
+
+    const sfxGain = ctx.createGain();
+    sfxGain.gain.value = SFX_GAIN;
+    sfxGain.connect(masterGain);
+    this.sfxGain = sfxGain;
+
+    const voiceGain = ctx.createGain();
+    voiceGain.gain.value = VOICE_GAIN;
+    voiceGain.connect(masterGain);
+    this.voiceGain = voiceGain;
+
+    // Resume AudioContext (user gesture required)
+    if (ctx.state === "suspended") {
+      try {
+        await ctx.resume();
+      } catch {
+        this._onPlaybackBlocked();
+      }
+    }
+  }
+
+  destroy() {
+    this.stopAmbient();
+    this.voiceQueue = [];
+    this.processingVoice = false;
+    this.currentClipKey = null;
+    if (this.ctx) {
+      this.ctx.close().catch(() => {});
+      this.ctx = null;
+    }
+    this.masterGain = null;
+    this.ambientGain = null;
+    this.sfxGain = null;
+    this.voiceGain = null;
+    this.bufferCache.clear();
+    this.preloaded = false;
+    this._onStateChange();
+  }
+
+  // --- Audio Buffer Loading ---
+
+  private async loadBuffer(url: string): Promise<AudioBuffer | null> {
+    if (this.bufferCache.has(url)) return this.bufferCache.get(url)!;
+    if (!this.ctx) return null;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      const arrayBuf = await res.arrayBuffer();
+      const audioBuf = await this.ctx.decodeAudioData(arrayBuf);
+      this.bufferCache.set(url, audioBuf);
+      return audioBuf;
+    } catch {
+      return null;
+    }
+  }
+
+  async preloadAll() {
+    if (this.preloaded) return;
+    this.preloaded = true;
+    await Promise.allSettled(ALL_SOUND_URLS.map((url) => this.loadBuffer(url)));
+  }
+
+  // --- Tune-In Effect ---
+
+  async playTuneInEffect() {
+    if (!this.ctx || !this.masterGain) return;
+
+    // Generate 300ms white noise through bandpass filter (radio static)
+    const duration = 0.3;
+    const sampleRate = this.ctx.sampleRate;
+    const numSamples = Math.floor(sampleRate * duration);
+    const noiseBuffer = this.ctx.createBuffer(1, numSamples, sampleRate);
+    const data = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < numSamples; i++) {
+      data[i] = Math.random() * 2 - 1;
+    }
+
+    const noiseSource = this.ctx.createBufferSource();
+    noiseSource.buffer = noiseBuffer;
+
+    const bandpass = this.ctx.createBiquadFilter();
+    bandpass.type = "bandpass";
+    bandpass.frequency.value = 2000;
+    bandpass.Q.value = 5;
+
+    const noiseGain = this.ctx.createGain();
+    noiseGain.gain.value = 0.3;
+
+    noiseSource.connect(bandpass);
+    bandpass.connect(noiseGain);
+    noiseGain.connect(this.masterGain);
+
+    noiseSource.start();
+    noiseSource.stop(this.ctx.currentTime + duration);
+
+    // Also try playing the radio-static.wav file
+    const staticBuf = await this.loadBuffer("/sounds/radio-static.wav");
+    if (staticBuf && this.ctx && this.masterGain) {
+      const staticSource = this.ctx.createBufferSource();
+      staticSource.buffer = staticBuf;
+      const staticGain = this.ctx.createGain();
+      staticGain.gain.value = 0.25;
+      staticSource.connect(staticGain);
+      staticGain.connect(this.masterGain);
+      staticSource.start();
+    }
+  }
+
+  // --- Ambient Loop ---
+
+  async startAmbient() {
+    if (!this.ctx || !this.ambientGain || this.ambientSource) return;
+
+    const buffer = await this.loadBuffer("/sounds/ambient-arena.wav");
+    if (!buffer || !this.ctx || !this.ambientGain) return;
+
+    const source = this.ctx.createBufferSource();
+    source.buffer = buffer;
+    source.loop = true;
+    source.connect(this.ambientGain);
+    source.start();
+    this.ambientSource = source;
+
+    // Fade in over 800ms
+    this.ambientGain.gain.setValueAtTime(0, this.ctx.currentTime);
+    this.ambientGain.gain.linearRampToValueAtTime(AMBIENT_GAIN, this.ctx.currentTime + 0.8);
+  }
+
+  stopAmbient() {
+    if (this.ambientSource) {
+      try { this.ambientSource.stop(); } catch {}
+      this.ambientSource = null;
+    }
+    if (this.ambientGain) {
+      this.ambientGain.gain.value = 0;
+    }
+  }
+
+  private duckAmbient() {
+    if (!this.ctx || !this.ambientGain) return;
+    this.ambientGain.gain.cancelScheduledValues(this.ctx.currentTime);
+    this.ambientGain.gain.linearRampToValueAtTime(AMBIENT_DUCK_GAIN, this.ctx.currentTime + 0.15);
+  }
+
+  private unduckAmbient() {
+    if (!this.ctx || !this.ambientGain) return;
+    this.ambientGain.gain.cancelScheduledValues(this.ctx.currentTime);
+    this.ambientGain.gain.linearRampToValueAtTime(AMBIENT_GAIN, this.ctx.currentTime + 0.3);
+  }
+
+  // --- SFX ---
+
+  async playSfx(eventType: CommentaryEventType, damageAmount?: number) {
+    if (!this.ctx || !this.sfxGain) return;
+
+    let sfxKey = eventType as string;
+    if (eventType === "big_hit") {
+      sfxKey = (damageAmount ?? 0) >= 25 ? "big_hit_heavy" : "big_hit_light";
+    }
+
+    const url = SFX_MAP[sfxKey];
+    if (!url) return;
+
+    const buffer = await this.loadBuffer(url);
+    if (!buffer || !this.ctx || !this.sfxGain) return;
+
+    const source = this.ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(this.sfxGain);
+    source.start();
+  }
+
+  // --- Voice Queue ---
+
   dropPendingCombatNarration() {
-    this.queue = this.queue.filter(
+    this.voiceQueue = this.voiceQueue.filter(
       (item) => item.eventType !== "big_hit" && item.eventType !== "elimination",
     );
     this._onStateChange();
@@ -86,51 +326,67 @@ class AudioQueue {
   ) {
     if (clipKey) {
       if (this.currentClipKey === clipKey) return;
-      if (this.queue.some((queued) => queued.clipKey === clipKey)) return;
+      if (this.voiceQueue.some((q) => q.clipKey === clipKey)) return;
     }
-    // Cap queue at 3 to avoid backlog
-    if (this.queue.length >= 3) return;
-    this.queue.push({ eventType, context, voiceId, allowedNames, clipKey, retries: 0 });
-    if (!this.playing) this.playNext();
+    // Cap queue at 5
+    if (this.voiceQueue.length >= 5) return;
+
+    const priority = HIGH_PRIORITY_EVENTS.has(eventType);
+    const item = { eventType, context, voiceId, allowedNames, clipKey, retries: 0, priority };
+
+    if (priority) {
+      // Insert before non-priority items
+      const insertIdx = this.voiceQueue.findIndex((q) => !q.priority);
+      if (insertIdx >= 0) {
+        this.voiceQueue.splice(insertIdx, 0, item);
+      } else {
+        this.voiceQueue.push(item);
+      }
+    } else {
+      this.voiceQueue.push(item);
+    }
+
+    // Play SFX immediately
+    this.playSfx(eventType);
+
+    if (!this.processingVoice) this.processNextVoice();
   }
 
   stop() {
-    this.queue = [];
-    if (this.audioEl) {
-      this.audioEl.pause();
-      this.audioEl.src = "";
-    }
-    this.cleanup();
+    this.voiceQueue = [];
+    this.processingVoice = false;
+    this.voicePlaying = false;
     this.currentClipKey = null;
-    this.playing = false;
+    this.unduckAmbient();
     this._onStateChange();
   }
 
   setVolume(vol: number) {
-    if (this.audioEl) this.audioEl.volume = vol;
-  }
-
-  resume() {
-    if (!this.playing) this.playNext();
-  }
-
-  private cleanup() {
-    if (this.currentUrl) {
-      URL.revokeObjectURL(this.currentUrl);
-      this.currentUrl = null;
+    if (this.masterGain) {
+      this.masterGain.gain.value = vol;
     }
   }
 
-  private async playNext() {
-    const item = this.queue.shift();
+  resume() {
+    if (this.ctx?.state === "suspended") {
+      this.ctx.resume();
+    }
+    if (!this.processingVoice) this.processNextVoice();
+  }
+
+  private async processNextVoice() {
+    const item = this.voiceQueue.shift();
     if (!item) {
-      this.playing = false;
+      this.processingVoice = false;
+      this.voicePlaying = false;
       this.currentClipKey = null;
+      this.unduckAmbient();
       this._onStateChange();
       return;
     }
 
-    this.playing = true;
+    this.processingVoice = true;
+    this.voicePlaying = true;
     this.currentClipKey = item.clipKey ?? null;
     this._onStateChange();
 
@@ -151,95 +407,117 @@ class AudioQueue {
         if (res.status === 503) {
           const payload = await res.json().catch(() => null);
           const code = typeof payload?.code === "string" ? payload.code : "";
-          // Only hard-disable on configuration errors. Provider outages are transient.
           if (code === "COMMENTARY_NOT_CONFIGURED") {
-            const msg =
-              payload?.error && typeof payload.error === "string"
-                ? payload.error
-                : "Commentary service is unavailable.";
-            this.queue = [];
-            this.playing = false;
+            this.voiceQueue = [];
+            this.processingVoice = false;
+            this.voicePlaying = false;
             this._onStateChange();
-            this._onUnavailable(msg);
+            this._onUnavailable(payload?.error ?? "Commentary service is unavailable.");
             return;
           }
-
           const nextRetry = item.retries + 1;
           if (nextRetry <= 5) {
             const retryAfterMs = Math.min(8_000, 1_000 * nextRetry);
-            this.queue.unshift({ ...item, retries: nextRetry });
-            this.playing = false;
+            this.voiceQueue.unshift({ ...item, retries: nextRetry });
+            this.processingVoice = false;
+            this.voicePlaying = false;
             this.currentClipKey = null;
             this._onStateChange();
             setTimeout(() => {
-              if (!this.playing) this.playNext();
+              if (!this.processingVoice) this.processNextVoice();
             }, retryAfterMs);
             return;
           }
-
-          const msg =
-            payload?.error && typeof payload.error === "string"
-              ? payload.error
-              : "Commentary service is unavailable.";
-          console.warn("[commentary] dropping item after repeated 503s:", msg);
-          setTimeout(() => this.playNext(), 300);
+          console.warn("[commentary] dropping item after repeated 503s");
+          setTimeout(() => this.processNextVoice(), 300);
           return;
         }
         if (res.status === 429) {
           const retryAfterSec = Number(res.headers.get("retry-after") ?? "1");
           const retryAfterMs = Math.max(1_000, Number.isFinite(retryAfterSec) ? retryAfterSec * 1_000 : 1_000);
-          // Requeue the dropped item and retry later instead of hammering the API.
-          this.queue.unshift(item);
-          this.playing = false;
+          this.voiceQueue.unshift(item);
+          this.processingVoice = false;
+          this.voicePlaying = false;
           this.currentClipKey = null;
           this._onStateChange();
           setTimeout(() => {
-            if (!this.playing) this.playNext();
+            if (!this.processingVoice) this.processNextVoice();
           }, retryAfterMs);
           return;
         }
         console.warn("[commentary] API error:", res.status);
-        setTimeout(() => this.playNext(), 300);
+        setTimeout(() => this.processNextVoice(), 300);
         return;
       }
 
-      const blob = await res.blob();
-      this.cleanup();
-      const url = URL.createObjectURL(blob);
-      this.currentUrl = url;
+      if (!this.ctx) {
+        setTimeout(() => this.processNextVoice(), 300);
+        return;
+      }
 
-      const audio = new Audio(url);
-      this.audioEl = audio;
-      audio.playbackRate = PLAYBACK_RATE;
+      // Duck ambient during voice
+      this.duckAmbient();
 
-      audio.onended = () => {
-        this.cleanup();
+      const arrayBuf = await res.arrayBuffer();
+      const audioBuf = await this.ctx.decodeAudioData(arrayBuf);
+
+      const source = this.ctx.createBufferSource();
+      source.buffer = audioBuf;
+      source.playbackRate.value = PLAYBACK_RATE;
+      source.connect(this.voiceGain!);
+
+      source.onended = () => {
         this.currentClipKey = null;
-        this.playNext();
-      };
-      audio.onerror = () => {
-        this.cleanup();
-        this.currentClipKey = null;
-        this.playNext();
+        this.unduckAmbient();
+        this.processNextVoice();
       };
 
-      await audio.play();
+      source.start();
     } catch (err) {
       const errMsg = String((err as any)?.message ?? "").toLowerCase();
       const errName = String((err as any)?.name ?? "").toLowerCase();
       if (errName.includes("notallowed") || errMsg.includes("not allowed")) {
-        this.queue.unshift(item);
-        this.playing = false;
+        this.voiceQueue.unshift(item);
+        this.processingVoice = false;
+        this.voicePlaying = false;
         this.currentClipKey = null;
         this._onStateChange();
         this._onPlaybackBlocked();
         return;
       }
       console.warn("[commentary] playback error:", err);
-      this.cleanup();
-      this.playNext();
+      this.unduckAmbient();
+      this.processNextVoice();
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Equalizer Bars Animation
+// ---------------------------------------------------------------------------
+
+function EqualizerBars({ active }: { active: boolean }) {
+  if (!active) return null;
+  return (
+    <div className="flex items-end gap-[2px] h-3">
+      {[0, 1, 2, 3].map((i) => (
+        <div
+          key={i}
+          className="w-[2px] bg-red-500 rounded-sm"
+          style={{
+            animation: `eqBar 0.${4 + i * 2}s ease-in-out infinite alternate`,
+            height: "40%",
+          }}
+        />
+      ))}
+      <style>{`
+        @keyframes eqBar {
+          0% { height: 20%; }
+          100% { height: 100%; }
+        }
+      `}</style>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -256,28 +534,23 @@ export default function CommentaryPlayer({
   const [isPlaying, setIsPlaying] = useState(false);
   const [serviceError, setServiceError] = useState<string | null>(null);
   const [needsAudioUnlock, setNeedsAudioUnlock] = useState(false);
+  const [isAmbientActive, setIsAmbientActive] = useState(false);
 
-  const queueRef = useRef<AudioQueue | null>(null);
+  const mixerRef = useRef<RadioMixer | null>(null);
   const lastRequestTime = useRef(0);
   const prevSeq = useRef(-1);
   const announcedBettingRumblesRef = useRef<Set<string>>(new Set());
   const announcedCombatRumblesRef = useRef<Set<string>>(new Set());
+  const enqueuedIntrosRef = useRef<Set<string>>(new Set());
   const lastBettingHypeAtByRumbleRef = useRef<Map<string, number>>(new Map());
   const lastTurnSeenByRumbleRef = useRef<Map<string, number>>(new Map());
 
-  // Load persisted prefs
+  // Init mixer
   useEffect(() => {
-    try {
-      // Keep commentary on by default every load unless user disables in-session.
-      setEnabled(true);
-    } catch {}
-  }, []);
-
-  // Init audio queue
-  useEffect(() => {
-    queueRef.current = new AudioQueue(
+    const mixer = new RadioMixer(
       () => {
-        setIsPlaying(queueRef.current?.isPlaying ?? false);
+        setIsPlaying(mixerRef.current?.isPlaying ?? false);
+        setIsAmbientActive(mixerRef.current?.isAmbientPlaying ?? false);
       },
       (message) => {
         setServiceError(message);
@@ -286,27 +559,62 @@ export default function CommentaryPlayer({
         setNeedsAudioUnlock(true);
       },
     );
+    mixerRef.current = mixer;
     return () => {
-      queueRef.current?.stop();
+      mixer.destroy();
     };
   }, []);
 
   // Sync volume
   useEffect(() => {
-    queueRef.current?.setVolume(volume);
+    mixerRef.current?.setVolume(volume);
   }, [volume]);
 
-  // Stop audio when disabled
+  // Start/stop ambient and preload on enable/disable
   useEffect(() => {
-    if (!enabled) {
-      queueRef.current?.stop();
+    const mixer = mixerRef.current;
+    if (!mixer) return;
+    let cancelled = false;
+
+    if (enabled) {
+      (async () => {
+        try {
+          await mixer.init();
+          if (cancelled) return;
+          await mixer.preloadAll();
+          if (cancelled) return;
+          await mixer.playTuneInEffect();
+          if (cancelled) return;
+          await mixer.startAmbient();
+          if (!cancelled) setIsAmbientActive(true);
+        } catch (err: any) {
+          if (cancelled) return;
+          const message = err?.message ?? "Commentary audio unavailable on this browser/device.";
+          setServiceError(String(message));
+        }
+      })();
+    } else {
+      mixer.stop();
+      mixer.stopAmbient();
+      setIsAmbientActive(false);
     }
+    return () => {
+      cancelled = true;
+    };
   }, [enabled]);
 
-  const unlockAudio = useCallback(() => {
+  const unlockAudio = useCallback(async () => {
     setNeedsAudioUnlock(false);
-    queueRef.current?.resume();
-  }, []);
+    const mixer = mixerRef.current;
+    if (mixer) {
+      await mixer.init();
+      mixer.resume();
+      if (enabled) {
+        await mixer.startAmbient();
+        setIsAmbientActive(true);
+      }
+    }
+  }, [enabled]);
 
   const getVoiceId = useCallback(() => {
     return process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_A ?? "";
@@ -322,7 +630,7 @@ export default function CommentaryPlayer({
     const now = Date.now();
     if (now - lastRequestTime.current < COOLDOWN_MS) return;
     lastRequestTime.current = now;
-    queueRef.current?.enqueue(
+    mixerRef.current?.enqueue(
       candidate.eventType,
       candidate.context,
       getVoiceId(),
@@ -349,25 +657,29 @@ export default function CommentaryPlayer({
     if (!enabled || !lastEvent || eventSeq === prevSeq.current) return;
     prevSeq.current = eventSeq;
 
-    const slot = slots?.find((s) => s.slotIndex === lastEvent.slotIndex);
-    if (lastEvent.type === "turn_resolved") {
-      const slotAny = slot as (CommentarySlotData & { rumbleId?: string }) | undefined;
-      const rumbleId =
-        typeof slotAny?.rumbleId === "string" && slotAny.rumbleId.length > 0
-          ? slotAny.rumbleId
-          : `slot-${lastEvent.slotIndex}`;
-      const turnNum = Number(lastEvent.data?.turn?.turnNumber ?? lastEvent.data?.turnNumber ?? 0);
-      const prevTurn = lastTurnSeenByRumbleRef.current.get(rumbleId) ?? 0;
-      if (turnNum > prevTurn) {
-        queueRef.current?.dropPendingCombatNarration();
-        lastTurnSeenByRumbleRef.current.set(rumbleId, turnNum);
+    try {
+      const slot = slots?.find((s) => s.slotIndex === lastEvent.slotIndex);
+      if (lastEvent.type === "turn_resolved") {
+        const slotAny = slot as (CommentarySlotData & { rumbleId?: string }) | undefined;
+        const rumbleId =
+          typeof slotAny?.rumbleId === "string" && slotAny.rumbleId.length > 0
+            ? slotAny.rumbleId
+            : `slot-${lastEvent.slotIndex}`;
+        const turnNum = Number(lastEvent.data?.turn?.turnNumber ?? lastEvent.data?.turnNumber ?? 0);
+        const prevTurn = lastTurnSeenByRumbleRef.current.get(rumbleId) ?? 0;
+        if (turnNum > prevTurn) {
+          mixerRef.current?.dropPendingCombatNarration();
+          lastTurnSeenByRumbleRef.current.set(rumbleId, turnNum);
+        }
       }
+      const candidate = evaluateEvent(lastEvent, slot as CommentarySlotData | undefined);
+      enqueueCandidate(candidate);
+    } catch (err) {
+      console.warn("[commentary] event handling skipped due to malformed payload", err);
     }
-    const candidate = evaluateEvent(lastEvent, slot as CommentarySlotData | undefined);
-    enqueueCandidate(candidate);
   }, [enabled, lastEvent, eventSeq, slots, enqueueCandidate]);
 
-  // Fallback: announce betting/combat from polled slot state in case SSE open/start events were missed.
+  // Fallback: announce betting/combat from polled slot state + fighter intros
   useEffect(() => {
     if (!enabled || !slots?.length) return;
 
@@ -380,6 +692,25 @@ export default function CommentaryPlayer({
         const candidate = evaluateEvent({ type: "betting_open", slotIndex: slotAny.slotIndex, data: {} }, slotAny);
         enqueueCandidate(candidate);
         announcedBettingRumblesRef.current.add(rumbleId);
+
+        // Enqueue fighter intros (up to 4 notable fighters)
+        if (!enqueuedIntrosRef.current.has(rumbleId)) {
+          enqueuedIntrosRef.current.add(rumbleId);
+          const fighters = Array.isArray(slotAny.fighters) ? slotAny.fighters.filter((f) => f.robotMeta) : [];
+          const introFighters = fighters.slice(0, 4);
+          for (const fighter of introFighters) {
+            const introContext = buildFighterIntroContext(fighter);
+            if (!introContext) continue;
+            // Use a small delay offset via clipKey uniqueness
+            mixerRef.current?.enqueue(
+              "fighter_intro",
+              introContext,
+              getVoiceId(),
+              [fighter.name],
+              `intro:${rumbleId}:${fighter.id}`,
+            );
+          }
+        }
       }
 
       if (slotAny.state === "combat" && !announcedCombatRumblesRef.current.has(rumbleId)) {
@@ -388,9 +719,9 @@ export default function CommentaryPlayer({
         announcedCombatRumblesRef.current.add(rumbleId);
       }
     }
-  }, [enabled, slots, enqueueCandidate]);
+  }, [enabled, slots, enqueueCandidate, getVoiceId]);
 
-  // Continuous hype while betting is open so commentary stays alive pre-fight.
+  // Continuous hype while betting is open
   useEffect(() => {
     if (!enabled || !slots?.length) return;
 
@@ -446,6 +777,8 @@ export default function CommentaryPlayer({
     return () => clearInterval(timer);
   }, [enabled, slots, enqueueCandidate]);
 
+  const showOnAir = enabled && (isPlaying || isAmbientActive);
+
   return (
     <div className="flex items-center gap-2 bg-stone-900/80 border border-stone-700 rounded-sm px-2 py-1">
       {/* Toggle */}
@@ -471,13 +804,11 @@ export default function CommentaryPlayer({
           stroke="currentColor"
         >
           {enabled ? (
-            <>
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z"
-              />
-            </>
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z"
+            />
           ) : (
             <path
               strokeLinecap="round"
@@ -486,7 +817,20 @@ export default function CommentaryPlayer({
             />
           )}
         </svg>
-        <span>{enabled ? "LIVE" : "COMMENTARY"}</span>
+
+        {/* ON AIR label with red glow */}
+        {showOnAir ? (
+          <span
+            className="text-red-500 font-bold tracking-wider"
+            style={{
+              textShadow: "0 0 6px rgba(239, 68, 68, 0.7), 0 0 12px rgba(239, 68, 68, 0.4)",
+            }}
+          >
+            ON AIR
+          </span>
+        ) : (
+          <span>{enabled ? "LIVE" : "COMMENTARY"}</span>
+        )}
       </button>
 
       {enabled && (
@@ -501,9 +845,12 @@ export default function CommentaryPlayer({
             </button>
           )}
 
-          {/* Playing indicator */}
-          {isPlaying && (
-            <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+          {/* Equalizer bars when playing */}
+          <EqualizerBars active={isPlaying} />
+
+          {/* Ambient indicator (subtle) */}
+          {!isPlaying && isAmbientActive && (
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-red-500/60 animate-pulse" />
           )}
 
           {/* Volume */}

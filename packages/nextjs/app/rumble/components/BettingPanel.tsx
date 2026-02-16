@@ -205,6 +205,9 @@ export default function BettingPanel({
           const isSelected = bets.has(f.fighterId);
           const isDeploying = deploying.has(f.fighterId);
           const myStake = myBetAmounts?.get(f.fighterId) ?? 0;
+          const potentialReturn = Number.isFinite(Number(f.potentialReturn)) ? Number(f.potentialReturn) : 0;
+          const impliedProbability = Number.isFinite(Number(f.impliedProbability)) ? Number(f.impliedProbability) : 0;
+          const deployed = Number.isFinite(Number(f.solDeployed)) ? Number(f.solDeployed) : 0;
 
           return (
             <div key={f.fighterId} className="space-y-0">
@@ -225,13 +228,13 @@ export default function BettingPanel({
                 </div>
                 <div className="text-right flex-shrink-0 ml-2">
                   <p className="font-mono text-xs text-amber-400">
-                    {f.potentialReturn.toFixed(1)}x
+                    {potentialReturn.toFixed(1)}x
                   </p>
                   <p className="font-mono text-[10px] text-stone-500">
-                    {(f.impliedProbability * 100).toFixed(0)}%
+                    {(impliedProbability * 100).toFixed(0)}%
                   </p>
                   <p className="font-mono text-[10px] text-stone-600">
-                    {f.solDeployed.toFixed(2)} SOL
+                    {deployed.toFixed(2)} SOL
                   </p>
                   {myStake > 0 && (
                     <p className="font-mono text-[10px] text-cyan-400">

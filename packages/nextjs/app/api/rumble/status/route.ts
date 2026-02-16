@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { getOrchestrator } from "~~/lib/rumble-orchestrator";
 import { getQueueManager } from "~~/lib/queue-manager";
+import { hasRecovered, recoverOrchestratorState } from "~~/lib/rumble-state-recovery";
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 import {
   loadQueueState,
@@ -35,17 +36,41 @@ function freshServiceClient() {
 // Fighter lookup cache (refreshed per request)
 // ---------------------------------------------------------------------------
 
-type FighterInfo = { name: string; imageUrl: string | null };
+interface RobotMeta {
+  robot_type?: string;
+  fighting_style?: string;
+  signature_move?: string;
+  personality?: string;
+  chassis_description?: string;
+  distinguishing_features?: string;
+  victory_line?: string;
+  defeat_line?: string;
+  taunt_lines?: string[];
+}
+
+type FighterInfo = { name: string; imageUrl: string | null; robotMeta: RobotMeta | null };
 
 async function loadFighterLookup(): Promise<Map<string, FighterInfo>> {
   const sb = freshServiceClient();
   const { data } = await sb
     .from("ucf_fighters")
-    .select("id, name, image_url");
+    .select("id, name, image_url, robot_metadata");
 
   const map = new Map<string, FighterInfo>();
   for (const f of data ?? []) {
-    map.set(f.id, { name: f.name, imageUrl: f.image_url });
+    const raw = f.robot_metadata;
+    const robotMeta: RobotMeta | null = raw && typeof raw === "object" ? {
+      robot_type: raw.robot_type ?? undefined,
+      fighting_style: raw.fighting_style ?? undefined,
+      signature_move: raw.signature_move ?? undefined,
+      personality: raw.personality ?? undefined,
+      chassis_description: raw.chassis_description ?? undefined,
+      distinguishing_features: raw.distinguishing_features ?? undefined,
+      victory_line: raw.victory_line ?? undefined,
+      defeat_line: raw.defeat_line ?? undefined,
+      taunt_lines: Array.isArray(raw.taunt_lines) ? raw.taunt_lines : undefined,
+    } : null;
+    map.set(f.id, { name: f.name, imageUrl: f.image_url, robotMeta });
   }
   return map;
 }
@@ -56,6 +81,10 @@ function fighterName(lookup: Map<string, FighterInfo>, id: string): string {
 
 function fighterImage(lookup: Map<string, FighterInfo>, id: string): string | null {
   return lookup.get(id)?.imageUrl ?? null;
+}
+
+function fighterRobotMeta(lookup: Map<string, FighterInfo>, id: string): RobotMeta | null {
+  return lookup.get(id)?.robotMeta ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,6 +100,14 @@ export async function GET(request: Request) {
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
 
   try {
+    // Cold-start self-heal so stale betting/combat rows are reconciled even if
+    // no one has hit /tick or /bet yet.
+    if (!hasRecovered()) {
+      await recoverOrchestratorState().catch((err) => {
+        console.warn("[StatusAPI] state recovery failed", err);
+      });
+    }
+
     const orchestrator = getOrchestrator();
     const qm = getQueueManager();
 
@@ -97,6 +134,7 @@ export async function GET(request: Request) {
           hp: f.hp,
           maxHp: 100,
           imageUrl: fighterImage(lookup, f.id),
+          robotMeta: fighterRobotMeta(lookup, f.id),
           meter: f.meter,
           totalDamageDealt: f.totalDamageDealt,
           totalDamageTaken: f.totalDamageTaken,
@@ -110,6 +148,7 @@ export async function GET(request: Request) {
           hp: 100,
           maxHp: 100,
           imageUrl: fighterImage(lookup, fid),
+          robotMeta: fighterRobotMeta(lookup, fid),
           meter: 0,
           totalDamageDealt: 0,
           totalDamageTaken: 0,
@@ -248,6 +287,7 @@ export async function GET(request: Request) {
             hp: 100,
             maxHp: 100,
             imageUrl: fighterImage(lookup, fid),
+            robotMeta: fighterRobotMeta(lookup, fid),
             meter: 0,
             totalDamageDealt: 0,
             totalDamageTaken: 0,
