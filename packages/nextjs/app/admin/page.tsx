@@ -68,6 +68,7 @@ interface DashboardData {
   stats: Stats | null;
   ichorShower: IchorShower | null;
   activeRumbles: Rumble[];
+  staleActiveRows?: number;
   recentRumbles: Rumble[];
   fighters: Fighter[];
   timestamp: string;
@@ -723,6 +724,11 @@ export default function AdminPage() {
                 Run all rumble ops from here. No terminal needed.
               </p>
             )}
+            {(dashboard?.staleActiveRows ?? 0) > 0 ? (
+              <p className="font-mono text-[10px] text-amber-500">
+                Admin cleaned view: hiding {dashboard?.staleActiveRows} stale active row(s).
+              </p>
+            ) : null}
           </div>
         </Section>
 

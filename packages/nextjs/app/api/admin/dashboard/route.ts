@@ -33,7 +33,7 @@ export async function GET(request: Request) {
     const sb = freshClient();
 
     // Run all queries in parallel
-    const [queue, stats, ichorShower, activeRumbles, recentRumbles, fighters] =
+    const [queue, stats, ichorShower, activeRumblesRaw, recentRumbles, fighters] =
       await Promise.all([
         loadQueueState(),
         getStats(),
@@ -43,7 +43,7 @@ export async function GET(request: Request) {
           .from("ucf_rumbles")
           .select("id, slot_index, status, fighters, created_at, started_at, tx_signatures")
           .in("status", ["betting", "combat", "payout"])
-          .order("created_at", { ascending: true })
+          .order("created_at", { ascending: false })
           .then(({ data }) => data ?? []),
         // Recent completed rumbles
         sb
@@ -65,11 +65,28 @@ export async function GET(request: Request) {
           .then(({ data }) => data ?? []),
       ]);
 
+    // Keep only the newest active rumble per slot for admin display.
+    // Stale rows can exist after cold starts/recovery races; showing all of
+    // them makes the panel look broken (e.g., multiple "Slot 0" cards).
+    const activeBySlot = new Map<number, any>();
+    for (const row of activeRumblesRaw) {
+      const slotIndex = Number(row?.slot_index);
+      if (!Number.isInteger(slotIndex) || slotIndex < 0 || slotIndex > 2) continue;
+      if (!activeBySlot.has(slotIndex)) {
+        activeBySlot.set(slotIndex, row);
+      }
+    }
+    const activeRumbles = [...activeBySlot.values()].sort(
+      (a, b) => Number(a.slot_index) - Number(b.slot_index),
+    );
+    const staleActiveRows = Math.max(0, activeRumblesRaw.length - activeRumbles.length);
+
     return NextResponse.json({
       queue,
       stats,
       ichorShower,
       activeRumbles,
+      staleActiveRows,
       recentRumbles,
       fighters,
       timestamp: new Date().toISOString(),
