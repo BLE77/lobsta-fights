@@ -30,6 +30,7 @@ export interface QueueEntry {
 export interface QueueManager {
   addToQueue(fighterId: string, autoRequeue?: boolean): QueueEntry;
   removeFromQueue(fighterId: string): boolean;
+  abortBettingSlot(slotIndex: number): string[];
   getQueuePosition(fighterId: string): number | null;
   getQueueLength(): number;
   getQueueEntries(): QueueEntry[];
@@ -315,6 +316,28 @@ export class RumbleQueueManager implements QueueManager {
       `[QM] Slot ${slotIndex} betting window armed: deadline=${slot.bettingDeadline.toISOString()}`
     );
     return true;
+  }
+
+  /**
+   * Abort a slot stuck in betting and return fighters that were in that slot.
+   * The slot is reset to idle and onSlotRecycled hook is triggered.
+   */
+  abortBettingSlot(slotIndex: number): string[] {
+    const slot = this.slots[slotIndex];
+    if (!slot || slot.state !== "betting") return [];
+    const fighters = [...slot.fighters];
+    const previousRumbleId = slot.id;
+
+    slot.id = generateRumbleId();
+    slot.state = "idle";
+    slot.fighters = [];
+    slot.bettingPool = new Map();
+    slot.bettingDeadline = null;
+    slot.combatStartedAt = null;
+    slot.rumbleResult = null;
+
+    this.onSlotRecycled(slotIndex, fighters, previousRumbleId);
+    return fighters;
   }
 
   /**

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { PublicKey } from "@solana/web3.js";
 import { getQueueManager } from "~~/lib/queue-manager";
 import { getOrchestrator } from "~~/lib/rumble-orchestrator";
 import { saveQueueFighter, removeQueueFighter } from "~~/lib/rumble-persistence";
@@ -91,6 +92,28 @@ export async function POST(request: Request) {
     }
     if (!(await isAuthorizedFighter(fighterId, apiKey))) {
       return NextResponse.json({ error: "Invalid fighter credentials" }, { status: 401 });
+    }
+
+    // Full on-chain mode requires each queued fighter to have a valid Solana wallet.
+    const { data: fighterRow } = await freshSupabase()
+      .from("ucf_fighters")
+      .select("wallet_address")
+      .eq("id", fighterId)
+      .maybeSingle();
+    const walletAddress = String((fighterRow as any)?.wallet_address ?? "").trim();
+    if (!walletAddress) {
+      return NextResponse.json(
+        { error: "Fighter is missing wallet_address. Update the fighter wallet before joining queue." },
+        { status: 409 },
+      );
+    }
+    try {
+      void new PublicKey(walletAddress);
+    } catch {
+      return NextResponse.json(
+        { error: "Fighter wallet_address is invalid. Use a valid Solana public key." },
+        { status: 409 },
+      );
     }
 
     // Sybil protection: limit concurrent fighters from same IP in queue/active Rumbles

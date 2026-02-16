@@ -291,6 +291,12 @@ const SHOWER_SETTLEMENT_POLL_MS = 12_000;
 const ONCHAIN_FINALIZATION_DELAY_MS = 30_000;
 const ONCHAIN_FINALIZATION_RETRY_MS = 10_000;
 const ONCHAIN_CREATE_RETRY_MS = 5_000;
+const ONCHAIN_CREATE_STALL_TIMEOUT_MS = readIntervalMs(
+  "RUMBLE_ONCHAIN_CREATE_STALL_TIMEOUT_MS",
+  45_000,
+  10_000,
+  5 * 60_000,
+);
 const MAX_FINALIZATION_ATTEMPTS = 30;
 const ONCHAIN_CREATE_RECOVERY_DEADLINE_SKEW_SEC = 5;
 const ONCHAIN_TURN_AUTHORITY =
@@ -355,6 +361,8 @@ export class RumbleOrchestrator {
   private settledRumbleIds: Map<string, number> = new Map(); // rumbleId → timestamp
   private pendingFinalizations: Map<string, PendingFinalization> = new Map();
   private onchainRumbleCreateRetryAt: Map<string, number> = new Map();
+  private onchainRumbleCreateStartedAt: Map<string, number> = new Map();
+  private warnedInvalidHouseBotIds: Set<string> = new Set();
   private tickInFlight: Promise<void> | null = null;
 
   constructor(queueManager: RumbleQueueManager) {
@@ -602,10 +610,28 @@ export class RumbleOrchestrator {
     const missing = Math.max(0, this.getHouseBotTargetPopulation() - currentHousePopulation);
     if (missing === 0) return;
 
+    const walletMap = await persist.lookupFighterWallets(this.houseBotIds);
     let added = 0;
     for (const fighterId of this.houseBotIds) {
       if (added >= missing) break;
       if (queuedSet.has(fighterId) || activeSet.has(fighterId)) continue;
+      const wallet = walletMap.get(fighterId);
+      if (!wallet) {
+        if (!this.warnedInvalidHouseBotIds.has(fighterId)) {
+          this.warnedInvalidHouseBotIds.add(fighterId);
+          console.warn(`[HouseBots] Skipping ${fighterId}: missing wallet_address`);
+        }
+        continue;
+      }
+      try {
+        void new PublicKey(wallet);
+      } catch {
+        if (!this.warnedInvalidHouseBotIds.has(fighterId)) {
+          this.warnedInvalidHouseBotIds.add(fighterId);
+          console.warn(`[HouseBots] Skipping ${fighterId}: invalid wallet_address (${wallet})`);
+        }
+        continue;
+      }
       try {
         this.queueManager.addToQueue(fighterId, false);
         await persist.saveQueueFighter(fighterId, "waiting", false);
@@ -818,6 +844,17 @@ export class RumbleOrchestrator {
 
   private async handleBettingPhase(slot: RumbleSlot): Promise<void> {
     const idx = slot.slotIndex;
+    const rumbleId = slot.id;
+    const now = Date.now();
+
+    if (!this.onchainRumbleCreateStartedAt.has(rumbleId)) {
+      this.onchainRumbleCreateStartedAt.set(rumbleId, now);
+    }
+
+    const slotWalletsValid = await this.ensureSlotFighterWalletsValid(slot);
+    if (!slotWalletsValid) {
+      return;
+    }
 
     // Create betting pool if we don't have one for this rumble
     if (!this.bettingPools.has(idx) || this.bettingPools.get(idx)!.rumbleId !== slot.id) {
@@ -838,20 +875,24 @@ export class RumbleOrchestrator {
     // Keep trying to materialize the on-chain rumble account during betting.
     // A transient failure on the first create attempt must not leave the slot
     // permanently unbettable.
-    const now = Date.now();
-    const retryAt = this.onchainRumbleCreateRetryAt.get(slot.id) ?? 0;
+    const retryAt = this.onchainRumbleCreateRetryAt.get(rumbleId) ?? 0;
     if (now < retryAt) return;
 
     const createdOrExists = await this.ensureOnchainRumbleExists(
-      slot.id,
+      rumbleId,
       slot.fighters,
       Math.floor((Date.now() + ONCHAIN_BETTING_DURATION_MS) / 1000),
     );
     if (createdOrExists) {
-      this.onchainRumbleCreateRetryAt.delete(slot.id);
+      this.onchainRumbleCreateRetryAt.delete(rumbleId);
+      this.onchainRumbleCreateStartedAt.delete(rumbleId);
       await this.armBettingWindowIfReady(slot);
     } else {
-      this.onchainRumbleCreateRetryAt.set(slot.id, now + ONCHAIN_CREATE_RETRY_MS);
+      this.onchainRumbleCreateRetryAt.set(rumbleId, now + ONCHAIN_CREATE_RETRY_MS);
+      const startedAt = this.onchainRumbleCreateStartedAt.get(rumbleId) ?? now;
+      if (now - startedAt >= ONCHAIN_CREATE_STALL_TIMEOUT_MS) {
+        await this.abortStalledBettingSlot(slot, "on-chain rumble creation timed out");
+      }
     }
   }
 
@@ -903,6 +944,62 @@ export class RumbleOrchestrator {
       fighters: [...slot.fighters],
       deadline: updated.bettingDeadline,
     });
+  }
+
+  private async ensureSlotFighterWalletsValid(slot: RumbleSlot): Promise<boolean> {
+    if (slot.fighters.length === 0) return false;
+    const walletMap = await persist.lookupFighterWallets(slot.fighters);
+    const invalid: string[] = [];
+    for (const fighterId of slot.fighters) {
+      const wallet = walletMap.get(fighterId);
+      if (!wallet) {
+        invalid.push(fighterId);
+        continue;
+      }
+      try {
+        void new PublicKey(wallet);
+      } catch {
+        invalid.push(fighterId);
+      }
+    }
+    if (invalid.length === 0) return true;
+    const invalidSet = new Set(invalid);
+    await this.abortStalledBettingSlot(
+      slot,
+      `invalid fighter wallet(s): ${invalid.slice(0, 3).join(", ")}${invalid.length > 3 ? "..." : ""}`,
+      invalidSet,
+    );
+    return false;
+  }
+
+  private async abortStalledBettingSlot(
+    slot: RumbleSlot,
+    reason: string,
+    dropFighterIds: Set<string> = new Set(),
+  ): Promise<void> {
+    const rumbleId = slot.id;
+    const slotIndex = slot.slotIndex;
+    const fighters = this.queueManager.abortBettingSlot(slotIndex);
+
+    this.onchainRumbleCreateRetryAt.delete(rumbleId);
+    this.onchainRumbleCreateStartedAt.delete(rumbleId);
+    this.cleanupSlot(slotIndex, rumbleId);
+
+    for (const fighterId of fighters) {
+      if (dropFighterIds.has(fighterId)) {
+        await persist.removeQueueFighter(fighterId).catch(() => {});
+        continue;
+      }
+      try {
+        this.queueManager.addToQueue(fighterId, false);
+        await persist.saveQueueFighter(fighterId, "waiting", false);
+      } catch {
+        // Ignore duplicates/active-slot conflicts during recovery.
+      }
+    }
+
+    await persist.updateRumbleStatus(rumbleId, "complete").catch(() => {});
+    console.warn(`[Orchestrator] Recycled stalled betting slot ${slotIndex} (${rumbleId}): ${reason}`);
   }
 
   /**
@@ -2560,6 +2657,7 @@ export class RumbleOrchestrator {
   ): void {
     this.payoutProcessed.delete(previousRumbleId);
     this.onchainRumbleCreateRetryAt.delete(previousRumbleId);
+    this.onchainRumbleCreateStartedAt.delete(previousRumbleId);
     this.combatStates.delete(slotIndex);
     this.payoutResults.delete(slotIndex);
 

@@ -32,8 +32,6 @@ import {
 function getHeliusApiKey(): string | null {
   const serverKey = process.env.HELIUS_API_KEY?.trim();
   if (serverKey) return serverKey;
-  const publicKey = process.env.NEXT_PUBLIC_HELIUS_API_KEY?.trim();
-  if (publicKey) return publicKey;
   return null;
 }
 
