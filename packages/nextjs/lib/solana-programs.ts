@@ -1401,7 +1401,7 @@ export async function createRumble(
   const [rumbleConfigPda] = deriveRumbleConfigPda();
   const [rumblePda] = deriveRumblePda(rumbleId);
   const nowUnix = Math.floor(Date.now() / 1000);
-  const deadlineMode = (process.env.RUMBLE_CREATE_DEADLINE_MODE ?? "slot").trim().toLowerCase();
+  const deadlineMode = (process.env.RUMBLE_CREATE_DEADLINE_MODE ?? "unix").trim().toLowerCase();
   const currentSlot = await provider.connection.getSlot("processed");
   const slotMsEstimateRaw = Number(process.env.RUMBLE_SLOT_MS_ESTIMATE ?? "400");
   const slotMsEstimate = Number.isFinite(slotMsEstimateRaw)
