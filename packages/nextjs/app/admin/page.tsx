@@ -1282,7 +1282,14 @@ function OnChainTab({ data }: { data: OnChainData | null }) {
   const rumble = data.rumbleConfig;
   const registry = data.registryConfig;
   const adminSigner = data.adminSigner ?? null;
-  const adminHealthy = adminSigner?.configured && adminSigner?.matchesRumbleAdmin !== false;
+  const adminStatus: "ready" | "unknown" | "not_ready" =
+    !adminSigner?.configured
+      ? "not_ready"
+      : adminSigner?.matchesRumbleAdmin === false
+        ? "not_ready"
+        : adminSigner?.matchesRumbleAdmin === true
+          ? "ready"
+          : "unknown";
 
   return (
     <div className="space-y-6">
@@ -1290,18 +1297,24 @@ function OnChainTab({ data }: { data: OnChainData | null }) {
       <Section title="Admin Signer Health">
         <div
           className={`border rounded p-4 ${
-            adminHealthy
+            adminStatus === "ready"
               ? "bg-emerald-900/20 border-emerald-700/40"
-              : "bg-red-900/20 border-red-700/40"
+              : adminStatus === "unknown"
+                ? "bg-amber-900/20 border-amber-700/40"
+                : "bg-red-900/20 border-red-700/40"
           }`}
         >
           <div className="flex items-center justify-between gap-3">
             <p
               className={`font-mono text-sm uppercase ${
-                adminHealthy ? "text-emerald-400" : "text-red-400"
+                adminStatus === "ready"
+                  ? "text-emerald-400"
+                  : adminStatus === "unknown"
+                    ? "text-amber-400"
+                    : "text-red-400"
               }`}
             >
-              {adminHealthy ? "READY" : "NOT READY"}
+              {adminStatus === "ready" ? "READY" : adminStatus === "unknown" ? "UNKNOWN" : "NOT READY"}
             </p>
             <p className="font-mono text-[10px] text-stone-500">
               Create rumble requires signer = on-chain admin
@@ -1333,7 +1346,7 @@ function OnChainTab({ data }: { data: OnChainData | null }) {
               title={adminSigner?.onchainRumbleAdmin ?? undefined}
             />
           </div>
-          {!adminHealthy && (
+          {adminStatus !== "ready" && (
             <p className="font-mono text-xs text-red-300 mt-3">
               Fix Vercel env: set <code>SOLANA_DEPLOYER_KEYPAIR</code> to the same wallet that controls on-chain
               <code> RumbleConfig.admin</code>, then redeploy.

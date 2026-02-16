@@ -22,7 +22,11 @@ export async function GET(request: Request) {
       readRegistryConfig().catch(() => null),
     ]);
     const adminSigner = getAdminSignerPublicKey();
-    const onchainRumbleAdmin = rumbleConfig?.admin?.toBase58?.() ?? null;
+    const onchainAdminRaw = rumbleConfig?.admin as unknown;
+    const onchainRumbleAdmin =
+      typeof onchainAdminRaw === "string"
+        ? onchainAdminRaw
+        : (onchainAdminRaw as any)?.toBase58?.() ?? null;
     const adminSignerMatchesRumbleAdmin =
       !!adminSigner && !!onchainRumbleAdmin ? adminSigner === onchainRumbleAdmin : null;
 
