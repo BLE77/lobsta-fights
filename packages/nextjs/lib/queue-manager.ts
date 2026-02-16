@@ -33,6 +33,7 @@ export interface QueueManager {
   getQueuePosition(fighterId: string): number | null;
   getQueueLength(): number;
   getQueueEntries(): QueueEntry[];
+  getQueueStartCountdownMs(): number | null;
   getSlots(): RumbleSlot[];
   getSlot(slotIndex: number): RumbleSlot | null;
   advanceSlots(): void;
@@ -44,7 +45,8 @@ export interface QueueManager {
 // ---------------------------------------------------------------------------
 
 const NUM_SLOTS = 3;
-const FIGHTERS_PER_RUMBLE = 12;
+const FIGHTERS_PER_RUMBLE = 16;
+const MIN_FIGHTERS_TO_START = 8;
 
 function readDurationMs(
   envName: string,
@@ -80,6 +82,12 @@ const BETTING_CLOSE_GRACE_MS = readDurationMs(
   1_500,
   0,
   15_000,
+);
+const QUEUE_LOCK_COUNTDOWN_MS = readDurationMs(
+  "RUMBLE_QUEUE_LOCK_COUNTDOWN_MS",
+  30_000,
+  5_000,
+  120_000,
 );
 
 // Slot offsets -- each slot is staggered by ~2 minutes so there's always
@@ -119,6 +127,7 @@ export class RumbleQueueManager implements QueueManager {
   private queue: QueueEntry[] = [];
   private slots: RumbleSlot[];
   private fighterSet: Set<string> = new Set(); // quick lookup for duplicates
+  private queueReadyAtMs: number | null = null;
 
   constructor() {
     this.slots = Array.from({ length: NUM_SLOTS }, (_, i) => createEmptySlot(i));
@@ -174,6 +183,13 @@ export class RumbleQueueManager implements QueueManager {
 
   getQueueEntries(): QueueEntry[] {
     return this.queue.map((entry) => ({ ...entry }));
+  }
+
+  getQueueStartCountdownMs(): number | null {
+    if (this.queue.length < MIN_FIGHTERS_TO_START) return null;
+    if (this.queueReadyAtMs === null) return QUEUE_LOCK_COUNTDOWN_MS;
+    const deadline = this.queueReadyAtMs + QUEUE_LOCK_COUNTDOWN_MS;
+    return Math.max(0, deadline - Date.now());
   }
 
   /**
@@ -281,6 +297,7 @@ export class RumbleQueueManager implements QueueManager {
     slot.combatStartedAt = null;
     slot.rumbleResult = null;
     slot.state = "betting";
+    this.queueReadyAtMs = null;
 
     console.log(`[QM] Slot ${slotIndex} started betting: deadline=${slot.bettingDeadline.toISOString()} BETTING_DURATION_MS=${BETTING_DURATION_MS}`);
 
@@ -335,8 +352,26 @@ export class RumbleQueueManager implements QueueManager {
 
   /** If queue has enough fighters and slot is idle, start betting. */
   private tryStartBetting(slot: RumbleSlot): void {
-    // Require a minimum of 8 fighters to match rumble-engine's MIN_FIGHTERS.
-    if (this.queue.length < 8) return;
+    if (this.queue.length < MIN_FIGHTERS_TO_START) {
+      this.queueReadyAtMs = null;
+      return;
+    }
+
+    // If we've already filled the full bracket, start immediately.
+    if (this.queue.length >= FIGHTERS_PER_RUMBLE) {
+      this.startNextRumble(slot.slotIndex);
+      return;
+    }
+
+    if (this.queueReadyAtMs === null) {
+      this.queueReadyAtMs = Date.now();
+      return;
+    }
+
+    if (Date.now() < this.queueReadyAtMs + QUEUE_LOCK_COUNTDOWN_MS) {
+      return;
+    }
+
     this.startNextRumble(slot.slotIndex);
   }
 

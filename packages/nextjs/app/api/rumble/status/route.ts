@@ -417,7 +417,18 @@ export async function GET(request: Request) {
       nextRumbleIn = `Need ${8 - effectiveQueueLen} more fighters`;
     } else if (effectiveQueueLen >= 8) {
       const hasIdleSlot = slots.some((s) => s.state === "idle");
-      nextRumbleIn = hasIdleSlot ? "Starting soon..." : "All slots active";
+      if (!hasIdleSlot) {
+        nextRumbleIn = "All slots active";
+      } else if (effectiveQueueLen >= 16) {
+        nextRumbleIn = "Starting now...";
+      } else {
+        const warmupMs = qm.getQueueStartCountdownMs();
+        if (typeof warmupMs === "number" && warmupMs > 0) {
+          nextRumbleIn = `Queue lock in ${Math.ceil(warmupMs / 1000)}s`;
+        } else {
+          nextRumbleIn = "Starting soon...";
+        }
+      }
     }
 
     // ---- queueLength: in-queue + in-combat fighters for display ------------

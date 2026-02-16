@@ -267,6 +267,7 @@ const HOUSE_BOT_IDS = (process.env.RUMBLE_HOUSE_BOT_IDS ?? "")
   .map((id) => id.trim())
   .filter((id) => id.length > 0);
 const HOUSE_BOTS_ENABLED = process.env.RUMBLE_HOUSE_BOTS_ENABLED === "true" && HOUSE_BOT_IDS.length > 0;
+const HOUSE_BOTS_AUTO_FILL = process.env.RUMBLE_HOUSE_BOTS_AUTO_FILL === "true";
 const HOUSE_BOT_TARGET_POPULATION = readInt(
   "RUMBLE_HOUSE_BOT_TARGET_POPULATION",
   8,
@@ -560,6 +561,10 @@ export class RumbleOrchestrator {
   private async maintainHouseBotQueue(): Promise<void> {
     if (!HOUSE_BOTS_ENABLED) return;
     if (this.houseBotsPaused) return;
+    if (!HOUSE_BOTS_AUTO_FILL) {
+      await this.removeQueuedHouseBots();
+      return;
+    }
 
     const slots = this.queueManager.getSlots();
     const queueEntries = this.queueManager.getQueueEntries();
@@ -631,6 +636,7 @@ export class RumbleOrchestrator {
 
   getHouseBotControlStatus(): {
     configuredEnabled: boolean;
+    configuredAutoFill: boolean;
     configuredHouseBotCount: number;
     paused: boolean;
     targetPopulation: number;
@@ -639,6 +645,7 @@ export class RumbleOrchestrator {
   } {
     return {
       configuredEnabled: HOUSE_BOTS_ENABLED,
+      configuredAutoFill: HOUSE_BOTS_AUTO_FILL,
       configuredHouseBotCount: this.houseBotIds.length,
       paused: this.houseBotsPaused,
       targetPopulation: this.getHouseBotTargetPopulation(),
