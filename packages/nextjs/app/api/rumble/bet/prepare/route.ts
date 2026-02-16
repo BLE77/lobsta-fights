@@ -13,6 +13,7 @@ export const dynamic = "force-dynamic";
 const BETTING_CLOSE_GUARD_MS = Math.max(1000, Number(process.env.RUMBLE_BETTING_CLOSE_GUARD_MS ?? "12000"));
 const SLOT_MS_ESTIMATE = Math.max(250, Number(process.env.RUMBLE_SLOT_MS_ESTIMATE ?? "400"));
 const BETTING_CLOSE_GUARD_SLOTS = Math.max(1, Math.ceil(BETTING_CLOSE_GUARD_MS / SLOT_MS_ESTIMATE));
+const ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD = 5_000_000n;
 
 async function ensureRecovered(): Promise<void> {
   if (hasRecovered()) return;
@@ -202,7 +203,7 @@ export async function POST(request: Request) {
 
     const conn = getConnection();
     const currentSlot = await conn.getSlot("processed");
-    const onchainCloseSlot = (() => {
+    const onchainCloseRaw = (() => {
       const compat = onchainRumble as unknown as {
         bettingCloseSlot?: bigint;
         bettingDeadlineTs?: bigint;
@@ -210,22 +211,35 @@ export async function POST(request: Request) {
       const slotValue = compat.bettingCloseSlot ?? compat.bettingDeadlineTs ?? 0n;
       return slotValue > 0n ? slotValue : 0n;
     })();
-    const guardSlotThreshold = BigInt(currentSlot) + BigInt(BETTING_CLOSE_GUARD_SLOTS);
-    const slotsUntilCloseBig = onchainCloseSlot > BigInt(currentSlot)
-      ? onchainCloseSlot - BigInt(currentSlot)
+    const currentSlotBig = BigInt(currentSlot);
+    const looksLikeUnixDeadline = onchainCloseRaw > currentSlotBig + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD;
+    const guardSlotThreshold = currentSlotBig + BigInt(BETTING_CLOSE_GUARD_SLOTS);
+    const slotsUntilCloseBig = !looksLikeUnixDeadline && onchainCloseRaw > currentSlotBig
+      ? onchainCloseRaw - currentSlotBig
       : 0n;
-    const slotsUntilClose = Number(slotsUntilCloseBig);
+    const slotsUntilClose = !looksLikeUnixDeadline ? Number(slotsUntilCloseBig) : Number.NaN;
     const onchainDeadlineMsEstimate =
-      Number.isFinite(slotsUntilClose) && slotsUntilClose > 0
-        ? Date.now() + slotsUntilClose * SLOT_MS_ESTIMATE
-        : Number.NaN;
-    if (onchainCloseSlot > 0n) {
-      if (guardSlotThreshold >= onchainCloseSlot) {
+      looksLikeUnixDeadline
+        ? Number(onchainCloseRaw) * 1_000
+        : Number.isFinite(slotsUntilClose) && slotsUntilClose > 0
+          ? Date.now() + slotsUntilClose * SLOT_MS_ESTIMATE
+          : Number.NaN;
+    if (onchainCloseRaw > 0n) {
+      const bettingClosingNow = (() => {
+        if (looksLikeUnixDeadline) {
+          const guardSec = Math.max(1, Math.ceil(BETTING_CLOSE_GUARD_MS / 1_000));
+          const nowUnix = Math.floor(Date.now() / 1_000);
+          return BigInt(nowUnix + guardSec) >= onchainCloseRaw;
+        }
+        return guardSlotThreshold >= onchainCloseRaw;
+      })();
+      if (bettingClosingNow) {
         return NextResponse.json(
           {
             error: "Betting is closing right now. Wait for the next rumble to avoid a failed transaction.",
             onchain_state: onchainRumble.state,
-            onchain_betting_close_slot: onchainCloseSlot.toString(),
+            onchain_betting_close_slot: looksLikeUnixDeadline ? null : onchainCloseRaw.toString(),
+            onchain_betting_deadline_unix: looksLikeUnixDeadline ? onchainCloseRaw.toString() : null,
             current_slot: String(currentSlot),
             slots_until_close: Number.isFinite(slotsUntilClose) ? slotsUntilClose : null,
             guard_ms: BETTING_CLOSE_GUARD_MS,
@@ -288,7 +302,10 @@ export async function POST(request: Request) {
         total_lamports: preparedBets.reduce((sum, b) => sum + b.lamports, 0),
         wallet: wallet.toBase58(),
         onchain_state: onchainRumble.state,
-        onchain_betting_close_slot: onchainCloseSlot > 0n ? onchainCloseSlot.toString() : null,
+        onchain_betting_close_slot:
+          onchainCloseRaw > 0n && !looksLikeUnixDeadline ? onchainCloseRaw.toString() : null,
+        onchain_betting_deadline_unix:
+          onchainCloseRaw > 0n && looksLikeUnixDeadline ? onchainCloseRaw.toString() : null,
         current_slot: String(currentSlot),
         slots_until_close: Number.isFinite(slotsUntilClose) ? slotsUntilClose : null,
         onchain_betting_deadline:

@@ -17,6 +17,7 @@ import { getConnection } from "~~/lib/solana-connection";
 
 export const dynamic = "force-dynamic";
 const SLOT_MS_ESTIMATE = Math.max(250, Number(process.env.RUMBLE_SLOT_MS_ESTIMATE ?? "400"));
+const ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD = 5_000_000n;
 
 // ---------------------------------------------------------------------------
 // Fresh Supabase client (no-store cache)
@@ -298,10 +299,19 @@ export async function GET(request: Request) {
         let bettingDeadline = slot.bettingDeadline;
 
         if (state === "betting") {
-          const closeSlot = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
-          if (closeSlot > 0n) {
-            const etaMs = slotsToMs(closeSlot);
-            bettingDeadline = new Date(Date.now() + etaMs).toISOString();
+          const closeRaw = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
+          if (closeRaw > 0n) {
+            const looksLikeUnix =
+              currentClusterSlotBig !== null
+                ? closeRaw > currentClusterSlotBig + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD
+                : closeRaw > 1_000_000_000n;
+            if (looksLikeUnix) {
+              const unixMs = Number(closeRaw) * 1_000;
+              bettingDeadline = Number.isFinite(unixMs) ? new Date(unixMs).toISOString() : slot.bettingDeadline;
+            } else {
+              const etaMs = slotsToMs(closeRaw);
+              bettingDeadline = new Date(Date.now() + etaMs).toISOString();
+            }
           }
         } else {
           bettingDeadline = null;

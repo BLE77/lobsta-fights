@@ -264,6 +264,7 @@ const SLOT_MS_ESTIMATE = readIntervalMs(
   250,
   1_000,
 );
+const ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD = 5_000_000n;
 const AGENT_MOVE_TIMEOUT_MS = readIntervalMs(
   "RUMBLE_AGENT_MOVE_TIMEOUT_MS",
   3_500,
@@ -1095,13 +1096,22 @@ export class RumbleOrchestrator {
     if (rumbleIdNum !== null) {
       const onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
       if (onchain) {
-        const closeSlot = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
-        if (closeSlot > 0n) {
+        const closeRaw = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
+        if (closeRaw > 0n) {
           const clusterSlot = await getConnection().getSlot("processed").catch(() => null);
           if (typeof clusterSlot === "number" && Number.isFinite(clusterSlot)) {
-            const remainingSlots = closeSlot > BigInt(clusterSlot) ? closeSlot - BigInt(clusterSlot) : 0n;
-            const capped = remainingSlots > 1_000_000n ? 1_000_000n : remainingSlots;
-            deadline = new Date(Date.now() + Number(capped) * SLOT_MS_ESTIMATE);
+            const clusterSlotBig = BigInt(clusterSlot);
+            const looksLikeUnix = closeRaw > clusterSlotBig + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD;
+            if (looksLikeUnix) {
+              const unixMs = Number(closeRaw) * 1_000;
+              if (Number.isFinite(unixMs) && unixMs > 0) {
+                deadline = new Date(unixMs);
+              }
+            } else {
+              const remainingSlots = closeRaw > clusterSlotBig ? closeRaw - clusterSlotBig : 0n;
+              const capped = remainingSlots > 1_000_000n ? 1_000_000n : remainingSlots;
+              deadline = new Date(Date.now() + Number(capped) * SLOT_MS_ESTIMATE);
+            }
           }
         }
       }
