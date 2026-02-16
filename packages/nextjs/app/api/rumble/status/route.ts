@@ -118,6 +118,19 @@ export async function GET(request: Request) {
     const orchestrator = getOrchestrator();
     const qm = getQueueManager();
 
+    // Deadlock self-heal:
+    // if queue has enough fighters to start but all slots are idle, force one
+    // orchestrator tick so we don't sit forever in "Starting soon...".
+    const inMemorySlots = orchestrator.getStatus();
+    const allSlotsIdle = inMemorySlots.every(
+      (slot) => slot.state === "idle" && slot.fighters.length === 0,
+    );
+    if (allSlotsIdle && qm.getQueueLength() >= 8) {
+      await orchestrator.tick().catch((err) => {
+        console.warn("[StatusAPI] deadlock kick tick failed", err);
+      });
+    }
+
     // Load fighter info for name/image enrichment
     const lookup = await loadFighterLookup();
 
