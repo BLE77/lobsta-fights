@@ -1401,20 +1401,20 @@ export async function createRumble(
   const [rumbleConfigPda] = deriveRumbleConfigPda();
   const [rumblePda] = deriveRumblePda(rumbleId);
   const nowUnix = Math.floor(Date.now() / 1000);
-  const deadlineMode = (process.env.RUMBLE_CREATE_DEADLINE_MODE ?? "unix").trim().toLowerCase();
+  const deadlineMode = (process.env.RUMBLE_CREATE_DEADLINE_MODE ?? "slot").trim().toLowerCase();
   const currentSlot = await provider.connection.getSlot("processed");
   const slotMsEstimateRaw = Number(process.env.RUMBLE_SLOT_MS_ESTIMATE ?? "400");
   const slotMsEstimate = Number.isFinite(slotMsEstimateRaw)
     ? Math.min(1_000, Math.max(250, Math.floor(slotMsEstimateRaw)))
     : 400;
-  const minCloseSlotsRaw = Number(process.env.RUMBLE_BETTING_MIN_CLOSE_SLOTS ?? "90");
+  const minCloseSlotsRaw = Number(process.env.RUMBLE_BETTING_MIN_CLOSE_SLOTS ?? "180");
   const minCloseSlots = Number.isFinite(minCloseSlotsRaw)
     ? Math.min(2_000, Math.max(10, Math.floor(minCloseSlotsRaw)))
-    : 90;
-  const closeSafetySlotsRaw = Number(process.env.RUMBLE_BETTING_CLOSE_SAFETY_SLOTS ?? "30");
+    : 180;
+  const closeSafetySlotsRaw = Number(process.env.RUMBLE_BETTING_CLOSE_SAFETY_SLOTS ?? "45");
   const closeSafetySlots = Number.isFinite(closeSafetySlotsRaw)
     ? Math.min(1_000, Math.max(0, Math.floor(closeSafetySlotsRaw)))
-    : 30;
+    : 45;
 
   let bettingCloseSlot: bigint;
   if (deadlineMode === "slot") {
@@ -1429,8 +1429,8 @@ export async function createRumble(
       bettingCloseSlot = BigInt(currentSlot + minCloseSlots);
     }
   } else {
-    // Deployed devnet program currently validates deadline using unix time.
-    // Keep unix mode as default to stay backward compatible.
+    // Compatibility mode for deployments that still use unix timestamp
+    // validation inside create_rumble/place_bet.
     const unixDeadline = Math.max(nowUnix + 15, Math.floor(bettingDeadlineUnix));
     bettingCloseSlot = BigInt(unixDeadline);
   }
