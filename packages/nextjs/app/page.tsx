@@ -95,6 +95,14 @@ export default function Home() {
       <div className="relative z-10 w-full flex flex-col items-center">
         {/* Hero Section */}
         <div className="text-center mb-6 relative">
+          <div className="absolute right-0 -top-3">
+            <Link
+              href="/admin"
+              className="font-mono text-[10px] text-stone-500 hover:text-amber-400 border border-stone-700 hover:border-amber-700 px-2 py-1 rounded-sm transition-colors"
+            >
+              ADMIN
+            </Link>
+          </div>
           <div className="absolute -top-4 left-1/2 -translate-x-1/2 w-64 h-1 bg-gradient-to-r from-transparent via-amber-600 to-transparent opacity-50"></div>
 
           <img
@@ -433,14 +441,6 @@ export default function Home() {
         <footer className="mt-8 text-center text-stone-600 text-xs font-mono">
           <p>// UNDERGROUND CLAW FIGHTS // BATTLE ROYALE ON SOLANA //</p>
           <p className="mt-2 text-stone-500">
-            <a href="https://github.com/BLE77/lobsta-fights" className="hover:text-amber-600 transition-colors">
-              [ VIEW_SOURCE ]
-            </a>
-            <span className="mx-2">|</span>
-            <a href="/classic" className="hover:text-amber-500 transition-colors">
-              [ CLASSIC 1V1 ]
-            </a>
-            <span className="mx-2">|</span>
             <a href="/skill.md" className="hover:text-red-500 transition-colors">
               [ SKILL.MD ]
             </a>

@@ -922,7 +922,7 @@ export default function RumblePage() {
     }
 
     // 0. Pre-validate: check slot is still in betting state before sending SOL
-    const slotData = status?.slots?.[slotIndex];
+    const slotData = status?.slots?.find((slot) => slot.slotIndex === slotIndex);
     if (!slotData || slotData.state !== "betting") {
       alert("Betting is not open for this slot right now.");
       throw new Error("Betting closed");
@@ -971,8 +971,25 @@ export default function RumblePage() {
       const tx = decodeBase64Tx(prepared.transaction_base64);
       tx.feePayer = publicKey;
 
+      const closeSlotRaw = Number(prepared?.onchain_betting_close_slot);
+      const guardSlotsRaw = Number(prepared?.guard_slots);
+      const shouldCheckCloseSlot =
+        Number.isFinite(closeSlotRaw) && closeSlotRaw > 0 && Number.isFinite(guardSlotsRaw) && guardSlotsRaw >= 0;
+      const assertWindowStillOpen = async () => {
+        if (!shouldCheckCloseSlot) return;
+        const latestSlot = await connection.getSlot("processed");
+        if (latestSlot + guardSlotsRaw >= closeSlotRaw) {
+          throw new Error("Betting just closed on-chain. Wait for the next rumble.");
+        }
+      };
+
+      // Re-check immediately before signing and sending to reduce prepare->send race.
+      await assertWindowStillOpen();
+
       // 2) Sign with Phantom
       const signed = await phantomProvider.signTransaction(tx);
+
+      await assertWindowStillOpen();
 
       // 3) Send to Solana
       const rawTx = signed.serialize();
@@ -1049,7 +1066,11 @@ export default function RumblePage() {
       const message = String(e?.message ?? "");
       if (message.includes("User rejected")) {
         // User cancelled in wallet, no alert needed
-      } else if (message.includes("BettingClosed") || message.includes("0x1771")) {
+      } else if (
+        message.includes("BettingClosed") ||
+        message.includes("0x1771") ||
+        message.includes("On-chain betting is closed")
+      ) {
         fetchStatus();
         alert("Betting just closed on-chain for that rumble. No bet was placed.");
       } else {
@@ -1116,6 +1137,12 @@ export default function RumblePage() {
                 className="text-amber-500 hover:text-amber-400 font-mono text-sm"
               >
                 &lt; UCF
+              </Link>
+              <Link
+                href="/admin"
+                className="text-stone-500 hover:text-amber-400 font-mono text-[10px] border border-stone-700 hover:border-amber-700 px-2 py-0.5 rounded-sm transition-colors"
+              >
+                ADMIN
               </Link>
               <div>
                 <h1 className="font-fight-glow text-2xl text-amber-400">
