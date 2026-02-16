@@ -279,7 +279,8 @@ const HOUSE_BOT_IDS = (process.env.RUMBLE_HOUSE_BOT_IDS ?? "")
   .map((id) => id.trim())
   .filter((id) => id.length > 0);
 const HOUSE_BOTS_ENABLED = process.env.RUMBLE_HOUSE_BOTS_ENABLED === "true" && HOUSE_BOT_IDS.length > 0;
-const HOUSE_BOTS_AUTO_FILL = process.env.RUMBLE_HOUSE_BOTS_AUTO_FILL === "true";
+// Default to auto-fill ON when house bots are enabled; can be explicitly disabled.
+const HOUSE_BOTS_AUTO_FILL = (process.env.RUMBLE_HOUSE_BOTS_AUTO_FILL ?? "true") !== "false";
 const HOUSE_BOT_TARGET_POPULATION = readInt(
   "RUMBLE_HOUSE_BOT_TARGET_POPULATION",
   8,
