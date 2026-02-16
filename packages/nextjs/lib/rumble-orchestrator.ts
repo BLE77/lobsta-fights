@@ -250,6 +250,18 @@ const ONCHAIN_KEEPER_POLL_INTERVAL_MS = readIntervalMs(
   250,
   10_000,
 );
+const ONCHAIN_BETTING_DURATION_MS = readIntervalMs(
+  "RUMBLE_BETTING_DURATION_MS",
+  60_000,
+  15_000,
+  10 * 60_000,
+);
+const SLOT_MS_ESTIMATE = readIntervalMs(
+  "RUMBLE_SLOT_MS_ESTIMATE",
+  400,
+  250,
+  1_000,
+);
 const AGENT_MOVE_TIMEOUT_MS = readIntervalMs(
   "RUMBLE_AGENT_MOVE_TIMEOUT_MS",
   3_500,
@@ -820,13 +832,6 @@ export class RumbleOrchestrator {
       for (const fid of slot.fighters) {
         persist.saveQueueFighter(fid, "in_combat");
       }
-
-      this.emit("betting_open", {
-        slotIndex: idx,
-        rumbleId: slot.id,
-        fighters: [...slot.fighters],
-        deadline: slot.bettingDeadline!,
-      });
     }
 
     // Keep trying to materialize the on-chain rumble account during betting.
@@ -839,12 +844,11 @@ export class RumbleOrchestrator {
     const createdOrExists = await this.ensureOnchainRumbleExists(
       slot.id,
       slot.fighters,
-      slot.bettingDeadline
-        ? Math.floor(slot.bettingDeadline.getTime() / 1000)
-        : Math.floor(Date.now() / 1000) + 60,
+      Math.floor((Date.now() + ONCHAIN_BETTING_DURATION_MS) / 1000),
     );
     if (createdOrExists) {
       this.onchainRumbleCreateRetryAt.delete(slot.id);
+      await this.armBettingWindowIfReady(slot);
     } else {
       this.onchainRumbleCreateRetryAt.set(slot.id, now + ONCHAIN_CREATE_RETRY_MS);
     }
@@ -857,13 +861,47 @@ export class RumbleOrchestrator {
   async ensureOnchainRumbleForSlot(slotIndex: number): Promise<boolean> {
     const slot = this.queueManager.getSlot(slotIndex);
     if (!slot || slot.state !== "betting") return false;
-    return await this.ensureOnchainRumbleExists(
+    const exists = await this.ensureOnchainRumbleExists(
       slot.id,
       slot.fighters,
-      slot.bettingDeadline
-        ? Math.floor(slot.bettingDeadline.getTime() / 1000)
-        : Math.floor(Date.now() / 1000) + 60,
+      Math.floor((Date.now() + ONCHAIN_BETTING_DURATION_MS) / 1000),
     );
+    if (exists) {
+      await this.armBettingWindowIfReady(slot);
+    }
+    return exists;
+  }
+
+  private async armBettingWindowIfReady(slot: RumbleSlot): Promise<void> {
+    if (slot.state !== "betting" || slot.bettingDeadline) return;
+    const rumbleIdNum = parseOnchainRumbleIdNumber(slot.id);
+    let deadline: Date | undefined;
+    if (rumbleIdNum !== null) {
+      const onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+      if (onchain) {
+        const closeSlot = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
+        if (closeSlot > 0n) {
+          const clusterSlot = await getConnection().getSlot("processed").catch(() => null);
+          if (typeof clusterSlot === "number" && Number.isFinite(clusterSlot)) {
+            const remainingSlots = closeSlot > BigInt(clusterSlot) ? closeSlot - BigInt(clusterSlot) : 0n;
+            const capped = remainingSlots > 1_000_000n ? 1_000_000n : remainingSlots;
+            deadline = new Date(Date.now() + Number(capped) * SLOT_MS_ESTIMATE);
+          }
+        }
+      }
+    }
+
+    const armed = this.queueManager.armBettingWindow(slot.slotIndex, deadline);
+    if (!armed) return;
+    const updated = this.queueManager.getSlot(slot.slotIndex);
+    if (!updated?.bettingDeadline) return;
+
+    this.emit("betting_open", {
+      slotIndex: slot.slotIndex,
+      rumbleId: slot.id,
+      fighters: [...slot.fighters],
+      deadline: updated.bettingDeadline,
+    });
   }
 
   /**
@@ -973,9 +1011,7 @@ export class RumbleOrchestrator {
     const onchainState = await this.ensureOnchainRumbleIsCombatReady(
       slot.id,
       slot.fighters,
-      slot.bettingDeadline
-        ? Math.floor(slot.bettingDeadline.getTime() / 1000)
-        : Math.floor(Date.now() / 1000) + 60,
+      Math.floor((Date.now() + ONCHAIN_BETTING_DURATION_MS) / 1000),
     );
     if (!onchainState) {
       console.warn(`[OnChain] startCombat skipped: rumble ${slot.id} does not exist on-chain yet`);

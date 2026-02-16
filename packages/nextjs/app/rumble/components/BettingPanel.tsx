@@ -138,19 +138,25 @@ export default function BettingPanel({
   const myStakeTotal = myStakeEntries.reduce((sum, [, amount]) => sum + amount, 0);
   const deployableCount = [...bets.values()].filter(v => (parseFloat(v) || 0) > 0).length;
 
-  const isClosed = timeLeft === "CLOSED";
+  const bettingInitialized = !!deadline;
+  const isClosed = bettingInitialized && timeLeft === "CLOSED";
+  const canSubmitBets = bettingInitialized && !isClosed;
 
   return (
     <div className="space-y-3">
       {/* Timer + Pool */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
-          </span>
+          {bettingInitialized ? (
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+            </span>
+          ) : (
+            <span className="inline-flex h-2 w-2 rounded-full bg-stone-500" />
+          )}
           <span className="font-mono text-xs text-amber-400 uppercase">
-            Betting Open
+            {bettingInitialized ? "Betting Open" : "Initializing On-Chain..."}
           </span>
         </div>
         <span
@@ -158,7 +164,7 @@ export default function BettingPanel({
             isClosed ? "text-red-500" : "text-amber-400"
           }`}
         >
-          {timeLeft || "--:--"}
+          {bettingInitialized ? timeLeft || "--:--" : "--:--"}
         </span>
       </div>
 
@@ -272,7 +278,7 @@ export default function BettingPanel({
                   />
                   <button
                     onClick={() => handleDeploySingle(f.fighterId)}
-                    disabled={isClosed || !onPlaceBet || isDeploying}
+                    disabled={!canSubmitBets || !onPlaceBet || isDeploying}
                     className="px-2 py-0.5 bg-amber-600 hover:bg-amber-500 disabled:bg-stone-700 disabled:text-stone-500 text-stone-950 font-mono text-[10px] font-bold uppercase transition-all"
                   >
                     {isDeploying ? "..." : "BET"}
@@ -288,7 +294,7 @@ export default function BettingPanel({
       {deployableCount > 1 && (
         <button
           onClick={handleDeployAll}
-          disabled={isClosed || (!onPlaceBet && !onPlaceBatchBet) || deploying.size > 0}
+          disabled={!canSubmitBets || (!onPlaceBet && !onPlaceBatchBet) || deploying.size > 0}
           className="w-full py-2 bg-amber-600 hover:bg-amber-500 disabled:bg-stone-700 disabled:text-stone-500 text-stone-950 font-mono text-sm font-bold uppercase transition-all rounded-sm"
         >
           {deploying.size > 0
@@ -298,7 +304,9 @@ export default function BettingPanel({
       )}
 
       <p className="text-[10px] text-stone-600 font-mono text-center">
-        Select one or more fighters · 1% admin + 5% sponsorship deducted
+        {bettingInitialized
+          ? "Select one or more fighters · 1% admin + 5% sponsorship deducted"
+          : "Stand by while on-chain rumble initializes. Betting opens when timer appears."}
       </p>
     </div>
   );

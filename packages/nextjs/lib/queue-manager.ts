@@ -34,6 +34,7 @@ export interface QueueManager {
   getQueueLength(): number;
   getQueueEntries(): QueueEntry[];
   getQueueStartCountdownMs(): number | null;
+  armBettingWindow(slotIndex: number, deadline?: Date): boolean;
   getSlots(): RumbleSlot[];
   getSlot(slotIndex: number): RumbleSlot | null;
   advanceSlots(): void;
@@ -293,15 +294,27 @@ export class RumbleQueueManager implements QueueManager {
     slot.id = generateRumbleId();
     slot.fighters = pulled;
     slot.bettingPool = new Map();
-    slot.bettingDeadline = new Date(Date.now() + BETTING_DURATION_MS);
+    // Betting window starts only after on-chain rumble initialization.
+    slot.bettingDeadline = null;
     slot.combatStartedAt = null;
     slot.rumbleResult = null;
     slot.state = "betting";
     this.queueReadyAtMs = null;
 
-    console.log(`[QM] Slot ${slotIndex} started betting: deadline=${slot.bettingDeadline.toISOString()} BETTING_DURATION_MS=${BETTING_DURATION_MS}`);
+    console.log(`[QM] Slot ${slotIndex} entered betting (awaiting on-chain init)`);
 
     return pulled;
+  }
+
+  armBettingWindow(slotIndex: number, deadline?: Date): boolean {
+    const slot = this.slots[slotIndex];
+    if (!slot || slot.state !== "betting") return false;
+    if (slot.bettingDeadline) return true;
+    slot.bettingDeadline = deadline ?? new Date(Date.now() + BETTING_DURATION_MS);
+    console.log(
+      `[QM] Slot ${slotIndex} betting window armed: deadline=${slot.bettingDeadline.toISOString()}`
+    );
+    return true;
   }
 
   /**

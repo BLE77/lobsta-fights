@@ -693,6 +693,8 @@ export default function RumblePage() {
         case "betting_open":
           slot.state = "betting";
           slot.rumbleId = typeof event.data?.rumbleId === "string" ? event.data.rumbleId : slot.rumbleId;
+          slot.bettingDeadline =
+            typeof event.data?.deadline === "string" ? event.data.deadline : slot.bettingDeadline;
           slot.turns = [];
           slot.currentTurn = 0;
           slot.payout = null;

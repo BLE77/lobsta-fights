@@ -99,7 +99,8 @@ export async function GET(request: Request) {
       fighters: slot.fighters,
       odds,
       total_pool_sol: totalPool,
-      betting_open: slot.state === "betting",
+      betting_open: slot.state === "betting" && !!slot.bettingDeadline,
+      betting_initializing: slot.state === "betting" && !slot.bettingDeadline,
       betting_deadline: slot.bettingDeadline?.toISOString() ?? null,
       timestamp: new Date().toISOString(),
     });
