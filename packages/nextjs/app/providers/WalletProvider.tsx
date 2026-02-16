@@ -20,20 +20,14 @@ import { type WalletError } from "@solana/wallet-adapter-base";
 import "@solana/wallet-adapter-react-ui/styles.css";
 
 function getRpcEndpoint(): string {
-  const key = process.env.NEXT_PUBLIC_HELIUS_API_KEY;
   const network = process.env.NEXT_PUBLIC_SOLANA_NETWORK ?? "devnet";
+  const explicit = process.env.NEXT_PUBLIC_SOLANA_RPC_URL?.trim();
+  if (explicit) return explicit;
 
-  if (!key) {
-    if (network === "mainnet-beta") {
-      return "https://api.mainnet-beta.solana.com";
-    }
-    return "https://api.devnet.solana.com";
-  }
-
-  if (network === "mainnet-beta") {
-    return `https://mainnet.helius-rpc.com/?api-key=${key}`;
-  }
-  return `https://devnet.helius-rpc.com/?api-key=${key}`;
+  // Frontend defaults to public RPC to avoid exposing/rate-limiting a shared key.
+  return network === "mainnet-beta"
+    ? "https://api.mainnet-beta.solana.com"
+    : "https://api.devnet.solana.com";
 }
 
 export default function WalletProvider({

@@ -1,11 +1,13 @@
 /**
  * Solana RPC Connection Setup
  *
- * Creates a connection to Solana via Helius RPC endpoints.
+ * Creates a connection to Solana RPC.
  * Provides helpers for sending and confirming transactions.
  *
  * Environment variables:
- *   NEXT_PUBLIC_HELIUS_API_KEY - Helius API key
+ *   SOLANA_RPC_URL - explicit RPC endpoint (server-side preferred)
+ *   NEXT_PUBLIC_SOLANA_RPC_URL - explicit RPC endpoint fallback
+ *   HELIUS_API_KEY / NEXT_PUBLIC_HELIUS_API_KEY - optional Helius API key fallback
  *   NEXT_PUBLIC_SOLANA_NETWORK - "devnet" | "mainnet-beta" (default: "devnet")
  *
  * Dependencies needed (not yet installed):
@@ -27,10 +29,12 @@ import {
 // Config
 // ---------------------------------------------------------------------------
 
-function getHeliusApiKey(): string {
-  const key = process.env.NEXT_PUBLIC_HELIUS_API_KEY;
-  if (!key) throw new Error("Missing NEXT_PUBLIC_HELIUS_API_KEY");
-  return key;
+function getHeliusApiKey(): string | null {
+  const serverKey = process.env.HELIUS_API_KEY?.trim();
+  if (serverKey) return serverKey;
+  const publicKey = process.env.NEXT_PUBLIC_HELIUS_API_KEY?.trim();
+  if (publicKey) return publicKey;
+  return null;
 }
 
 function getNetwork(): "devnet" | "mainnet-beta" {
@@ -43,12 +47,20 @@ function getNetwork(): "devnet" | "mainnet-beta" {
  * Get the Helius RPC endpoint URL for the configured network.
  */
 export function getRpcEndpoint(): string {
+  const explicit = process.env.SOLANA_RPC_URL?.trim() || process.env.NEXT_PUBLIC_SOLANA_RPC_URL?.trim();
+  if (explicit) return explicit;
+
   const key = getHeliusApiKey();
   const network = getNetwork();
-  if (network === "mainnet-beta") {
-    return `https://mainnet.helius-rpc.com/?api-key=${key}`;
+  if (key) {
+    if (network === "mainnet-beta") {
+      return `https://mainnet.helius-rpc.com/?api-key=${key}`;
+    }
+    return `https://devnet.helius-rpc.com/?api-key=${key}`;
   }
-  return `https://devnet.helius-rpc.com/?api-key=${key}`;
+  return network === "mainnet-beta"
+    ? "https://api.mainnet-beta.solana.com"
+    : "https://api.devnet.solana.com";
 }
 
 // ---------------------------------------------------------------------------

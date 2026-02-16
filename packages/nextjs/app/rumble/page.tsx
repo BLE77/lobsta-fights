@@ -364,9 +364,10 @@ export default function RumblePage() {
   const walletConnected = !!publicKey;
 
   // RPC connection
-  const rpcEndpoint = process.env.NEXT_PUBLIC_HELIUS_API_KEY
-    ? `https://devnet.helius-rpc.com/?api-key=${process.env.NEXT_PUBLIC_HELIUS_API_KEY}`
-    : "https://api.devnet.solana.com";
+  const network = process.env.NEXT_PUBLIC_SOLANA_NETWORK ?? "devnet";
+  const rpcEndpoint =
+    process.env.NEXT_PUBLIC_SOLANA_RPC_URL?.trim() ||
+    (network === "mainnet-beta" ? "https://api.mainnet-beta.solana.com" : "https://api.devnet.solana.com");
   const connectionRef = useRef(new Connection(rpcEndpoint, "confirmed"));
   const connection = connectionRef.current;
 
@@ -779,8 +780,8 @@ export default function RumblePage() {
   useEffect(() => {
     fetchStatus();
 
-    // Poll every 2 seconds as fallback
-    const pollInterval = setInterval(fetchStatus, 2000);
+    // Poll every 4 seconds as fallback; SSE handles live updates.
+    const pollInterval = setInterval(fetchStatus, 4000);
 
     // Connect SSE for real-time updates
     const es = connectSSE();
