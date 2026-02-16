@@ -56,6 +56,21 @@ export async function POST(request: Request) {
     if (!slot) {
       return NextResponse.json({ error: "Slot not found" }, { status: 404 });
     }
+    if (slot.state !== "betting") {
+      return NextResponse.json(
+        { error: "Betting is not open for this slot right now." },
+        { status: 409 },
+      );
+    }
+    if (!slot.bettingDeadline) {
+      return NextResponse.json(
+        {
+          error: "On-chain rumble is still initializing. Betting opens when the countdown appears.",
+          rumble_id: slot.rumbleId,
+        },
+        { status: 409 },
+      );
+    }
     if (slot.state === "betting" && slot.bettingDeadline && Date.now() >= slot.bettingDeadline.getTime()) {
       return NextResponse.json({ error: "Betting window has closed." }, { status: 409 });
     }

@@ -259,6 +259,15 @@ export async function GET(request: Request) {
     slots = await Promise.all(
       slots.map(async slot => {
         if (!slot.rumbleId) return slot;
+        if (slot.state === "betting" && !slot.bettingDeadline) {
+          // Slot entered betting in queue-manager but on-chain rumble is not
+          // confirmed yet. Avoid extra RPC pressure while orchestrator retries.
+          return {
+            ...slot,
+            nextTurnAt: null,
+            turnIntervalMs: null,
+          };
+        }
         const rumbleIdNum = parseOnchainRumbleIdNumber(slot.rumbleId);
         if (rumbleIdNum === null) return slot;
         const onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
@@ -440,6 +449,12 @@ export async function GET(request: Request) {
     const systemWarnings: string[] = [];
     if (!runtimeHealth.onchainAdmin.ready && runtimeHealth.onchainAdmin.reason) {
       systemWarnings.push(`On-chain admin unavailable: ${runtimeHealth.onchainAdmin.reason}`);
+    }
+    const unarmedBettingSlots = slots.filter((slot) => slot.state === "betting" && !slot.bettingDeadline);
+    for (const slot of unarmedBettingSlots) {
+      systemWarnings.push(
+        `Slot ${slot.slotIndex} is initializing on-chain (betting timer not armed yet).`,
+      );
     }
     if (Array.isArray(runtimeHealth.onchainCreateFailures)) {
       for (const failure of runtimeHealth.onchainCreateFailures.slice(0, 3)) {

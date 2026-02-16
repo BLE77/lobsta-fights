@@ -7,7 +7,14 @@ const MIN_INTERVAL_MS = (() => {
   return Math.max(500, Math.min(30_000, Math.floor(raw)));
 })();
 
-const ENABLED = (process.env.RUMBLE_PUBLIC_TICK_ENABLED ?? "true") !== "false";
+// Production default is OFF to avoid multi-instance heartbeat stampedes
+// from public /status polling. Enable explicitly via env when desired.
+const ENABLED = (() => {
+  const raw = process.env.RUMBLE_PUBLIC_TICK_ENABLED;
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  return process.env.NODE_ENV !== "production";
+})();
 
 type HeartbeatState = {
   inFlight: Promise<void> | null;
@@ -57,4 +64,3 @@ export async function ensureRumblePublicHeartbeat(source: string): Promise<void>
 
   await state.inFlight;
 }
-
