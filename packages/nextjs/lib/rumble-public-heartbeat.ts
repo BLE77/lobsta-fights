@@ -2,19 +2,16 @@ import { getOrchestrator } from "~~/lib/rumble-orchestrator";
 import { hasRecovered, recoverOrchestratorState } from "~~/lib/rumble-state-recovery";
 
 const MIN_INTERVAL_MS = (() => {
-  const raw = Number(process.env.RUMBLE_PUBLIC_TICK_MIN_INTERVAL_MS ?? "2500");
-  if (!Number.isFinite(raw)) return 2500;
+  const fallback = process.env.NODE_ENV === "production" ? 15_000 : 2_500;
+  const raw = Number(process.env.RUMBLE_PUBLIC_TICK_MIN_INTERVAL_MS ?? String(fallback));
+  if (!Number.isFinite(raw)) return fallback;
   return Math.max(500, Math.min(30_000, Math.floor(raw)));
 })();
 
-// Production default is OFF to avoid multi-instance heartbeat stampedes
-// from public /status polling. Enable explicitly via env when desired.
-const ENABLED = (() => {
-  const raw = process.env.RUMBLE_PUBLIC_TICK_ENABLED;
-  if (raw === "true") return true;
-  if (raw === "false") return false;
-  return process.env.NODE_ENV !== "production";
-})();
+// Keep public heartbeat enabled by default so queue/slots continue advancing
+// even when cron/admin tab is not open. Can be explicitly disabled.
+const ENABLED = (process.env.RUMBLE_PUBLIC_TICK_ENABLED ?? "true") !== "false";
+const ALLOW_NON_STATUS_SOURCES = (process.env.RUMBLE_PUBLIC_TICK_ALLOW_NON_STATUS ?? "false") === "true";
 
 type HeartbeatState = {
   inFlight: Promise<void> | null;
@@ -35,6 +32,7 @@ function getState(): HeartbeatState {
 
 export async function ensureRumblePublicHeartbeat(source: string): Promise<void> {
   if (!ENABLED) return;
+  if (!ALLOW_NON_STATUS_SOURCES && source !== "status") return;
 
   const state = getState();
   if (state.inFlight) {
