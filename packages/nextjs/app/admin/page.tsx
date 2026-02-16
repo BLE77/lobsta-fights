@@ -115,6 +115,9 @@ type Tab = "overview" | "rumbles" | "fighters" | "onchain";
 // ---------------------------------------------------------------------------
 
 const EXPLORER_BASE = "https://explorer.solana.com/tx";
+const AUTO_TICK_INTERVAL_DEFAULT_MS = 2_000;
+const AUTO_TICK_INTERVAL_MIN_MS = 500;
+const AUTO_TICK_INTERVAL_MAX_MS = 10_000;
 
 function explorerUrl(sig: string): string {
   return `${EXPLORER_BASE}/${sig}?cluster=devnet`;
@@ -225,15 +228,36 @@ export default function AdminPage() {
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState("");
   const [loading, setLoading] = useState(false);
+  const [autoTickEnabled, setAutoTickEnabled] = useState(false);
+  const [autoTickIntervalInput, setAutoTickIntervalInput] = useState(String(AUTO_TICK_INTERVAL_DEFAULT_MS));
+  const [autoTickRuns, setAutoTickRuns] = useState(0);
+  const [autoTickLastAt, setAutoTickLastAt] = useState<string | null>(null);
+  const [autoTickError, setAutoTickError] = useState("");
+  const autoTickInFlightRef = useRef(false);
   const secretRef = useRef("");
 
   // Restore session
   useEffect(() => {
     const saved = sessionStorage.getItem("ucf_admin_secret");
+    const savedAutoTickEnabled = sessionStorage.getItem("ucf_admin_auto_tick_enabled");
+    const savedAutoTickInterval = sessionStorage.getItem("ucf_admin_auto_tick_interval_ms");
     if (saved) {
       secretRef.current = saved;
       setSecret(saved);
       setAuthenticated(true);
+    }
+    if (savedAutoTickEnabled === "1") {
+      setAutoTickEnabled(true);
+    }
+    if (savedAutoTickInterval) {
+      const parsed = Number(savedAutoTickInterval);
+      if (Number.isFinite(parsed)) {
+        const clamped = Math.min(
+          AUTO_TICK_INTERVAL_MAX_MS,
+          Math.max(AUTO_TICK_INTERVAL_MIN_MS, Math.floor(parsed)),
+        );
+        setAutoTickIntervalInput(String(clamped));
+      }
     }
   }, []);
 
@@ -360,6 +384,38 @@ export default function AdminPage() {
     );
   }, [headers, runAdminAction]);
 
+  const runAutoTickNow = useCallback(async () => {
+    if (autoTickInFlightRef.current) return;
+    autoTickInFlightRef.current = true;
+    try {
+      const ticksPerCall = 2;
+      const res = await fetch("/api/admin/rumble/tick", {
+        method: "POST",
+        headers: { ...headers(), "Content-Type": "application/json" },
+        body: JSON.stringify({ ticks: ticksPerCall, interval_ms: 200 }),
+      });
+      if (res.status === 401) {
+        setAuthenticated(false);
+        setAutoTickEnabled(false);
+        sessionStorage.removeItem("ucf_admin_secret");
+        return;
+      }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setAutoTickError(data?.error ? String(data.error) : `Tick failed (${res.status})`);
+        return;
+      }
+      setAutoTickError("");
+      setAutoTickRuns((n) => n + 1);
+      setAutoTickLastAt(data?.timestamp ?? new Date().toISOString());
+      await fetchDashboard();
+    } catch (err: any) {
+      setAutoTickError(err?.message ?? "Auto tick failed");
+    } finally {
+      autoTickInFlightRef.current = false;
+    }
+  }, [fetchDashboard, headers]);
+
   const runHouseBotAction = useCallback(
     async (action: string, payload?: Record<string, any>) => {
       await runAdminAction(`House bots ${action}`, () =>
@@ -405,6 +461,32 @@ export default function AdminPage() {
       clearInterval(houseBotInterval);
     };
   }, [authenticated, fetchDashboard, fetchOnChain, fetchHouseBotStatus]);
+
+  // Auto tick loop (browser-driven). Keep this page open while testing.
+  useEffect(() => {
+    if (!authenticated || !autoTickEnabled) return;
+    const parsed = Number(autoTickIntervalInput);
+    const intervalMs = Math.min(
+      AUTO_TICK_INTERVAL_MAX_MS,
+      Math.max(
+        AUTO_TICK_INTERVAL_MIN_MS,
+        Number.isFinite(parsed) ? Math.floor(parsed) : AUTO_TICK_INTERVAL_DEFAULT_MS,
+      ),
+    );
+    sessionStorage.setItem("ucf_admin_auto_tick_enabled", "1");
+    sessionStorage.setItem("ucf_admin_auto_tick_interval_ms", String(intervalMs));
+
+    runAutoTickNow();
+    const timer = setInterval(runAutoTickNow, intervalMs);
+    return () => clearInterval(timer);
+  }, [authenticated, autoTickEnabled, autoTickIntervalInput, runAutoTickNow]);
+
+  useEffect(() => {
+    if (!autoTickEnabled) {
+      sessionStorage.setItem("ucf_admin_auto_tick_enabled", "0");
+      autoTickInFlightRef.current = false;
+    }
+  }, [autoTickEnabled]);
 
   // ---- Login screen ----
   if (!authenticated) {
@@ -475,6 +557,7 @@ export default function AdminPage() {
               onClick={() => {
                 sessionStorage.removeItem("ucf_admin_secret");
                 setAuthenticated(false);
+                setAutoTickEnabled(false);
                 setDashboard(null);
                 setOnChain(null);
               }}
@@ -545,6 +628,21 @@ export default function AdminPage() {
               >
                 Hard Reset Rumble
               </button>
+              <button
+                onClick={() => {
+                  setAutoTickError("");
+                  setAutoTickRuns(0);
+                  setAutoTickLastAt(null);
+                  setAutoTickEnabled((v) => !v);
+                }}
+                className={`px-3 py-2 rounded font-mono text-xs ${
+                  autoTickEnabled
+                    ? "bg-emerald-700 hover:bg-emerald-600"
+                    : "bg-stone-700 hover:bg-stone-600"
+                }`}
+              >
+                {autoTickEnabled ? "Stop Auto Tick" : "Start Auto Tick"}
+              </button>
             </div>
 
             <div className="flex flex-wrap gap-2 items-center">
@@ -574,6 +672,33 @@ export default function AdminPage() {
               >
                 Use Env Target
               </button>
+              <span className="font-mono text-[11px] text-stone-500">Auto Tick ms</span>
+              <input
+                type="number"
+                min={AUTO_TICK_INTERVAL_MIN_MS}
+                max={AUTO_TICK_INTERVAL_MAX_MS}
+                step={100}
+                value={autoTickIntervalInput}
+                onChange={(e) => setAutoTickIntervalInput(e.target.value)}
+                className="w-24 bg-stone-800 border border-stone-700 rounded px-2 py-1.5 font-mono text-xs"
+              />
+            </div>
+
+            <div className="font-mono text-[11px] text-stone-500">
+              Auto Tick:{" "}
+              <span className={autoTickEnabled ? "text-emerald-400" : "text-stone-400"}>
+                {autoTickEnabled ? "ON" : "OFF"}
+              </span>
+              {" · "}
+              Runs: <span className="text-stone-300">{autoTickRuns}</span>
+              {" · "}
+              Last: <span className="text-stone-300">{autoTickLastAt ? new Date(autoTickLastAt).toLocaleTimeString() : "-"}</span>
+              {autoTickError ? (
+                <>
+                  {" · "}
+                  <span className="text-red-400">{autoTickError}</span>
+                </>
+              ) : null}
             </div>
 
             <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
