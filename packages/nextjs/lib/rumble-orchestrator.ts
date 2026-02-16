@@ -8,7 +8,9 @@
 // Called on a regular tick (~1s). Emits events for live spectator updates.
 // =============================================================================
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
 import {
   RumbleQueueManager,
   getQueueManager,
@@ -58,10 +60,18 @@ import { parseOnchainRumbleIdNumber } from "./rumble-id";
 import {
   distributeReward as distributeRewardOnChain,
   adminDistribute as adminDistributeOnChain,
+  buildCommitMoveTx,
+  buildRevealMoveTx,
   checkIchorShower as checkIchorShowerOnChain,
+  computeMoveCommitmentHash,
   createRumble as createRumbleOnChain,
+  deriveMoveCommitmentPda,
+  finalizeRumbleOnChain as finalizeRumbleOnChainTx,
+  openTurn as openTurnOnChain,
+  readRumbleCombatState,
   startCombat as startCombatOnChain,
-  reportResult as reportResultOnChain,
+  resolveTurnOnChain,
+  advanceTurnOnChain,
   completeRumble as completeRumbleOnChain,
   sweepTreasury as sweepTreasuryOnChain,
   ensureAta as ensureAtaOnChain,
@@ -69,10 +79,13 @@ import {
   deriveArenaConfigPda,
   readArenaConfig,
   readRumbleAccountState,
+  type RumbleCombatAccountState,
   readShowerRequest,
+  RUMBLE_ENGINE_ID,
 } from "./solana-programs";
-import { PublicKey } from "@solana/web3.js";
+import { Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
+import { getConnection } from "./solana-connection";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -169,10 +182,22 @@ interface SlotCombatState {
   rumbleId: string;
   fighters: RumbleFighter[];
   fighterProfiles: Map<string, persist.RumbleFighterProfile>;
+  fighterWallets: Map<string, PublicKey>;
   turns: RumbleTurn[];
   eliminationOrder: string[];
   previousPairings: Set<string>;
+  turnDecisions: Map<number, Map<string, OnchainTurnDecision>>;
+  lastOnchainTurnResolved: number;
   lastTickAt: number;
+}
+
+interface OnchainTurnDecision {
+  move: MoveType;
+  moveCode: number;
+  salt32Hex: string;
+  commitmentHex: string;
+  commitSubmitted: boolean;
+  revealSubmitted: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -203,12 +228,22 @@ function readInt(
   return Math.min(max, Math.max(min, Math.floor(raw)));
 }
 
-const COMBAT_TICK_INTERVAL_MS = readIntervalMs(
+const COMBAT_TICK_INTERVAL_MS_CONFIGURED = readIntervalMs(
   "RUMBLE_COMBAT_TICK_INTERVAL_MS",
-  3_000,
+  30_000,
   1_000,
   120_000,
 );
+const COMBAT_TICK_MIN_PROD_MS = readIntervalMs(
+  "RUMBLE_COMBAT_TICK_MIN_PROD_MS",
+  30_000,
+  1_000,
+  120_000,
+);
+const COMBAT_TICK_INTERVAL_MS =
+  process.env.NODE_ENV === "production"
+    ? Math.max(COMBAT_TICK_INTERVAL_MS_CONFIGURED, COMBAT_TICK_MIN_PROD_MS)
+    : COMBAT_TICK_INTERVAL_MS_CONFIGURED;
 const AGENT_MOVE_TIMEOUT_MS = readIntervalMs(
   "RUMBLE_AGENT_MOVE_TIMEOUT_MS",
   3_500,
@@ -237,6 +272,7 @@ const ONCHAIN_FINALIZATION_DELAY_MS = 30_000;
 const ONCHAIN_FINALIZATION_RETRY_MS = 10_000;
 const MAX_FINALIZATION_ATTEMPTS = 30;
 const ONCHAIN_CREATE_RECOVERY_DEADLINE_SKEW_SEC = 5;
+const ONCHAIN_TURN_AUTHORITY = (process.env.RUMBLE_ONCHAIN_TURN_AUTHORITY ?? "true") !== "false";
 
 interface PendingFinalization {
   rumbleId: string;
@@ -267,6 +303,8 @@ export class RumbleOrchestrator {
   private queueManager: RumbleQueueManager;
   private readonly houseBotIds = HOUSE_BOT_IDS;
   private readonly houseBotSet = new Set(HOUSE_BOT_IDS);
+  private readonly fighterSignerById = new Map<string, Keypair>();
+  private readonly fighterSignerByWallet = new Map<string, Keypair>();
   private houseBotsPaused = false;
   private houseBotTargetPopulationOverride: number | null = null;
   private houseBotsLastRestartAt: string | null = null;
@@ -296,11 +334,124 @@ export class RumbleOrchestrator {
 
   constructor(queueManager: RumbleQueueManager) {
     this.queueManager = queueManager;
+    this.loadConfiguredFighterSigners();
 
     // Hook into the queue manager's slot recycling so we can handle auto-requeue
     this.queueManager.onSlotRecycled = (slotIndex, previousFighters, previousRumbleId) => {
       this.handleSlotRecycled(slotIndex, previousFighters, previousRumbleId);
     };
+  }
+
+  private parseSecretKey(raw: unknown): Uint8Array | null {
+    if (Array.isArray(raw) && raw.length >= 32) {
+      try {
+        return Uint8Array.from(raw.map((v) => Number(v)));
+      } catch {
+        return null;
+      }
+    }
+    if (typeof raw === "string" && raw.trim().length > 0) {
+      const normalized = raw.trim();
+      try {
+        if (normalized.startsWith("[") && normalized.endsWith("]")) {
+          const parsed = JSON.parse(normalized);
+          if (Array.isArray(parsed)) return Uint8Array.from(parsed.map((v) => Number(v)));
+        }
+      } catch {}
+      try {
+        const bytes = Buffer.from(normalized, "base64");
+        if (bytes.length >= 32) return Uint8Array.from(bytes);
+      } catch {}
+      try {
+        const bytes = Buffer.from(normalized, "hex");
+        if (bytes.length >= 32) return Uint8Array.from(bytes);
+      } catch {}
+    }
+    return null;
+  }
+
+  private registerFighterSigner(
+    fighterId: string | null | undefined,
+    walletAddress: string | null | undefined,
+    secretRaw: unknown,
+  ): void {
+    const secret = this.parseSecretKey(secretRaw);
+    if (!secret) return;
+
+    let signer: Keypair;
+    try {
+      signer = Keypair.fromSecretKey(secret);
+    } catch {
+      return;
+    }
+
+    if (fighterId && fighterId.trim()) {
+      this.fighterSignerById.set(fighterId.trim(), signer);
+    }
+    if (walletAddress && walletAddress.trim()) {
+      this.fighterSignerByWallet.set(walletAddress.trim(), signer);
+    } else {
+      this.fighterSignerByWallet.set(signer.publicKey.toBase58(), signer);
+    }
+  }
+
+  private loadConfiguredFighterSigners(): void {
+    try {
+      const rawEnv = process.env.RUMBLE_FIGHTER_SIGNER_KEYS_JSON?.trim();
+      if (rawEnv) {
+        const parsed = JSON.parse(rawEnv);
+        if (Array.isArray(parsed)) {
+          for (const row of parsed) {
+            const fighterId =
+              typeof row?.fighter_id === "string"
+                ? row.fighter_id
+                : typeof row?.fighterId === "string"
+                  ? row.fighterId
+                  : null;
+            const walletAddress =
+              typeof row?.wallet_public_key === "string"
+                ? row.wallet_public_key
+                : typeof row?.walletAddress === "string"
+                  ? row.walletAddress
+                  : null;
+            this.registerFighterSigner(
+              fighterId,
+              walletAddress,
+              row?.wallet_secret_key ?? row?.secret_key ?? row?.secretKey,
+            );
+          }
+        } else if (parsed && typeof parsed === "object") {
+          for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+            this.registerFighterSigner(key, key, value);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("[Orchestrator] Failed parsing RUMBLE_FIGHTER_SIGNER_KEYS_JSON:", err);
+    }
+
+    const secretsPathRaw = process.env.HOUSE_BOT_SECRETS_FILE?.trim();
+    if (!secretsPathRaw) return;
+
+    try {
+      const absolute = resolvePath(secretsPathRaw);
+      if (!existsSync(absolute)) {
+        console.warn(`[Orchestrator] HOUSE_BOT_SECRETS_FILE not found: ${absolute}`);
+        return;
+      }
+      const content = readFileSync(absolute, "utf8");
+      const parsed = JSON.parse(content);
+      const bots: any[] = Array.isArray(parsed?.bots) ? parsed.bots : [];
+      for (const bot of bots) {
+        this.registerFighterSigner(
+          typeof bot?.fighter_id === "string" ? bot.fighter_id : null,
+          typeof bot?.wallet_public_key === "string" ? bot.wallet_public_key : null,
+          bot?.wallet_secret_key,
+        );
+      }
+    } catch (err) {
+      console.warn("[Orchestrator] Failed loading HOUSE_BOT_SECRETS_FILE:", err);
+    }
   }
 
   // ---- Event emitter -------------------------------------------------------
@@ -898,6 +1049,14 @@ export class RumbleOrchestrator {
   // ---- Combat phase --------------------------------------------------------
 
   private async handleCombatPhase(slot: RumbleSlot): Promise<void> {
+    if (ONCHAIN_TURN_AUTHORITY) {
+      await this.handleCombatPhaseOnchain(slot);
+      return;
+    }
+    await this.handleCombatPhaseLegacy(slot);
+  }
+
+  private async handleCombatPhaseLegacy(slot: RumbleSlot): Promise<void> {
     const idx = slot.slotIndex;
     const now = Date.now();
 
@@ -939,10 +1098,158 @@ export class RumbleOrchestrator {
     state.lastTickAt = now;
   }
 
+  private async handleCombatPhaseOnchain(slot: RumbleSlot): Promise<void> {
+    const idx = slot.slotIndex;
+    const now = Date.now();
+    const rumbleIdNum = parseOnchainRumbleIdNumber(slot.id);
+    if (rumbleIdNum === null) return;
+
+    // Initialize local state and start on-chain combat if needed.
+    if (!this.combatStates.has(idx) || this.combatStates.get(idx)!.rumbleId !== slot.id) {
+      await this.initCombatState(slot);
+
+      const pool = this.bettingPools.get(idx);
+      if (pool) {
+        this.emit("betting_closed", {
+          slotIndex: idx,
+          rumbleId: slot.id,
+          odds: calculateOdds(pool),
+        });
+      }
+
+      persist.updateRumbleStatus(slot.id, "combat");
+      await this.startCombatOnChain(slot);
+
+      this.emit("combat_started", {
+        slotIndex: idx,
+        rumbleId: slot.id,
+        fighters: [...slot.fighters],
+      });
+      return;
+    }
+
+    const state = this.combatStates.get(idx)!;
+    if (now - state.lastTickAt < COMBAT_TICK_INTERVAL_MS) return;
+    state.lastTickAt = now;
+
+    let onchainState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+    if (!onchainState) return;
+
+    if (onchainState.state === "betting") {
+      await this.startCombatOnChain(slot);
+      return;
+    }
+
+    if (onchainState.state === "payout" || onchainState.state === "complete") {
+      await this.finishCombatFromOnchain(slot, state, rumbleIdNum);
+      return;
+    }
+
+    const combat = await readRumbleCombatState(rumbleIdNum).catch(() => null);
+    if (!combat) return;
+
+    const sync = this.syncLocalFightersFromOnchain(slot, state, combat);
+    if (combat.turnResolved && combat.currentTurn > state.lastOnchainTurnResolved) {
+      const turn: RumbleTurn = {
+        turnNumber: combat.currentTurn,
+        pairings: [],
+        eliminations: sync.newEliminations,
+      };
+      state.turns.push(turn);
+      state.lastOnchainTurnResolved = combat.currentTurn;
+      persist.updateRumbleTurnLog(slot.id, state.turns, state.turns.length);
+
+      this.emit("turn_resolved", {
+        slotIndex: idx,
+        rumbleId: slot.id,
+        turn,
+        remainingFighters: combat.remainingFighters,
+      });
+      for (const eliminatedId of sync.newEliminations) {
+        this.emit("fighter_eliminated", {
+          slotIndex: idx,
+          rumbleId: slot.id,
+          fighterId: eliminatedId,
+          turnNumber: combat.currentTurn,
+          remainingFighters: combat.remainingFighters,
+        });
+      }
+    }
+
+    // Open the first turn once combat has started.
+    if (combat.currentTurn === 0 && combat.turnResolved && combat.remainingFighters > 1) {
+      try {
+        const sig = await openTurnOnChain(rumbleIdNum);
+        if (sig) console.log(`[OnChain] openTurn succeeded: ${sig}`);
+      } catch (err) {
+        console.warn(`[OnChain] openTurn failed for ${slot.id}: ${formatError(err)}`);
+      }
+      return;
+    }
+
+    const currentSlot = await getConnection().getSlot("processed");
+    const currentSlotBig = BigInt(currentSlot);
+
+    if (!combat.turnResolved) {
+      await this.submitOnchainMovesForTurn(slot, state, combat, rumbleIdNum, currentSlotBig);
+      if (currentSlotBig >= combat.revealCloseSlot) {
+        try {
+          const commitmentAccounts = await this.collectExistingMoveCommitments(
+            state,
+            rumbleIdNum,
+            combat.currentTurn,
+          );
+          const sig = await resolveTurnOnChain(rumbleIdNum, commitmentAccounts);
+          if (sig) console.log(`[OnChain] resolveTurn succeeded: ${sig}`);
+        } catch (err) {
+          console.warn(`[OnChain] resolveTurn failed for ${slot.id}: ${formatError(err)}`);
+        }
+      }
+      return;
+    }
+
+    if (combat.remainingFighters <= 1) {
+      try {
+        const sig = await finalizeRumbleOnChainTx(rumbleIdNum);
+        if (sig) {
+          console.log(`[OnChain] finalizeRumble succeeded: ${sig}`);
+          await persist.updateRumbleTxSignature(slot.id, "reportResult", sig);
+        }
+      } catch (err) {
+        console.warn(`[OnChain] finalizeRumble failed for ${slot.id}: ${formatError(err)}`);
+      }
+      onchainState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+      if (onchainState?.state === "payout" || onchainState?.state === "complete") {
+        await this.finishCombatFromOnchain(slot, state, rumbleIdNum);
+      }
+      return;
+    }
+
+    if (currentSlotBig >= combat.revealCloseSlot) {
+      try {
+        const sig = await advanceTurnOnChain(rumbleIdNum);
+        if (sig) console.log(`[OnChain] advanceTurn succeeded: ${sig}`);
+      } catch (err) {
+        console.warn(`[OnChain] advanceTurn failed for ${slot.id}: ${formatError(err)}`);
+      }
+    }
+  }
+
   private async initCombatState(slot: RumbleSlot): Promise<void> {
     // Build RumbleFighter array from slot's fighter IDs.
     const MAX_HP = 100; // matches combat.ts default
     const fighterProfiles = await persist.loadRumbleFighterProfiles(slot.fighters);
+    const fighterWalletRows = await persist.lookupFighterWallets(slot.fighters);
+    const fighterWallets = new Map<string, PublicKey>();
+    for (const fid of slot.fighters) {
+      const wallet = fighterWalletRows.get(fid);
+      if (!wallet) continue;
+      try {
+        fighterWallets.set(fid, new PublicKey(wallet));
+      } catch {
+        console.warn(`[Orchestrator] Invalid wallet for fighter ${fid}: ${wallet}`);
+      }
+    }
 
     const fighters: RumbleFighter[] = slot.fighters.map((id) => ({
       id,
@@ -959,10 +1266,394 @@ export class RumbleOrchestrator {
       rumbleId: slot.id,
       fighters,
       fighterProfiles,
+      fighterWallets,
       turns: [],
       eliminationOrder: [],
       previousPairings: new Set(),
+      turnDecisions: new Map(),
+      lastOnchainTurnResolved: 0,
       lastTickAt: Date.now(),
+    });
+  }
+
+  private moveToCode(move: MoveType): number {
+    switch (move) {
+      case "HIGH_STRIKE":
+        return 0;
+      case "MID_STRIKE":
+        return 1;
+      case "LOW_STRIKE":
+        return 2;
+      case "GUARD_HIGH":
+        return 3;
+      case "GUARD_MID":
+        return 4;
+      case "GUARD_LOW":
+        return 5;
+      case "DODGE":
+        return 6;
+      case "CATCH":
+        return 7;
+      case "SPECIAL":
+        return 8;
+      default:
+        return 1;
+    }
+  }
+
+  private getSignerForFighter(fighterId: string, wallet: PublicKey | null): Keypair | null {
+    const byId = this.fighterSignerById.get(fighterId);
+    if (byId) return byId;
+    if (!wallet) return null;
+    return this.fighterSignerByWallet.get(wallet.toBase58()) ?? null;
+  }
+
+  private async sendFighterSignedTx(tx: Transaction, signer: Keypair): Promise<string> {
+    tx.partialSign(signer);
+    const conn = getConnection();
+    const signature = await conn.sendRawTransaction(tx.serialize(), {
+      skipPreflight: false,
+      preflightCommitment: "confirmed",
+      maxRetries: 3,
+    });
+    if (tx.recentBlockhash && tx.lastValidBlockHeight) {
+      await conn.confirmTransaction(
+        {
+          signature,
+          blockhash: tx.recentBlockhash,
+          lastValidBlockHeight: tx.lastValidBlockHeight,
+        },
+        "confirmed",
+      );
+    } else {
+      await conn.confirmTransaction(signature, "confirmed");
+    }
+    return signature;
+  }
+
+  private hashU64(parts: Array<Buffer | Uint8Array>): bigint {
+    const hasher = createHash("sha256");
+    for (const part of parts) {
+      hasher.update(part);
+    }
+    const digest = hasher.digest();
+    return digest.readBigUInt64LE(0);
+  }
+
+  private deriveOnchainPairings(
+    slot: RumbleSlot,
+    state: SlotCombatState,
+    combat: RumbleCombatAccountState,
+    rumbleIdNum: number,
+  ): Array<[string, string]> {
+    const fighterCount = Math.min(slot.fighters.length, combat.fighterCount);
+    const turn = combat.currentTurn;
+    if (turn <= 0) return [];
+
+    const rumbleBuf = Buffer.alloc(8);
+    rumbleBuf.writeBigUInt64LE(BigInt(rumbleIdNum));
+    const turnBuf = Buffer.alloc(4);
+    turnBuf.writeUInt32LE(turn >>> 0);
+
+    const aliveIndices: number[] = [];
+    for (let i = 0; i < fighterCount; i++) {
+      const hp = combat.hp[i] ?? 0;
+      const eliminated = (combat.eliminationRank[i] ?? 0) > 0;
+      if (hp > 0 && !eliminated) aliveIndices.push(i);
+    }
+
+    aliveIndices.sort((a, b) => {
+      const fighterAId = slot.fighters[a];
+      const fighterBId = slot.fighters[b];
+      const fighterAWallet = state.fighterWallets.get(fighterAId);
+      const fighterBWallet = state.fighterWallets.get(fighterBId);
+      if (!fighterAWallet || !fighterBWallet) return a - b;
+
+      const keyA = this.hashU64([
+        Buffer.from("pair-order"),
+        rumbleBuf,
+        turnBuf,
+        fighterAWallet.toBuffer(),
+      ]);
+      const keyB = this.hashU64([
+        Buffer.from("pair-order"),
+        rumbleBuf,
+        turnBuf,
+        fighterBWallet.toBuffer(),
+      ]);
+      if (keyA !== keyB) return keyA < keyB ? -1 : 1;
+      return Buffer.compare(fighterAWallet.toBuffer(), fighterBWallet.toBuffer());
+    });
+
+    const pairs: Array<[string, string]> = [];
+    for (let i = 0; i + 1 < aliveIndices.length; i += 2) {
+      pairs.push([slot.fighters[aliveIndices[i]], slot.fighters[aliveIndices[i + 1]]]);
+    }
+    return pairs;
+  }
+
+  private syncLocalFightersFromOnchain(
+    slot: RumbleSlot,
+    state: SlotCombatState,
+    combat: RumbleCombatAccountState,
+  ): { newEliminations: string[] } {
+    const newEliminations: string[] = [];
+    const fighterCount = Math.min(slot.fighters.length, combat.fighterCount);
+
+    for (let i = 0; i < fighterCount; i++) {
+      const fighterId = slot.fighters[i];
+      const fighter = state.fighters.find((f) => f.id === fighterId);
+      if (!fighter) continue;
+
+      const prevHp = fighter.hp;
+      const hp = Math.max(0, Number(combat.hp[i] ?? fighter.hp));
+      fighter.hp = hp;
+      fighter.meter = Math.max(0, Math.min(100, Number(combat.meter[i] ?? fighter.meter)));
+      fighter.totalDamageDealt = Number(combat.totalDamageDealt[i] ?? BigInt(fighter.totalDamageDealt));
+      fighter.totalDamageTaken = Number(combat.totalDamageTaken[i] ?? BigInt(fighter.totalDamageTaken));
+
+      const eliminatedRank = Number(combat.eliminationRank[i] ?? 0);
+      if ((hp <= 0 || eliminatedRank > 0) && fighter.eliminatedOnTurn === null) {
+        fighter.eliminatedOnTurn = combat.currentTurn > 0 ? combat.currentTurn : 1;
+        state.eliminationOrder.push(fighterId);
+        if (prevHp > 0) newEliminations.push(fighterId);
+      }
+    }
+
+    return { newEliminations };
+  }
+
+  private async ensureOnchainTurnDecision(
+    slot: RumbleSlot,
+    state: SlotCombatState,
+    fighterId: string,
+    opponentId: string,
+    rumbleIdNum: number,
+    turn: number,
+  ): Promise<OnchainTurnDecision | null> {
+    const byTurn = state.turnDecisions.get(turn) ?? new Map<string, OnchainTurnDecision>();
+    const existing = byTurn.get(fighterId);
+    if (existing) return existing;
+
+    const fighterWallet = state.fighterWallets.get(fighterId) ?? null;
+    const signer = this.getSignerForFighter(fighterId, fighterWallet);
+    if (!fighterWallet || !signer) return null;
+
+    const fighter = state.fighters.find((f) => f.id === fighterId);
+    const opponent = state.fighters.find((f) => f.id === opponentId);
+    if (!fighter || !opponent) return null;
+
+    const alive = state.fighters.filter((f) => f.hp > 0);
+    const move = await this.requestFighterMove(slot, state, fighter, opponent, alive, turn);
+    const moveCode = this.moveToCode(move);
+    const salt32Hex = randomBytes(32).toString("hex");
+    const commitment = computeMoveCommitmentHash(
+      rumbleIdNum,
+      turn,
+      fighterWallet,
+      moveCode,
+      Uint8Array.from(Buffer.from(salt32Hex, "hex")),
+    );
+    const decision: OnchainTurnDecision = {
+      move,
+      moveCode,
+      salt32Hex,
+      commitmentHex: Buffer.from(commitment).toString("hex"),
+      commitSubmitted: false,
+      revealSubmitted: false,
+    };
+    byTurn.set(fighterId, decision);
+    state.turnDecisions.set(turn, byTurn);
+    return decision;
+  }
+
+  private hasErrorTokenAny(err: unknown, tokens: string[]): boolean {
+    const text = formatError(err).toLowerCase();
+    return tokens.some((token) => text.includes(token.toLowerCase()));
+  }
+
+  private async submitOnchainMovesForTurn(
+    slot: RumbleSlot,
+    state: SlotCombatState,
+    combat: RumbleCombatAccountState,
+    rumbleIdNum: number,
+    currentSlot: bigint,
+  ): Promise<void> {
+    if (combat.currentTurn <= 0) return;
+
+    const turn = combat.currentTurn;
+    const pairings = this.deriveOnchainPairings(slot, state, combat, rumbleIdNum);
+    for (const [fighterA, fighterB] of pairings) {
+      await Promise.all([
+        this.ensureOnchainTurnDecision(slot, state, fighterA, fighterB, rumbleIdNum, turn),
+        this.ensureOnchainTurnDecision(slot, state, fighterB, fighterA, rumbleIdNum, turn),
+      ]);
+    }
+
+    const decisionsByFighter = state.turnDecisions.get(turn);
+    if (!decisionsByFighter) return;
+
+    for (const [fighterId, decision] of decisionsByFighter.entries()) {
+      const fighterWallet = state.fighterWallets.get(fighterId) ?? null;
+      const signer = this.getSignerForFighter(fighterId, fighterWallet);
+      if (!fighterWallet || !signer) continue;
+
+      if (!decision.commitSubmitted && currentSlot <= combat.commitCloseSlot) {
+        try {
+          const tx = await buildCommitMoveTx(
+            fighterWallet,
+            rumbleIdNum,
+            turn,
+            Uint8Array.from(Buffer.from(decision.commitmentHex, "hex")),
+          );
+          const sig = await this.sendFighterSignedTx(tx, signer);
+          decision.commitSubmitted = true;
+          console.log(`[OnChain] commitMove ${fighterId} turn ${turn}: ${sig}`);
+        } catch (err) {
+          if (
+            this.hasErrorTokenAny(err, [
+              "already in use",
+              "custom program error: 0x0",
+              "instruction 0:",
+            ])
+          ) {
+            decision.commitSubmitted = true;
+          } else {
+            console.warn(
+              `[OnChain] commitMove failed for fighter ${fighterId} turn ${turn}: ${formatError(err)}`,
+            );
+          }
+        }
+      }
+
+      if (
+        decision.commitSubmitted &&
+        !decision.revealSubmitted &&
+        currentSlot > combat.commitCloseSlot &&
+        currentSlot <= combat.revealCloseSlot
+      ) {
+        try {
+          const tx = await buildRevealMoveTx(
+            fighterWallet,
+            rumbleIdNum,
+            turn,
+            decision.moveCode,
+            Uint8Array.from(Buffer.from(decision.salt32Hex, "hex")),
+          );
+          const sig = await this.sendFighterSignedTx(tx, signer);
+          decision.revealSubmitted = true;
+          console.log(`[OnChain] revealMove ${fighterId} turn ${turn}: ${sig}`);
+        } catch (err) {
+          if (
+            this.hasErrorTokenAny(err, [
+              "already revealed",
+              "custom program error: 0x8a7",
+            ])
+          ) {
+            decision.revealSubmitted = true;
+          } else {
+            console.warn(
+              `[OnChain] revealMove failed for fighter ${fighterId} turn ${turn}: ${formatError(err)}`,
+            );
+          }
+        }
+      }
+    }
+  }
+
+  private async collectExistingMoveCommitments(
+    state: SlotCombatState,
+    rumbleIdNum: number,
+    turn: number,
+  ): Promise<PublicKey[]> {
+    const wallets = [...state.fighterWallets.values()];
+    if (wallets.length === 0) return [];
+    const pdas = wallets.map((wallet) => deriveMoveCommitmentPda(rumbleIdNum, wallet, turn)[0]);
+    const infos = await getConnection().getMultipleAccountsInfo(pdas, "processed");
+    const resolved: PublicKey[] = [];
+    for (let i = 0; i < pdas.length; i++) {
+      const info = infos[i];
+      if (!info) continue;
+      if (!info.owner.equals(RUMBLE_ENGINE_ID)) continue;
+      resolved.push(pdas[i]);
+    }
+    return resolved;
+  }
+
+  private async finishCombatFromOnchain(
+    slot: RumbleSlot,
+    state: SlotCombatState,
+    rumbleIdNum: number,
+  ): Promise<void> {
+    if (slot.rumbleResult) return;
+
+    const [rumble, combat] = await Promise.all([
+      readRumbleAccountState(rumbleIdNum).catch(() => null),
+      readRumbleCombatState(rumbleIdNum).catch(() => null),
+    ]);
+    if (!rumble || !combat) return;
+
+    this.syncLocalFightersFromOnchain(slot, state, combat);
+
+    let placements = slot.fighters
+      .map((fighterId, index) => ({
+        id: fighterId,
+        placement: rumble.placements[index] ?? 0,
+      }))
+      .filter((row) => Number.isInteger(row.placement) && row.placement > 0)
+      .sort((a, b) => a.placement - b.placement);
+
+    if (placements.length < 2) {
+      const ranked = [...state.fighters].sort((a, b) => {
+        if (a.hp > 0 || b.hp > 0) {
+          if (b.hp !== a.hp) return b.hp - a.hp;
+        }
+        if ((b.eliminatedOnTurn ?? 0) !== (a.eliminatedOnTurn ?? 0)) {
+          return (b.eliminatedOnTurn ?? 0) - (a.eliminatedOnTurn ?? 0);
+        }
+        return b.totalDamageDealt - a.totalDamageDealt;
+      });
+      placements = ranked.map((f, i) => ({ id: f.id, placement: i + 1 }));
+    }
+
+    const rankedFighters = placements
+      .map((row) => {
+        const fighter = state.fighters.find((f) => f.id === row.id);
+        return fighter
+          ? {
+              ...fighter,
+              placement: row.placement,
+            }
+          : null;
+      })
+      .filter((f): f is RumbleFighter => !!f)
+      .sort((a, b) => a.placement - b.placement);
+
+    if (rankedFighters.length < 2) return;
+    const winner = rankedFighters[0].id;
+
+    const result: RumbleResult = {
+      rumbleId: slot.id,
+      fighters: rankedFighters,
+      turns: state.turns,
+      winner,
+      placements,
+      totalTurns: state.turns.length,
+    };
+
+    await persist.completeRumbleRecord(
+      slot.id,
+      winner,
+      result.placements,
+      state.turns,
+      state.turns.length,
+    );
+
+    this.queueManager.reportResult(slot.slotIndex, result);
+    this.emit("rumble_complete", {
+      slotIndex: slot.slotIndex,
+      rumbleId: slot.id,
+      result,
     });
   }
 
@@ -1145,11 +1836,7 @@ export class RumbleOrchestrator {
   async runCombatPhase(slotIndex: number): Promise<void> {
     const slot = this.queueManager.getSlot(slotIndex);
     if (!slot || slot.state !== "combat") return;
-
-    const state = this.combatStates.get(slotIndex);
-    if (!state) return;
-
-    await this.runCombatTurn(slot, state);
+    await this.handleCombatPhase(slot);
   }
 
   private async runCombatTurn(slot: RumbleSlot, state: SlotCombatState): Promise<void> {
@@ -1438,67 +2125,33 @@ export class RumbleOrchestrator {
       return;
     }
 
-    // 1. Report result on-chain.
-    // IMPORTANT: placement vector must be aligned to the rumble's ORIGINAL
-    // fighter order used in create_rumble, not ranked order.
+    // 1. Ensure on-chain result is finalized (payout-ready).
     try {
-      const placementById = new Map<string, number>();
-      for (const row of placements) {
-        if (typeof row.id === "string" && Number.isInteger(row.placement) && row.placement > 0) {
-          placementById.set(row.id, row.placement);
-        }
+      let onchainState = await this.ensureOnchainRumbleIsCombatReady(
+        rumbleId,
+        fighterOrder,
+        Math.floor(Date.now() / 1000) - ONCHAIN_CREATE_RECOVERY_DEADLINE_SKEW_SEC,
+      );
+      if (!onchainState) {
+        throw new Error(`[OnChain] finalize skipped for ${rumbleId}: on-chain rumble unavailable`);
       }
 
-      const placementArray: number[] = [];
-      for (const fighterId of fighterOrder) {
-        const placement = placementById.get(fighterId) ?? 0;
-        if (!placement) {
-          throw new Error(
-            `[OnChain] reportResult skipped for ${rumbleId}: missing placement for fighter ${fighterId}`,
-          );
+      if (onchainState.state === "combat") {
+        const finalizeSig = await finalizeRumbleOnChainTx(rumbleIdNum).catch(() => null);
+        if (finalizeSig) {
+          console.log(`[OnChain] finalizeRumble succeeded: ${finalizeSig}`);
+          persist.updateRumbleTxSignature(rumbleId, "reportResult", finalizeSig);
         }
-        placementArray.push(placement);
+        onchainState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
       }
 
-      const winnerIndex = placementArray.findIndex((p) => p === 1);
-      if (winnerIndex >= 0) {
-        let onchainState = await this.ensureOnchainRumbleIsCombatReady(
-          rumbleId,
-          fighterOrder,
-          Math.floor(Date.now() / 1000) - ONCHAIN_CREATE_RECOVERY_DEADLINE_SKEW_SEC,
+      if (onchainState?.state !== "payout" && onchainState?.state !== "complete") {
+        console.warn(
+          `[OnChain] rumble ${rumbleId} not payout-ready yet (state=${onchainState?.state ?? "unknown"})`,
         );
-        if (!onchainState) {
-          throw new Error(
-            `[OnChain] reportResult skipped for ${rumbleId}: on-chain rumble unavailable`,
-          );
-        }
-        if (onchainState.state === "payout" || onchainState.state === "complete") {
-          console.log(
-            `[OnChain] reportResult already applied for ${rumbleId} (state=${onchainState.state}), skipping`,
-          );
-        } else {
-          if (onchainState.state === "betting") {
-            // best effort: transition before reporting
-            await startCombatOnChain(rumbleIdNum).catch(() => null);
-            onchainState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
-          }
-          if (onchainState?.state !== "combat") {
-            console.warn(
-              `[OnChain] reportResult skipped for ${rumbleId}: unexpected state=${onchainState?.state ?? "unknown"}`,
-            );
-          } else {
-            const sig = await reportResultOnChain(rumbleIdNum, placementArray, winnerIndex);
-            if (sig) {
-              console.log(`[OnChain] reportResult succeeded: ${sig}`);
-              persist.updateRumbleTxSignature(rumbleId, "reportResult", sig);
-            } else {
-              console.warn(`[OnChain] reportResult returned null — continuing off-chain`);
-            }
-          }
-        }
       }
     } catch (err) {
-      console.error(`[OnChain] reportResult error:`, err);
+      console.error(`[OnChain] finalizeRumble error:`, err);
     }
 
     // 2. Distribute ICHOR rewards by placement
