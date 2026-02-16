@@ -296,10 +296,14 @@ const ONCHAIN_FINALIZATION_RETRY_MS = 10_000;
 const ONCHAIN_CREATE_RETRY_MS = 5_000;
 const ONCHAIN_CREATE_STALL_TIMEOUT_MS = readIntervalMs(
   "RUMBLE_ONCHAIN_CREATE_STALL_TIMEOUT_MS",
-  45_000,
-  10_000,
   5 * 60_000,
+  10_000,
+  30 * 60_000,
 );
+const ABORT_STALLED_BETTING =
+  process.env.RUMBLE_ABORT_STALLED_BETTING === undefined
+    ? process.env.NODE_ENV !== "production"
+    : process.env.RUMBLE_ABORT_STALLED_BETTING === "true";
 const ONCHAIN_CREATE_VERIFY_ATTEMPTS = readInt(
   "RUMBLE_ONCHAIN_CREATE_VERIFY_ATTEMPTS",
   4,
@@ -1065,7 +1069,7 @@ export class RumbleOrchestrator {
     } else {
       this.onchainRumbleCreateRetryAt.set(rumbleId, now + ONCHAIN_CREATE_RETRY_MS);
       const startedAt = this.onchainRumbleCreateStartedAt.get(rumbleId) ?? now;
-      if (now - startedAt >= ONCHAIN_CREATE_STALL_TIMEOUT_MS) {
+      if (ABORT_STALLED_BETTING && now - startedAt >= ONCHAIN_CREATE_STALL_TIMEOUT_MS) {
         await this.abortStalledBettingSlot(slot, "on-chain rumble creation timed out");
       }
     }

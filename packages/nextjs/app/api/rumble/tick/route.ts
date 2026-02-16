@@ -29,7 +29,7 @@ function readEnvInt(
 // Number of ticks to run per invocation and spacing between ticks.
 // Production-safe defaults are non-bursty (1 tick/call). Override via env
 // only when you intentionally want burst catch-up behavior.
-const TICKS_PER_INVOCATION = readEnvInt("RUMBLE_TICKS_PER_INVOCATION", 1, 1, 60);
+const TICKS_PER_INVOCATION = readEnvInt("RUMBLE_TICKS_PER_INVOCATION", 8, 1, 60);
 const TICK_INTERVAL_MS = readEnvInt("RUMBLE_TICK_BURST_INTERVAL_MS", 1_000, 250, 10_000);
 
 // ---------------------------------------------------------------------------
