@@ -36,7 +36,10 @@ const STALLED_COMBAT_NUDGE_INTERVAL_MS = Math.max(
   5_000,
   Number(process.env.RUMBLE_STALLED_COMBAT_NUDGE_INTERVAL_MS ?? "15000"),
 );
-const statusGlobal = globalThis as unknown as { __rumbleStatusStallKickAt?: number };
+const statusGlobal = globalThis as unknown as {
+  __rumbleStatusStallKickAt?: number;
+  __rumbleStallSeenAtByRumble?: Record<string, number>;
+};
 
 // ---------------------------------------------------------------------------
 // Fresh Supabase client (no-store cache)
@@ -482,20 +485,39 @@ export async function GET(request: Request) {
     // If public mutation is disabled and combat is visibly stalled at turn 0,
     // perform a throttled single tick to unstick progression.
     if (!STATUS_MUTATION_ENABLED) {
+      const nowBySlotMs = Date.now();
+      const stallSeenAtByRumble = statusGlobal.__rumbleStallSeenAtByRumble ?? {};
+      const activeCombatRumbleIds = new Set<string>();
       const stalledCombatDetected = slots.some((slot) => {
         if (slot.state !== "combat") return false;
         if ((slot.currentTurn ?? 0) > 0) return false;
         if (slot.nextTurnAt) return false;
+        activeCombatRumbleIds.add(slot.rumbleId);
+
+        if (!stallSeenAtByRumble[slot.rumbleId]) {
+          stallSeenAtByRumble[slot.rumbleId] = nowBySlotMs;
+        }
+
+        const inMemoryAgeMs = nowBySlotMs - stallSeenAtByRumble[slot.rumbleId];
+        if (inMemoryAgeMs >= STALLED_COMBAT_MIN_AGE_MS) return true;
+
         const persisted = latestPersistedBySlot.get(slot.slotIndex);
         if (!persisted) return false;
         if (String(persisted.status ?? "").toLowerCase() !== "combat") return false;
         const createdAtMs = new Date(persisted.created_at).getTime();
         if (!Number.isFinite(createdAtMs)) return false;
-        return nowMs - createdAtMs >= STALLED_COMBAT_MIN_AGE_MS;
+        return nowBySlotMs - createdAtMs >= STALLED_COMBAT_MIN_AGE_MS;
       });
+      for (const [rumbleId] of Object.entries(stallSeenAtByRumble)) {
+        if (!activeCombatRumbleIds.has(rumbleId)) {
+          delete stallSeenAtByRumble[rumbleId];
+        }
+      }
+      statusGlobal.__rumbleStallSeenAtByRumble = stallSeenAtByRumble;
+
       const lastKickAt = statusGlobal.__rumbleStatusStallKickAt ?? 0;
-      if (stalledCombatDetected && nowMs - lastKickAt >= STALLED_COMBAT_NUDGE_INTERVAL_MS) {
-        statusGlobal.__rumbleStatusStallKickAt = nowMs;
+      if (stalledCombatDetected && nowBySlotMs - lastKickAt >= STALLED_COMBAT_NUDGE_INTERVAL_MS) {
+        statusGlobal.__rumbleStatusStallKickAt = nowBySlotMs;
         await orchestrator.tick().catch((err) => {
           console.warn("[StatusAPI] stalled combat nudge tick failed", err);
         });
