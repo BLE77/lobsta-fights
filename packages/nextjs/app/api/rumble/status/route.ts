@@ -28,6 +28,15 @@ const MAX_ACTIVE_AGE_MS_BY_STATUS: Record<string, number> = {
   combat: 45 * 60 * 1000,
   payout: 10 * 60 * 1000,
 };
+const STALLED_COMBAT_MIN_AGE_MS = Math.max(
+  15_000,
+  Number(process.env.RUMBLE_STALLED_COMBAT_MIN_AGE_MS ?? "30000"),
+);
+const STALLED_COMBAT_NUDGE_INTERVAL_MS = Math.max(
+  5_000,
+  Number(process.env.RUMBLE_STALLED_COMBAT_NUDGE_INTERVAL_MS ?? "15000"),
+);
+const statusGlobal = globalThis as unknown as { __rumbleStatusStallKickAt?: number };
 
 // ---------------------------------------------------------------------------
 // Fresh Supabase client (no-store cache)
@@ -396,19 +405,19 @@ export async function GET(request: Request) {
       if (!Number.isFinite(createdAtMs)) return false;
       return nowMs - createdAtMs <= maxAge;
     });
-    if (freshPersisted.length > 0) {
-      const latestBySlot = new Map<number, (typeof persistedActive)[number]>();
-      for (const row of freshPersisted) {
-        const slotIndex = Number(row.slot_index);
-        if (!Number.isInteger(slotIndex)) continue;
-        const existing = latestBySlot.get(slotIndex);
-        if (!existing || new Date(row.created_at).getTime() > new Date(existing.created_at).getTime()) {
-          latestBySlot.set(slotIndex, row);
-        }
+    const latestPersistedBySlot = new Map<number, (typeof persistedActive)[number]>();
+    for (const row of freshPersisted) {
+      const slotIndex = Number(row.slot_index);
+      if (!Number.isInteger(slotIndex)) continue;
+      const existing = latestPersistedBySlot.get(slotIndex);
+      if (!existing || new Date(row.created_at).getTime() > new Date(existing.created_at).getTime()) {
+        latestPersistedBySlot.set(slotIndex, row);
       }
+    }
 
+    if (freshPersisted.length > 0) {
       const base = new Map(slots.map((s) => [s.slotIndex, s]));
-      for (const [slotIndex, row] of latestBySlot.entries()) {
+      for (const [slotIndex, row] of latestPersistedBySlot.entries()) {
         const fighterRows = Array.isArray(row.fighters)
           ? (row.fighters as Array<{ id?: string; name?: string }>)
           : [];
@@ -467,6 +476,30 @@ export async function GET(request: Request) {
         });
       }
       slots = [...base.values()].sort((a, b) => a.slotIndex - b.slotIndex);
+    }
+
+    // Safety valve:
+    // If public mutation is disabled and combat is visibly stalled at turn 0,
+    // perform a throttled single tick to unstick progression.
+    if (!STATUS_MUTATION_ENABLED) {
+      const stalledCombatDetected = slots.some((slot) => {
+        if (slot.state !== "combat") return false;
+        if ((slot.currentTurn ?? 0) > 0) return false;
+        if (slot.nextTurnAt) return false;
+        const persisted = latestPersistedBySlot.get(slot.slotIndex);
+        if (!persisted) return false;
+        if (String(persisted.status ?? "").toLowerCase() !== "combat") return false;
+        const createdAtMs = new Date(persisted.created_at).getTime();
+        if (!Number.isFinite(createdAtMs)) return false;
+        return nowMs - createdAtMs >= STALLED_COMBAT_MIN_AGE_MS;
+      });
+      const lastKickAt = statusGlobal.__rumbleStatusStallKickAt ?? 0;
+      if (stalledCombatDetected && nowMs - lastKickAt >= STALLED_COMBAT_NUDGE_INTERVAL_MS) {
+        statusGlobal.__rumbleStatusStallKickAt = nowMs;
+        await orchestrator.tick().catch((err) => {
+          console.warn("[StatusAPI] stalled combat nudge tick failed", err);
+        });
+      }
     }
 
     // ---- Ichor shower state ------------------------------------------------

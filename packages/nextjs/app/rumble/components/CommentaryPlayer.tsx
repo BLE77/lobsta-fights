@@ -535,6 +535,7 @@ export default function CommentaryPlayer({
   const [serviceError, setServiceError] = useState<string | null>(null);
   const [needsAudioUnlock, setNeedsAudioUnlock] = useState(false);
   const [isAmbientActive, setIsAmbientActive] = useState(false);
+  const [hasUserGesture, setHasUserGesture] = useState(false);
 
   const mixerRef = useRef<RadioMixer | null>(null);
   const lastRequestTime = useRef(0);
@@ -570,13 +571,32 @@ export default function CommentaryPlayer({
     mixerRef.current?.setVolume(volume);
   }, [volume]);
 
+  // Browser autoplay policy requires a user gesture before audio context can
+  // start. Track first interaction and avoid eager audio init before that.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const userActivation = (navigator as Navigator & { userActivation?: { hasBeenActive?: boolean } }).userActivation;
+    if (userActivation?.hasBeenActive) {
+      setHasUserGesture(true);
+      return;
+    }
+    const unlock = () => setHasUserGesture(true);
+    window.addEventListener("pointerdown", unlock, { once: true, passive: true });
+    window.addEventListener("keydown", unlock, { once: true });
+    return () => {
+      window.removeEventListener("pointerdown", unlock);
+      window.removeEventListener("keydown", unlock);
+    };
+  }, []);
+
   // Start/stop ambient and preload on enable/disable
   useEffect(() => {
     const mixer = mixerRef.current;
     if (!mixer) return;
     let cancelled = false;
 
-    if (enabled) {
+    if (enabled && hasUserGesture) {
+      setNeedsAudioUnlock(false);
       (async () => {
         try {
           await mixer.init();
@@ -593,18 +613,22 @@ export default function CommentaryPlayer({
           setServiceError(String(message));
         }
       })();
-    } else {
+    } else if (!enabled) {
       mixer.stop();
       mixer.stopAmbient();
       setIsAmbientActive(false);
+      setNeedsAudioUnlock(false);
+    } else {
+      setNeedsAudioUnlock(true);
     }
     return () => {
       cancelled = true;
     };
-  }, [enabled]);
+  }, [enabled, hasUserGesture]);
 
   const unlockAudio = useCallback(async () => {
     setNeedsAudioUnlock(false);
+    setHasUserGesture(true);
     const mixer = mixerRef.current;
     if (mixer) {
       await mixer.init();
