@@ -228,22 +228,28 @@ function readInt(
   return Math.min(max, Math.max(min, Math.floor(raw)));
 }
 
-const COMBAT_TICK_INTERVAL_MS_CONFIGURED = readIntervalMs(
+const LEGACY_COMBAT_TICK_INTERVAL_MS_CONFIGURED = readIntervalMs(
   "RUMBLE_COMBAT_TICK_INTERVAL_MS",
-  30_000,
+  3_000,
   1_000,
   120_000,
 );
-const COMBAT_TICK_MIN_PROD_MS = readIntervalMs(
+const LEGACY_COMBAT_TICK_MIN_PROD_MS = readIntervalMs(
   "RUMBLE_COMBAT_TICK_MIN_PROD_MS",
   30_000,
   1_000,
   120_000,
 );
-const COMBAT_TICK_INTERVAL_MS =
+const LEGACY_COMBAT_TICK_INTERVAL_MS =
   process.env.NODE_ENV === "production"
-    ? Math.max(COMBAT_TICK_INTERVAL_MS_CONFIGURED, COMBAT_TICK_MIN_PROD_MS)
-    : COMBAT_TICK_INTERVAL_MS_CONFIGURED;
+    ? Math.max(LEGACY_COMBAT_TICK_INTERVAL_MS_CONFIGURED, LEGACY_COMBAT_TICK_MIN_PROD_MS)
+    : LEGACY_COMBAT_TICK_INTERVAL_MS_CONFIGURED;
+const ONCHAIN_KEEPER_POLL_INTERVAL_MS = readIntervalMs(
+  "RUMBLE_ONCHAIN_KEEPER_POLL_INTERVAL_MS",
+  1_000,
+  250,
+  10_000,
+);
 const AGENT_MOVE_TIMEOUT_MS = readIntervalMs(
   "RUMBLE_AGENT_MOVE_TIMEOUT_MS",
   3_500,
@@ -272,7 +278,10 @@ const ONCHAIN_FINALIZATION_DELAY_MS = 30_000;
 const ONCHAIN_FINALIZATION_RETRY_MS = 10_000;
 const MAX_FINALIZATION_ATTEMPTS = 30;
 const ONCHAIN_CREATE_RECOVERY_DEADLINE_SKEW_SEC = 5;
-const ONCHAIN_TURN_AUTHORITY = (process.env.RUMBLE_ONCHAIN_TURN_AUTHORITY ?? "true") !== "false";
+const ONCHAIN_TURN_AUTHORITY =
+  process.env.NODE_ENV === "production"
+    ? true
+    : (process.env.RUMBLE_ONCHAIN_TURN_AUTHORITY ?? "true") !== "false";
 
 interface PendingFinalization {
   rumbleId: string;
@@ -1090,8 +1099,8 @@ export class RumbleOrchestrator {
 
     const state = this.combatStates.get(idx)!;
 
-    // Throttle: only run one turn per COMBAT_TICK_INTERVAL_MS
-    if (now - state.lastTickAt < COMBAT_TICK_INTERVAL_MS) return;
+    // Throttle: only run one turn per LEGACY_COMBAT_TICK_INTERVAL_MS
+    if (now - state.lastTickAt < LEGACY_COMBAT_TICK_INTERVAL_MS) return;
 
     // Run one turn (awaited so on-chain settlement is properly tracked)
     await this.runCombatTurn(slot, state);
@@ -1129,7 +1138,7 @@ export class RumbleOrchestrator {
     }
 
     const state = this.combatStates.get(idx)!;
-    if (now - state.lastTickAt < COMBAT_TICK_INTERVAL_MS) return;
+    if (now - state.lastTickAt < ONCHAIN_KEEPER_POLL_INTERVAL_MS) return;
     state.lastTickAt = now;
 
     let onchainState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
@@ -1831,7 +1840,7 @@ export class RumbleOrchestrator {
 
   /**
    * Execute a single combat turn for a slot. Called from tick() during
-   * combat phase, throttled to one turn per COMBAT_TICK_INTERVAL_MS.
+   * combat phase, throttled to one turn per legacy combat tick interval.
    */
   async runCombatPhase(slotIndex: number): Promise<void> {
     const slot = this.queueManager.getSlot(slotIndex);
@@ -2635,8 +2644,8 @@ export class RumbleOrchestrator {
         ? combatState.fighters.filter((f) => f.hp > 0).length
         : slot.fighters.length;
       const nextTurnAt =
-        slot.state === "combat" && combatState
-          ? new Date(Math.max(now, combatState.lastTickAt + COMBAT_TICK_INTERVAL_MS))
+        slot.state === "combat" && combatState && !ONCHAIN_TURN_AUTHORITY
+          ? new Date(Math.max(now, combatState.lastTickAt + LEGACY_COMBAT_TICK_INTERVAL_MS))
           : null;
 
       return {
@@ -2648,7 +2657,10 @@ export class RumbleOrchestrator {
         remainingFighters: remaining,
         bettingDeadline: slot.bettingDeadline,
         nextTurnAt,
-        turnIntervalMs: slot.state === "combat" && combatState ? COMBAT_TICK_INTERVAL_MS : null,
+        turnIntervalMs:
+          slot.state === "combat" && combatState && !ONCHAIN_TURN_AUTHORITY
+            ? LEGACY_COMBAT_TICK_INTERVAL_MS
+            : null,
       };
     });
   }

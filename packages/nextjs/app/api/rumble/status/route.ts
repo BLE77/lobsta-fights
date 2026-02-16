@@ -11,10 +11,12 @@ import {
   getIchorShowerState,
   getStats,
 } from "~~/lib/rumble-persistence";
-import { readArenaConfig, readRumbleAccountState } from "~~/lib/solana-programs";
+import { readArenaConfig, readRumbleAccountState, readRumbleCombatState } from "~~/lib/solana-programs";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
+import { getConnection } from "~~/lib/solana-connection";
 
 export const dynamic = "force-dynamic";
+const SLOT_MS_ESTIMATE = Math.max(250, Number(process.env.RUMBLE_SLOT_MS_ESTIMATE ?? "400"));
 
 // ---------------------------------------------------------------------------
 // Fresh Supabase client (no-store cache)
@@ -240,19 +242,87 @@ export async function GET(request: Request) {
       };
     });
 
-    // Cross-check betting slots against on-chain state so UI doesn't present
-    // a stale "Betting Open" phase after the program has already moved on.
+    // Cross-check slot state/timing against on-chain data so UI pacing is
+    // anchored to chain slots (ORE-style), not backend loop cadence.
+    const currentClusterSlot = await getConnection().getSlot("processed").catch(() => null);
+    const currentClusterSlotBig =
+      typeof currentClusterSlot === "number" && Number.isFinite(currentClusterSlot)
+        ? BigInt(currentClusterSlot)
+        : null;
+    const slotsToMs = (targetSlot: bigint | null): number => {
+      if (!targetSlot || currentClusterSlotBig === null || targetSlot <= currentClusterSlotBig) return 0;
+      const delta = targetSlot - currentClusterSlotBig;
+      const capped = delta > 1_000_000n ? 1_000_000n : delta;
+      return Number(capped) * SLOT_MS_ESTIMATE;
+    };
+
     slots = await Promise.all(
       slots.map(async slot => {
-        if (slot.state !== "betting" || !slot.rumbleId) return slot;
+        if (!slot.rumbleId) return slot;
         const rumbleIdNum = parseOnchainRumbleIdNumber(slot.rumbleId);
         if (rumbleIdNum === null) return slot;
         const onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
-        if (!onchain || onchain.state === "betting") return slot;
+        if (!onchain) return slot;
+
+        let state = slot.state;
+        if (onchain.state === "combat") state = "combat";
+        else if (onchain.state === "payout" || onchain.state === "complete") state = "payout";
+        else if (onchain.state === "betting") state = "betting";
+
+        let nextTurnAt = slot.nextTurnAt;
+        let turnIntervalMs = slot.turnIntervalMs;
+        let currentTurn = slot.currentTurn;
+        let bettingDeadline = slot.bettingDeadline;
+
+        if (state === "betting") {
+          const closeSlot = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
+          if (closeSlot > 0n) {
+            const etaMs = slotsToMs(closeSlot);
+            bettingDeadline = new Date(Date.now() + etaMs).toISOString();
+          }
+        } else {
+          bettingDeadline = null;
+        }
+
+        if (state === "combat") {
+          const onchainCombat = await readRumbleCombatState(rumbleIdNum).catch(() => null);
+          if (onchainCombat) {
+            currentTurn = Math.max(currentTurn ?? 0, onchainCombat.currentTurn ?? 0);
+
+            const slotSpan =
+              onchainCombat.revealCloseSlot > onchainCombat.turnOpenSlot
+                ? onchainCombat.revealCloseSlot - onchainCombat.turnOpenSlot
+                : 0n;
+            turnIntervalMs = Number(slotSpan > 0n ? slotSpan : 0n) * SLOT_MS_ESTIMATE;
+
+            let targetSlot: bigint | null = null;
+            if (!onchainCombat.turnResolved) {
+              targetSlot =
+                currentClusterSlotBig !== null && currentClusterSlotBig <= onchainCombat.commitCloseSlot
+                  ? onchainCombat.commitCloseSlot
+                  : onchainCombat.revealCloseSlot;
+            } else if (onchainCombat.remainingFighters > 1) {
+              targetSlot = onchainCombat.revealCloseSlot;
+            }
+            if (targetSlot) {
+              const etaMs = slotsToMs(targetSlot);
+              nextTurnAt = new Date(Date.now() + etaMs).toISOString();
+            } else {
+              nextTurnAt = null;
+            }
+          }
+        } else {
+          nextTurnAt = null;
+          turnIntervalMs = null;
+        }
+
         return {
           ...slot,
-          state: onchain.state === "combat" ? "combat" : "payout",
-          bettingDeadline: null,
+          state,
+          bettingDeadline,
+          nextTurnAt,
+          turnIntervalMs,
+          currentTurn,
         };
       }),
     );
