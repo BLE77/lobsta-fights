@@ -436,6 +436,11 @@ export async function GET(request: Request) {
       (sum, s) => sum + (s.state !== "idle" ? s.fighters.length : 0),
       0,
     );
+    const runtimeHealth = orchestrator.getRuntimeHealth();
+    const systemWarnings: string[] = [];
+    if (!runtimeHealth.onchainAdmin.ready && runtimeHealth.onchainAdmin.reason) {
+      systemWarnings.push(`On-chain admin unavailable: ${runtimeHealth.onchainAdmin.reason}`);
+    }
 
     return NextResponse.json({
       slots,
@@ -449,6 +454,8 @@ export async function GET(request: Request) {
             : Number(showerState?.pool_amount ?? 0),
         rumblesSinceLastTrigger,
       },
+      runtimeHealth,
+      systemWarnings,
     });
   } catch (error: any) {
     console.error("[StatusAPI]", error);

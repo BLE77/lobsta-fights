@@ -4,6 +4,7 @@ import {
   readArenaConfig,
   readRumbleConfig,
   readRegistryConfig,
+  getAdminSignerPublicKey,
 } from "~~/lib/solana-programs";
 import { isAuthorizedAdminRequest } from "~~/lib/request-auth";
 
@@ -20,6 +21,10 @@ export async function GET(request: Request) {
       readRumbleConfig().catch(() => null),
       readRegistryConfig().catch(() => null),
     ]);
+    const adminSigner = getAdminSignerPublicKey();
+    const onchainRumbleAdmin = rumbleConfig?.admin?.toBase58?.() ?? null;
+    const adminSignerMatchesRumbleAdmin =
+      !!adminSigner && !!onchainRumbleAdmin ? adminSigner === onchainRumbleAdmin : null;
 
     // Convert BigInts to strings for JSON serialization
     const serializeBigInts = (obj: any) => {
@@ -35,6 +40,12 @@ export async function GET(request: Request) {
       arenaConfig: serializeBigInts(arenaConfig),
       rumbleConfig: serializeBigInts(rumbleConfig),
       registryConfig: serializeBigInts(registryConfig),
+      adminSigner: {
+        configured: !!adminSigner,
+        pubkey: adminSigner,
+        onchainRumbleAdmin,
+        matchesRumbleAdmin: adminSignerMatchesRumbleAdmin,
+      },
       timestamp: new Date().toISOString(),
     });
   } catch (error: any) {

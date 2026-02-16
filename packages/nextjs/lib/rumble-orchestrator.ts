@@ -78,7 +78,9 @@ import {
   getIchorMint,
   deriveArenaConfigPda,
   readArenaConfig,
+  readRumbleConfig,
   readRumbleAccountState,
+  getAdminSignerPublicKey,
   type RumbleCombatAccountState,
   readShowerRequest,
   RUMBLE_ENGINE_ID,
@@ -299,10 +301,24 @@ const ONCHAIN_CREATE_STALL_TIMEOUT_MS = readIntervalMs(
 );
 const MAX_FINALIZATION_ATTEMPTS = 30;
 const ONCHAIN_CREATE_RECOVERY_DEADLINE_SKEW_SEC = 5;
+const ONCHAIN_ADMIN_HEALTH_CHECK_MS = readIntervalMs(
+  "RUMBLE_ONCHAIN_ADMIN_HEALTH_CHECK_MS",
+  15_000,
+  2_000,
+  120_000,
+);
 const ONCHAIN_TURN_AUTHORITY =
   process.env.NODE_ENV === "production"
     ? true
     : (process.env.RUMBLE_ONCHAIN_TURN_AUTHORITY ?? "true") !== "false";
+
+interface OnchainAdminHealth {
+  checkedAt: number;
+  ready: boolean;
+  reason: string | null;
+  signerPubkey: string | null;
+  rumbleAdmin: string | null;
+}
 
 interface PendingFinalization {
   rumbleId: string;
@@ -363,6 +379,13 @@ export class RumbleOrchestrator {
   private onchainRumbleCreateRetryAt: Map<string, number> = new Map();
   private onchainRumbleCreateStartedAt: Map<string, number> = new Map();
   private warnedInvalidHouseBotIds: Set<string> = new Set();
+  private onchainAdminHealth: OnchainAdminHealth = {
+    checkedAt: 0,
+    ready: true,
+    reason: null,
+    signerPubkey: null,
+    rumbleAdmin: null,
+  };
   private tickInFlight: Promise<void> | null = null;
 
   constructor(queueManager: RumbleQueueManager) {
@@ -533,6 +556,23 @@ export class RumbleOrchestrator {
   }
 
   private async tickInternal(): Promise<void> {
+    if (ONCHAIN_TURN_AUTHORITY) {
+      const health = await this.getOnchainAdminHealth();
+      if (!health.ready) {
+        // Prevent endless betting-init loops when signer config is broken.
+        const slots = this.queueManager.getSlots();
+        for (const slot of slots) {
+          if (slot.state === "betting" && !slot.bettingDeadline) {
+            await this.abortStalledBettingSlot(
+              slot,
+              `on-chain admin unavailable: ${health.reason ?? "unknown reason"}`
+            );
+          }
+        }
+        return;
+      }
+    }
+
     await this.maintainHouseBotQueue();
 
     // Let the queue manager handle state transitions (idle→betting, betting→combat, etc.)
@@ -549,6 +589,55 @@ export class RumbleOrchestrator {
 
     await this.processPendingRumbleFinalizations();
     this.pollPendingIchorShower();
+  }
+
+  private async getOnchainAdminHealth(): Promise<OnchainAdminHealth> {
+    const now = Date.now();
+    if (now - this.onchainAdminHealth.checkedAt < ONCHAIN_ADMIN_HEALTH_CHECK_MS) {
+      return this.onchainAdminHealth;
+    }
+
+    const signerPubkey = getAdminSignerPublicKey();
+    if (!signerPubkey) {
+      this.onchainAdminHealth = {
+        checkedAt: now,
+        ready: false,
+        reason: "Missing SOLANA_DEPLOYER_KEYPAIR or SOLANA_DEPLOYER_KEYPAIR_PATH",
+        signerPubkey: null,
+        rumbleAdmin: null,
+      };
+      return this.onchainAdminHealth;
+    }
+
+    const cfg = await readRumbleConfig().catch(() => null);
+    const rumbleAdminRaw = cfg?.admin;
+    const rumbleAdmin =
+      typeof rumbleAdminRaw === "string"
+        ? rumbleAdminRaw
+        : (rumbleAdminRaw as any)?.toBase58?.() ?? null;
+    if (rumbleAdmin && signerPubkey !== rumbleAdmin) {
+      this.onchainAdminHealth = {
+        checkedAt: now,
+        ready: false,
+        reason: `Admin signer mismatch (signer=${signerPubkey}, onchain=${rumbleAdmin})`,
+        signerPubkey,
+        rumbleAdmin,
+      };
+      return this.onchainAdminHealth;
+    }
+
+    this.onchainAdminHealth = {
+      checkedAt: now,
+      ready: true,
+      reason: null,
+      signerPubkey,
+      rumbleAdmin,
+    };
+    return this.onchainAdminHealth;
+  }
+
+  getRuntimeHealth(): { onchainAdmin: OnchainAdminHealth } {
+    return { onchainAdmin: { ...this.onchainAdminHealth } };
   }
 
   private getHouseBotTargetPopulation(): number {

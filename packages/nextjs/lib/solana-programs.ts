@@ -610,6 +610,11 @@ function getAdminKeypair(): Keypair | null {
   return null;
 }
 
+export function getAdminSignerPublicKey(): string | null {
+  const kp = getAdminKeypair();
+  return kp ? kp.publicKey.toBase58() : null;
+}
+
 function getAdminProvider(connection?: Connection): anchor.AnchorProvider | null {
   const keypair = getAdminKeypair();
   if (!keypair) return null;
