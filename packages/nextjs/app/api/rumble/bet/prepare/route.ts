@@ -6,9 +6,13 @@ import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-
 import { MAX_BET_SOL, MIN_BET_SOL } from "~~/lib/tx-verify";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 import { hasRecovered, recoverOrchestratorState } from "~~/lib/rumble-state-recovery";
+import { getConnection } from "~~/lib/solana-connection";
+import { ensureRumblePublicHeartbeat } from "~~/lib/rumble-public-heartbeat";
 
 export const dynamic = "force-dynamic";
 const BETTING_CLOSE_GUARD_MS = Math.max(1000, Number(process.env.RUMBLE_BETTING_CLOSE_GUARD_MS ?? "12000"));
+const SLOT_MS_ESTIMATE = Math.max(250, Number(process.env.RUMBLE_SLOT_MS_ESTIMATE ?? "400"));
+const BETTING_CLOSE_GUARD_SLOTS = Math.max(1, Math.ceil(BETTING_CLOSE_GUARD_MS / SLOT_MS_ESTIMATE));
 
 async function ensureRecovered(): Promise<void> {
   if (hasRecovered()) return;
@@ -42,15 +46,13 @@ export async function POST(request: Request) {
     }
 
     await ensureRecovered();
+    await ensureRumblePublicHeartbeat("bet_prepare");
     const orchestrator = getOrchestrator();
     const slot = orchestrator.getStatus().find((s) => s.slotIndex === parsedSlotIndex);
     if (!slot) {
       return NextResponse.json({ error: "Slot not found" }, { status: 404 });
     }
-    if (slot.state !== "betting") {
-      return NextResponse.json({ error: "Betting is not open for this slot." }, { status: 409 });
-    }
-    if (slot.bettingDeadline && Date.now() >= slot.bettingDeadline.getTime()) {
+    if (slot.state === "betting" && slot.bettingDeadline && Date.now() >= slot.bettingDeadline.getTime()) {
       return NextResponse.json({ error: "Betting window has closed." }, { status: 409 });
     }
 
@@ -136,10 +138,11 @@ export async function POST(request: Request) {
       });
     }
 
-    const rumbleIdNum = parseOnchainRumbleIdNumber(slot.rumbleId);
+    const slotRumbleId = slot.rumbleId;
+    const rumbleIdNum = parseOnchainRumbleIdNumber(slotRumbleId);
     if (rumbleIdNum === null) {
       return NextResponse.json(
-        { error: `Could not derive numeric rumble id from ${slot.rumbleId}` },
+        { error: `Could not derive numeric rumble id from ${slotRumbleId}` },
         { status: 400 },
       );
     }
@@ -163,16 +166,30 @@ export async function POST(request: Request) {
         { status: 409 },
       );
     }
-    const onchainDeadlineMs = Number(onchainRumble.bettingDeadlineTs) * 1000;
-    if (Number.isFinite(onchainDeadlineMs) && onchainDeadlineMs > 0) {
-      const nowMs = Date.now();
-      if (nowMs >= onchainDeadlineMs - BETTING_CLOSE_GUARD_MS) {
+
+    const conn = getConnection();
+    const currentSlot = await conn.getSlot("processed");
+    const onchainCloseSlot = onchainRumble.bettingCloseSlot;
+    const guardSlotThreshold = BigInt(currentSlot) + BigInt(BETTING_CLOSE_GUARD_SLOTS);
+    const slotsUntilCloseBig = onchainCloseSlot > BigInt(currentSlot)
+      ? onchainCloseSlot - BigInt(currentSlot)
+      : 0n;
+    const slotsUntilClose = Number(slotsUntilCloseBig);
+    const onchainDeadlineMsEstimate =
+      Number.isFinite(slotsUntilClose) && slotsUntilClose > 0
+        ? Date.now() + slotsUntilClose * SLOT_MS_ESTIMATE
+        : Number.NaN;
+    if (onchainCloseSlot > 0n) {
+      if (guardSlotThreshold >= onchainCloseSlot) {
         return NextResponse.json(
           {
             error: "Betting is closing right now. Wait for the next rumble to avoid a failed transaction.",
             onchain_state: onchainRumble.state,
-            onchain_betting_deadline: new Date(onchainDeadlineMs).toISOString(),
+            onchain_betting_close_slot: onchainCloseSlot.toString(),
+            current_slot: String(currentSlot),
+            slots_until_close: Number.isFinite(slotsUntilClose) ? slotsUntilClose : null,
             guard_ms: BETTING_CLOSE_GUARD_MS,
+            guard_slots: BETTING_CLOSE_GUARD_SLOTS,
           },
           { status: 409 },
         );
@@ -220,7 +237,7 @@ export async function POST(request: Request) {
 
       return NextResponse.json({
         slot_index: parsedSlotIndex,
-        rumble_id: slot.rumbleId,
+        rumble_id: slotRumbleId,
         rumble_id_num: rumbleIdNum,
         fighter_id: primary.fighter_id,
         fighter_index: primary.fighter_index,
@@ -231,11 +248,15 @@ export async function POST(request: Request) {
         total_lamports: preparedBets.reduce((sum, b) => sum + b.lamports, 0),
         wallet: wallet.toBase58(),
         onchain_state: onchainRumble.state,
+        onchain_betting_close_slot: onchainCloseSlot > 0n ? onchainCloseSlot.toString() : null,
+        current_slot: String(currentSlot),
+        slots_until_close: Number.isFinite(slotsUntilClose) ? slotsUntilClose : null,
         onchain_betting_deadline:
-          Number.isFinite(onchainDeadlineMs) && onchainDeadlineMs > 0
-            ? new Date(onchainDeadlineMs).toISOString()
+          Number.isFinite(onchainDeadlineMsEstimate) && onchainDeadlineMsEstimate > 0
+            ? new Date(onchainDeadlineMsEstimate).toISOString()
             : null,
         guard_ms: BETTING_CLOSE_GUARD_MS,
+        guard_slots: BETTING_CLOSE_GUARD_SLOTS,
         tx_kind: txKind,
         transaction_base64: txBase64,
         timestamp: new Date().toISOString(),

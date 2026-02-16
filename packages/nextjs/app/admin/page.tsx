@@ -1,7 +1,7 @@
 // @ts-nocheck
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 
 // ---------------------------------------------------------------------------
@@ -236,6 +236,10 @@ export default function AdminPage() {
   const [autoTickRuns, setAutoTickRuns] = useState(0);
   const [autoTickLastAt, setAutoTickLastAt] = useState<string | null>(null);
   const [autoTickError, setAutoTickError] = useState("");
+  const [onchainRumbleIdInput, setOnchainRumbleIdInput] = useState("");
+  const [onchainActionInput, setOnchainActionInput] = useState("open_turn");
+  const [onchainFighterWalletsInput, setOnchainFighterWalletsInput] = useState("");
+  const [onchainActionResult, setOnchainActionResult] = useState<any>(null);
   const autoTickInFlightRef = useRef(false);
   const autoTickOwnerIdRef = useRef("");
   const secretRef = useRef("");
@@ -477,6 +481,84 @@ export default function AdminPage() {
     );
   }, [headers, runAdminAction]);
 
+  const runOnchainRumbleAction = useCallback(async () => {
+    const rumbleId = onchainRumbleIdInput.trim();
+    if (!rumbleId) {
+      setActionMessage("Enter rumble id first.");
+      return;
+    }
+    const fighterWallets = onchainFighterWalletsInput
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const label = `On-chain ${onchainActionInput}`;
+    setActionBusy(label);
+    setActionMessage("");
+    try {
+      const res = await fetch("/api/admin/rumble/onchain", {
+        method: "POST",
+        headers: { ...headers(), "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: onchainActionInput,
+          rumble_id: rumbleId,
+          fighter_wallets: fighterWallets,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setActionMessage(`${label} failed (${res.status})${data?.error ? `: ${data.error}` : ""}`);
+        return;
+      }
+      setOnchainActionResult(data);
+      setActionMessage(
+        `${label} complete${data?.signature ? ` · tx ${truncate(data.signature, 6)}` : ""}`,
+      );
+      await Promise.all([fetchDashboard(), fetchOnChain(), fetchHouseBotStatus()]);
+    } catch (err: any) {
+      setActionMessage(`${label} failed: ${err?.message ?? "unknown error"}`);
+    } finally {
+      setActionBusy(null);
+    }
+  }, [
+    fetchDashboard,
+    fetchHouseBotStatus,
+    fetchOnChain,
+    headers,
+    onchainActionInput,
+    onchainFighterWalletsInput,
+    onchainRumbleIdInput,
+  ]);
+
+  const refreshOnchainRumbleState = useCallback(async () => {
+    const rumbleId = onchainRumbleIdInput.trim();
+    if (!rumbleId) {
+      setActionMessage("Enter rumble id first.");
+      return;
+    }
+    const label = "Refresh on-chain state";
+    setActionBusy(label);
+    setActionMessage("");
+    try {
+      const qs = new URLSearchParams({ rumble_id: rumbleId }).toString();
+      const res = await fetch(`/api/admin/rumble/onchain?${qs}`, {
+        headers: headers(),
+        cache: "no-store",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setActionMessage(`${label} failed (${res.status})${data?.error ? `: ${data.error}` : ""}`);
+        return;
+      }
+      setOnchainActionResult(data);
+      setActionMessage(`${label} complete`);
+    } catch (err: any) {
+      setActionMessage(`${label} failed: ${err?.message ?? "unknown error"}`);
+    } finally {
+      setActionBusy(null);
+    }
+  }, [headers, onchainRumbleIdInput]);
+
   // Polling
   useEffect(() => {
     if (!authenticated) return;
@@ -584,7 +666,7 @@ export default function AdminPage() {
   const stats = dashboard?.stats ?? null;
   const q = dashboard?.queue ?? [];
   const activeRumbles = dashboard?.activeRumbles ?? [];
-  const dedupedActiveRumbles = useMemo(() => {
+  const dedupedActiveRumbles = (() => {
     const bySlot = new Map<number, Rumble>();
     for (const row of activeRumbles) {
       const slotIndex = Number((row as any)?.slot_index);
@@ -599,7 +681,7 @@ export default function AdminPage() {
       if (rowTs > existingTs) bySlot.set(slotIndex, row);
     }
     return [...bySlot.values()].sort((a, b) => a.slot_index - b.slot_index);
-  }, [activeRumbles]);
+  })();
   const recentRumbles = dashboard?.recentRumbles ?? [];
   const fighters = dashboard?.fighters ?? [];
   const shower = dashboard?.ichorShower ?? null;
@@ -777,6 +859,63 @@ export default function AdminPage() {
                   {" · "}
                   <span className="text-red-400">{autoTickError}</span>
                 </>
+              ) : null}
+            </div>
+
+            <div className="border-t border-stone-800 pt-3 space-y-2">
+              <div className="font-mono text-[11px] text-amber-400">On-Chain Turn Controls</div>
+              <div className="flex flex-wrap gap-2 items-center">
+                <input
+                  value={onchainRumbleIdInput}
+                  onChange={(e) => setOnchainRumbleIdInput(e.target.value)}
+                  placeholder="rumble_id"
+                  className="w-44 bg-stone-800 border border-stone-700 rounded px-2 py-1.5 font-mono text-xs"
+                />
+                <select
+                  value={onchainActionInput}
+                  onChange={(e) => setOnchainActionInput(e.target.value)}
+                  className="bg-stone-800 border border-stone-700 rounded px-2 py-1.5 font-mono text-xs"
+                >
+                  <option value="start_combat">start_combat</option>
+                  <option value="open_turn">open_turn</option>
+                  <option value="resolve_turn">resolve_turn</option>
+                  <option value="advance_turn">advance_turn</option>
+                  <option value="finalize_rumble">finalize_rumble</option>
+                  <option value="complete_rumble">complete_rumble</option>
+                  <option value="sweep_treasury">sweep_treasury</option>
+                </select>
+                <button
+                  onClick={runOnchainRumbleAction}
+                  disabled={!!actionBusy}
+                  className="px-3 py-1.5 rounded bg-cyan-700 hover:bg-cyan-600 disabled:opacity-50 font-mono text-xs"
+                >
+                  Run Action
+                </button>
+                <button
+                  onClick={refreshOnchainRumbleState}
+                  disabled={!!actionBusy}
+                  className="px-3 py-1.5 rounded bg-stone-700 hover:bg-stone-600 disabled:opacity-50 font-mono text-xs"
+                >
+                  Refresh State
+                </button>
+              </div>
+              <input
+                value={onchainFighterWalletsInput}
+                onChange={(e) => setOnchainFighterWalletsInput(e.target.value)}
+                placeholder="fighter wallets (csv) for resolve_turn remaining accounts"
+                className="w-full bg-stone-800 border border-stone-700 rounded px-2 py-1.5 font-mono text-xs"
+              />
+              {onchainActionResult ? (
+                <div className="font-mono text-[11px] text-stone-400">
+                  Rumble:{" "}
+                  <span className="text-stone-200">{onchainActionResult?.onchain_rumble_id ?? "-"}</span>
+                  {" · "}State:{" "}
+                  <span className="text-stone-200">{onchainActionResult?.rumble?.state ?? "-"}</span>
+                  {" · "}Turn:{" "}
+                  <span className="text-stone-200">{onchainActionResult?.combat?.currentTurn ?? "-"}</span>
+                  {" · "}Remaining:{" "}
+                  <span className="text-stone-200">{onchainActionResult?.combat?.remainingFighters ?? "-"}</span>
+                </div>
               ) : null}
             </div>
 

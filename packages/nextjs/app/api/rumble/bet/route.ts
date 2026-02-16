@@ -16,6 +16,7 @@ import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-
 import { hashApiKey } from "~~/lib/api-key";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 import { hasRecovered, recoverOrchestratorState } from "~~/lib/rumble-state-recovery";
+import { ensureRumblePublicHeartbeat } from "~~/lib/rumble-public-heartbeat";
 
 export const dynamic = "force-dynamic";
 const ALLOW_OFFCHAIN_BETS = String(process.env.RUMBLE_ALLOW_OFFCHAIN_BETS ?? "false").toLowerCase() === "true";
@@ -79,6 +80,7 @@ export async function GET(request: Request) {
     }
 
     await ensureRecovered();
+    await ensureRumblePublicHeartbeat("bet_get");
     const orchestrator = getOrchestrator();
     const status = orchestrator.getStatus();
     const slot = status.find((s) => s.slotIndex === slotIndex);
@@ -218,6 +220,7 @@ export async function POST(request: Request) {
     }
 
     await ensureRecovered();
+    await ensureRumblePublicHeartbeat("bet_post");
 
     let resolvedWallet: string;
     let verifiedRumbleId: string | null = null;

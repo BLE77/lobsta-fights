@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { getOrchestrator } from "~~/lib/rumble-orchestrator";
 import { getQueueManager } from "~~/lib/queue-manager";
 import { hasRecovered, recoverOrchestratorState } from "~~/lib/rumble-state-recovery";
+import { ensureRumblePublicHeartbeat } from "~~/lib/rumble-public-heartbeat";
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 import {
   loadQueueState,
@@ -100,6 +101,10 @@ export async function GET(request: Request) {
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
 
   try {
+    // Keep lifecycle moving in serverless/public mode without relying on
+    // separate cron/admin tabs.
+    await ensureRumblePublicHeartbeat("status");
+
     // Cold-start self-heal so stale betting/combat rows are reconciled even if
     // no one has hit /tick or /bet yet.
     if (!hasRecovered()) {
