@@ -106,6 +106,12 @@ interface OnChainData {
     totalFighters: string;
     bump: number;
   } | null;
+  adminSigner?: {
+    configured: boolean;
+    pubkey: string | null;
+    onchainRumbleAdmin: string | null;
+    matchesRumbleAdmin: boolean | null;
+  } | null;
   timestamp: string;
 }
 
@@ -1275,9 +1281,67 @@ function OnChainTab({ data }: { data: OnChainData | null }) {
   const arena = data.arenaConfig;
   const rumble = data.rumbleConfig;
   const registry = data.registryConfig;
+  const adminSigner = data.adminSigner ?? null;
+  const adminHealthy = adminSigner?.configured && adminSigner?.matchesRumbleAdmin !== false;
 
   return (
     <div className="space-y-6">
+      {/* Admin Signer Health */}
+      <Section title="Admin Signer Health">
+        <div
+          className={`border rounded p-4 ${
+            adminHealthy
+              ? "bg-emerald-900/20 border-emerald-700/40"
+              : "bg-red-900/20 border-red-700/40"
+          }`}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <p
+              className={`font-mono text-sm uppercase ${
+                adminHealthy ? "text-emerald-400" : "text-red-400"
+              }`}
+            >
+              {adminHealthy ? "READY" : "NOT READY"}
+            </p>
+            <p className="font-mono text-[10px] text-stone-500">
+              Create rumble requires signer = on-chain admin
+            </p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-3">
+            <OnChainField
+              label="Signer Configured"
+              value={adminSigner?.configured ? "YES" : "NO"}
+            />
+            <OnChainField
+              label="Signer Matches On-Chain"
+              value={
+                adminSigner?.matchesRumbleAdmin === null
+                  ? "-"
+                  : adminSigner?.matchesRumbleAdmin
+                    ? "YES"
+                    : "NO"
+              }
+            />
+            <OnChainField
+              label="Configured Signer"
+              value={adminSigner?.pubkey ? truncate(adminSigner.pubkey) : "-"}
+              title={adminSigner?.pubkey ?? undefined}
+            />
+            <OnChainField
+              label="On-Chain Rumble Admin"
+              value={adminSigner?.onchainRumbleAdmin ? truncate(adminSigner.onchainRumbleAdmin) : "-"}
+              title={adminSigner?.onchainRumbleAdmin ?? undefined}
+            />
+          </div>
+          {!adminHealthy && (
+            <p className="font-mono text-xs text-red-300 mt-3">
+              Fix Vercel env: set <code>SOLANA_DEPLOYER_KEYPAIR</code> to the same wallet that controls on-chain
+              <code> RumbleConfig.admin</code>, then redeploy.
+            </p>
+          )}
+        </div>
+      </Section>
+
       {/* Arena Config (ICHOR Token Program) */}
       <Section title="Arena Config (ICHOR Token)">
         {arena ? (
