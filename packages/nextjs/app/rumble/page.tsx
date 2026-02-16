@@ -1141,12 +1141,6 @@ export default function RumblePage() {
               >
                 &lt; UCF
               </Link>
-              <Link
-                href="/admin"
-                className="text-stone-500 hover:text-amber-400 font-mono text-[10px] border border-stone-700 hover:border-amber-700 px-2 py-0.5 rounded-sm transition-colors"
-              >
-                ADMIN
-              </Link>
               <div>
                 <h1 className="font-fight-glow text-2xl text-amber-400">
                   RUMBLE
