@@ -1406,32 +1406,57 @@ export async function createRumble(
   const slotMsEstimate = Number.isFinite(slotMsEstimateRaw)
     ? Math.min(1_000, Math.max(250, Math.floor(slotMsEstimateRaw)))
     : 400;
+  const minCloseSlotsRaw = Number(process.env.RUMBLE_BETTING_MIN_CLOSE_SLOTS ?? "90");
+  const minCloseSlots = Number.isFinite(minCloseSlotsRaw)
+    ? Math.min(2_000, Math.max(10, Math.floor(minCloseSlotsRaw)))
+    : 90;
+  const closeSafetySlotsRaw = Number(process.env.RUMBLE_BETTING_CLOSE_SAFETY_SLOTS ?? "30");
+  const closeSafetySlots = Number.isFinite(closeSafetySlotsRaw)
+    ? Math.min(1_000, Math.max(0, Math.floor(closeSafetySlotsRaw)))
+    : 30;
 
   let bettingCloseSlot = BigInt(Math.floor(bettingDeadlineUnix));
   if (bettingDeadlineUnix >= nowUnix - 60) {
     const remainingMs = Math.max(1_000, (bettingDeadlineUnix - nowUnix) * 1_000);
-    const slotsRemaining = Math.max(2, Math.ceil(remainingMs / slotMsEstimate));
+    const slotsRemainingBase = Math.ceil(remainingMs / slotMsEstimate);
+    const slotsRemaining = Math.max(minCloseSlots, slotsRemainingBase + closeSafetySlots);
     bettingCloseSlot = BigInt(currentSlot) + BigInt(slotsRemaining);
   }
   if (bettingCloseSlot <= BigInt(currentSlot)) {
-    bettingCloseSlot = BigInt(currentSlot + 2);
+    bettingCloseSlot = BigInt(currentSlot + minCloseSlots);
   }
 
-  const tx = await (program.methods as any)
-    .createRumble(
-      new anchor.BN(rumbleId),
-      fighters,
-      new anchor.BN(bettingCloseSlot.toString())
-    )
-    .accounts({
-      admin: admin.publicKey,
-      config: rumbleConfigPda,
-      rumble: rumblePda,
-      systemProgram: SystemProgram.programId,
-    })
-    .rpc();
+  try {
+    const tx = await (program.methods as any)
+      .createRumble(
+        new anchor.BN(rumbleId),
+        fighters,
+        new anchor.BN(bettingCloseSlot.toString())
+      )
+      .accounts({
+        admin: admin.publicKey,
+        config: rumbleConfigPda,
+        rumble: rumblePda,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
 
-  return tx;
+    return tx;
+  } catch (err) {
+    const context =
+      `[solana-programs] createRumble failed` +
+      ` rumbleId=${rumbleId}` +
+      ` currentSlot=${currentSlot}` +
+      ` bettingCloseSlot=${bettingCloseSlot.toString()}` +
+      ` bettingDeadlineUnix=${bettingDeadlineUnix}` +
+      ` nowUnix=${nowUnix}` +
+      ` minCloseSlots=${minCloseSlots}` +
+      ` closeSafetySlots=${closeSafetySlots}`;
+    if (err instanceof Error) {
+      throw new Error(`${context} :: ${err.message}`);
+    }
+    throw new Error(`${context} :: ${String(err)}`);
+  }
 }
 
 /**

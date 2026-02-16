@@ -299,6 +299,18 @@ const ONCHAIN_CREATE_STALL_TIMEOUT_MS = readIntervalMs(
   10_000,
   5 * 60_000,
 );
+const ONCHAIN_CREATE_VERIFY_ATTEMPTS = readInt(
+  "RUMBLE_ONCHAIN_CREATE_VERIFY_ATTEMPTS",
+  4,
+  1,
+  10,
+);
+const ONCHAIN_CREATE_VERIFY_BACKOFF_MS = readIntervalMs(
+  "RUMBLE_ONCHAIN_CREATE_VERIFY_BACKOFF_MS",
+  250,
+  50,
+  2_000,
+);
 const MAX_FINALIZATION_ATTEMPTS = 30;
 const ONCHAIN_CREATE_RECOVERY_DEADLINE_SKEW_SEC = 5;
 const ONCHAIN_ADMIN_HEALTH_CHECK_MS = readIntervalMs(
@@ -1272,11 +1284,21 @@ export class RumbleOrchestrator {
     const created = await this.createRumbleOnChain(rumbleId, fighterIds, bettingDeadlineUnix);
     if (!created) return false;
 
-    const after = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+    let after: Awaited<ReturnType<typeof readRumbleAccountState>> = null;
+    for (let attempt = 0; attempt < ONCHAIN_CREATE_VERIFY_ATTEMPTS; attempt++) {
+      if (attempt > 0) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, ONCHAIN_CREATE_VERIFY_BACKOFF_MS * attempt)
+        );
+      }
+      after = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+      if (after) break;
+    }
+
     if (!after) {
       this.recordOnchainCreateFailure(
         rumbleId,
-        "createRumble sent but PDA still not readable",
+        `createRumble sent but PDA still not readable after ${ONCHAIN_CREATE_VERIFY_ATTEMPTS} checks`,
         fighterIds.length,
         slotIndex,
       );

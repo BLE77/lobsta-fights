@@ -259,6 +259,7 @@ export async function GET(request: Request) {
     slots = await Promise.all(
       slots.map(async slot => {
         if (!slot.rumbleId) return slot;
+        if (slot.state === "idle" || slot.state === "payout") return slot;
         if (slot.state === "betting" && !slot.bettingDeadline) {
           // Slot entered betting in queue-manager but on-chain rumble is not
           // confirmed yet. Avoid extra RPC pressure while orchestrator retries.
@@ -273,7 +274,7 @@ export async function GET(request: Request) {
         const onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
         if (!onchain) return slot;
 
-        let state = slot.state;
+        let state: "idle" | "betting" | "combat" | "payout" = slot.state;
         if (onchain.state === "combat") state = "combat";
         else if (onchain.state === "payout" || onchain.state === "complete") state = "payout";
         else if (onchain.state === "betting") state = "betting";
