@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { isAuthorizedAdminRequest } from "~~/lib/request-auth";
 import { getOrchestrator } from "~~/lib/rumble-orchestrator";
+import { hasRecovered, recoverOrchestratorState } from "~~/lib/rumble-state-recovery";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +21,12 @@ export async function POST(request: Request) {
   }
 
   try {
+    if (!hasRecovered()) {
+      await recoverOrchestratorState().catch((err) => {
+        console.warn("[AdminRumbleTick] state recovery failed", err);
+      });
+    }
+
     const body = await request.json().catch(() => ({}));
     const ticks = clampInt(body?.ticks, 1, 1, 20);
     const intervalMs = clampInt(body?.interval_ms, 0, 0, 2_000);

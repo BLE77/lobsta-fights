@@ -38,9 +38,6 @@ export function resetRecoveryFlag(): void {
 // Constants
 // ---------------------------------------------------------------------------
 
-// Fresh betting time given to recovered rumbles (matches queue-manager)
-const RECOVERED_BETTING_DURATION_MS = 60 * 1000;
-
 // Max age of a betting rumble before we consider it stale and discard it.
 // If a rumble was created > 5 minutes ago and is still in "betting", something
 // went wrong — mark it complete and re-queue fighters.
@@ -204,10 +201,11 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
           // Restore this betting rumble into the correct slot
           const slotIndex = rumble.slot_index;
           const fighterIds = fighters.map((f) => f.id);
-          const freshDeadline = new Date(Date.now() + RECOVERED_BETTING_DURATION_MS);
-
           // Restore the slot in the queue manager
-          qm.restoreSlot(slotIndex, rumble.id, fighterIds, "betting", freshDeadline);
+          // Do not invent a local deadline during recovery. The on-chain rumble
+          // close slot is the source of truth and will arm betting in the next
+          // orchestrator tick once the account is confirmed.
+          qm.restoreSlot(slotIndex, rumble.id, fighterIds, "betting", null);
 
           // Load any existing bets from Supabase and restore the betting pool
           const existingBets = await persist.loadBetsForRumble(rumble.id);
@@ -216,7 +214,7 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
           console.log(
             `[StateRecovery] RESTORED betting rumble ${rumble.id} in slot ${slotIndex} ` +
               `with ${fighterIds.length} fighters, ${existingBets.length} bets, ` +
-              `fresh deadline ${freshDeadline.toISOString()}`
+              `deadline=unarmed (waiting on on-chain close slot)`
           );
           result.restoredBetting++;
 

@@ -8,12 +8,14 @@ import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 import { hasRecovered, recoverOrchestratorState } from "~~/lib/rumble-state-recovery";
 import { getConnection } from "~~/lib/solana-connection";
 import { ensureRumblePublicHeartbeat } from "~~/lib/rumble-public-heartbeat";
+import { loadActiveRumbles } from "~~/lib/rumble-persistence";
 
 export const dynamic = "force-dynamic";
 const BETTING_CLOSE_GUARD_MS = Math.max(1000, Number(process.env.RUMBLE_BETTING_CLOSE_GUARD_MS ?? "12000"));
 const SLOT_MS_ESTIMATE = Math.max(250, Number(process.env.RUMBLE_SLOT_MS_ESTIMATE ?? "400"));
 const BETTING_CLOSE_GUARD_SLOTS = Math.max(1, Math.ceil(BETTING_CLOSE_GUARD_MS / SLOT_MS_ESTIMATE));
 const ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD = 5_000_000n;
+const BET_PREPARE_ACTIVE_BETTING_MAX_AGE_MS = 10 * 60 * 1000;
 
 async function ensureRecovered(): Promise<void> {
   if (hasRecovered()) return;
@@ -22,6 +24,43 @@ async function ensureRecovered(): Promise<void> {
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function loadLatestBettingRumbleForSlot(slotIndex: number): Promise<{
+  rumbleId: string;
+  fighterIds: string[];
+} | null> {
+  const active = await loadActiveRumbles();
+  let best: { id: string; createdAtMs: number; fighters: unknown; status: string } | null = null;
+  for (const row of active) {
+    if (Number(row.slot_index) !== slotIndex) continue;
+    if (String(row.status ?? "").toLowerCase() !== "betting") continue;
+    const createdAtMs = new Date(row.created_at).getTime();
+    if (!Number.isFinite(createdAtMs)) continue;
+    if (Date.now() - createdAtMs > BET_PREPARE_ACTIVE_BETTING_MAX_AGE_MS) continue;
+    if (!best || createdAtMs > best.createdAtMs) {
+      best = {
+        id: row.id,
+        createdAtMs,
+        fighters: row.fighters,
+        status: row.status,
+      };
+    }
+  }
+  if (!best) return null;
+
+  const fighterRows = Array.isArray(best.fighters)
+    ? (best.fighters as Array<{ id?: string }>)
+    : [];
+  const fighterIds = fighterRows
+    .map((row) => String(row?.id ?? "").trim())
+    .filter(Boolean);
+  if (fighterIds.length === 0) return null;
+
+  return {
+    rumbleId: best.id,
+    fighterIds,
+  };
 }
 
 export async function POST(request: Request) {
@@ -53,27 +92,34 @@ export async function POST(request: Request) {
     await ensureRecovered();
     await ensureRumblePublicHeartbeat("bet_prepare");
     const orchestrator = getOrchestrator();
-    const slot = orchestrator.getStatus().find((s) => s.slotIndex === parsedSlotIndex);
-    if (!slot) {
-      return NextResponse.json({ error: "Slot not found" }, { status: 404 });
-    }
-    if (slot.state !== "betting") {
+    const localSlot = orchestrator.getStatus().find((s) => s.slotIndex === parsedSlotIndex) ?? null;
+    const persistedBetting = await loadLatestBettingRumbleForSlot(parsedSlotIndex).catch(() => null);
+
+    const slotRumbleId = (() => {
+      if (persistedBetting?.rumbleId) return persistedBetting.rumbleId;
+      if (localSlot?.state === "betting" && localSlot?.rumbleId) return localSlot.rumbleId;
+      return null;
+    })();
+    if (!slotRumbleId) {
       return NextResponse.json(
         { error: "Betting is not open for this slot right now." },
         { status: 409 },
       );
     }
-    if (!slot.bettingDeadline) {
+
+    const slotFighters = (() => {
+      if (persistedBetting?.fighterIds?.length) return persistedBetting.fighterIds;
+      if (localSlot?.fighters?.length) return localSlot.fighters;
+      return [];
+    })();
+    if (slotFighters.length === 0) {
       return NextResponse.json(
         {
-          error: "On-chain rumble is still initializing. Betting opens when the countdown appears.",
-          rumble_id: slot.rumbleId,
+          error: "Rumble fighter list is still syncing. Refresh and retry.",
+          rumble_id: slotRumbleId,
         },
         { status: 409 },
       );
-    }
-    if (slot.state === "betting" && slot.bettingDeadline && Date.now() >= slot.bettingDeadline.getTime()) {
-      return NextResponse.json({ error: "Betting window has closed." }, { status: 409 });
     }
 
     const normalizedBets: Array<{ fighterId: string; solAmount: number }> = [];
@@ -136,10 +182,10 @@ export async function POST(request: Request) {
       lamports: number;
     }> = [];
     for (const [fighterId, solAmount] of aggregated.entries()) {
-      if (!slot.fighters.includes(fighterId)) {
+      if (!slotFighters.includes(fighterId)) {
         return NextResponse.json({ error: `Fighter ${fighterId} is not in this Rumble.` }, { status: 400 });
       }
-      const fighterIndex = slot.fighters.findIndex((f) => f === fighterId);
+      const fighterIndex = slotFighters.findIndex((f) => f === fighterId);
       if (fighterIndex < 0) {
         return NextResponse.json({ error: `Fighter index resolution failed for ${fighterId}` }, { status: 400 });
       }
@@ -158,7 +204,6 @@ export async function POST(request: Request) {
       });
     }
 
-    const slotRumbleId = slot.rumbleId;
     const rumbleIdNum = parseOnchainRumbleIdNumber(slotRumbleId);
     if (rumbleIdNum === null) {
       return NextResponse.json(

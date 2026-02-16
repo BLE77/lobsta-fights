@@ -8,9 +8,13 @@ const MIN_INTERVAL_MS = (() => {
   return Math.max(500, Math.min(30_000, Math.floor(raw)));
 })();
 
-// Keep public heartbeat enabled by default so queue/slots continue advancing
-// even when cron/admin tab is not open. Can be explicitly disabled.
-const ENABLED = (process.env.RUMBLE_PUBLIC_TICK_ENABLED ?? "true") !== "false";
+// In production/serverless, implicit ticking from public requests can cause
+// split-brain across function instances. Keep it opt-in there.
+const ENABLED = (() => {
+  const env = process.env.RUMBLE_PUBLIC_TICK_ENABLED;
+  if (typeof env === "string" && env.length > 0) return env !== "false";
+  return process.env.NODE_ENV !== "production";
+})();
 const ALLOW_NON_STATUS_SOURCES = (process.env.RUMBLE_PUBLIC_TICK_ALLOW_NON_STATUS ?? "false") === "true";
 
 type HeartbeatState = {

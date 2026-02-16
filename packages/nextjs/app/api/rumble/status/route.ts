@@ -18,6 +18,16 @@ import { getConnection } from "~~/lib/solana-connection";
 export const dynamic = "force-dynamic";
 const SLOT_MS_ESTIMATE = Math.max(250, Number(process.env.RUMBLE_SLOT_MS_ESTIMATE ?? "400"));
 const ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD = 5_000_000n;
+const STATUS_MUTATION_ENABLED = (() => {
+  const env = process.env.RUMBLE_PUBLIC_STATUS_MUTATION_ENABLED;
+  if (typeof env === "string" && env.length > 0) return env === "true";
+  return process.env.NODE_ENV !== "production";
+})();
+const MAX_ACTIVE_AGE_MS_BY_STATUS: Record<string, number> = {
+  betting: 10 * 60 * 1000,
+  combat: 45 * 60 * 1000,
+  payout: 10 * 60 * 1000,
+};
 
 // ---------------------------------------------------------------------------
 // Fresh Supabase client (no-store cache)
@@ -104,16 +114,16 @@ export async function GET(request: Request) {
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
 
   try {
-    // Keep lifecycle moving in serverless/public mode without relying on
-    // separate cron/admin tabs.
-    await ensureRumblePublicHeartbeat("status");
+    // In production, keep status read-only by default to avoid split-brain
+    // serverless instances mutating queue/combat state independently.
+    if (STATUS_MUTATION_ENABLED) {
+      await ensureRumblePublicHeartbeat("status");
 
-    // Cold-start self-heal so stale betting/combat rows are reconciled even if
-    // no one has hit /tick or /bet yet.
-    if (!hasRecovered()) {
-      await recoverOrchestratorState().catch((err) => {
-        console.warn("[StatusAPI] state recovery failed", err);
-      });
+      if (!hasRecovered()) {
+        await recoverOrchestratorState().catch((err) => {
+          console.warn("[StatusAPI] state recovery failed", err);
+        });
+      }
     }
 
     const orchestrator = getOrchestrator();
@@ -122,14 +132,16 @@ export async function GET(request: Request) {
     // Deadlock self-heal:
     // if queue has enough fighters to start but all slots are idle, force one
     // orchestrator tick so we don't sit forever in "Starting soon...".
-    const inMemorySlots = orchestrator.getStatus();
-    const allSlotsIdle = inMemorySlots.every(
-      (slot) => slot.state === "idle" && slot.fighters.length === 0,
-    );
-    if (allSlotsIdle && qm.getQueueLength() >= 8) {
-      await orchestrator.tick().catch((err) => {
-        console.warn("[StatusAPI] deadlock kick tick failed", err);
-      });
+    if (STATUS_MUTATION_ENABLED) {
+      const inMemorySlots = orchestrator.getStatus();
+      const allSlotsIdle = inMemorySlots.every(
+        (slot) => slot.state === "idle" && slot.fighters.length === 0,
+      );
+      if (allSlotsIdle && qm.getQueueLength() >= 8) {
+        await orchestrator.tick().catch((err) => {
+          console.warn("[StatusAPI] deadlock kick tick failed", err);
+        });
+      }
     }
 
     // Load fighter info for name/image enrichment
@@ -375,65 +387,86 @@ export async function GET(request: Request) {
     // This keeps UI accurate even when /status runs on a different lambda
     // instance than /tick.
     // ---------------------------------------------------------------------
-    const inMemoryLooksIdle = slots.every((s) => s.state === "idle" && s.fighters.length === 0);
-    if (inMemoryLooksIdle) {
-      const persistedActive = await loadActiveRumbles();
-      if (persistedActive.length > 0) {
-        const base = new Map(slots.map((s) => [s.slotIndex, s]));
-        for (const row of persistedActive) {
-          const slotIndex = Number(row.slot_index);
-          if (!Number.isInteger(slotIndex)) continue;
-          const fighterRows = Array.isArray(row.fighters)
-            ? (row.fighters as Array<{ id?: string; name?: string }>)
-            : [];
-          const fighterIds = fighterRows
-            .map((f) => String(f?.id ?? "").trim())
-            .filter(Boolean);
-          const fighters = fighterIds.map((fid) => ({
-            id: fid,
-            name: fighterName(lookup, fid),
-            hp: 100,
-            maxHp: 100,
-            imageUrl: fighterImage(lookup, fid),
-            robotMeta: fighterRobotMeta(lookup, fid),
-            meter: 0,
-            totalDamageDealt: 0,
-            totalDamageTaken: 0,
-            eliminatedOnTurn: null,
-            placement: 0,
-          }));
-          const fighterNames: Record<string, string> = {};
-          for (const fid of fighterIds) fighterNames[fid] = fighterName(lookup, fid);
-
-          const existing = base.get(slotIndex);
-          if (!existing) continue;
-          base.set(slotIndex, {
-            ...existing,
-            rumbleId: row.id,
-            state: (row.status as "idle" | "betting" | "combat" | "payout") ?? "idle",
-            fighters,
-            odds: fighterIds.map((fid) => ({
-              fighterId: fid,
-              fighterName: fighterName(lookup, fid),
-              imageUrl: fighterImage(lookup, fid),
-              hp: 100,
-              solDeployed: 0,
-              betCount: 0,
-              impliedProbability: fighterIds.length > 0 ? 1 / fighterIds.length : 0,
-              potentialReturn: fighterIds.length || 1,
-            })),
-            totalPool: 0,
-            bettingDeadline: null,
-            nextTurnAt: null,
-            turnIntervalMs: null,
-            currentTurn: 0,
-            turns: [],
-            payout: null,
-            fighterNames,
-          });
+    const persistedActive = await loadActiveRumbles();
+    const nowMs = Date.now();
+    const freshPersisted = persistedActive.filter((row) => {
+      const status = String(row.status ?? "").toLowerCase();
+      const maxAge = MAX_ACTIVE_AGE_MS_BY_STATUS[status] ?? 10 * 60 * 1000;
+      const createdAtMs = new Date(row.created_at).getTime();
+      if (!Number.isFinite(createdAtMs)) return false;
+      return nowMs - createdAtMs <= maxAge;
+    });
+    if (freshPersisted.length > 0) {
+      const latestBySlot = new Map<number, (typeof persistedActive)[number]>();
+      for (const row of freshPersisted) {
+        const slotIndex = Number(row.slot_index);
+        if (!Number.isInteger(slotIndex)) continue;
+        const existing = latestBySlot.get(slotIndex);
+        if (!existing || new Date(row.created_at).getTime() > new Date(existing.created_at).getTime()) {
+          latestBySlot.set(slotIndex, row);
         }
-        slots = [...base.values()].sort((a, b) => a.slotIndex - b.slotIndex);
       }
+
+      const base = new Map(slots.map((s) => [s.slotIndex, s]));
+      for (const [slotIndex, row] of latestBySlot.entries()) {
+        const fighterRows = Array.isArray(row.fighters)
+          ? (row.fighters as Array<{ id?: string; name?: string }>)
+          : [];
+        const fighterIds = fighterRows
+          .map((f) => String(f?.id ?? "").trim())
+          .filter(Boolean);
+        const fighters = fighterIds.map((fid) => ({
+          id: fid,
+          name: fighterName(lookup, fid),
+          hp: 100,
+          maxHp: 100,
+          imageUrl: fighterImage(lookup, fid),
+          robotMeta: fighterRobotMeta(lookup, fid),
+          meter: 0,
+          totalDamageDealt: 0,
+          totalDamageTaken: 0,
+          eliminatedOnTurn: null,
+          placement: 0,
+        }));
+        const fighterNames: Record<string, string> = {};
+        for (const fid of fighterIds) fighterNames[fid] = fighterName(lookup, fid);
+
+        const existing = base.get(slotIndex);
+        if (!existing) continue;
+        const sameRumble = existing.rumbleId === row.id;
+        const shouldOverlay =
+          sameRumble ||
+          existing.state === "idle" ||
+          (existing.state === "betting" && !existing.bettingDeadline);
+        if (!shouldOverlay) continue;
+        base.set(slotIndex, {
+          ...existing,
+          rumbleId: row.id,
+          state: (row.status as "idle" | "betting" | "combat" | "payout") ?? "idle",
+          fighters,
+          odds: sameRumble
+            ? existing.odds
+            : fighterIds.map((fid) => ({
+                fighterId: fid,
+                fighterName: fighterName(lookup, fid),
+                imageUrl: fighterImage(lookup, fid),
+                hp: 100,
+                solDeployed: 0,
+                betCount: 0,
+                impliedProbability: fighterIds.length > 0 ? 1 / fighterIds.length : 0,
+                potentialReturn: fighterIds.length || 1,
+              })),
+          totalPool: sameRumble ? existing.totalPool : 0,
+          bettingDeadline: sameRumble ? existing.bettingDeadline : null,
+          nextTurnAt: sameRumble ? existing.nextTurnAt : null,
+          turnIntervalMs: sameRumble ? existing.turnIntervalMs : null,
+          currentTurn: sameRumble ? existing.currentTurn : 0,
+          turns: sameRumble ? existing.turns : [],
+          payout: sameRumble ? existing.payout : null,
+          fighterNames,
+        });
+      }
+      slots = [...base.values()].sort((a, b) => a.slotIndex - b.slotIndex);
     }
 
     // ---- Ichor shower state ------------------------------------------------
@@ -443,8 +476,7 @@ export async function GET(request: Request) {
     const rumblesSinceLastTrigger = stats?.total_rumbles ?? 0;
 
     // ---- nextRumbleIn estimate ---------------------------------------------
-    const inMemoryQueueLen = qm.getQueueLength();
-    const effectiveQueueLen = Math.max(inMemoryQueueLen, queueEntries.length);
+    const effectiveQueueLen = queueEntries.length;
     let nextRumbleIn: string | null = null;
     if (effectiveQueueLen > 0 && effectiveQueueLen < 8) {
       nextRumbleIn = `Need ${8 - effectiveQueueLen} more fighters`;
@@ -455,12 +487,7 @@ export async function GET(request: Request) {
       } else if (effectiveQueueLen >= 16) {
         nextRumbleIn = "Starting now...";
       } else {
-        const warmupMs = qm.getQueueStartCountdownMs();
-        if (typeof warmupMs === "number" && warmupMs > 0) {
-          nextRumbleIn = `Queue lock in ${Math.ceil(warmupMs / 1000)}s`;
-        } else {
-          nextRumbleIn = "Starting soon...";
-        }
+        nextRumbleIn = "Starting soon...";
       }
     }
 
