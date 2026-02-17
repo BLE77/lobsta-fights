@@ -256,6 +256,7 @@ export default function AdminPage() {
   const [autoTickRuns, setAutoTickRuns] = useState(0);
   const [autoTickLastAt, setAutoTickLastAt] = useState<string | null>(null);
   const [autoTickError, setAutoTickError] = useState("");
+  const [testRunCountInput, setTestRunCountInput] = useState("8");
   const [onchainRumbleIdInput, setOnchainRumbleIdInput] = useState("");
   const [onchainActionInput, setOnchainActionInput] = useState("open_turn");
   const [onchainFighterWalletsInput, setOnchainFighterWalletsInput] = useState("");
@@ -497,6 +498,26 @@ export default function AdminPage() {
         method: "POST",
         headers: { ...headers(), "Content-Type": "application/json" },
         body: JSON.stringify({ reset_db: true, reset_session_floor: true }),
+      }),
+    );
+  }, [headers, runAdminAction]);
+
+  const runTestRun = useCallback(async () => {
+    const count = Number(testRunCountInput) || 8;
+    await runAdminAction("Test Run", () =>
+      fetch("/api/admin/rumble/test-run", {
+        method: "POST",
+        headers: { ...headers(), "Content-Type": "application/json" },
+        body: JSON.stringify({ fighter_count: count }),
+      }),
+    );
+  }, [headers, runAdminAction, testRunCountInput]);
+
+  const runFundBots = useCallback(async () => {
+    await runAdminAction("Fund Bots", () =>
+      fetch("/api/admin/rumble/fund-bots", {
+        method: "POST",
+        headers: headers(),
       }),
     );
   }, [headers, runAdminAction]);
@@ -808,6 +829,29 @@ export default function AdminPage() {
                 className="px-3 py-2 rounded bg-red-700 hover:bg-red-600 disabled:opacity-50 font-mono text-xs"
               >
                 Hard Reset Rumble
+              </button>
+              <button
+                onClick={runTestRun}
+                disabled={!!actionBusy}
+                className="px-3 py-2 rounded bg-purple-700 hover:bg-purple-600 disabled:opacity-50 font-mono text-xs"
+              >
+                Start Test Run
+              </button>
+              <input
+                type="number"
+                min={4}
+                max={16}
+                value={testRunCountInput}
+                onChange={(e) => setTestRunCountInput(e.target.value)}
+                className="w-16 bg-stone-800 border border-stone-700 rounded px-2 py-2 font-mono text-xs"
+                title="Fighter count for test run (4-16)"
+              />
+              <button
+                onClick={runFundBots}
+                disabled={!!actionBusy}
+                className="px-3 py-2 rounded bg-teal-700 hover:bg-teal-600 disabled:opacity-50 font-mono text-xs"
+              >
+                Fund Bot Wallets
               </button>
               <button
                 onClick={() => {

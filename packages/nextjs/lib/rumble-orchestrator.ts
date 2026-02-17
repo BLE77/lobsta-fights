@@ -845,6 +845,54 @@ export class RumbleOrchestrator {
     this.houseBotsPaused = false;
   }
 
+  /**
+   * Manually queue N house bots for a test run. Bypasses auto-fill gating.
+   * Returns the list of fighter IDs actually queued.
+   */
+  async queueHouseBotsManually(count: number): Promise<{ queued: string[]; skipped: string[] }> {
+    const target = Math.max(1, Math.min(this.houseBotIds.length, count));
+    const slots = this.queueManager.getSlots();
+    const queueEntries = this.queueManager.getQueueEntries();
+    const queuedSet = new Set(queueEntries.map((e) => e.fighterId));
+    const activeSet = new Set(
+      slots.filter((s) => s.state !== "idle").flatMap((s) => s.fighters),
+    );
+
+    const walletMap = await persist.lookupFighterWallets(this.houseBotIds);
+    const queued: string[] = [];
+    const skipped: string[] = [];
+
+    for (const fighterId of this.houseBotIds) {
+      if (queued.length >= target) break;
+      if (queuedSet.has(fighterId) || activeSet.has(fighterId)) {
+        skipped.push(fighterId);
+        continue;
+      }
+      const wallet = walletMap.get(fighterId);
+      if (!wallet) { skipped.push(fighterId); continue; }
+      try {
+        void new PublicKey(wallet);
+      } catch {
+        skipped.push(fighterId);
+        continue;
+      }
+      try {
+        this.queueManager.addToQueue(fighterId, false);
+        await persist.saveQueueFighter(fighterId, "waiting", false);
+        queuedSet.add(fighterId);
+        queued.push(fighterId);
+      } catch {
+        skipped.push(fighterId);
+      }
+    }
+    return { queued, skipped };
+  }
+
+  /** Returns the configured house bot IDs. */
+  getHouseBotIds(): string[] {
+    return [...this.houseBotIds];
+  }
+
   setHouseBotTargetPopulation(target: number | null): number {
     if (target === null) {
       this.houseBotTargetPopulationOverride = null;
