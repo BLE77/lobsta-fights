@@ -1091,8 +1091,9 @@ export class RumbleOrchestrator {
       const pool = createBettingPool(slot.id);
       this.bettingPools.set(idx, pool);
 
-      // Persist: create rumble record and update queue fighter statuses
-      persist.createRumbleRecord({
+      // Persist: create rumble record BEFORE betting window opens (FK constraint)
+      // Must be awaited so the ucf_rumbles row exists before any bet can reference it.
+      await persist.createRumbleRecord({
         id: slot.id,
         slotIndex: idx,
         fighters: slot.fighters.map((id) => ({ id, name: id })),

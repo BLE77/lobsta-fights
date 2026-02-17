@@ -217,7 +217,7 @@ export async function GET(request: Request) {
       });
 
       // Build turns (SlotTurn[])
-      const turns = (combatState?.turns ?? []).map((t) => ({
+      let turns = (combatState?.turns ?? []).map((t) => ({
         turnNumber: t.turnNumber,
         pairings: t.pairings.map((p) => ({
           fighterA: p.fighterA,
@@ -352,6 +352,18 @@ export async function GET(request: Request) {
           turnIntervalMs = null;
         }
 
+        // Generate synthetic turn entries when on-chain reports combat progress
+        // but local turns array is empty (cold start / instance swap).
+        let turns = slot.turns;
+        if (currentTurn > 0 && (!turns || turns.length === 0)) {
+          turns = Array.from({ length: currentTurn }, (_, i) => ({
+            turnNumber: i + 1,
+            pairings: [],
+            eliminations: [],
+            bye: undefined,
+          }));
+        }
+
         return {
           ...slot,
           state,
@@ -359,6 +371,7 @@ export async function GET(request: Request) {
           nextTurnAt,
           turnIntervalMs,
           currentTurn,
+          turns,
         };
       }),
     );

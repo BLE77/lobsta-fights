@@ -101,7 +101,9 @@ export default function CombatFeed({
     return (
       <div className="flex items-center justify-center h-32">
         <span className="font-mono text-sm text-stone-600 animate-pulse">
-          Waiting for combat to begin...
+          {currentTurn > 0
+            ? `Turn ${currentTurn} in progress...`
+            : "Waiting for combat to begin..."}
         </span>
       </div>
     );

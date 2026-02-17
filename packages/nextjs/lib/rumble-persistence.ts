@@ -387,9 +387,16 @@ export async function saveBets(inputs: SaveBetInput[]): Promise<boolean> {
       const { error } = await sb.from("ucf_bets").insert(rows).select();
       if (error) throw error;
       return true;
-    } catch (err) {
+    } catch (err: unknown) {
       const isLastAttempt = attempt === maxAttempts;
-      logError(`saveBets failed (attempt ${attempt}/${maxAttempts})`, err);
+      const supaErr = err && typeof err === "object" && "message" in err ? (err as { message: string; code?: string; details?: string }) : null;
+      const detail = supaErr
+        ? `code=${supaErr.code ?? "?"} message="${supaErr.message}" details="${supaErr.details ?? ""}"`
+        : String(err);
+      logError(
+        `saveBets failed (attempt ${attempt}/${maxAttempts}) rumbleIds=[${rows.map(r => r.rumble_id).join(",")}] — ${detail}`,
+        err,
+      );
       if (isLastAttempt) return false;
       await new Promise(resolve => setTimeout(resolve, 150 * attempt));
     }
