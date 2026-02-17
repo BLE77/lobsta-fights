@@ -1,7 +1,7 @@
 import * as persist from "./rumble-persistence";
 import {
+  finalizeRumbleOnChain,
   readRumbleAccountState,
-  reportResult as reportResultOnChain,
   startCombat as startCombatOnChain,
 } from "./solana-programs";
 import { parseOnchainRumbleIdNumber } from "./rumble-id";
@@ -24,50 +24,6 @@ export interface OnchainReconcileResult {
   reported: number;
   details: ReconcileDetail[];
   errors: string[];
-}
-
-function toFighterId(value: unknown): string | null {
-  if (!value || typeof value !== "object") return null;
-  const id = (value as any).id;
-  return typeof id === "string" && id.length > 0 ? id : null;
-}
-
-function toPlacement(value: unknown): number | null {
-  if (!value || typeof value !== "object") return null;
-  const p = Number((value as any).placement);
-  return Number.isInteger(p) && p > 0 ? p : null;
-}
-
-function buildPlacementVector(row: persist.CompletedRumbleForOnchainReconcile): {
-  placementVector: number[];
-  winnerIndex: number;
-} | null {
-  const fighters = Array.isArray(row.fighters) ? row.fighters : [];
-  const placements = Array.isArray(row.placements) ? row.placements : [];
-  if (fighters.length < 2 || placements.length < 2) return null;
-
-  const placementById = new Map<string, number>();
-  for (const item of placements) {
-    const id = toFighterId(item);
-    const placement = toPlacement(item);
-    if (!id || placement === null) continue;
-    placementById.set(id, placement);
-  }
-  if (placementById.size === 0) return null;
-
-  const placementVector: number[] = [];
-  for (const fighter of fighters) {
-    const fighterId = toFighterId(fighter);
-    if (!fighterId) return null;
-    const placement = placementById.get(fighterId);
-    if (!placement || !Number.isInteger(placement) || placement < 1) return null;
-    placementVector.push(placement);
-  }
-
-  const winnerIndex = placementVector.findIndex((p) => p === 1);
-  if (winnerIndex < 0) return null;
-
-  return { placementVector, winnerIndex };
 }
 
 export async function reconcileOnchainReportResults(options?: {
@@ -134,17 +90,6 @@ export async function reconcileOnchainReportResults(options?: {
         continue;
       }
 
-      const built = buildPlacementVector(row);
-      if (!built) {
-        result.details.push({
-          rumbleId: row.id,
-          action: "skip_missing_placements",
-          stateBefore,
-          stateAfter: stateBefore,
-        });
-        continue;
-      }
-
       // If the rumble never transitioned out of betting, try start_combat first.
       if (state.state === "betting") {
         const startSig = await startCombatOnChain(rumbleIdNum).catch(() => null);
@@ -153,26 +98,41 @@ export async function reconcileOnchainReportResults(options?: {
         }
         state = await readRumbleAccountState(rumbleIdNum).catch(() => null);
       }
+      if (!state) {
+        result.details.push({
+          rumbleId: row.id,
+          action: "skip_state_unavailable",
+          stateBefore,
+          stateAfter: null,
+        });
+        continue;
+      }
+
+      if (state.state !== "combat") {
+        result.details.push({
+          rumbleId: row.id,
+          action: "skip_not_combat",
+          stateBefore,
+          stateAfter: state.state,
+        });
+        continue;
+      }
 
       result.attempted += 1;
-      const reportSig = await reportResultOnChain(
-        rumbleIdNum,
-        built.placementVector,
-        built.winnerIndex,
-      );
+      const finalizeSig = await finalizeRumbleOnChain(rumbleIdNum);
 
       const stateAfter = await readRumbleAccountState(rumbleIdNum).catch(() => null);
-      if (reportSig) {
-        await persist.updateRumbleTxSignature(row.id, "reportResult", reportSig);
+      if (finalizeSig) {
+        await persist.updateRumbleTxSignature(row.id, "reportResult", finalizeSig);
         result.reported += 1;
       }
 
       result.details.push({
         rumbleId: row.id,
-        action: reportSig ? "report_result_sent" : "report_result_skipped",
+        action: finalizeSig ? "finalize_sent" : "finalize_skipped",
         stateBefore,
         stateAfter: stateAfter?.state ?? null,
-        signature: reportSig ?? null,
+        signature: finalizeSig ?? null,
       });
     } catch (error) {
       const message = `[OnchainReconcile] ${row.id}: ${String(error)}`;

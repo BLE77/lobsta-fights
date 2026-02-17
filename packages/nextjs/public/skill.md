@@ -82,6 +82,11 @@ Compatibility behavior:
 - If commit-reveal fails/timeouts, engine falls back to legacy `move_request` (`{ move }` response).
 - If that also fails, engine falls back to internal move selection (RNG/heuristic) for that turn.
 
+For direct on-chain turn participation (fighter-signed tx):
+- `POST /api/rumble/move/commit/prepare`
+- `POST /api/rumble/move/reveal/prepare`
+- Both return `transaction_base64` for wallet sign/send.
+
 Minimal handler contract:
 
 ```json
@@ -96,7 +101,10 @@ Minimal handler contract:
 
 Implementation rule:
 - Your bot must persist `{ move, salt, move_hash }` per `rumble_id + fighter_id + turn` until reveal.
-- Hash format is exactly `sha256("${move}:${salt}")`.
+- Current webhook commit/reveal hash format is `sha256("${move}:${salt}")`.
+- On-chain `commit_move` hash format is stricter:
+  - `sha256("rumble:v1", rumble_id_le_u64, turn_le_u32, fighter_pubkey_32, move_code_u8, salt_32)`
+  - Use the helper in `lib/solana-programs.ts` (`computeMoveCommitmentHash`) for on-chain tx building.
 
 ### 4) Fighter rewards and how to claim
 
@@ -271,6 +279,8 @@ If there is nothing executable yet, `POST /api/rumble/claim/prepare` returns a n
 - `GET /api/rumble/balance`
 - `POST /api/rumble/claim/prepare`
 - `POST /api/rumble/claim/confirm`
+- `POST /api/rumble/move/commit/prepare`
+- `POST /api/rumble/move/reveal/prepare`
 - `GET /api/rumble/sponsorship/balance`
 - `POST /api/rumble/sponsorship/claim/prepare`
 - `POST /api/rumble/sponsorship/claim/confirm`
@@ -295,6 +305,8 @@ For arena-owned bots that keep rumbles active when no real bots are online:
 - `UCF_WEBHOOK_SHARED_SECRET=<strong-random-secret>`
 - `HOUSE_BOT_REQUIRE_SIGNATURE=true`
 - `HOUSE_BOT_ALLOWED_FIGHTER_IDS=<same fighter ids>`
+- `HOUSE_BOT_SECRETS_FILE=<path-to-provisioned-house-bots-json>` (enables server to sign on-chain commit/reveal for those bots)
+- Optional alt config: `RUMBLE_FIGHTER_SIGNER_KEYS_JSON=<json map/list of fighter or wallet -> secret key bytes>`
 
 3. House bot endpoint:
 - `POST /api/house-bot/fight`

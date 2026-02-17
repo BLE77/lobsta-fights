@@ -107,12 +107,14 @@ function buildCacheKey(
 function tightenCommentaryLine(commentary: string): string {
   const compact = commentary.replace(/\s+/g, " ").trim();
   if (!compact) return compact;
-  const firstSentence = compact.split(/(?<=[.!?])\s+/).filter(Boolean)[0] ?? compact;
-  const words = firstSentence.split(/\s+/).filter(Boolean);
-  const trimmedWords = words.slice(0, 18).join(" ");
+  // Allow up to 3 sentences, 50 words, 350 chars
+  const sentences = compact.split(/(?<=[.!?])\s+/).filter(Boolean);
+  const kept = sentences.slice(0, 3).join(" ");
+  const words = kept.split(/\s+/).filter(Boolean);
+  const trimmedWords = words.slice(0, 50).join(" ");
   let output = trimmedWords.trim();
   if (!/[.!?]$/.test(output)) output += "!";
-  return output.length > 170 ? `${output.slice(0, 169).trim()}!` : output;
+  return output.length > 350 ? `${output.slice(0, 349).trim()}!` : output;
 }
 
 function getElevenLabsKey(): string {
@@ -193,8 +195,8 @@ async function requestTts(voice: string, text: string): Promise<Response> {
       model_id: ELEVENLABS_MODEL,
       output_format: "mp3_44100_128",
       voice_settings: {
-        stability: 0.5,
-        similarity_boost: 0.75,
+        stability: 0.35,
+        similarity_boost: 0.85,
       },
     }),
   });
@@ -218,6 +220,7 @@ function clipResponse(clip: CommentaryClip, cacheState: "HIT" | "MISS"): Respons
 
 const VALID_EVENT_TYPES = new Set<CommentaryEventType>([
   "betting_open",
+  "fighter_intro",
   "big_hit",
   "elimination",
   "combat_start",
@@ -267,9 +270,9 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-    if (!context || typeof context !== "string" || context.length > 1000) {
+    if (!context || typeof context !== "string" || context.length > 3000) {
       return NextResponse.json(
-        { error: "context is required and must be under 1000 characters" },
+        { error: "context is required and must be under 3000 characters" },
         { status: 400 },
       );
     }
@@ -311,8 +314,8 @@ export async function POST(request: Request) {
           const systemPrompt = await getAnnouncerSystemPrompt();
           const msg = await anthropic.messages.create({
             model: "claude-haiku-4-5-20251001",
-            max_tokens: 90,
-            temperature: 0,
+            max_tokens: 200,
+            temperature: 0.85,
             system: systemPrompt,
             messages: [{ role: "user", content: prompt }],
           });

@@ -324,10 +324,14 @@ const ONCHAIN_ADMIN_HEALTH_CHECK_MS = readIntervalMs(
   2_000,
   120_000,
 );
-const ONCHAIN_TURN_AUTHORITY =
-  process.env.NODE_ENV === "production"
-    ? true
-    : (process.env.RUMBLE_ONCHAIN_TURN_AUTHORITY ?? "true") !== "false";
+// Turn authority mode:
+// - true  => full on-chain turn loop (requires deployed program with
+//            open_turn/resolve_turn/advance_turn + combat_state account)
+// - false => legacy off-chain turn loop with on-chain betting/payout state
+//
+// We default to legacy mode until the upgraded turn-authority program is
+// deployed and verified on the target cluster.
+const ONCHAIN_TURN_AUTHORITY = (process.env.RUMBLE_ONCHAIN_TURN_AUTHORITY ?? "false") === "true";
 
 interface OnchainAdminHealth {
   checkedAt: number;
@@ -1538,6 +1542,10 @@ export class RumbleOrchestrator {
     if (rumbleIdNum === null) return;
 
     // Initialize local state and start on-chain combat if needed.
+    // On cold starts (new serverless instance) combatStates is empty, so we
+    // re-init and then FALL THROUGH to the combat processing below instead
+    // of returning early — this prevents a one-tick stall per cold start.
+    let justInitialized = false;
     if (!this.combatStates.has(idx) || this.combatStates.get(idx)!.rumbleId !== slot.id) {
       await this.initCombatState(slot);
 
@@ -1558,11 +1566,14 @@ export class RumbleOrchestrator {
         rumbleId: slot.id,
         fighters: [...slot.fighters],
       });
-      return;
+      justInitialized = true;
+      // Fall through — proceed to combat processing in same tick
     }
 
     const state = this.combatStates.get(idx)!;
-    if (now - state.lastTickAt < ONCHAIN_KEEPER_POLL_INTERVAL_MS) return;
+    if (!justInitialized) {
+      if (now - state.lastTickAt < ONCHAIN_KEEPER_POLL_INTERVAL_MS) return;
+    }
     state.lastTickAt = now;
 
     let onchainState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
@@ -1578,7 +1589,7 @@ export class RumbleOrchestrator {
       return;
     }
 
-    const combat = await readRumbleCombatState(rumbleIdNum).catch(() => null);
+    let combat = await readRumbleCombatState(rumbleIdNum).catch(() => null);
     if (!combat) return;
 
     const sync = this.syncLocalFightersFromOnchain(slot, state, combat);
@@ -1630,29 +1641,54 @@ export class RumbleOrchestrator {
           console.warn(`[OnChain] openTurn failed for ${slot.id}: ${formatError(err)}`);
         }
       }
-      return;
+      // Re-read combat state after open_turn so we can proceed to
+      // commit/reveal/resolve in the same tick cycle.
+      combat = await readRumbleCombatState(rumbleIdNum).catch(() => null);
+      if (!combat || combat.currentTurn === 0) return;
     }
 
     const currentSlot = await getConnection().getSlot("processed");
     const currentSlotBig = BigInt(currentSlot);
 
-    if (!combat.turnResolved) {
+    // --- Missed-window recovery ---
+    // If the reveal window has passed and the turn is still unresolved, always
+    // attempt resolve_turn. This handles serverless cold starts, instance churn,
+    // and any gap where the keeper missed the window.
+    if (!combat.turnResolved && currentSlotBig >= combat.revealCloseSlot) {
+      // Try submitting any remaining moves first (commit/reveal may have been
+      // missed on previous instances).
       await this.submitOnchainMovesForTurn(slot, state, combat, rumbleIdNum, currentSlotBig);
-      if (currentSlotBig >= combat.revealCloseSlot) {
-        try {
-          const commitmentAccounts = await this.collectExistingMoveCommitments(
-            state,
-            rumbleIdNum,
-            combat.currentTurn,
-          );
-          const sig = await resolveTurnOnChain(rumbleIdNum, commitmentAccounts);
-          if (sig) console.log(`[OnChain] resolveTurn succeeded: ${sig}`);
-        } catch (err) {
+      try {
+        const commitmentAccounts = await this.collectExistingMoveCommitments(
+          state,
+          rumbleIdNum,
+          combat.currentTurn,
+        );
+        const sig = await resolveTurnOnChain(rumbleIdNum, commitmentAccounts);
+        if (sig) console.log(`[OnChain] resolveTurn succeeded: ${sig}`);
+      } catch (err) {
+        if (
+          !this.hasErrorTokenAny(err, [
+            "turn already resolved",
+            "turnalreadyresolved",
+            "custom program error: 0x177d",
+          ])
+        ) {
           console.warn(`[OnChain] resolveTurn failed for ${slot.id}: ${formatError(err)}`);
         }
       }
+      // Re-read to check if resolve succeeded so we can advance in same tick.
+      combat = await readRumbleCombatState(rumbleIdNum).catch(() => null);
+      if (!combat) return;
+    }
+
+    if (!combat.turnResolved) {
+      // Turn is still within commit/reveal window — submit moves and wait.
+      await this.submitOnchainMovesForTurn(slot, state, combat, rumbleIdNum, currentSlotBig);
       return;
     }
+
+    // --- Turn is resolved: finalize or advance ---
 
     if (combat.remainingFighters <= 1) {
       try {
@@ -1671,12 +1707,21 @@ export class RumbleOrchestrator {
       return;
     }
 
+    // More than 1 fighter remains and turn is resolved — advance to next turn.
     if (currentSlotBig >= combat.revealCloseSlot) {
       try {
         const sig = await advanceTurnOnChain(rumbleIdNum);
         if (sig) console.log(`[OnChain] advanceTurn succeeded: ${sig}`);
       } catch (err) {
-        console.warn(`[OnChain] advanceTurn failed for ${slot.id}: ${formatError(err)}`);
+        if (
+          !this.hasErrorTokenAny(err, [
+            "turn already open",
+            "turnalreadyopen",
+            "custom program error: 0x177b",
+          ])
+        ) {
+          console.warn(`[OnChain] advanceTurn failed for ${slot.id}: ${formatError(err)}`);
+        }
       }
     }
   }

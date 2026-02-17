@@ -1,5 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
+use sha2::{Digest, Sha256};
 
 declare_id!("2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC");
 
@@ -12,6 +13,9 @@ const VAULT_SEED: &[u8] = b"vault";
 const BETTOR_SEED: &[u8] = b"bettor";
 const CONFIG_SEED: &[u8] = b"rumble_config";
 const SPONSORSHIP_SEED: &[u8] = b"sponsorship";
+const MOVE_COMMIT_SEED: &[u8] = b"move_commit";
+const MOVE_COMMIT_DOMAIN: &[u8] = b"rumble:v1";
+const COMBAT_STATE_SEED: &[u8] = b"combat_state";
 const FIGHTER_REGISTRY_PROGRAM_ID: Pubkey = pubkey!("2hA6Jvj1yjP2Uj3qrJcsBeYA2R9xPM95mDKw1ncKVExa");
 const FIGHTER_ACCOUNT_DISCRIMINATOR: [u8; 8] = [24, 221, 27, 113, 60, 210, 101, 211];
 
@@ -29,6 +33,31 @@ const TREASURY_CUT_BPS: u64 = 1_000; // 10%
 
 /// Claim window after report_result before admin can finalize/sweep.
 const PAYOUT_CLAIM_WINDOW_SECONDS: i64 = 30;
+
+/// On-chain turn timing windows (slots).
+const COMMIT_WINDOW_SLOTS: u64 = 30;
+const REVEAL_WINDOW_SLOTS: u64 = 30;
+const MAX_ONCHAIN_COMBAT_TURNS: u32 = 120;
+
+const MOVE_HIGH_STRIKE: u8 = 0;
+const MOVE_MID_STRIKE: u8 = 1;
+const MOVE_LOW_STRIKE: u8 = 2;
+const MOVE_GUARD_HIGH: u8 = 3;
+const MOVE_GUARD_MID: u8 = 4;
+const MOVE_GUARD_LOW: u8 = 5;
+const MOVE_DODGE: u8 = 6;
+const MOVE_CATCH: u8 = 7;
+const MOVE_SPECIAL: u8 = 8;
+
+const STRIKE_DAMAGE_HIGH: u16 = 18;
+const STRIKE_DAMAGE_MID: u16 = 14;
+const STRIKE_DAMAGE_LOW: u16 = 10;
+const CATCH_DAMAGE: u16 = 22;
+const COUNTER_DAMAGE: u16 = 8;
+const SPECIAL_DAMAGE: u16 = 25;
+const METER_PER_TURN: u8 = 20;
+const SPECIAL_METER_COST: u8 = 100;
+const START_HP: u16 = 100;
 
 struct ParsedBettorAccount {
     authority: Pubkey,
@@ -210,6 +239,236 @@ fn write_bettor_account_data(data: &mut [u8], bettor: &ParsedBettorAccount) -> R
     Ok(())
 }
 
+fn fighter_in_rumble(rumble: &Rumble, fighter: &Pubkey) -> bool {
+    let fighter_count = rumble.fighter_count as usize;
+    rumble.fighters[..fighter_count]
+        .iter()
+        .any(|f| f == fighter)
+}
+
+fn is_valid_move_code(move_code: u8) -> bool {
+    move_code <= 8
+}
+
+fn compute_move_commitment_hash(
+    rumble_id: u64,
+    turn: u32,
+    fighter: &Pubkey,
+    move_code: u8,
+    salt: &[u8; 32],
+) -> [u8; 32] {
+    let rumble_id_bytes = rumble_id.to_le_bytes();
+    let turn_bytes = turn.to_le_bytes();
+    let move_code_bytes = [move_code];
+    let mut hasher = Sha256::new();
+    hasher.update(MOVE_COMMIT_DOMAIN);
+    hasher.update(rumble_id_bytes.as_ref());
+    hasher.update(turn_bytes.as_ref());
+    hasher.update(fighter.as_ref());
+    hasher.update(move_code_bytes.as_ref());
+    hasher.update(salt.as_ref());
+    let digest = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
+}
+
+fn hash_u64(parts: &[&[u8]]) -> u64 {
+    let mut hasher = Sha256::new();
+    for p in parts {
+        hasher.update(p);
+    }
+    let digest = hasher.finalize();
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    u64::from_le_bytes(bytes)
+}
+
+fn is_strike(move_code: u8) -> bool {
+    move_code == MOVE_HIGH_STRIKE || move_code == MOVE_MID_STRIKE || move_code == MOVE_LOW_STRIKE
+}
+
+fn is_guard(move_code: u8) -> bool {
+    move_code == MOVE_GUARD_HIGH || move_code == MOVE_GUARD_MID || move_code == MOVE_GUARD_LOW
+}
+
+fn guard_for_strike(move_code: u8) -> Option<u8> {
+    match move_code {
+        MOVE_HIGH_STRIKE => Some(MOVE_GUARD_HIGH),
+        MOVE_MID_STRIKE => Some(MOVE_GUARD_MID),
+        MOVE_LOW_STRIKE => Some(MOVE_GUARD_LOW),
+        _ => None,
+    }
+}
+
+fn strike_damage(move_code: u8) -> u16 {
+    match move_code {
+        MOVE_HIGH_STRIKE => STRIKE_DAMAGE_HIGH,
+        MOVE_MID_STRIKE => STRIKE_DAMAGE_MID,
+        MOVE_LOW_STRIKE => STRIKE_DAMAGE_LOW,
+        _ => 0,
+    }
+}
+
+fn fallback_move_code(rumble_id: u64, turn: u32, fighter: &Pubkey, meter: u8) -> u8 {
+    let rumble_id_bytes = rumble_id.to_le_bytes();
+    let turn_bytes = turn.to_le_bytes();
+    let roll = hash_u64(&[
+        b"fallback-move",
+        rumble_id_bytes.as_ref(),
+        turn_bytes.as_ref(),
+        fighter.as_ref(),
+    ]) % 100;
+
+    if meter >= SPECIAL_METER_COST && roll < 15 {
+        return MOVE_SPECIAL;
+    }
+
+    if roll < 67 {
+        let strike_idx = hash_u64(&[
+            b"fallback-strike",
+            rumble_id_bytes.as_ref(),
+            turn_bytes.as_ref(),
+            fighter.as_ref(),
+        ]) % 3;
+        match strike_idx {
+            0 => MOVE_HIGH_STRIKE,
+            1 => MOVE_MID_STRIKE,
+            _ => MOVE_LOW_STRIKE,
+        }
+    } else if roll < 87 {
+        let guard_idx = hash_u64(&[
+            b"fallback-guard",
+            rumble_id_bytes.as_ref(),
+            turn_bytes.as_ref(),
+            fighter.as_ref(),
+        ]) % 3;
+        match guard_idx {
+            0 => MOVE_GUARD_HIGH,
+            1 => MOVE_GUARD_MID,
+            _ => MOVE_GUARD_LOW,
+        }
+    } else if roll < 95 {
+        MOVE_DODGE
+    } else {
+        MOVE_CATCH
+    }
+}
+
+fn resolve_duel(
+    move_a: u8,
+    move_b: u8,
+    meter_a: u8,
+    meter_b: u8,
+) -> (u16, u16, u8, u8) {
+    let mut damage_to_a: u16 = 0;
+    let mut damage_to_b: u16 = 0;
+    let mut meter_used_a: u8 = 0;
+    let mut meter_used_b: u8 = 0;
+
+    let a_special = move_a == MOVE_SPECIAL && meter_a >= SPECIAL_METER_COST;
+    let b_special = move_b == MOVE_SPECIAL && meter_b >= SPECIAL_METER_COST;
+    if a_special {
+        meter_used_a = SPECIAL_METER_COST;
+    }
+    if b_special {
+        meter_used_b = SPECIAL_METER_COST;
+    }
+
+    let effective_a = if move_a == MOVE_SPECIAL && !a_special {
+        u8::MAX
+    } else {
+        move_a
+    };
+    let effective_b = if move_b == MOVE_SPECIAL && !b_special {
+        u8::MAX
+    } else {
+        move_b
+    };
+
+    // A attacks B
+    if effective_a == MOVE_SPECIAL {
+        if effective_b != MOVE_DODGE {
+            damage_to_b = SPECIAL_DAMAGE;
+        }
+    } else if effective_a == MOVE_CATCH {
+        if effective_b == MOVE_DODGE {
+            damage_to_b = CATCH_DAMAGE;
+        }
+    } else if is_strike(effective_a) {
+        if effective_b == MOVE_DODGE {
+            // dodged
+        } else if guard_for_strike(effective_a) == Some(effective_b) {
+            damage_to_a = COUNTER_DAMAGE;
+        } else {
+            damage_to_b = strike_damage(effective_a);
+        }
+    }
+
+    // B attacks A
+    if effective_b == MOVE_SPECIAL {
+        if effective_a != MOVE_DODGE {
+            damage_to_a = SPECIAL_DAMAGE;
+        }
+    } else if effective_b == MOVE_CATCH {
+        if effective_a == MOVE_DODGE {
+            damage_to_a = CATCH_DAMAGE;
+        }
+    } else if is_strike(effective_b) {
+        if effective_a == MOVE_DODGE {
+            // dodged
+        } else if guard_for_strike(effective_b) == Some(effective_a) {
+            damage_to_b = COUNTER_DAMAGE;
+        } else {
+            damage_to_a = strike_damage(effective_b);
+        }
+    }
+
+    (damage_to_a, damage_to_b, meter_used_a, meter_used_b)
+}
+
+fn expected_move_commitment_pda(rumble_id: u64, fighter: &Pubkey, turn: u32) -> Pubkey {
+    let rumble_id_bytes = rumble_id.to_le_bytes();
+    let turn_bytes = turn.to_le_bytes();
+    let (pda, _bump) = Pubkey::find_program_address(
+        &[
+            MOVE_COMMIT_SEED,
+            rumble_id_bytes.as_ref(),
+            fighter.as_ref(),
+            turn_bytes.as_ref(),
+        ],
+        &crate::ID,
+    );
+    pda
+}
+
+fn read_revealed_move_from_remaining_accounts(
+    remaining_accounts: &[AccountInfo<'_>],
+    rumble_id: u64,
+    turn: u32,
+    fighter: &Pubkey,
+) -> Option<u8> {
+    let expected_pda = expected_move_commitment_pda(rumble_id, fighter, turn);
+    let info = remaining_accounts.iter().find(|acc| *acc.key == expected_pda)?;
+    if *info.owner != crate::ID || info.data_is_empty() {
+        return None;
+    }
+
+    let data = info.try_borrow_data().ok()?;
+    if data.len() < 8 || data.get(..8) != Some(MoveCommitment::DISCRIMINATOR.as_ref()) {
+        return None;
+    }
+    let mut slice: &[u8] = &data;
+    let parsed = MoveCommitment::try_deserialize(&mut slice).ok()?;
+    if parsed.rumble_id != rumble_id || parsed.turn != turn || parsed.fighter != *fighter {
+        return None;
+    }
+    if !parsed.revealed {
+        return None;
+    }
+    Some(parsed.revealed_move)
+}
+
 #[program]
 pub mod rumble_engine {
     use super::*;
@@ -227,7 +486,8 @@ pub mod rumble_engine {
         Ok(())
     }
 
-    /// Create a new rumble with a list of fighters and a betting deadline.
+    /// Create a new rumble with a list of fighters and an on-chain betting close slot.
+    /// `betting_deadline` is interpreted as a slot number for backward compatibility.
     pub fn create_rumble(
         ctx: Context<CreateRumble>,
         rumble_id: u64,
@@ -240,10 +500,10 @@ pub mod rumble_engine {
         );
 
         let clock = Clock::get()?;
-        require!(
-            betting_deadline > clock.unix_timestamp,
-            RumbleError::DeadlineInPast
-        );
+        require!(betting_deadline > 0, RumbleError::DeadlineInPast);
+        let betting_close_slot =
+            u64::try_from(betting_deadline).map_err(|_| error!(RumbleError::DeadlineInPast))?;
+        require!(betting_close_slot > clock.slot, RumbleError::DeadlineInPast);
 
         let rumble = &mut ctx.accounts.rumble;
         rumble.id = rumble_id;
@@ -292,12 +552,11 @@ pub mod rumble_engine {
             RumbleError::BettingClosed
         );
 
-        // Validate deadline
+        // Validate on-chain slot deadline
         let clock = Clock::get()?;
-        require!(
-            clock.unix_timestamp < rumble.betting_deadline,
-            RumbleError::BettingClosed
-        );
+        let betting_close_slot = u64::try_from(rumble.betting_deadline)
+            .map_err(|_| error!(RumbleError::BettingClosed))?;
+        require!(clock.slot < betting_close_slot, RumbleError::BettingClosed);
 
         // Validate fighter index
         require!(
@@ -452,9 +711,9 @@ pub mod rumble_engine {
         Ok(())
     }
 
-    /// Transition rumble from Betting to Combat.
-    /// Only callable by admin after the betting deadline.
-    pub fn start_combat(ctx: Context<AdminAction>) -> Result<()> {
+    /// Transition rumble from Betting to Combat and initialize on-chain combat state.
+    /// Callable by admin after betting deadline.
+    pub fn start_combat(ctx: Context<StartCombat>) -> Result<()> {
         let rumble = &mut ctx.accounts.rumble;
 
         require!(
@@ -463,13 +722,38 @@ pub mod rumble_engine {
         );
 
         let clock = Clock::get()?;
+        let betting_close_slot = u64::try_from(rumble.betting_deadline)
+            .map_err(|_| error!(RumbleError::BettingNotEnded))?;
         require!(
-            clock.unix_timestamp >= rumble.betting_deadline,
+            clock.slot >= betting_close_slot,
             RumbleError::BettingNotEnded
         );
 
         rumble.state = RumbleState::Combat;
         rumble.combat_started_at = clock.unix_timestamp;
+
+        let combat = &mut ctx.accounts.combat_state;
+        if combat.rumble_id != 0 {
+            require!(combat.rumble_id == rumble.id, RumbleError::InvalidRumble);
+        }
+        combat.rumble_id = rumble.id;
+        combat.fighter_count = rumble.fighter_count;
+        combat.current_turn = 0;
+        combat.turn_open_slot = clock.slot;
+        combat.commit_close_slot = clock.slot;
+        combat.reveal_close_slot = clock.slot;
+        combat.turn_resolved = true;
+        combat.remaining_fighters = rumble.fighter_count;
+        combat.winner_index = u8::MAX;
+        combat.hp = [0u16; MAX_FIGHTERS];
+        combat.meter = [0u8; MAX_FIGHTERS];
+        combat.elimination_rank = [0u8; MAX_FIGHTERS];
+        combat.total_damage_dealt = [0u64; MAX_FIGHTERS];
+        combat.total_damage_taken = [0u64; MAX_FIGHTERS];
+        for i in 0..rumble.fighter_count as usize {
+            combat.hp[i] = START_HP;
+        }
+        combat.bump = ctx.bumps.combat_state;
 
         msg!(
             "Rumble {} combat started at {}",
@@ -485,75 +769,484 @@ pub mod rumble_engine {
         Ok(())
     }
 
-    /// Report the final result of a rumble.
-    /// Admin submits placements (1st through last). Transitions to Payout state.
-    /// placements[i] = the placement (1-indexed) of fighter at index i.
-    /// e.g. placements[0] = 1 means fighter 0 came in 1st place.
-    pub fn report_result(
-        ctx: Context<AdminAction>,
-        placements: Vec<u8>,
-        winner_index: u8,
+    /// Fighter commits a move hash for the active rumble turn.
+    /// Hash format: sha256("rumble:v1", rumble_id, turn, fighter_pubkey, move_code, salt)
+    pub fn commit_move(
+        ctx: Context<CommitMove>,
+        rumble_id: u64,
+        turn: u32,
+        move_hash: [u8; 32],
     ) -> Result<()> {
-        let rumble = &mut ctx.accounts.rumble;
+        let clock = Clock::get()?;
+        let rumble = &ctx.accounts.rumble;
+        let combat = &ctx.accounts.combat_state;
 
         require!(
             rumble.state == RumbleState::Combat,
             RumbleError::InvalidStateTransition
         );
+        require!(turn > 0, RumbleError::InvalidTurn);
+        require!(
+            fighter_in_rumble(rumble, &ctx.accounts.fighter.key()),
+            RumbleError::Unauthorized
+        );
+        require!(turn == combat.current_turn, RumbleError::InvalidTurn);
+        require!(!combat.turn_resolved, RumbleError::TurnAlreadyResolved);
+        require!(
+            clock.slot >= combat.turn_open_slot && clock.slot <= combat.commit_close_slot,
+            RumbleError::CommitWindowClosed
+        );
+        require!(move_hash != [0u8; 32], RumbleError::InvalidMoveCommitment);
+
+        let move_commitment = &mut ctx.accounts.move_commitment;
+        move_commitment.rumble_id = rumble_id;
+        move_commitment.fighter = ctx.accounts.fighter.key();
+        move_commitment.turn = turn;
+        move_commitment.move_hash = move_hash;
+        move_commitment.revealed_move = 255;
+        move_commitment.revealed = false;
+        move_commitment.committed_slot = clock.slot;
+        move_commitment.revealed_slot = 0;
+        move_commitment.bump = ctx.bumps.move_commitment;
+
+        emit!(MoveCommittedEvent {
+            rumble_id,
+            fighter: ctx.accounts.fighter.key(),
+            turn,
+            committed_slot: clock.slot,
+        });
+
+        Ok(())
+    }
+
+    /// Fighter reveals move + salt for a previously committed move hash.
+    pub fn reveal_move(
+        ctx: Context<RevealMove>,
+        rumble_id: u64,
+        turn: u32,
+        move_code: u8,
+        salt: [u8; 32],
+    ) -> Result<()> {
+        let clock = Clock::get()?;
+        let rumble = &ctx.accounts.rumble;
+        let combat = &ctx.accounts.combat_state;
 
         require!(
-            placements.len() == rumble.fighter_count as usize,
-            RumbleError::InvalidPlacement
+            rumble.state == RumbleState::Combat,
+            RumbleError::InvalidStateTransition
         );
+        require!(turn > 0, RumbleError::InvalidTurn);
+        require!(
+            fighter_in_rumble(rumble, &ctx.accounts.fighter.key()),
+            RumbleError::Unauthorized
+        );
+        require!(turn == combat.current_turn, RumbleError::InvalidTurn);
+        require!(!combat.turn_resolved, RumbleError::TurnAlreadyResolved);
+        require!(
+            clock.slot > combat.commit_close_slot && clock.slot <= combat.reveal_close_slot,
+            RumbleError::RevealWindowClosed
+        );
+        require!(is_valid_move_code(move_code), RumbleError::InvalidMoveCode);
+
+        let move_commitment = &mut ctx.accounts.move_commitment;
+        require!(!move_commitment.revealed, RumbleError::AlreadyRevealedMove);
+
+        let computed_hash = compute_move_commitment_hash(
+            rumble_id,
+            turn,
+            &ctx.accounts.fighter.key(),
+            move_code,
+            &salt,
+        );
+        require!(
+            computed_hash == move_commitment.move_hash,
+            RumbleError::InvalidMoveCommitment
+        );
+
+        move_commitment.revealed = true;
+        move_commitment.revealed_move = move_code;
+        move_commitment.revealed_slot = clock.slot;
+
+        emit!(MoveRevealedEvent {
+            rumble_id,
+            fighter: ctx.accounts.fighter.key(),
+            turn,
+            move_code,
+            revealed_slot: clock.slot,
+        });
+
+        Ok(())
+    }
+
+    /// Open the first turn window after combat starts.
+    /// Permissionless keeper call; correctness is slot-gated on-chain.
+    pub fn open_turn(ctx: Context<CombatAction>) -> Result<()> {
+        let clock = Clock::get()?;
+        let rumble = &ctx.accounts.rumble;
+        let combat = &mut ctx.accounts.combat_state;
 
         require!(
-            (winner_index as usize) < rumble.fighter_count as usize,
-            RumbleError::InvalidFighterIndex
+            rumble.state == RumbleState::Combat,
+            RumbleError::InvalidStateTransition
         );
+        require!(combat.current_turn == 0, RumbleError::TurnAlreadyOpen);
+        require!(combat.turn_resolved, RumbleError::TurnNotResolved);
+        require!(combat.remaining_fighters > 1, RumbleError::CombatAlreadyFinished);
 
-        // Validate that winner_index has placement == 1
+        combat.current_turn = 1;
+        combat.turn_open_slot = clock.slot;
+        combat.commit_close_slot = clock
+            .slot
+            .checked_add(COMMIT_WINDOW_SLOTS)
+            .ok_or(RumbleError::MathOverflow)?;
+        combat.reveal_close_slot = combat
+            .commit_close_slot
+            .checked_add(REVEAL_WINDOW_SLOTS)
+            .ok_or(RumbleError::MathOverflow)?;
+        combat.turn_resolved = false;
+
+        emit!(TurnOpenedEvent {
+            rumble_id: rumble.id,
+            turn: combat.current_turn,
+            turn_open_slot: combat.turn_open_slot,
+            commit_close_slot: combat.commit_close_slot,
+            reveal_close_slot: combat.reveal_close_slot,
+        });
+
+        Ok(())
+    }
+
+    /// Resolve the active turn from revealed move commitments.
+    /// If a fighter didn't reveal, deterministic fallback move is used.
+    pub fn resolve_turn(ctx: Context<CombatAction>) -> Result<()> {
+        let clock = Clock::get()?;
+        let rumble = &ctx.accounts.rumble;
+        let combat = &mut ctx.accounts.combat_state;
+
         require!(
-            placements[winner_index as usize] == 1,
-            RumbleError::InvalidPlacement
+            rumble.state == RumbleState::Combat,
+            RumbleError::InvalidStateTransition
+        );
+        require!(combat.current_turn > 0, RumbleError::TurnNotOpen);
+        require!(!combat.turn_resolved, RumbleError::TurnAlreadyResolved);
+        require!(
+            clock.slot >= combat.reveal_close_slot,
+            RumbleError::RevealWindowActive
         );
 
-        // Copy placements into fixed-size array
-        let mut placement_arr = [0u8; MAX_FIGHTERS];
-        let mut seen_placements = vec![false; rumble.fighter_count as usize + 1];
-        for (i, p) in placements.iter().enumerate() {
-            require!(
-                *p >= 1 && *p <= rumble.fighter_count,
-                RumbleError::InvalidPlacement
-            );
-            let placement_idx = *p as usize;
-            require!(
-                !seen_placements[placement_idx],
-                RumbleError::InvalidPlacement
-            );
-            seen_placements[placement_idx] = true;
-            placement_arr[i] = *p;
+        let fighter_count = combat.fighter_count as usize;
+        let turn = combat.current_turn;
+
+        let mut alive_indices: Vec<usize> = (0..fighter_count)
+            .filter(|i| combat.hp[*i] > 0 && combat.elimination_rank[*i] == 0)
+            .collect();
+
+        if alive_indices.len() <= 1 {
+            combat.turn_resolved = true;
+            if let Some(idx) = alive_indices.first() {
+                combat.winner_index = *idx as u8;
+            }
+            emit!(TurnResolvedEvent {
+                rumble_id: rumble.id,
+                turn,
+                remaining_fighters: combat.remaining_fighters,
+            });
+            return Ok(());
         }
 
-        rumble.placements = placement_arr;
-        rumble.winner_index = winner_index;
-        rumble.state = RumbleState::Payout;
+        let rumble_id_bytes = rumble.id.to_le_bytes();
+        let turn_bytes = turn.to_le_bytes();
+        alive_indices.sort_by(|a, b| {
+            let key_a = hash_u64(&[
+                b"pair-order",
+                rumble_id_bytes.as_ref(),
+                turn_bytes.as_ref(),
+                rumble.fighters[*a].as_ref(),
+            ]);
+            let key_b = hash_u64(&[
+                b"pair-order",
+                rumble_id_bytes.as_ref(),
+                turn_bytes.as_ref(),
+                rumble.fighters[*b].as_ref(),
+            ]);
+            key_a
+                .cmp(&key_b)
+                .then_with(|| rumble.fighters[*a].to_bytes().cmp(&rumble.fighters[*b].to_bytes()))
+        });
 
+        let mut paired_indices: Vec<usize> = Vec::with_capacity(alive_indices.len());
+        let mut eliminated_this_turn: Vec<usize> = Vec::new();
+
+        for chunk in alive_indices.chunks(2) {
+            if chunk.len() < 2 {
+                // bye
+                continue;
+            }
+
+            let idx_a = chunk[0];
+            let idx_b = chunk[1];
+            let fighter_a = rumble.fighters[idx_a];
+            let fighter_b = rumble.fighters[idx_b];
+
+            let move_a = read_revealed_move_from_remaining_accounts(
+                ctx.remaining_accounts,
+                rumble.id,
+                turn,
+                &fighter_a,
+            )
+            .filter(|m| is_valid_move_code(*m))
+            .unwrap_or_else(|| fallback_move_code(rumble.id, turn, &fighter_a, combat.meter[idx_a]));
+            let move_b = read_revealed_move_from_remaining_accounts(
+                ctx.remaining_accounts,
+                rumble.id,
+                turn,
+                &fighter_b,
+            )
+            .filter(|m| is_valid_move_code(*m))
+            .unwrap_or_else(|| fallback_move_code(rumble.id, turn, &fighter_b, combat.meter[idx_b]));
+
+            let (damage_to_a, damage_to_b, meter_used_a, meter_used_b) =
+                resolve_duel(move_a, move_b, combat.meter[idx_a], combat.meter[idx_b]);
+
+            combat.meter[idx_a] = combat.meter[idx_a].saturating_sub(meter_used_a);
+            combat.meter[idx_b] = combat.meter[idx_b].saturating_sub(meter_used_b);
+
+            combat.hp[idx_a] = combat.hp[idx_a].saturating_sub(damage_to_a);
+            combat.hp[idx_b] = combat.hp[idx_b].saturating_sub(damage_to_b);
+
+            combat.total_damage_dealt[idx_a] = combat.total_damage_dealt[idx_a]
+                .checked_add(damage_to_b as u64)
+                .ok_or(RumbleError::MathOverflow)?;
+            combat.total_damage_dealt[idx_b] = combat.total_damage_dealt[idx_b]
+                .checked_add(damage_to_a as u64)
+                .ok_or(RumbleError::MathOverflow)?;
+            combat.total_damage_taken[idx_a] = combat.total_damage_taken[idx_a]
+                .checked_add(damage_to_a as u64)
+                .ok_or(RumbleError::MathOverflow)?;
+            combat.total_damage_taken[idx_b] = combat.total_damage_taken[idx_b]
+                .checked_add(damage_to_b as u64)
+                .ok_or(RumbleError::MathOverflow)?;
+
+            paired_indices.push(idx_a);
+            paired_indices.push(idx_b);
+
+            emit!(TurnPairResolvedEvent {
+                rumble_id: rumble.id,
+                turn,
+                fighter_a: fighter_a,
+                fighter_b: fighter_b,
+                move_a,
+                move_b,
+                damage_to_a,
+                damage_to_b,
+            });
+
+            if combat.hp[idx_a] == 0 && combat.elimination_rank[idx_a] == 0 {
+                eliminated_this_turn.push(idx_a);
+            }
+            if combat.hp[idx_b] == 0 && combat.elimination_rank[idx_b] == 0 {
+                eliminated_this_turn.push(idx_b);
+            }
+        }
+
+        for idx in paired_indices {
+            if combat.hp[idx] > 0 {
+                let next_meter = combat.meter[idx].saturating_add(METER_PER_TURN);
+                combat.meter[idx] = next_meter.min(SPECIAL_METER_COST);
+            }
+        }
+
+        for idx in eliminated_this_turn {
+            if combat.elimination_rank[idx] > 0 {
+                continue;
+            }
+            let eliminated_so_far = combat
+                .fighter_count
+                .checked_sub(combat.remaining_fighters)
+                .ok_or(RumbleError::MathOverflow)?;
+            combat.elimination_rank[idx] = eliminated_so_far
+                .checked_add(1)
+                .ok_or(RumbleError::MathOverflow)?;
+            combat.remaining_fighters = combat
+                .remaining_fighters
+                .checked_sub(1)
+                .ok_or(RumbleError::MathOverflow)?;
+        }
+
+        if combat.remaining_fighters == 1 {
+            if let Some((idx, _)) = (0..fighter_count)
+                .filter(|i| combat.hp[*i] > 0 && combat.elimination_rank[*i] == 0)
+                .map(|i| (i, combat.hp[i]))
+                .next()
+            {
+                combat.winner_index = idx as u8;
+            }
+        }
+
+        combat.turn_resolved = true;
+
+        emit!(TurnResolvedEvent {
+            rumble_id: rumble.id,
+            turn,
+            remaining_fighters: combat.remaining_fighters,
+        });
+
+        Ok(())
+    }
+
+    /// Advance to next turn after a resolved turn.
+    /// Permissionless keeper call.
+    pub fn advance_turn(ctx: Context<CombatAction>) -> Result<()> {
         let clock = Clock::get()?;
-        rumble.completed_at = clock.unix_timestamp;
+        let rumble = &ctx.accounts.rumble;
+        let combat = &mut ctx.accounts.combat_state;
 
-        msg!(
-            "Rumble {} result reported. Winner: fighter #{}",
-            rumble.id,
-            winner_index
+        require!(
+            rumble.state == RumbleState::Combat,
+            RumbleError::InvalidStateTransition
+        );
+        require!(combat.current_turn > 0, RumbleError::TurnNotOpen);
+        require!(combat.turn_resolved, RumbleError::TurnNotResolved);
+        require!(combat.remaining_fighters > 1, RumbleError::CombatAlreadyFinished);
+        require!(
+            combat.current_turn < MAX_ONCHAIN_COMBAT_TURNS,
+            RumbleError::MaxTurnsReached
+        );
+        require!(
+            clock.slot >= combat.reveal_close_slot,
+            RumbleError::RevealWindowActive
         );
 
-        emit!(ResultReportedEvent {
+        combat.current_turn = combat
+            .current_turn
+            .checked_add(1)
+            .ok_or(RumbleError::MathOverflow)?;
+        combat.turn_open_slot = clock.slot;
+        combat.commit_close_slot = clock
+            .slot
+            .checked_add(COMMIT_WINDOW_SLOTS)
+            .ok_or(RumbleError::MathOverflow)?;
+        combat.reveal_close_slot = combat
+            .commit_close_slot
+            .checked_add(REVEAL_WINDOW_SLOTS)
+            .ok_or(RumbleError::MathOverflow)?;
+        combat.turn_resolved = false;
+
+        emit!(TurnOpenedEvent {
             rumble_id: rumble.id,
-            winner_index,
+            turn: combat.current_turn,
+            turn_open_slot: combat.turn_open_slot,
+            commit_close_slot: combat.commit_close_slot,
+            reveal_close_slot: combat.reveal_close_slot,
+        });
+
+        Ok(())
+    }
+
+    /// Permissionless deterministic finalization from on-chain combat state.
+    pub fn finalize_rumble(ctx: Context<FinalizeRumble>) -> Result<()> {
+        let clock = Clock::get()?;
+        let rumble = &mut ctx.accounts.rumble;
+        let combat = &mut ctx.accounts.combat_state;
+
+        require!(
+            rumble.state == RumbleState::Combat,
+            RumbleError::InvalidStateTransition
+        );
+        require!(combat.turn_resolved, RumbleError::TurnNotResolved);
+        require!(combat.current_turn > 0, RumbleError::TurnNotOpen);
+
+        if combat.remaining_fighters > 1 {
+            require!(
+                combat.current_turn >= MAX_ONCHAIN_COMBAT_TURNS,
+                RumbleError::CombatStillActive
+            );
+        }
+
+        let fighter_count = rumble.fighter_count as usize;
+        let mut winner_idx: usize = if combat.winner_index != u8::MAX {
+            combat.winner_index as usize
+        } else {
+            0
+        };
+
+        if combat.winner_index == u8::MAX {
+            let mut candidates: Vec<usize> = (0..fighter_count)
+                .filter(|i| combat.hp[*i] > 0 && combat.elimination_rank[*i] == 0)
+                .collect();
+            if candidates.is_empty() {
+                candidates = (0..fighter_count).collect();
+            }
+            candidates.sort_by(|a, b| {
+                combat.hp[*b]
+                    .cmp(&combat.hp[*a])
+                    .then_with(|| combat.total_damage_dealt[*b].cmp(&combat.total_damage_dealt[*a]))
+                    .then_with(|| rumble.fighters[*a].to_bytes().cmp(&rumble.fighters[*b].to_bytes()))
+            });
+            winner_idx = *candidates.first().ok_or(RumbleError::CombatStillActive)?;
+            combat.winner_index = winner_idx as u8;
+        }
+
+        let mut placements = [0u8; MAX_FIGHTERS];
+        placements[winner_idx] = 1;
+
+        let mut survivors: Vec<usize> = (0..fighter_count)
+            .filter(|i| *i != winner_idx && combat.hp[*i] > 0 && combat.elimination_rank[*i] == 0)
+            .collect();
+        survivors.sort_by(|a, b| {
+            combat.hp[*b]
+                .cmp(&combat.hp[*a])
+                .then_with(|| combat.total_damage_dealt[*b].cmp(&combat.total_damage_dealt[*a]))
+                .then_with(|| rumble.fighters[*a].to_bytes().cmp(&rumble.fighters[*b].to_bytes()))
+        });
+        let mut next_place: u8 = 2;
+        for idx in survivors {
+            placements[idx] = next_place;
+            next_place = next_place.checked_add(1).ok_or(RumbleError::MathOverflow)?;
+        }
+
+        for i in 0..fighter_count {
+            if placements[i] != 0 {
+                continue;
+            }
+            let elimination_rank = combat.elimination_rank[i];
+            if elimination_rank > 0 {
+                let place = (combat.fighter_count as u16)
+                    .checked_sub(elimination_rank as u16)
+                    .and_then(|v| v.checked_add(1))
+                    .ok_or(RumbleError::MathOverflow)?;
+                placements[i] = place as u8;
+            }
+        }
+
+        for i in 0..fighter_count {
+            if placements[i] == 0 {
+                placements[i] = next_place;
+                next_place = next_place.checked_add(1).ok_or(RumbleError::MathOverflow)?;
+            }
+        }
+
+        rumble.placements = placements;
+        rumble.winner_index = winner_idx as u8;
+        rumble.state = RumbleState::Payout;
+        rumble.completed_at = clock.unix_timestamp;
+
+        emit!(OnchainResultFinalizedEvent {
+            rumble_id: rumble.id,
+            winner_index: rumble.winner_index,
             timestamp: clock.unix_timestamp,
         });
 
         Ok(())
+    }
+
+    /// Deprecated: result is now finalized permissionlessly from on-chain combat state.
+    pub fn report_result(
+        _ctx: Context<AdminAction>,
+        _placements: Vec<u8>,
+        _winner_index: u8,
+    ) -> Result<()> {
+        err!(RumbleError::DeprecatedInstruction)
     }
 
     /// Bettor claims their payout if their fighter placed 1st (winner-takes-all).
@@ -934,6 +1627,153 @@ pub struct CreateRumble<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(rumble_id: u64, turn: u32)]
+pub struct CommitMove<'info> {
+    #[account(mut)]
+    pub fighter: Signer<'info>,
+
+    #[account(
+        seeds = [RUMBLE_SEED, rumble_id.to_le_bytes().as_ref()],
+        bump = rumble.bump,
+    )]
+    pub rumble: Account<'info, Rumble>,
+
+    #[account(
+        seeds = [COMBAT_STATE_SEED, rumble_id.to_le_bytes().as_ref()],
+        bump = combat_state.bump,
+        constraint = combat_state.rumble_id == rumble_id @ RumbleError::InvalidRumble,
+    )]
+    pub combat_state: Account<'info, RumbleCombatState>,
+
+    #[account(
+        init,
+        payer = fighter,
+        space = 8 + MoveCommitment::INIT_SPACE,
+        seeds = [
+            MOVE_COMMIT_SEED,
+            rumble_id.to_le_bytes().as_ref(),
+            fighter.key().as_ref(),
+            turn.to_le_bytes().as_ref(),
+        ],
+        bump
+    )]
+    pub move_commitment: Account<'info, MoveCommitment>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(rumble_id: u64, turn: u32)]
+pub struct RevealMove<'info> {
+    #[account(mut)]
+    pub fighter: Signer<'info>,
+
+    #[account(
+        seeds = [RUMBLE_SEED, rumble_id.to_le_bytes().as_ref()],
+        bump = rumble.bump,
+    )]
+    pub rumble: Account<'info, Rumble>,
+
+    #[account(
+        seeds = [COMBAT_STATE_SEED, rumble_id.to_le_bytes().as_ref()],
+        bump = combat_state.bump,
+        constraint = combat_state.rumble_id == rumble_id @ RumbleError::InvalidRumble,
+    )]
+    pub combat_state: Account<'info, RumbleCombatState>,
+
+    #[account(
+        mut,
+        seeds = [
+            MOVE_COMMIT_SEED,
+            rumble_id.to_le_bytes().as_ref(),
+            fighter.key().as_ref(),
+            turn.to_le_bytes().as_ref(),
+        ],
+        bump = move_commitment.bump,
+        constraint = move_commitment.fighter == fighter.key() @ RumbleError::Unauthorized,
+        constraint = move_commitment.rumble_id == rumble_id @ RumbleError::InvalidRumble,
+        constraint = move_commitment.turn == turn @ RumbleError::InvalidTurn,
+    )]
+    pub move_commitment: Account<'info, MoveCommitment>,
+}
+
+#[derive(Accounts)]
+pub struct StartCombat<'info> {
+    #[account(
+        mut,
+        constraint = admin.key() == config.admin @ RumbleError::Unauthorized,
+    )]
+    pub admin: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [CONFIG_SEED],
+        bump = config.bump,
+    )]
+    pub config: Account<'info, RumbleConfig>,
+
+    #[account(
+        mut,
+        seeds = [RUMBLE_SEED, rumble.id.to_le_bytes().as_ref()],
+        bump = rumble.bump,
+    )]
+    pub rumble: Account<'info, Rumble>,
+
+    #[account(
+        init_if_needed,
+        payer = admin,
+        space = 8 + RumbleCombatState::INIT_SPACE,
+        seeds = [COMBAT_STATE_SEED, rumble.id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub combat_state: Account<'info, RumbleCombatState>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct CombatAction<'info> {
+    #[account(mut)]
+    pub keeper: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [RUMBLE_SEED, rumble.id.to_le_bytes().as_ref()],
+        bump = rumble.bump,
+    )]
+    pub rumble: Account<'info, Rumble>,
+
+    #[account(
+        mut,
+        seeds = [COMBAT_STATE_SEED, rumble.id.to_le_bytes().as_ref()],
+        bump = combat_state.bump,
+        constraint = combat_state.rumble_id == rumble.id @ RumbleError::InvalidRumble,
+    )]
+    pub combat_state: Account<'info, RumbleCombatState>,
+}
+
+#[derive(Accounts)]
+pub struct FinalizeRumble<'info> {
+    #[account(mut)]
+    pub keeper: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [RUMBLE_SEED, rumble.id.to_le_bytes().as_ref()],
+        bump = rumble.bump,
+    )]
+    pub rumble: Account<'info, Rumble>,
+
+    #[account(
+        mut,
+        seeds = [COMBAT_STATE_SEED, rumble.id.to_le_bytes().as_ref()],
+        bump = combat_state.bump,
+        constraint = combat_state.rumble_id == rumble.id @ RumbleError::InvalidRumble,
+    )]
+    pub combat_state: Account<'info, RumbleCombatState>,
+}
+
+#[derive(Accounts)]
 #[instruction(rumble_id: u64, fighter_index: u8, amount: u64)]
 pub struct PlaceBet<'info> {
     #[account(mut)]
@@ -1151,6 +1991,40 @@ pub struct BettorAccount {
     pub fighter_deployments: [u64; MAX_FIGHTERS], // 128
 }
 
+#[account]
+#[derive(InitSpace)]
+pub struct MoveCommitment {
+    pub rumble_id: u64,      // 8
+    pub fighter: Pubkey,     // 32
+    pub turn: u32,           // 4
+    pub move_hash: [u8; 32], // 32
+    pub revealed_move: u8,   // 1
+    pub revealed: bool,      // 1
+    pub committed_slot: u64, // 8
+    pub revealed_slot: u64,  // 8
+    pub bump: u8,            // 1
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct RumbleCombatState {
+    pub rumble_id: u64,                         // 8
+    pub fighter_count: u8,                      // 1
+    pub current_turn: u32,                      // 4
+    pub turn_open_slot: u64,                    // 8
+    pub commit_close_slot: u64,                 // 8
+    pub reveal_close_slot: u64,                 // 8
+    pub turn_resolved: bool,                    // 1
+    pub remaining_fighters: u8,                 // 1
+    pub winner_index: u8,                       // 1 (255 until known)
+    pub hp: [u16; MAX_FIGHTERS],                // 32
+    pub meter: [u8; MAX_FIGHTERS],              // 16
+    pub elimination_rank: [u8; MAX_FIGHTERS],   // 16
+    pub total_damage_dealt: [u64; MAX_FIGHTERS], // 128
+    pub total_damage_taken: [u64; MAX_FIGHTERS], // 128
+    pub bump: u8,                               // 1
+}
+
 // ---------------------------------------------------------------------------
 // Enums
 // ---------------------------------------------------------------------------
@@ -1202,6 +2076,58 @@ pub struct PayoutClaimedEvent {
     pub fighter_index: u8,
     pub placement: u8,
     pub amount: u64,
+}
+
+#[event]
+pub struct MoveCommittedEvent {
+    pub rumble_id: u64,
+    pub fighter: Pubkey,
+    pub turn: u32,
+    pub committed_slot: u64,
+}
+
+#[event]
+pub struct MoveRevealedEvent {
+    pub rumble_id: u64,
+    pub fighter: Pubkey,
+    pub turn: u32,
+    pub move_code: u8,
+    pub revealed_slot: u64,
+}
+
+#[event]
+pub struct TurnOpenedEvent {
+    pub rumble_id: u64,
+    pub turn: u32,
+    pub turn_open_slot: u64,
+    pub commit_close_slot: u64,
+    pub reveal_close_slot: u64,
+}
+
+#[event]
+pub struct TurnPairResolvedEvent {
+    pub rumble_id: u64,
+    pub turn: u32,
+    pub fighter_a: Pubkey,
+    pub fighter_b: Pubkey,
+    pub move_a: u8,
+    pub move_b: u8,
+    pub damage_to_a: u16,
+    pub damage_to_b: u16,
+}
+
+#[event]
+pub struct TurnResolvedEvent {
+    pub rumble_id: u64,
+    pub turn: u32,
+    pub remaining_fighters: u8,
+}
+
+#[event]
+pub struct OnchainResultFinalizedEvent {
+    pub rumble_id: u64,
+    pub winner_index: u8,
+    pub timestamp: i64,
 }
 
 #[event]
@@ -1276,4 +2202,49 @@ pub enum RumbleError {
 
     #[msg("Invalid bettor account data")]
     InvalidBettorAccount,
+
+    #[msg("Invalid turn index")]
+    InvalidTurn,
+
+    #[msg("Invalid move commitment")]
+    InvalidMoveCommitment,
+
+    #[msg("Invalid move code")]
+    InvalidMoveCode,
+
+    #[msg("Move already revealed")]
+    AlreadyRevealedMove,
+
+    #[msg("Turn is already open")]
+    TurnAlreadyOpen,
+
+    #[msg("Turn is not open")]
+    TurnNotOpen,
+
+    #[msg("Turn already resolved")]
+    TurnAlreadyResolved,
+
+    #[msg("Turn is not resolved yet")]
+    TurnNotResolved,
+
+    #[msg("Commit window is closed")]
+    CommitWindowClosed,
+
+    #[msg("Reveal window is closed")]
+    RevealWindowClosed,
+
+    #[msg("Reveal window is still active")]
+    RevealWindowActive,
+
+    #[msg("Combat already finished")]
+    CombatAlreadyFinished,
+
+    #[msg("Combat is still active")]
+    CombatStillActive,
+
+    #[msg("Max combat turns reached")]
+    MaxTurnsReached,
+
+    #[msg("Instruction is deprecated")]
+    DeprecatedInstruction,
 }
