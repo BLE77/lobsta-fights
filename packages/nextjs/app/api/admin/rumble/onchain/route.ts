@@ -1,4 +1,3 @@
-import { NextResponse } from "next/server";
 import { PublicKey } from "@solana/web3.js";
 import {
   advanceTurnOnChain,
@@ -18,6 +17,20 @@ import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 import { isAuthorizedAdminRequest } from "~~/lib/request-auth";
 
 export const dynamic = "force-dynamic";
+
+// BigInt-safe JSON serialization — convert bigints to strings
+function safeJson(data: unknown): string {
+  return JSON.stringify(data, (_key, value) =>
+    typeof value === "bigint" ? value.toString() : value,
+  );
+}
+
+function jsonResponse(data: unknown, status = 200): Response {
+  return new Response(safeJson(data), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
 
 type OnchainAdminAction =
   | "start_combat"
@@ -83,7 +96,7 @@ async function buildAdminHealth() {
 
 export async function GET(request: Request) {
   if (!isAuthorizedAdminRequest(request.headers)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return jsonResponse({ error: "Unauthorized" }, 401);
   }
 
   const url = new URL(request.url);
@@ -92,7 +105,7 @@ export async function GET(request: Request) {
   // Health-only mode: no rumble_id → return admin health info
   if (!rumbleIdRaw) {
     const health = await buildAdminHealth();
-    return NextResponse.json({
+    return jsonResponse({
       success: true,
       health,
       timestamp: new Date().toISOString(),
@@ -101,7 +114,7 @@ export async function GET(request: Request) {
 
   const rumbleId = parseRumbleId(rumbleIdRaw);
   if (!rumbleId) {
-    return NextResponse.json({ error: "Invalid rumble_id" }, { status: 400 });
+    return jsonResponse({ error: "Invalid rumble_id" }, 400);
   }
 
   const [rumble, combat, health] = await Promise.all([
@@ -110,7 +123,7 @@ export async function GET(request: Request) {
     buildAdminHealth(),
   ]);
 
-  return NextResponse.json({
+  return jsonResponse({
     success: true,
     onchain_rumble_id: rumbleId,
     rumble,
@@ -122,7 +135,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   if (!isAuthorizedAdminRequest(request.headers)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return jsonResponse({ error: "Unauthorized" }, 401);
   }
 
   try {
@@ -130,10 +143,10 @@ export async function POST(request: Request) {
     const rumbleId = parseRumbleId(body?.rumble_id ?? body?.rumbleId);
     const action = parseAction(body?.action);
     if (!rumbleId) {
-      return NextResponse.json({ error: "Invalid rumble_id" }, { status: 400 });
+      return jsonResponse({ error: "Invalid rumble_id" }, 400);
     }
     if (!action) {
-      return NextResponse.json({ error: "Invalid action" }, { status: 400 });
+      return jsonResponse({ error: "Invalid action" }, 400);
     }
 
     let signature: string | null = null;
@@ -168,7 +181,7 @@ export async function POST(request: Request) {
         signature = await sweepTreasury(rumbleId);
         break;
       default:
-        return NextResponse.json({ error: "Unsupported action" }, { status: 400 });
+        return jsonResponse({ error: "Unsupported action" }, 400);
     }
 
     const [rumbleAfter, combatAfter] = await Promise.all([
@@ -176,7 +189,7 @@ export async function POST(request: Request) {
       readRumbleCombatState(rumbleId).catch(() => null),
     ]);
 
-    return NextResponse.json({
+    return jsonResponse({
       success: true,
       action,
       onchain_rumble_id: rumbleId,
@@ -186,9 +199,9 @@ export async function POST(request: Request) {
       timestamp: new Date().toISOString(),
     });
   } catch (err: any) {
-    return NextResponse.json(
+    return jsonResponse(
       { error: err?.message ?? "Failed to run on-chain admin action" },
-      { status: 500 },
+      500,
     );
   }
 }
