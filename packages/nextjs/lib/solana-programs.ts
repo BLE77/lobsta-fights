@@ -1834,6 +1834,29 @@ export async function startCombat(
 }
 
 /**
+ * Send an admin-signed transaction without waiting for confirmation.
+ * The on-chain state polling loop will pick up results on the next tick.
+ */
+async function sendAdminTxFireAndForget(
+  method: any,
+  admin: Keypair,
+  connection?: Connection,
+): Promise<string> {
+  const conn = connection ?? getConnection();
+  const tx: Transaction = await method.transaction();
+  tx.feePayer = admin.publicKey;
+  const { blockhash } = await conn.getLatestBlockhash("processed");
+  tx.recentBlockhash = blockhash;
+  tx.sign(admin);
+  const signature = await conn.sendRawTransaction(tx.serialize(), {
+    skipPreflight: false,
+    preflightCommitment: "processed",
+    maxRetries: 3,
+  });
+  return signature;
+}
+
+/**
  * Open the first on-chain turn window (permissionless, admin keeper used here).
  */
 export async function openTurn(
@@ -1850,14 +1873,15 @@ export async function openTurn(
   const [rumblePda] = deriveRumblePda(rumbleId);
   const [combatStatePda] = deriveCombatStatePda(rumbleId);
 
-  return await (program.methods as any)
+  const method = (program.methods as any)
     .openTurn()
     .accounts({
       keeper: admin.publicKey,
       rumble: rumblePda,
       combatState: combatStatePda,
-    })
-    .rpc();
+    });
+
+  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
 }
 
 /**
@@ -1890,7 +1914,7 @@ export async function resolveTurnOnChain(
     );
   }
 
-  return await method
+  method = method
     .accounts({
       keeper: admin.publicKey,
       rumble: rumblePda,
@@ -1898,8 +1922,9 @@ export async function resolveTurnOnChain(
     })
     .preInstructions([
       ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }),
-    ])
-    .rpc();
+    ]);
+
+  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
 }
 
 /**
@@ -1919,14 +1944,15 @@ export async function advanceTurnOnChain(
   const [rumblePda] = deriveRumblePda(rumbleId);
   const [combatStatePda] = deriveCombatStatePda(rumbleId);
 
-  return await (program.methods as any)
+  const method = (program.methods as any)
     .advanceTurn()
     .accounts({
       keeper: admin.publicKey,
       rumble: rumblePda,
       combatState: combatStatePda,
-    })
-    .rpc();
+    });
+
+  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
 }
 
 /**
@@ -1946,7 +1972,7 @@ export async function finalizeRumbleOnChain(
   const [rumblePda] = deriveRumblePda(rumbleId);
   const [combatStatePda] = deriveCombatStatePda(rumbleId);
 
-  return await (program.methods as any)
+  const method = (program.methods as any)
     .finalizeRumble()
     .accounts({
       keeper: admin.publicKey,
@@ -1955,8 +1981,9 @@ export async function finalizeRumbleOnChain(
     })
     .preInstructions([
       ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }),
-    ])
-    .rpc();
+    ]);
+
+  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
 }
 
 /**
