@@ -528,8 +528,8 @@ function getProvider(
   const conn = connection ?? getConnection();
   const w = wallet ?? new NodeWallet(Keypair.generate());
   return new anchor.AnchorProvider(conn, w, {
-    commitment: "confirmed",
-    preflightCommitment: "confirmed",
+    commitment: "processed",
+    preflightCommitment: "processed",
   });
 }
 

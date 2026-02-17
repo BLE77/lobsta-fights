@@ -1971,21 +1971,11 @@ export class RumbleOrchestrator {
     const conn = getConnection();
     const signature = await conn.sendRawTransaction(tx.serialize(), {
       skipPreflight: false,
-      preflightCommitment: "confirmed",
+      preflightCommitment: "processed",
       maxRetries: 3,
     });
-    if (tx.recentBlockhash && tx.lastValidBlockHeight) {
-      await conn.confirmTransaction(
-        {
-          signature,
-          blockhash: tx.recentBlockhash,
-          lastValidBlockHeight: tx.lastValidBlockHeight,
-        },
-        "confirmed",
-      );
-    } else {
-      await conn.confirmTransaction(signature, "confirmed");
-    }
+    // Fire-and-forget: don't block on confirmation — the on-chain state
+    // polling loop will pick up the result on the next tick.
     return signature;
   }
 
