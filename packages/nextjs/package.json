@@ -10,6 +10,7 @@
     "backfill:rumble-claims": "node scripts/backfill-rumble-claims.mjs",
     "provision:house-bots": "node scripts/provision-house-bots.mjs",
     "test:rumble-claim": "node scripts/test-rumble-claim-flow.mjs",
+    "worker": "tsx rumble-worker.ts",
     "test": "vitest run",
     "test:integration": "vitest run __tests__/rumble-integration.test.ts"
   },
@@ -33,6 +34,7 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-hot-toast": "^2.4.0",
+    "tsx": "^4.21.0",
     "viem": "^2.21.0",
     "wagmi": "2.5.0"
   },
