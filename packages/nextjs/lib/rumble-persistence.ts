@@ -368,8 +368,10 @@ export interface SaveBetInput {
   sponsorFee: number;
 }
 
-export async function saveBets(inputs: SaveBetInput[]): Promise<boolean> {
-  if (inputs.length === 0) return true;
+export type SaveBetsResult = { ok: true } | { ok: false; reason: string };
+
+export async function saveBets(inputs: SaveBetInput[]): Promise<SaveBetsResult> {
+  if (inputs.length === 0) return { ok: true };
   const rows = inputs.map((input) => ({
     rumble_id: input.rumbleId,
     wallet_address: input.walletAddress,
@@ -380,13 +382,14 @@ export async function saveBets(inputs: SaveBetInput[]): Promise<boolean> {
     sponsor_fee: input.sponsorFee,
   }));
 
+  let lastReason = "Unknown persistence error.";
   const maxAttempts = 3;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const sb = freshServiceClient();
       const { error } = await sb.from("ucf_bets").insert(rows).select();
       if (error) throw error;
-      return true;
+      return { ok: true };
     } catch (err: unknown) {
       const isLastAttempt = attempt === maxAttempts;
       const supaErr = err && typeof err === "object" && "message" in err ? (err as { message: string; code?: string; details?: string }) : null;
@@ -397,11 +400,19 @@ export async function saveBets(inputs: SaveBetInput[]): Promise<boolean> {
         `saveBets failed (attempt ${attempt}/${maxAttempts}) rumbleIds=[${rows.map(r => r.rumble_id).join(",")}] — ${detail}`,
         err,
       );
-      if (isLastAttempt) return false;
+
+      // Detect the "one fighter per wallet" trigger — no point retrying
+      const msg = supaErr?.message ?? String(err);
+      if (msg.includes("already bet on a different fighter")) {
+        return { ok: false, reason: "You already bet on another fighter in this rumble. One fighter per wallet per rumble." };
+      }
+
+      lastReason = supaErr?.message ?? "Bet registration failed. Please retry with the same signed transaction.";
+      if (isLastAttempt) return { ok: false, reason: lastReason };
       await new Promise(resolve => setTimeout(resolve, 150 * attempt));
     }
   }
-  return false;
+  return { ok: false, reason: lastReason };
 }
 
 export async function saveBet(input: SaveBetInput): Promise<void> {

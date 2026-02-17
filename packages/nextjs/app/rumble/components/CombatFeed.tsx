@@ -99,12 +99,35 @@ export default function CombatFeed({
 
   if (turns.length === 0) {
     return (
-      <div className="flex items-center justify-center h-32">
-        <span className="font-mono text-sm text-stone-600 animate-pulse">
-          {currentTurn > 0
-            ? `Turn ${currentTurn} in progress...`
-            : "Waiting for combat to begin..."}
-        </span>
+      <div className="flex flex-col items-center justify-center h-32 gap-2">
+        {currentTurn > 0 ? (
+          <>
+            <span className="font-mono text-sm text-amber-400 animate-pulse">
+              Turn {currentTurn} in progress...
+            </span>
+            <span className="font-mono text-[10px] text-stone-600">
+              On-chain combat active
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="font-mono text-sm text-amber-500 animate-pulse">
+              COMBAT STARTING
+            </span>
+            <div className="flex gap-1">
+              {[0, 1, 2].map((i) => (
+                <div
+                  key={i}
+                  className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-bounce"
+                  style={{ animationDelay: `${i * 150}ms` }}
+                />
+              ))}
+            </div>
+            <span className="font-mono text-[10px] text-stone-600">
+              Initializing on-chain combat...
+            </span>
+          </>
+        )}
       </div>
     );
   }

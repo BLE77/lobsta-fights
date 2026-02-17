@@ -775,6 +775,10 @@ export default function CommentaryPlayer({
 
       const deadlineMs = target.bettingDeadline ? new Date(target.bettingDeadline).getTime() : now;
       const secondsLeft = Math.max(0, Math.ceil((deadlineMs - now) / 1000));
+
+      // Don't announce "betting is still open" once the deadline has passed
+      if (secondsLeft <= 0) return;
+
       const pool = Number(target.totalPool ?? 0);
 
       const leaders = (target.odds ?? [])

@@ -1509,8 +1509,8 @@ export class RumbleOrchestrator {
         };
       }),
     );
-    if (!persisted) {
-      return { accepted: false, reason: "Bet registration failed. Please retry with the same signed transaction." };
+    if (!persisted.ok) {
+      return { accepted: false, reason: persisted.reason };
     }
 
     for (const bet of bets) {

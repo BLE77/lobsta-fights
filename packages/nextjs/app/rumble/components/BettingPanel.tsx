@@ -147,16 +147,16 @@ export default function BettingPanel({
       {/* Timer + Pool */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          {bettingInitialized ? (
+          {bettingInitialized && !isClosed ? (
             <span className="relative flex h-2 w-2">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
               <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
             </span>
           ) : (
-            <span className="inline-flex h-2 w-2 rounded-full bg-stone-500" />
+            <span className={`inline-flex h-2 w-2 rounded-full ${isClosed ? "bg-red-500" : "bg-stone-500"}`} />
           )}
-          <span className="font-mono text-xs text-amber-400 uppercase">
-            {bettingInitialized ? "Betting Open" : "Initializing On-Chain..."}
+          <span className={`font-mono text-xs uppercase ${isClosed ? "text-red-500" : "text-amber-400"}`}>
+            {bettingInitialized ? (isClosed ? "Betting Closed" : "Betting Open") : "Initializing On-Chain..."}
           </span>
         </div>
         <span
