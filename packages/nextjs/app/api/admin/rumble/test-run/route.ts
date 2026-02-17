@@ -38,10 +38,16 @@ export async function POST(request: Request) {
 
     const orchestrator = getOrchestrator();
 
+    // Pause house bot maintenance so tick() doesn't remove our manually-queued bots
+    // (maintainHouseBotQueue removes queued house bots when HOUSE_BOTS_AUTO_FILL=false)
+    const wasPaused = orchestrator.getHouseBotControlStatus().paused;
+    if (!wasPaused) await orchestrator.pauseHouseBots();
+
     // Queue house bots manually
     const { queued, skipped } = await orchestrator.queueHouseBotsManually(fighterCount);
 
     if (queued.length === 0) {
+      if (!wasPaused) orchestrator.resumeHouseBots();
       return NextResponse.json({
         success: false,
         error: "No bots could be queued. Check RUMBLE_HOUSE_BOT_IDS and that bots aren't already active.",
@@ -55,6 +61,9 @@ export async function POST(request: Request) {
       await orchestrator.tick();
       if (i < 2) await sleep(500);
     }
+
+    // Restore pause state
+    if (!wasPaused) orchestrator.resumeHouseBots();
 
     const slots = orchestrator.getStatus().map((slot) => ({
       slotIndex: slot.slotIndex,
