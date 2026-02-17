@@ -788,7 +788,18 @@ export default function CommentaryPlayer({
         .map((odd) => `${odd.fighterName} (${Number(odd.solDeployed ?? 0).toFixed(2)} SOL)`);
 
       const leaderText = leaders.length > 0 ? ` Current action leaders: ${leaders.join(", ")}.` : "";
-      const context = `Betting is still open in slot ${target.slotIndex + 1}. ${secondsLeft}s until lock. Pool stands at ${pool.toFixed(2)} SOL.${leaderText} Place your bets now.`;
+
+      // Vary the hype template so grounded mode doesn't repeat the same phrase
+      const templates = [
+        `Betting is still open in slot ${target.slotIndex + 1}! ${secondsLeft} seconds until lock. Pool stands at ${pool.toFixed(2)} SOL.${leaderText} Place your bets now!`,
+        `The clock is ticking! ${secondsLeft}s remain to get your bets in on slot ${target.slotIndex + 1}. Total pool: ${pool.toFixed(2)} SOL.${leaderText}`,
+        `Who's got the edge? ${secondsLeft} seconds left in the betting window. ${pool.toFixed(2)} SOL on the line.${leaderText} Lock in your fighter!`,
+        `Last call coming up! Only ${secondsLeft}s to deploy your SOL in slot ${target.slotIndex + 1}. Pool at ${pool.toFixed(2)} SOL.${leaderText}`,
+        `The arena is heating up! ${secondsLeft} seconds until combat begins. ${pool.toFixed(2)} SOL in the pool.${leaderText} Don't miss your chance!`,
+      ];
+      const templateIndex = Math.floor(secondsLeft / 20) % templates.length;
+      const context = templates[templateIndex];
+
       const allowedNames = target.fighters
         .map((fighter) => fighter.name?.trim())
         .filter((name): name is string => Boolean(name));
