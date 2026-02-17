@@ -427,6 +427,7 @@ export async function GET(request: Request) {
         const sameRumble = existing.rumbleId === row.id;
         const shouldOverlay =
           sameRumble ||
+          existing.rumbleId !== row.id ||
           existing.state === "idle" ||
           (existing.state === "betting" && !existing.bettingDeadline);
         if (!shouldOverlay) continue;
@@ -460,22 +461,54 @@ export async function GET(request: Request) {
       slots = [...base.values()].sort((a, b) => a.slotIndex - b.slotIndex);
     }
 
-    // Safety valve:
-    // If public mutation is disabled and combat is visibly stalled at turn 0,
-    // perform a single tick to unstick progression.
+    // In read-only production mode, suppress ghost in-memory active states
+    // when no persisted active row exists for that slot.
     if (!STATUS_MUTATION_ENABLED) {
-      const stalledCombatDetected = slots.some((slot) => {
-        if (slot.state !== "combat") return false;
-        if ((slot.currentTurn ?? 0) > 0) return false;
-        if (slot.nextTurnAt) return false;
-        return true;
+      slots = slots.map((slot) => {
+        const persisted = latestPersistedBySlot.get(slot.slotIndex);
+        if (slot.state === "idle") return slot;
+        if (persisted && persisted.id === slot.rumbleId) return slot;
+        return {
+          ...slot,
+          state: "idle" as const,
+          fighters: [],
+          odds: [],
+          totalPool: 0,
+          bettingDeadline: null,
+          nextTurnAt: null,
+          turnIntervalMs: null,
+          currentTurn: 0,
+          turns: [],
+          payout: null,
+          fighterNames: {},
+        };
       });
-      if (stalledCombatDetected) {
-        await orchestrator.tick().catch((err) => {
-          console.warn("[StatusAPI] stalled combat nudge tick failed", err);
-        });
-      }
     }
+
+    // If persisted overlay replaced in-memory state after an instance swap,
+    // restore betting countdown from on-chain close slot.
+    slots = await Promise.all(
+      slots.map(async slot => {
+        if (slot.state !== "betting" || slot.bettingDeadline) return slot;
+        const rumbleIdNum = parseOnchainRumbleIdNumber(slot.rumbleId);
+        if (rumbleIdNum === null) return slot;
+        const onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+        if (!onchain || onchain.state !== "betting") return slot;
+        const closeRaw = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
+        if (!(closeRaw > 0n)) return slot;
+        const looksLikeUnix =
+          currentClusterSlotBig !== null
+            ? closeRaw > currentClusterSlotBig + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD
+            : closeRaw > 1_000_000_000n;
+        const bettingDeadline = looksLikeUnix
+          ? new Date(Number(closeRaw) * 1_000).toISOString()
+          : new Date(Date.now() + slotsToMs(closeRaw)).toISOString();
+        return {
+          ...slot,
+          bettingDeadline,
+        };
+      }),
+    );
 
     // ---- Ichor shower state ------------------------------------------------
     const showerState = await getIchorShowerState();

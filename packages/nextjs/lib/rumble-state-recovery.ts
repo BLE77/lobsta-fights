@@ -133,14 +133,16 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
           const supersededByNewerSlotRumble = createdAtMs < newestForSlot;
           const staleCombat = ageMs > MAX_COMBAT_STUCK_AGE_MS;
 
-          // Safety valve: if this combat rumble is stale/superseded and has no bets,
-          // we can close it without payout risk. This prevents old "combat" rows
-          // from piling up and making the system look stuck.
-          if (supersededByNewerSlotRumble || staleCombat) {
+          // Optional cleanup mode (disabled by default): force-close stale
+          // combat rows with no bets. Keep this OFF in production to avoid
+          // cross-instance false positives causing synthetic "complete" rows.
+          const allowForceCloseStaleCombatNoBets =
+            process.env.RUMBLE_RECOVERY_FORCE_CLOSE_STALE_COMBAT_NO_BETS === "true";
+          if (allowForceCloseStaleCombatNoBets && (supersededByNewerSlotRumble || staleCombat)) {
             const betCount = await persist.countBetsForRumble(rumble.id);
             if (betCount === 0) {
               console.warn(
-                `[StateRecovery] Closing stale combat rumble ${rumble.id} (slot=${rumble.slot_index}, age=${Math.round(ageMs / 1000)}s, superseded=${supersededByNewerSlotRumble})`,
+                `[StateRecovery] Force-closing stale combat rumble ${rumble.id} (slot=${rumble.slot_index}, age=${Math.round(ageMs / 1000)}s, superseded=${supersededByNewerSlotRumble})`,
               );
               await persist.updateRumbleStatus(rumble.id, "complete");
               for (const f of fighters) {
