@@ -246,6 +246,15 @@ const LEGACY_COMBAT_TICK_INTERVAL_MS =
   process.env.NODE_ENV === "production"
     ? Math.max(LEGACY_COMBAT_TICK_INTERVAL_MS_CONFIGURED, LEGACY_COMBAT_TICK_MIN_PROD_MS)
     : LEGACY_COMBAT_TICK_INTERVAL_MS_CONFIGURED;
+// Serverless function max duration budget — matches Vercel maxDuration.
+// Combat loop stops running turns BUDGET_RESERVE_MS before this to leave
+// time for persistence. Overridable via env for Pro plan (60s).
+const MAX_DURATION_MS = readIntervalMs(
+  "RUMBLE_MAX_DURATION_MS",
+  10_000,
+  5_000,
+  120_000,
+);
 const ONCHAIN_KEEPER_POLL_INTERVAL_MS = readIntervalMs(
   "RUMBLE_ONCHAIN_KEEPER_POLL_INTERVAL_MS",
   1_000,
@@ -392,6 +401,9 @@ export class RumbleOrchestrator {
 
   // Incremental combat state indexed by slot
   private combatStates: Map<number, SlotCombatState> = new Map();
+
+  // Timestamp of when the current tick burst started (for serverless budget tracking)
+  private tickStartedAt: number = Date.now();
 
   // Auto-requeue tracking: fighters that opted in
   private autoRequeueFighters: Map<number, Set<string>> = new Map();
@@ -589,6 +601,10 @@ export class RumbleOrchestrator {
   }
 
   private async tickInternal(): Promise<void> {
+    // Track when this tick started for serverless budget management.
+    // Combat loop uses this to stop before the function is killed.
+    this.tickStartedAt = Date.now();
+
     let onchainAdminHealthy = true;
     if (ONCHAIN_TURN_AUTHORITY) {
       const health = await this.getOnchainAdminHealth();
@@ -1563,49 +1579,127 @@ export class RumbleOrchestrator {
 
   private async handleCombatPhaseLegacy(slot: RumbleSlot): Promise<void> {
     const idx = slot.slotIndex;
-    const now = Date.now();
 
-    // Initialize combat state when we first enter combat.
-    // On serverless cold starts, combatStates is empty, so we re-init and
-    // FALL THROUGH to run the first turn immediately instead of wasting a tick.
-    let justInitialized = false;
+    // -----------------------------------------------------------------------
+    // Cold-start re-initialization: combatStates is empty on every new
+    // serverless instance. We init fighters, then RESTORE progress from the
+    // persisted turn_log so we don't reset everyone to 100 HP.
+    // -----------------------------------------------------------------------
     if (!this.combatStates.has(idx) || this.combatStates.get(idx)!.rumbleId !== slot.id) {
       await this.initCombatState(slot);
+      const state = this.combatStates.get(idx)!;
 
-      // Emit betting closed event with final odds
-      const pool = this.bettingPools.get(idx);
-      if (pool) {
-        this.emit("betting_closed", {
+      // Check if this combat already has saved progress in the DB
+      const savedTurnLog = await persist.loadRumbleTurnLog(slot.id);
+      if (savedTurnLog && savedTurnLog.length > 0) {
+        // COLD-START RESUME: Replay saved turns to reconstruct fighter state
+        this.replaySavedTurns(state, savedTurnLog as RumbleTurn[]);
+        console.log(
+          `[Orchestrator] Slot ${idx} resumed combat from turn ${state.turns.length} ` +
+            `(${state.fighters.filter(f => f.hp > 0).length} alive)`,
+        );
+      } else {
+        // FRESH COMBAT: First time entering combat for this rumble
+        const pool = this.bettingPools.get(idx);
+        if (pool) {
+          this.emit("betting_closed", {
+            slotIndex: idx,
+            rumbleId: slot.id,
+            odds: calculateOdds(pool),
+          });
+        }
+
+        // Persist status (also sets started_at) — AWAITED
+        await persist.updateRumbleStatus(slot.id, "combat");
+
+        // On-chain: best-effort with 2s timeout to avoid eating the entire
+        // serverless function budget on RPC calls during cold starts.
+        await Promise.race([
+          this.startCombatOnChain(slot).catch(() => {}),
+          new Promise<void>(resolve => setTimeout(resolve, 2_000)),
+        ]);
+
+        this.emit("combat_started", {
           slotIndex: idx,
           rumbleId: slot.id,
-          odds: calculateOdds(pool),
+          fighters: [...slot.fighters],
         });
       }
-
-      // Persist: mark rumble as combat
-      persist.updateRumbleStatus(slot.id, "combat");
-
-      // On-chain: transition from Betting -> Combat (awaited, failures don't block)
-      await this.startCombatOnChain(slot);
-
-      this.emit("combat_started", {
-        slotIndex: idx,
-        rumbleId: slot.id,
-        fighters: [...slot.fighters],
-      });
-      justInitialized = true;
-      // Fall through — run first turn in the same tick
     }
 
     const state = this.combatStates.get(idx)!;
 
-    // Throttle: only run one turn per LEGACY_COMBAT_TICK_INTERVAL_MS.
-    // Skip throttle on first init so the first turn runs immediately.
-    if (!justInitialized && now - state.lastTickAt < LEGACY_COMBAT_TICK_INTERVAL_MS) return;
+    // -----------------------------------------------------------------------
+    // Run as many turns as the serverless budget allows.
+    // Each turn still goes through requestFighterMove (webhooks / commit-
+    // reveal for AI agents; instant fallback for bots). Per-turn persistence
+    // is AWAITED so progress survives if the function is killed mid-combat.
+    // On the next cold start, we resume from the last persisted turn.
+    // -----------------------------------------------------------------------
+    const BUDGET_RESERVE_MS = 2_000; // stop 2s before maxDuration
+    const budgetDeadline = this.tickStartedAt + (MAX_DURATION_MS - BUDGET_RESERVE_MS);
+    let turnsThisInvocation = 0;
 
-    // Run one turn (awaited so on-chain settlement is properly tracked)
-    await this.runCombatTurn(slot, state);
-    state.lastTickAt = now;
+    while (state.fighters.filter(f => f.hp > 0).length > 1) {
+      if (Date.now() > budgetDeadline) {
+        console.log(
+          `[Orchestrator] Slot ${idx} pausing combat after ${turnsThisInvocation} turns (budget exhausted)`,
+        );
+        break;
+      }
+      await this.runCombatTurn(slot, state);
+      turnsThisInvocation++;
+      // runCombatTurn calls finishCombat when remaining <= 1
+    }
+  }
+
+  /**
+   * Replay saved turns from DB onto freshly-initialized combat fighters.
+   * Reconstructs HP, damage stats, eliminations, and turn history so the
+   * combat can resume from the correct state after a serverless cold start.
+   */
+  private replaySavedTurns(state: SlotCombatState, savedTurns: RumbleTurn[]): void {
+    const fighterMap = new Map(state.fighters.map(f => [f.id, f]));
+
+    for (const turn of savedTurns) {
+      // Apply damage from each pairing
+      for (const p of turn.pairings) {
+        const fA = fighterMap.get(p.fighterA);
+        const fB = fighterMap.get(p.fighterB);
+        if (fA) {
+          fA.hp = Math.max(0, fA.hp - p.damageToA);
+          fA.totalDamageDealt += p.damageToB;
+          fA.totalDamageTaken += p.damageToA;
+        }
+        if (fB) {
+          fB.hp = Math.max(0, fB.hp - p.damageToB);
+          fB.totalDamageDealt += p.damageToA;
+          fB.totalDamageTaken += p.damageToB;
+        }
+      }
+
+      // Mark eliminations
+      for (const elimId of turn.eliminations) {
+        const f = fighterMap.get(elimId);
+        if (f && f.eliminatedOnTurn === null) {
+          f.eliminatedOnTurn = turn.turnNumber;
+          state.eliminationOrder.push(elimId);
+        }
+      }
+
+      // Build pairing tracking for duplicate avoidance
+      const pairingSet = new Set<string>();
+      for (const p of turn.pairings) {
+        const key = p.fighterA < p.fighterB
+          ? `${p.fighterA}:${p.fighterB}`
+          : `${p.fighterB}:${p.fighterA}`;
+        pairingSet.add(key);
+      }
+      state.previousPairings = pairingSet;
+    }
+
+    // Restore turn history
+    state.turns = savedTurns;
   }
 
   private async handleCombatPhaseOnchain(slot: RumbleSlot): Promise<void> {
@@ -1674,7 +1768,7 @@ export class RumbleOrchestrator {
       };
       state.turns.push(turn);
       state.lastOnchainTurnResolved = combat.currentTurn;
-      persist.updateRumbleTurnLog(slot.id, state.turns, state.turns.length);
+      await persist.updateRumbleTurnLog(slot.id, state.turns, state.turns.length);
 
       this.emit("turn_resolved", {
         slotIndex: idx,
@@ -2525,8 +2619,10 @@ export class RumbleOrchestrator {
     state.turns.push(turn);
     state.previousPairings = currentPairingsSet;
 
-    // Persist: update turn log after each turn
-    persist.updateRumbleTurnLog(slot.id, state.turns, state.turns.length);
+    // Persist: update turn log after each turn — AWAITED to survive cold starts.
+    // Without await, fire-and-forget writes are killed when the serverless
+    // function terminates, losing all combat progress.
+    await persist.updateRumbleTurnLog(slot.id, state.turns, state.turns.length);
 
     // Emit events
     const remaining = state.fighters.filter((f) => f.hp > 0).length;
@@ -2590,8 +2686,8 @@ export class RumbleOrchestrator {
       totalTurns: state.turns.length,
     };
 
-    // Persist: complete rumble record with winner and placements
-    persist.completeRumbleRecord(
+    // Persist: complete rumble record with winner and placements — AWAITED
+    await persist.completeRumbleRecord(
       state.rumbleId,
       winner,
       result.placements,

@@ -433,6 +433,8 @@ export async function GET(request: Request) {
         const fighterIds = fighterRows
           .map((f) => String(f?.id ?? "").trim())
           .filter(Boolean);
+        // Build fighter state — replay turn_log if available to show actual HP
+        const turnLog = Array.isArray(row.turn_log) ? row.turn_log : [];
         const fighters = fighterIds.map((fid) => ({
           id: fid,
           name: fighterName(lookup, fid),
@@ -443,9 +445,25 @@ export async function GET(request: Request) {
           meter: 0,
           totalDamageDealt: 0,
           totalDamageTaken: 0,
-          eliminatedOnTurn: null,
+          eliminatedOnTurn: null as number | null,
           placement: 0,
         }));
+        // Replay persisted turns to derive correct HP / damage stats
+        if (turnLog.length > 0) {
+          const fMap = new Map(fighters.map(f => [f.id, f]));
+          for (const turn of turnLog as Array<{ pairings?: Array<{ fighterA: string; fighterB: string; damageToA: number; damageToB: number }>; eliminations?: string[]; turnNumber?: number }>) {
+            for (const p of turn.pairings ?? []) {
+              const fA = fMap.get(p.fighterA);
+              const fB = fMap.get(p.fighterB);
+              if (fA) { fA.hp = Math.max(0, fA.hp - p.damageToA); fA.totalDamageDealt += p.damageToB; fA.totalDamageTaken += p.damageToA; }
+              if (fB) { fB.hp = Math.max(0, fB.hp - p.damageToB); fB.totalDamageDealt += p.damageToA; fB.totalDamageTaken += p.damageToB; }
+            }
+            for (const elimId of turn.eliminations ?? []) {
+              const f = fMap.get(elimId);
+              if (f && f.eliminatedOnTurn === null) f.eliminatedOnTurn = turn.turnNumber ?? 0;
+            }
+          }
+        }
         const fighterNames: Record<string, string> = {};
         for (const fid of fighterIds) fighterNames[fid] = fighterName(lookup, fid);
 
@@ -479,8 +497,30 @@ export async function GET(request: Request) {
           bettingDeadline: sameRumble ? existing.bettingDeadline : null,
           nextTurnAt: sameRumble ? existing.nextTurnAt : null,
           turnIntervalMs: sameRumble ? existing.turnIntervalMs : null,
-          currentTurn: sameRumble ? existing.currentTurn : 0,
-          turns: sameRumble ? existing.turns : [],
+          currentTurn: sameRumble
+            ? existing.currentTurn
+            : turnLog.length > 0
+              ? turnLog.length
+              : 0,
+          turns: sameRumble
+            ? existing.turns
+            : turnLog.length > 0
+              ? (turnLog as Array<any>).map((t: any) => ({
+                  turnNumber: t.turnNumber ?? 0,
+                  pairings: (t.pairings ?? []).map((p: any) => ({
+                    fighterA: p.fighterA ?? "",
+                    fighterB: p.fighterB ?? "",
+                    fighterAName: fighterName(lookup, p.fighterA ?? ""),
+                    fighterBName: fighterName(lookup, p.fighterB ?? ""),
+                    moveA: p.moveA ?? "",
+                    moveB: p.moveB ?? "",
+                    damageToA: p.damageToA ?? 0,
+                    damageToB: p.damageToB ?? 0,
+                  })),
+                  eliminations: t.eliminations ?? [],
+                  bye: t.bye,
+                }))
+              : [],
           payout: sameRumble ? existing.payout : null,
           fighterNames,
         });

@@ -202,6 +202,25 @@ export async function updateRumbleTurnLog(
   }
 }
 
+export async function loadRumbleTurnLog(
+  rumbleId: string,
+): Promise<unknown[] | null> {
+  try {
+    const sb = freshServiceClient();
+    const { data, error } = await sb
+      .from("ucf_rumbles")
+      .select("turn_log, total_turns")
+      .eq("id", rumbleId)
+      .single();
+    if (error) throw error;
+    if (!data || !Array.isArray(data.turn_log) || data.turn_log.length === 0) return null;
+    return data.turn_log;
+  } catch (err) {
+    logError("loadRumbleTurnLog failed", err);
+    return null;
+  }
+}
+
 export async function completeRumbleRecord(
   rumbleId: string,
   winnerId: string,
@@ -231,13 +250,22 @@ export async function completeRumbleRecord(
 }
 
 export async function loadActiveRumbles(): Promise<
-  Array<{ id: string; slot_index: number; status: string; fighters: unknown; created_at: string }>
+  Array<{
+    id: string;
+    slot_index: number;
+    status: string;
+    fighters: unknown;
+    created_at: string;
+    started_at: string | null;
+    turn_log: unknown[] | null;
+    total_turns: number;
+  }>
 > {
   try {
     const sb = freshServiceClient();
     const { data, error } = await sb
       .from("ucf_rumbles")
-      .select("id, slot_index, status, fighters, created_at")
+      .select("id, slot_index, status, fighters, created_at, started_at, turn_log, total_turns")
       .in("status", ["betting", "combat", "payout"])
       .order("created_at", { ascending: true });
     if (error) throw error;
