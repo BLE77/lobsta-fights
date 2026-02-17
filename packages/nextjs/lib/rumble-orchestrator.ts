@@ -765,7 +765,7 @@ export class RumbleOrchestrator {
     if (!HOUSE_BOTS_ENABLED) return;
     if (this.houseBotsPaused) return;
     if (!HOUSE_BOTS_AUTO_FILL) {
-      await this.removeQueuedHouseBots();
+      // Don't auto-fill, but don't remove manually-queued bots either
       return;
     }
 
