@@ -589,10 +589,12 @@ export class RumbleOrchestrator {
   }
 
   private async tickInternal(): Promise<void> {
+    let onchainAdminHealthy = true;
     if (ONCHAIN_TURN_AUTHORITY) {
       const health = await this.getOnchainAdminHealth();
       if (!health.ready) {
-        // Prevent endless betting-init loops when signer config is broken.
+        onchainAdminHealthy = false;
+        // Abort slots stuck in betting-init (no deadline yet) when signer is broken.
         const slots = this.queueManager.getSlots();
         for (const slot of slots) {
           if (slot.state === "betting" && !slot.bettingDeadline) {
@@ -602,7 +604,9 @@ export class RumbleOrchestrator {
             );
           }
         }
-        return;
+        // IMPORTANT: Do NOT return early here. advanceSlots() must still run
+        // so that slots with an armed bettingDeadline can transition to combat.
+        // processSlot() will be skipped for slots needing on-chain authority.
       }
     }
 
@@ -614,6 +618,12 @@ export class RumbleOrchestrator {
     const slots = this.queueManager.getSlots();
     const slotPromises: Promise<void>[] = [];
     for (const slot of slots) {
+      // When on-chain admin is unhealthy, still process combat/payout slots
+      // (they can run the legacy off-chain path) but skip betting init since
+      // it requires on-chain rumble creation.
+      if (ONCHAIN_TURN_AUTHORITY && !onchainAdminHealthy && slot.state === "betting") {
+        continue;
+      }
       slotPromises.push(this.processSlot(slot));
     }
 
@@ -1536,6 +1546,15 @@ export class RumbleOrchestrator {
 
   private async handleCombatPhase(slot: RumbleSlot): Promise<void> {
     if (ONCHAIN_TURN_AUTHORITY) {
+      // If on-chain admin is unhealthy, fall back to legacy combat to avoid
+      // slots stuck in combat with no turns progressing.
+      if (!this.onchainAdminHealth.ready) {
+        console.warn(
+          `[Orchestrator] Slot ${slot.slotIndex} falling back to legacy combat (on-chain admin unhealthy)`,
+        );
+        await this.handleCombatPhaseLegacy(slot);
+        return;
+      }
       await this.handleCombatPhaseOnchain(slot);
       return;
     }

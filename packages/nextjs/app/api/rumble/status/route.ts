@@ -291,10 +291,24 @@ export async function GET(request: Request) {
         const onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
         if (!onchain) return slot;
 
+        // Only ADVANCE state from on-chain data, never regress it.
+        // E.g. if in-memory is "combat" (deadline passed, advanceSlots ran)
+        // but on-chain is still "betting" (startCombat tx hasn't landed),
+        // keep the more-advanced in-memory state to prevent UI from
+        // showing "betting" indefinitely when combat is already running.
+        const STATE_ORDER: Record<string, number> = { idle: 0, betting: 1, combat: 2, payout: 3 };
         let state: "idle" | "betting" | "combat" | "payout" = slot.state;
-        if (onchain.state === "combat") state = "combat";
-        else if (onchain.state === "payout" || onchain.state === "complete") state = "payout";
-        else if (onchain.state === "betting") state = "betting";
+        const inMemoryOrder = STATE_ORDER[slot.state] ?? 0;
+        let onchainOrder = 0;
+        if (onchain.state === "combat") onchainOrder = 2;
+        else if (onchain.state === "payout" || onchain.state === "complete") onchainOrder = 3;
+        else if (onchain.state === "betting") onchainOrder = 1;
+
+        if (onchainOrder > inMemoryOrder) {
+          if (onchainOrder === 2) state = "combat";
+          else if (onchainOrder === 3) state = "payout";
+          else if (onchainOrder === 1) state = "betting";
+        }
 
         let nextTurnAt = slot.nextTurnAt;
         let turnIntervalMs = slot.turnIntervalMs;

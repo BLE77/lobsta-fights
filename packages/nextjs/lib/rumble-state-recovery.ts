@@ -212,20 +212,24 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
           // Restore this betting rumble into the correct slot
           const slotIndex = rumble.slot_index;
           const fighterIds = fighters.map((f) => f.id);
-          // Restore the slot in the queue manager
-          // Do not invent a local deadline during recovery. The on-chain rumble
-          // close slot is the source of truth and will arm betting in the next
-          // orchestrator tick once the account is confirmed.
-          qm.restoreSlot(slotIndex, rumble.id, fighterIds, "betting", null);
 
           // Load any existing bets from Supabase and restore the betting pool
           const existingBets = await persist.loadBetsForRumble(rumble.id);
+
+          // If bets already exist, the betting window was previously armed and
+          // likely expired. Set deadline to "now" so advanceSlots() can
+          // immediately transition to combat on the first tick instead of
+          // waiting for armBettingWindowIfReady() (which requires on-chain RPC
+          // and costs an extra tick cycle — fatal on serverless cold starts).
+          const recoveryDeadline = existingBets.length > 0 ? new Date() : null;
+
+          qm.restoreSlot(slotIndex, rumble.id, fighterIds, "betting", recoveryDeadline);
           orchestrator.restoreBettingPool(slotIndex, rumble.id, existingBets);
 
           console.log(
             `[StateRecovery] RESTORED betting rumble ${rumble.id} in slot ${slotIndex} ` +
               `with ${fighterIds.length} fighters, ${existingBets.length} bets, ` +
-              `deadline=unarmed (waiting on on-chain close slot)`
+              `deadline=${recoveryDeadline ? recoveryDeadline.toISOString() : "unarmed (waiting on on-chain close slot)"}`
           );
           result.restoredBetting++;
 
