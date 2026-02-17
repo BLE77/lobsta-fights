@@ -47,7 +47,7 @@ export interface QueueManager {
 // ---------------------------------------------------------------------------
 
 const NUM_SLOTS = 3;
-const FIGHTERS_PER_RUMBLE = 16;
+const FIGHTERS_PER_RUMBLE = 8;
 const MIN_FIGHTERS_TO_START = 8;
 
 function readDurationMs(
