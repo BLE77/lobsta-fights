@@ -1897,7 +1897,7 @@ export async function resolveTurnOnChain(
       combatState: combatStatePda,
     })
     .preInstructions([
-      ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }),
     ])
     .rpc();
 }
@@ -1954,7 +1954,7 @@ export async function finalizeRumbleOnChain(
       combatState: combatStatePda,
     })
     .preInstructions([
-      ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }),
     ])
     .rpc();
 }
