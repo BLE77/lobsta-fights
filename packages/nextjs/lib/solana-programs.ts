@@ -1402,7 +1402,7 @@ export async function createRumble(
   const [rumblePda] = deriveRumblePda(rumbleId);
   const nowUnix = Math.floor(Date.now() / 1000);
   const deadlineModeRaw = (process.env.RUMBLE_CREATE_DEADLINE_MODE ?? "slot").trim().toLowerCase();
-  const deadlineMode = deadlineModeRaw === "unix" ? "unix" : "slot";
+  const prefersUnixDeadline = deadlineModeRaw === "unix";
   const currentSlot = await provider.connection.getSlot("processed");
   const slotMsEstimateRaw = Number(process.env.RUMBLE_SLOT_MS_ESTIMATE ?? "400");
   const slotMsEstimate = Number.isFinite(slotMsEstimateRaw)
@@ -1417,8 +1417,6 @@ export async function createRumble(
     ? Math.min(1_000, Math.max(0, Math.floor(closeSafetySlotsRaw)))
     : 45;
 
-  // Rumble engine start_combat validates close against clock.slot, so new
-  // rumbles must always store close as a slot value.
   let bettingCloseSlot = BigInt(Math.floor(bettingDeadlineUnix));
   if (bettingDeadlineUnix >= nowUnix - 60) {
     const remainingMs = Math.max(1_000, (bettingDeadlineUnix - nowUnix) * 1_000);
@@ -1429,13 +1427,21 @@ export async function createRumble(
   if (bettingCloseSlot <= BigInt(currentSlot)) {
     bettingCloseSlot = BigInt(currentSlot + minCloseSlots);
   }
+  const minCloseSeconds = Math.max(
+    15,
+    Math.ceil(((minCloseSlots + closeSafetySlots) * slotMsEstimate) / 1_000),
+  );
+  const bettingCloseUnix = BigInt(Math.max(bettingDeadlineUnix, nowUnix + minCloseSeconds));
 
-  try {
-    const tx = await (program.methods as any)
+  const createWithDeadline = async (
+    closeValue: bigint,
+    effectiveMode: "slot" | "unix",
+  ): Promise<string> => {
+    return await (program.methods as any)
       .createRumble(
         new anchor.BN(rumbleId),
         fighters,
-        new anchor.BN(bettingCloseSlot.toString())
+        new anchor.BN(closeValue.toString())
       )
       .accounts({
         admin: admin.publicKey,
@@ -1443,25 +1449,51 @@ export async function createRumble(
         rumble: rumblePda,
         systemProgram: SystemProgram.programId,
       })
-      .rpc();
+      .rpc()
+      .catch((err: unknown) => {
+        const context =
+          `[solana-programs] createRumble failed` +
+          ` rumbleId=${rumbleId}` +
+          ` currentSlot=${currentSlot}` +
+          ` closeValue=${closeValue.toString()}` +
+          ` bettingCloseSlot=${bettingCloseSlot.toString()}` +
+          ` bettingCloseUnix=${bettingCloseUnix.toString()}` +
+          ` bettingDeadlineUnix=${bettingDeadlineUnix}` +
+          ` nowUnix=${nowUnix}` +
+          ` deadlineModeRaw=${deadlineModeRaw}` +
+          ` effectiveDeadlineMode=${effectiveMode}` +
+          ` minCloseSlots=${minCloseSlots}` +
+          ` closeSafetySlots=${closeSafetySlots}`;
+        if (err instanceof Error) {
+          throw new Error(`${context} :: ${err.message}`);
+        }
+        throw new Error(`${context} :: ${String(err)}`);
+      });
+  };
 
-    return tx;
-  } catch (err) {
-    const context =
-      `[solana-programs] createRumble failed` +
-      ` rumbleId=${rumbleId}` +
-      ` currentSlot=${currentSlot}` +
-      ` bettingCloseSlot=${bettingCloseSlot.toString()}` +
-      ` bettingDeadlineUnix=${bettingDeadlineUnix}` +
-      ` nowUnix=${nowUnix}` +
-      ` deadlineModeRaw=${deadlineModeRaw}` +
-      ` effectiveDeadlineMode=slot` +
-      ` minCloseSlots=${minCloseSlots}` +
-      ` closeSafetySlots=${closeSafetySlots}`;
-    if (err instanceof Error) {
-      throw new Error(`${context} :: ${err.message}`);
+  try {
+    if (prefersUnixDeadline) {
+      return await createWithDeadline(bettingCloseUnix, "unix");
     }
-    throw new Error(`${context} :: ${String(err)}`);
+
+    try {
+      return await createWithDeadline(bettingCloseSlot, "slot");
+    } catch (slotErr) {
+      const message = slotErr instanceof Error ? slotErr.message : String(slotErr);
+      const shouldFallbackToUnix = /DeadlineInPast|deadline must be in the future/i.test(message);
+      if (!shouldFallbackToUnix) throw slotErr;
+
+      console.warn(
+        `[solana-programs] createRumble slot deadline rejected; retrying with unix deadline` +
+          ` rumbleId=${rumbleId}` +
+          ` bettingCloseSlot=${bettingCloseSlot.toString()}` +
+          ` bettingCloseUnix=${bettingCloseUnix.toString()}`,
+      );
+      return await createWithDeadline(bettingCloseUnix, "unix");
+    }
+  } catch (finalErr) {
+    if (finalErr instanceof Error) throw finalErr;
+    throw new Error(String(finalErr));
   }
 }
 
