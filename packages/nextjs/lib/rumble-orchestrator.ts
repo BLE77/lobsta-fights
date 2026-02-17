@@ -1609,13 +1609,26 @@ export class RumbleOrchestrator {
       }
     }
 
-    // Open the first turn once combat has started.
-    if (combat.currentTurn === 0 && combat.turnResolved && combat.remainingFighters > 1) {
+    // Open the first turn as soon as combat starts. Some combat accounts can
+    // begin with currentTurn=0 and turnResolved=false; gating on turnResolved
+    // can deadlock the match at "Waiting for combat to begin...".
+    if (combat.currentTurn === 0 && combat.remainingFighters > 1) {
       try {
         const sig = await openTurnOnChain(rumbleIdNum);
         if (sig) console.log(`[OnChain] openTurn succeeded: ${sig}`);
       } catch (err) {
-        console.warn(`[OnChain] openTurn failed for ${slot.id}: ${formatError(err)}`);
+        // Idempotent/open-race failures are expected when multiple keepers
+        // hit the same turn boundary.
+        if (
+          !this.hasErrorTokenAny(err, [
+            "turn already open",
+            "turnalreadyopen",
+            "already in progress",
+            "custom program error: 0x177b",
+          ])
+        ) {
+          console.warn(`[OnChain] openTurn failed for ${slot.id}: ${formatError(err)}`);
+        }
       }
       return;
     }
