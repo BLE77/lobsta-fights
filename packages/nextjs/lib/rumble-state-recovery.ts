@@ -55,6 +55,7 @@ const MAX_COMBAT_STUCK_AGE_MS = (() => {
 export interface RecoveryResult {
   activeRumbles: number;
   restoredBetting: number;
+  restoredCombat: number;
   queueFighters: number;
   staleMidCombat: number;
   errors: string[];
@@ -78,12 +79,20 @@ export interface RecoveryResult {
  */
 export async function recoverOrchestratorState(): Promise<RecoveryResult> {
   if (g.__rumbleRecovered) {
-    return { activeRumbles: 0, restoredBetting: 0, queueFighters: 0, staleMidCombat: 0, errors: [] };
+    return {
+      activeRumbles: 0,
+      restoredBetting: 0,
+      restoredCombat: 0,
+      queueFighters: 0,
+      staleMidCombat: 0,
+      errors: [],
+    };
   }
 
   const result: RecoveryResult = {
     activeRumbles: 0,
     restoredBetting: 0,
+    restoredCombat: 0,
     queueFighters: 0,
     staleMidCombat: 0,
     errors: [],
@@ -153,31 +162,31 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
             }
           }
 
-          // Never fabricate outcomes for mid-combat rounds in production:
-          // doing so can create off-chain payouts with on-chain rumbles still
-          // in combat state, causing claim failures.
-          const unsafeFallbackEnabled =
-            process.env.RUMBLE_ALLOW_UNSAFE_COMBAT_RECOVERY === "true" &&
-            process.env.NODE_ENV !== "production";
-
-          if (unsafeFallbackEnabled) {
-            console.warn(
-              `[StateRecovery] UNSAFE fallback enabled; marking mid-combat rumble ${rumble.id} complete`,
-            );
-            const winnerId = fighters.length > 0 ? fighters[0].id : "unknown";
-            const placements = fighters.map((f, i) => ({ id: f.id, placement: i + 1 }));
-            await persist.completeRumbleRecord(rumble.id, winnerId, placements, [], 0);
-            for (const f of fighters) {
-              await persist.removeQueueFighter(f.id);
-            }
-          } else {
+          // Keep only the newest active combat rumble per slot in memory.
+          // Older/superseded rows are left for reconciliation but should not
+          // drive live slot state.
+          if (supersededByNewerSlotRumble) {
             const msg =
-              `[StateRecovery] Rumble ${rumble.id} is mid-combat; preserving state for reconciliation (no synthetic completion).`;
+              `[StateRecovery] Ignoring superseded combat rumble ${rumble.id} in slot ${rumble.slot_index}.`;
             console.warn(msg);
             result.errors.push(msg);
+            result.staleMidCombat++;
+            continue;
           }
 
-          result.staleMidCombat++;
+          // Restore combat rumble into queue/orchestrator memory so cold-start
+          // instances do not treat slots as idle and spawn overlapping rumbles.
+          const slotIndex = Number(rumble.slot_index);
+          const fighterIds = fighters.map((f) => f.id);
+          qm.restoreSlot(slotIndex, rumble.id, fighterIds, "combat", null);
+          const existingBets = await persist.loadBetsForRumble(rumble.id);
+          orchestrator.restoreBettingPool(slotIndex, rumble.id, existingBets);
+          console.log(
+            `[StateRecovery] RESTORED combat rumble ${rumble.id} in slot ${slotIndex} ` +
+              `with ${fighterIds.length} fighters, ${existingBets.length} bets`,
+          );
+          result.restoredCombat++;
+          continue;
 
         } else if (rumble.status === "betting") {
           // ---- RESTORE betting rumble in-memory instead of nuking it ----
@@ -236,6 +245,7 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
     console.log(
       `[StateRecovery] Recovery complete: ${result.activeRumbles} active rumbles, ` +
         `${result.restoredBetting} betting restored, ` +
+        `${result.restoredCombat} combat restored, ` +
         `${result.staleMidCombat} stale mid-combat, ${result.queueFighters} queue fighters`
     );
   } catch (err) {
