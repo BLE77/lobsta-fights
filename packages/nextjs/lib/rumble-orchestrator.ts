@@ -238,8 +238,8 @@ const LEGACY_COMBAT_TICK_INTERVAL_MS_CONFIGURED = readIntervalMs(
 );
 const LEGACY_COMBAT_TICK_MIN_PROD_MS = readIntervalMs(
   "RUMBLE_COMBAT_TICK_MIN_PROD_MS",
-  30_000,
   1_000,
+  500,
   120_000,
 );
 const LEGACY_COMBAT_TICK_INTERVAL_MS =
@@ -1565,7 +1565,10 @@ export class RumbleOrchestrator {
     const idx = slot.slotIndex;
     const now = Date.now();
 
-    // Initialize combat state when we first enter combat
+    // Initialize combat state when we first enter combat.
+    // On serverless cold starts, combatStates is empty, so we re-init and
+    // FALL THROUGH to run the first turn immediately instead of wasting a tick.
+    let justInitialized = false;
     if (!this.combatStates.has(idx) || this.combatStates.get(idx)!.rumbleId !== slot.id) {
       await this.initCombatState(slot);
 
@@ -1590,13 +1593,15 @@ export class RumbleOrchestrator {
         rumbleId: slot.id,
         fighters: [...slot.fighters],
       });
-      return; // wait for next tick to run first turn
+      justInitialized = true;
+      // Fall through — run first turn in the same tick
     }
 
     const state = this.combatStates.get(idx)!;
 
-    // Throttle: only run one turn per LEGACY_COMBAT_TICK_INTERVAL_MS
-    if (now - state.lastTickAt < LEGACY_COMBAT_TICK_INTERVAL_MS) return;
+    // Throttle: only run one turn per LEGACY_COMBAT_TICK_INTERVAL_MS.
+    // Skip throttle on first init so the first turn runs immediately.
+    if (!justInitialized && now - state.lastTickAt < LEGACY_COMBAT_TICK_INTERVAL_MS) return;
 
     // Run one turn (awaited so on-chain settlement is properly tracked)
     await this.runCombatTurn(slot, state);
