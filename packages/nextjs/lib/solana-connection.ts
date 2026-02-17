@@ -7,7 +7,7 @@
  * Environment variables:
  *   SOLANA_RPC_URL - explicit RPC endpoint (server-side preferred)
  *   NEXT_PUBLIC_SOLANA_RPC_URL - explicit RPC endpoint fallback
- *   HELIUS_API_KEY / NEXT_PUBLIC_HELIUS_API_KEY - optional Helius API key fallback
+ *   HELIUS_API_KEY - optional Helius API key fallback (server-side)
  *   NEXT_PUBLIC_SOLANA_NETWORK - "devnet" | "mainnet-beta" (default: "devnet")
  *
  * Dependencies needed (not yet installed):

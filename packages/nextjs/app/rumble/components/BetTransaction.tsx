@@ -21,7 +21,7 @@ import {
   LAMPORTS_PER_SOL,
 } from "@solana/web3.js";
 import { getRumbleVaultPublicKey } from "~~/lib/solana-connection";
-import { formatSol } from "~~/lib/solana-wallet";
+import { formatSol } from "~~/lib/solana-format";
 
 // ---------------------------------------------------------------------------
 // Types

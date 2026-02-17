@@ -17,12 +17,8 @@ import { useCallback, useEffect, useState } from "react";
 import { useWallet, useConnection } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { LAMPORTS_PER_SOL } from "@solana/web3.js";
-import {
-  type WalletBalances,
-  getWalletBalances,
-  truncateAddress,
-  formatSol,
-} from "~~/lib/solana-wallet";
+import type { WalletBalances } from "~~/lib/solana-wallet-types";
+import { truncateAddress, formatSol } from "~~/lib/solana-format";
 
 // Import wallet adapter styles
 import "@solana/wallet-adapter-react-ui/styles.css";
@@ -68,12 +64,15 @@ export default function WalletConnect({
 
       // Fetch full balances from Helius (includes ICHOR + USD values)
       try {
-        const balances: WalletBalances = await getWalletBalances(
-          publicKey.toBase58(),
+        const res = await fetch(
+          `/api/wallet/balances?wallet=${encodeURIComponent(publicKey.toBase58())}`,
+          { cache: "no-store" },
         );
+        if (!res.ok) throw new Error(`API error ${res.status}`);
+        const balances = (await res.json()) as WalletBalances;
         setIchorBalance(balances.ichorBalance);
       } catch {
-        // Helius API might not be configured yet; SOL balance still works
+        // Server-side Helius might not be configured yet; SOL balance still works.
         setIchorBalance(0);
       }
     } catch (err) {

@@ -5,17 +5,25 @@
  * using the Helius Wallet API (https://www.helius.dev/docs/wallet-api/overview).
  *
  * Environment variables:
- *   NEXT_PUBLIC_HELIUS_API_KEY - Helius API key
+ *   HELIUS_API_KEY - Helius API key (server-only)
  *   NEXT_PUBLIC_SOLANA_NETWORK - "devnet" | "mainnet-beta" (default: "devnet")
  */
+
+import "server-only";
+import type {
+  TokenBalance,
+  WalletBalances,
+  WalletTransaction,
+  WalletTransfer,
+} from "~~/lib/solana-wallet-types";
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
 function getHeliusApiKey(): string {
-  const key = process.env.NEXT_PUBLIC_HELIUS_API_KEY;
-  if (!key) throw new Error("Missing NEXT_PUBLIC_HELIUS_API_KEY");
+  const key = process.env.HELIUS_API_KEY?.trim();
+  if (!key) throw new Error("Missing HELIUS_API_KEY");
   return key;
 }
 
@@ -41,58 +49,6 @@ function getHeliusApiUrl(): string {
     return `https://api.helius.xyz/v0`;
   }
   return `https://api-devnet.helius.xyz/v0`;
-}
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-export interface TokenBalance {
-  mint: string;
-  amount: number;
-  decimals: number;
-  tokenAccount: string;
-  symbol?: string;
-  name?: string;
-  logoURI?: string;
-  usdValue?: number;
-}
-
-export interface WalletBalances {
-  solBalance: number; // SOL in lamports converted to SOL
-  solUsdValue?: number;
-  tokens: TokenBalance[];
-  ichorBalance: number; // ICHOR token balance (0 if not found)
-}
-
-export interface WalletTransaction {
-  signature: string;
-  timestamp: number;
-  type: string;
-  description: string;
-  fee: number;
-  feePayer: string;
-  nativeTransfers: Array<{
-    fromUserAccount: string;
-    toUserAccount: string;
-    amount: number; // in lamports
-  }>;
-  tokenTransfers: Array<{
-    fromUserAccount: string;
-    toUserAccount: string;
-    mint: string;
-    tokenAmount: number;
-  }>;
-}
-
-export interface WalletTransfer {
-  signature: string;
-  timestamp: number;
-  from: string;
-  to: string;
-  amount: number;
-  mint?: string; // undefined for native SOL
-  direction: "in" | "out";
 }
 
 // ---------------------------------------------------------------------------
@@ -283,28 +239,4 @@ export async function getWalletTransfers(
   }
 
   return transfers;
-}
-
-// ---------------------------------------------------------------------------
-// Utility
-// ---------------------------------------------------------------------------
-
-/**
- * Truncate a wallet address for display: "AbCd...xYz1"
- */
-export function truncateAddress(address: string, chars: number = 4): string {
-  if (address.length <= chars * 2 + 3) return address;
-  return `${address.slice(0, chars)}...${address.slice(-chars)}`;
-}
-
-/**
- * Format SOL amount for display (up to 4 decimal places).
- */
-export function formatSol(amount: number): string {
-  if (amount === 0) return "0";
-  if (amount < 0.0001) return "<0.0001";
-  return amount.toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
-  });
 }
