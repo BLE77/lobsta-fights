@@ -198,7 +198,10 @@ export default function RumbleSlot({
       };
     }
     if (slot.state === "betting" && slot.bettingDeadline) {
-      const targetMs = new Date(slot.bettingDeadline).getTime();
+      // Offset by bet close guard so the countdown matches when betting
+      // actually closes for the user (12s before the on-chain deadline).
+      const BET_CLOSE_GUARD_MS = 12_000;
+      const targetMs = new Date(slot.bettingDeadline).getTime() - BET_CLOSE_GUARD_MS;
       if (!Number.isFinite(targetMs)) return null;
       return {
         label: "FIRST TURN",

@@ -40,12 +40,14 @@ export default function BettingPanel({
   const [timeLeft, setTimeLeft] = useState("");
   const [deploying, setDeploying] = useState<Set<string>>(new Set());
 
-  // Countdown timer
+  // Countdown timer — offset by the on-chain close guard so the UI shows
+  // CLOSED at the same moment the bet placement code rejects submissions.
+  const BET_CLOSE_GUARD_MS = 12_000;
   useEffect(() => {
     if (!deadline) return;
     const update = () => {
       const now = Date.now();
-      const end = new Date(deadline).getTime();
+      const end = new Date(deadline).getTime() - BET_CLOSE_GUARD_MS;
       const diff = Math.max(0, end - now);
       const secs = Math.floor(diff / 1000);
       const mins = Math.floor(secs / 60);
