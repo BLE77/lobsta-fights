@@ -6,7 +6,7 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 
 # Install production dependencies
-RUN npm install --omit=dev --legacy-peer-deps && npm install tsx
+RUN npm install --omit=dev --legacy-peer-deps && npm install tsx --legacy-peer-deps
 
 # Copy source files
 COPY . .
