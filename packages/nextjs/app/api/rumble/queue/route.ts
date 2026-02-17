@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { PublicKey } from "@solana/web3.js";
+import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import { getQueueManager } from "~~/lib/queue-manager";
 import { getOrchestrator } from "~~/lib/rumble-orchestrator";
 import { saveQueueFighter, removeQueueFighter } from "~~/lib/rumble-persistence";
@@ -7,6 +7,10 @@ import { freshSupabase } from "~~/lib/supabase";
 import { getApiKeyFromHeaders } from "~~/lib/request-auth";
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 import { hashApiKey } from "~~/lib/api-key";
+import { getConnection } from "~~/lib/solana-connection";
+
+/** Minimum SOL balance required to join queue (covers MoveCommitment rent per turn) */
+const MIN_SOL_TO_QUEUE = 0.05;
 
 export const dynamic = "force-dynamic";
 
@@ -107,13 +111,34 @@ export async function POST(request: Request) {
         { status: 409 },
       );
     }
+    let walletPubkey: PublicKey;
     try {
-      void new PublicKey(walletAddress);
+      walletPubkey = new PublicKey(walletAddress);
     } catch {
       return NextResponse.json(
         { error: "Fighter wallet_address is invalid. Use a valid Solana public key." },
         { status: 409 },
       );
+    }
+
+    // SOL balance check — fighters need SOL to pay for on-chain move commitments
+    try {
+      const balance = await getConnection().getBalance(walletPubkey, "processed");
+      const solBalance = balance / LAMPORTS_PER_SOL;
+      if (solBalance < MIN_SOL_TO_QUEUE) {
+        return NextResponse.json(
+          {
+            error: `Insufficient SOL balance. Fighter wallet needs at least ${MIN_SOL_TO_QUEUE} SOL to participate in on-chain combat. Current balance: ${solBalance.toFixed(4)} SOL.`,
+            wallet: walletAddress,
+            balance_sol: solBalance,
+            required_sol: MIN_SOL_TO_QUEUE,
+          },
+          { status: 402 },
+        );
+      }
+    } catch (err) {
+      console.warn(`[Queue] SOL balance check failed for ${walletAddress}:`, err);
+      // Don't block queue join if RPC is down — the on-chain combat will catch it
     }
 
     // Sybil protection: limit concurrent fighters from same IP in queue/active Rumbles
