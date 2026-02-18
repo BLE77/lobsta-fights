@@ -8,6 +8,7 @@ import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-
 import {
   loadQueueState,
   loadActiveRumbles,
+  loadRumbleTurnLog,
   getIchorShowerState,
   getStats,
 } from "~~/lib/rumble-persistence";
@@ -334,6 +335,10 @@ export async function GET(request: Request) {
           bettingDeadline = null;
         }
 
+        // Enriched fighters/turns from on-chain + Supabase persistence
+        let enrichedFighters = slot.fighters;
+        let turns = slot.turns;
+
         if (state === "combat") {
           const onchainCombat = await readRumbleCombatState(rumbleIdNum).catch(() => null);
           if (onchainCombat) {
@@ -360,27 +365,62 @@ export async function GET(request: Request) {
             } else {
               nextTurnAt = null;
             }
+
+            // Update fighter HP/damage/meter from on-chain CombatState
+            enrichedFighters = slot.fighters.map((f, i) => {
+              if (i >= onchainCombat.fighterCount) return f;
+              return {
+                ...f,
+                hp: onchainCombat.hp[i],
+                meter: onchainCombat.meter[i],
+                totalDamageDealt: Number(onchainCombat.totalDamageDealt[i]),
+                totalDamageTaken: Number(onchainCombat.totalDamageTaken[i]),
+                eliminatedOnTurn: onchainCombat.hp[i] === 0 && onchainCombat.eliminationRank[i] > 0
+                  ? onchainCombat.eliminationRank[i]
+                  : f.eliminatedOnTurn,
+              };
+            });
           }
         } else {
           nextTurnAt = null;
           turnIntervalMs = null;
         }
 
-        // Generate synthetic turn entries when on-chain reports combat progress
-        // but local turns array is empty (cold start / instance swap).
-        let turns = slot.turns;
-        if (currentTurn > 0 && (!turns || turns.length === 0)) {
-          turns = Array.from({ length: currentTurn }, (_, i) => ({
-            turnNumber: i + 1,
-            pairings: [],
-            eliminations: [],
-            bye: undefined,
-          }));
+        // Load real turn data from Supabase persistence (Railway worker saves
+        // turn_log with pairings/moves/damage on each resolved turn).
+        if (currentTurn > 0 && slot.rumbleId) {
+          const persistedTurns = await loadRumbleTurnLog(slot.rumbleId).catch(() => null);
+          if (persistedTurns && persistedTurns.length > 0) {
+            turns = (persistedTurns as Array<any>).map((t: any) => ({
+              turnNumber: t.turnNumber ?? 0,
+              pairings: (t.pairings ?? []).map((p: any) => ({
+                fighterA: p.fighterA ?? "",
+                fighterB: p.fighterB ?? "",
+                fighterAName: fighterName(lookup, p.fighterA ?? ""),
+                fighterBName: fighterName(lookup, p.fighterB ?? ""),
+                moveA: p.moveA ?? "",
+                moveB: p.moveB ?? "",
+                damageToA: p.damageToA ?? 0,
+                damageToB: p.damageToB ?? 0,
+              })),
+              eliminations: t.eliminations ?? [],
+              bye: t.bye,
+            }));
+          } else if (!turns || turns.length === 0) {
+            // Fallback: synthetic turn entries so UI shows turn count
+            turns = Array.from({ length: currentTurn }, (_, i) => ({
+              turnNumber: i + 1,
+              pairings: [],
+              eliminations: [],
+              bye: undefined,
+            }));
+          }
         }
 
         return {
           ...slot,
           state,
+          fighters: enrichedFighters,
           bettingDeadline,
           nextTurnAt,
           turnIntervalMs,
