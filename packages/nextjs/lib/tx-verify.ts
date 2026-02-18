@@ -15,6 +15,24 @@ import { RUMBLE_ENGINE_ID } from "./solana-programs";
 /** Tolerance for SOL amount matching (accounts for rounding). */
 const AMOUNT_TOLERANCE_SOL = 0.001;
 
+/** Retry getParsedTransaction until the tx is visible (handles fire-and-forget clients). */
+async function getParsedTxWithRetry(
+  txSignature: string,
+  maxAttempts = 4,
+  delayMs = 2000,
+) {
+  const connection = getConnection();
+  for (let i = 0; i < maxAttempts; i++) {
+    const tx = await connection.getParsedTransaction(txSignature, {
+      maxSupportedTransactionVersion: 0,
+      commitment: "confirmed",
+    });
+    if (tx) return tx;
+    if (i < maxAttempts - 1) await new Promise(r => setTimeout(r, delayMs));
+  }
+  return null;
+}
+
 /** Min/max bet bounds in SOL. */
 export const MIN_BET_SOL = 0.001;
 export const MAX_BET_SOL = 100;
@@ -103,15 +121,10 @@ export async function verifyBetTransaction(
       return { valid: false, error: "Treasury address is invalid or not configured." };
     }
 
-    const connection = getConnection();
-
-    const tx = await connection.getParsedTransaction(txSignature, {
-      maxSupportedTransactionVersion: 0,
-      commitment: "confirmed",
-    });
+    const tx = await getParsedTxWithRetry(txSignature);
 
     if (!tx) {
-      return { valid: false, error: "Transaction not found. It may not be confirmed yet." };
+      return { valid: false, error: "Transaction not found after retries. It may not be confirmed yet." };
     }
 
     if (tx.meta?.err) {
@@ -228,14 +241,10 @@ export async function verifyRumblePlaceBetBatchTransaction(
       return { valid: false, error: "No expected bets provided." };
     }
 
-    const connection = getConnection();
-    const tx = await connection.getParsedTransaction(txSignature, {
-      maxSupportedTransactionVersion: 0,
-      commitment: "confirmed",
-    });
+    const tx = await getParsedTxWithRetry(txSignature);
 
     if (!tx) {
-      return { valid: false, error: "Transaction not found. It may not be confirmed yet." };
+      return { valid: false, error: "Transaction not found after retries. It may not be confirmed yet." };
     }
     if (tx.meta?.err) {
       return { valid: false, error: "Transaction failed on-chain." };

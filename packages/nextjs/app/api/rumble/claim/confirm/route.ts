@@ -75,13 +75,24 @@ export async function POST(request: Request) {
     }
 
     const connection = getConnection();
-    const tx = await connection.getParsedTransaction(txSignature, {
+    // Retry a few times — client uses fire-and-forget so tx may not be confirmed yet.
+    let tx = await connection.getParsedTransaction(txSignature, {
       maxSupportedTransactionVersion: 0,
       commitment: "confirmed",
     });
     if (!tx) {
+      for (let i = 0; i < 3; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        tx = await connection.getParsedTransaction(txSignature, {
+          maxSupportedTransactionVersion: 0,
+          commitment: "confirmed",
+        });
+        if (tx) break;
+      }
+    }
+    if (!tx) {
       return NextResponse.json(
-        { error: "Transaction not found. Wait for confirmation and retry." },
+        { error: "Transaction not found after retries. Wait and retry." },
         { status: 404 },
       );
     }

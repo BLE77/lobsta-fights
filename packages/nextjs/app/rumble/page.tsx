@@ -363,11 +363,19 @@ export default function RumblePage() {
   const [publicKey, setPublicKey] = useState<PublicKey | null>(null);
   const walletConnected = !!publicKey;
 
-  // RPC connection
+  // RPC connection — use Helius if available, otherwise public RPC
   const network = process.env.NEXT_PUBLIC_SOLANA_NETWORK ?? "devnet";
-  const rpcEndpoint =
-    process.env.NEXT_PUBLIC_SOLANA_RPC_URL?.trim() ||
-    (network === "mainnet-beta" ? "https://api.mainnet-beta.solana.com" : "https://api.devnet.solana.com");
+  const rpcEndpoint = (() => {
+    const explicit = process.env.NEXT_PUBLIC_SOLANA_RPC_URL?.trim();
+    if (explicit) return explicit;
+    const heliusKey = process.env.NEXT_PUBLIC_HELIUS_API_KEY?.trim();
+    if (heliusKey) {
+      return network === "mainnet-beta"
+        ? `https://mainnet.helius-rpc.com/?api-key=${heliusKey}`
+        : `https://devnet.helius-rpc.com/?api-key=${heliusKey}`;
+    }
+    return network === "mainnet-beta" ? "https://api.mainnet-beta.solana.com" : "https://api.devnet.solana.com";
+  })();
   const connectionRef = useRef(new Connection(rpcEndpoint, "confirmed"));
   const connection = connectionRef.current;
 
@@ -846,25 +854,11 @@ export default function RumblePage() {
       const rawTx = signed.serialize();
       const txSig = await connection.sendRawTransaction(rawTx, {
         skipPreflight: false,
-        preflightCommitment: "confirmed",
+        preflightCommitment: "processed",
       });
 
-      let blockhash = tx.recentBlockhash;
-      let lastValidBlockHeight = tx.lastValidBlockHeight;
-      if (!blockhash || typeof lastValidBlockHeight !== "number") {
-        const latest = await connection.getLatestBlockhash("confirmed");
-        blockhash = latest.blockhash;
-        lastValidBlockHeight = latest.lastValidBlockHeight;
-      }
-
-      await connection.confirmTransaction(
-        {
-          signature: txSig,
-          blockhash,
-          lastValidBlockHeight,
-        },
-        "confirmed",
-      );
+      // Don't block on confirmTransaction — devnet hangs for 30s+.
+      // The confirm endpoint verifies the tx on-chain with retries.
 
       const confirmRes = await fetch("/api/rumble/claim/confirm", {
         method: "POST",
@@ -994,27 +988,15 @@ export default function RumblePage() {
 
       await assertWindowStillOpen();
 
-      // 3) Send to Solana
+      // 3) Send to Solana (fire-and-forget — don't block on confirmation)
       const rawTx = signed.serialize();
       const txSig = await connection.sendRawTransaction(rawTx, {
         skipPreflight: false,
-        preflightCommitment: "confirmed",
+        preflightCommitment: "processed",
       });
 
-      // 4) Wait for confirmation
-      let blockhash = tx.recentBlockhash;
-      let lastValidBlockHeight = tx.lastValidBlockHeight;
-      if (!blockhash || typeof lastValidBlockHeight !== "number") {
-        const latest = await connection.getLatestBlockhash("confirmed");
-        blockhash = latest.blockhash;
-        lastValidBlockHeight = latest.lastValidBlockHeight;
-      }
-      await connection.confirmTransaction(
-        { signature: txSig, blockhash, lastValidBlockHeight },
-        "confirmed",
-      );
-
-      // 5) Register all bet legs in off-chain orchestrator/persistence.
+      // 4) Register bet immediately — the API verifies the tx on-chain.
+      //    Blocking on confirmTransaction hangs the UI on devnet (30s+ timeouts).
       const preparedLegs: Array<{
         fighter_id: string;
         fighter_index?: number;
