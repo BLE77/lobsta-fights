@@ -44,6 +44,35 @@ async function getCachedSlot(): Promise<number | null> {
 }
 
 // ---------------------------------------------------------------------------
+// Stable nextTurnAt cache — prevents timer reset on page refresh.
+// Keyed by (rumbleId, turn, phase) so the same absolute timestamp is returned
+// for the same on-chain state, instead of recomputing Date.now()+eta each call.
+// ---------------------------------------------------------------------------
+const _nextTurnAtCache = new Map<string, { iso: string; expiresAt: number }>();
+
+function getStableNextTurnAt(
+  rumbleIdNum: number,
+  turn: number,
+  phase: string,
+  computeIso: () => string,
+): string {
+  const key = `${rumbleIdNum}:${turn}:${phase}`;
+  const now = Date.now();
+  const cached = _nextTurnAtCache.get(key);
+  // Return cached value if it exists and hasn't expired (max 60s to handle stale edge cases)
+  if (cached && cached.expiresAt > now) return cached.iso;
+  // Evict stale entries
+  if (_nextTurnAtCache.size > 50) {
+    for (const [k, v] of _nextTurnAtCache) {
+      if (v.expiresAt <= now) _nextTurnAtCache.delete(k);
+    }
+  }
+  const iso = computeIso();
+  _nextTurnAtCache.set(key, { iso, expiresAt: now + 60_000 });
+  return iso;
+}
+
+// ---------------------------------------------------------------------------
 // Fresh Supabase client (no-store cache)
 // ---------------------------------------------------------------------------
 
@@ -388,13 +417,18 @@ export async function GET(request: Request) {
               const targetSlot = inCommitPhase
                 ? onchainCombat.commitCloseSlot
                 : onchainCombat.revealCloseSlot;
+              const phase = inCommitPhase ? "commit" : "reveal";
               const etaMs = slotsToMs(targetSlot);
-              nextTurnAt = etaMs > 0
-                ? new Date(Date.now() + etaMs).toISOString()
-                : new Date(Date.now() + 3_000).toISOString(); // window just closed, resolve imminent
+              nextTurnAt = getStableNextTurnAt(rumbleIdNum, currentTurn, phase, () =>
+                etaMs > 0
+                  ? new Date(Date.now() + etaMs).toISOString()
+                  : new Date(Date.now() + 3_000).toISOString(),
+              );
             } else if (onchainCombat.remainingFighters > 1) {
               // Turn resolved, waiting for worker to open next turn (~2s tick)
-              nextTurnAt = new Date(Date.now() + 3_000).toISOString();
+              nextTurnAt = getStableNextTurnAt(rumbleIdNum, currentTurn, "resolved", () =>
+                new Date(Date.now() + 3_000).toISOString(),
+              );
             } else {
               nextTurnAt = null; // combat over
             }
