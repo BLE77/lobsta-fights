@@ -608,8 +608,17 @@ export default function CommentaryPlayer({
     mixerRef.current?.setVolume(volume);
   }, [volume]);
 
+  // Restore enabled state from localStorage on mount
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored === "false") setEnabled(false);
+    } catch {}
+  }, []);
+
   // Browser autoplay policy requires a user gesture before audio context can
   // start. Track first interaction and avoid eager audio init before that.
+  // Listen for mousemove + scroll too so the user doesn't need to explicitly click.
   useEffect(() => {
     if (typeof window === "undefined") return;
     const userActivation = (navigator as Navigator & { userActivation?: { hasBeenActive?: boolean } }).userActivation;
@@ -620,9 +629,15 @@ export default function CommentaryPlayer({
     const unlock = () => setHasUserGesture(true);
     window.addEventListener("pointerdown", unlock, { once: true, passive: true });
     window.addEventListener("keydown", unlock, { once: true });
+    window.addEventListener("mousemove", unlock, { once: true, passive: true });
+    window.addEventListener("scroll", unlock, { once: true, passive: true });
+    window.addEventListener("touchstart", unlock, { once: true, passive: true });
     return () => {
       window.removeEventListener("pointerdown", unlock);
       window.removeEventListener("keydown", unlock);
+      window.removeEventListener("mousemove", unlock);
+      window.removeEventListener("scroll", unlock);
+      window.removeEventListener("touchstart", unlock);
     };
   }, []);
 
@@ -975,10 +990,10 @@ export default function CommentaryPlayer({
           {needsAudioUnlock && (
             <button
               onClick={unlockAudio}
-              className="font-mono text-[9px] text-amber-400 border border-amber-700 rounded-sm px-1 transition-colors hover:text-amber-300"
+              className="font-mono text-[10px] text-amber-400 bg-amber-900/40 border border-amber-600 rounded-sm px-2 py-0.5 transition-colors hover:text-amber-300 hover:bg-amber-800/50 animate-pulse"
               title="Tap to enable announcer audio"
             >
-              TAP AUDIO
+              TAP TO LISTEN
             </button>
           )}
 
