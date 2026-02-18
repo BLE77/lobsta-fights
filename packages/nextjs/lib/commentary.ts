@@ -121,11 +121,23 @@ const SYNTHETIC_CHASSIS = [
 
 export function buildFighterLoreBlock(
   fighters: CommentarySlotData["fighters"],
+  maxFighters = 3,
 ): string {
+  const eligible = fighters.filter(
+    (f) => f.name && !isLikelyIdentifier(f.name) && getEffectiveRobotMeta(f),
+  );
+  // Pick top fighters by a deterministic score so commentary focuses on a few
+  const scored = eligible
+    .map((f) => ({
+      f,
+      score: statFromName(`${f.id}:${f.name}`, 37, 1, 1000),
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, maxFighters);
+
   const lines: string[] = [];
-  for (const f of fighters) {
-    const m = getEffectiveRobotMeta(f);
-    if (!m || !f.name || isLikelyIdentifier(f.name)) continue;
+  for (const { f } of scored) {
+    const m = getEffectiveRobotMeta(f)!;
     const parts: string[] = [`${f.name}`];
     if (m.robot_type) parts.push(`(${m.robot_type})`);
     if (m.fighting_style) parts.push(`— ${m.fighting_style} style`);
@@ -434,11 +446,20 @@ export function evaluateEvent(
 
     case "combat_started": {
       const rumbleLabel = deriveRumbleLabel(slot);
-      const fighterNames = slot.fighters.map((f) => f.name).join(", ");
-      const lore = buildFighterLoreBlock(slot.fighters);
+      // Feature 2-3 fighters instead of listing all 8
+      const featured = slot.fighters
+        .filter((f) => f.name && !isLikelyIdentifier(f.name))
+        .map((f) => ({ f, score: statFromName(`${slot.rumbleId ?? slot.slotIndex}:${f.name}`, 53, 1, 1000) }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 3)
+        .map(({ f }) => f.name);
+      const featuredText = featured.length > 0
+        ? ` Featuring ${featured.join(", ")} and ${slot.fighters.length - featured.length} more.`
+        : ` ${slot.fighters.length} fighters enter.`;
+      const lore = buildFighterLoreBlock(slot.fighters, 2);
       return {
         eventType: "combat_start",
-        context: `${rumbleLabel} combat begins in slot ${slot.slotIndex + 1}! ${slot.fighters.length} fighters enter: ${fighterNames}.${lore}`,
+        context: `${rumbleLabel} combat begins in slot ${slot.slotIndex + 1}!${featuredText}${lore}`,
         allowedNames,
         clipKey: clipKeyFor(slot, "combat-start"),
       };
@@ -485,10 +506,18 @@ export function evaluateEvent(
 
       if (newState === "combat") {
         const rumbleLabel = deriveRumbleLabel(slot);
-        const fighterNames = slot.fighters.map((f) => f.name).join(", ");
+        const featured = slot.fighters
+          .filter((f) => f.name && !isLikelyIdentifier(f.name))
+          .map((f) => ({ f, score: statFromName(`${slot.rumbleId ?? slot.slotIndex}:${f.name}`, 53, 1, 1000) }))
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 3)
+          .map(({ f }) => f.name);
+        const featuredText = featured.length > 0
+          ? ` Featuring ${featured.join(", ")} and ${slot.fighters.length - featured.length} more.`
+          : ` ${slot.fighters.length} fighters enter the arena.`;
         return {
           eventType: "combat_start",
-          context: `${rumbleLabel} combat begins in slot ${slot.slotIndex + 1}! ${slot.fighters.length} fighters enter the arena: ${fighterNames}.`,
+          context: `${rumbleLabel} combat begins in slot ${slot.slotIndex + 1}!${featuredText}`,
           allowedNames,
           clipKey: clipKeyFor(slot, "combat-start"),
         };

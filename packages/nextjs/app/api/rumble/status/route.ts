@@ -15,6 +15,7 @@ import {
 import { readArenaConfig, readRumbleAccountState, readRumbleCombatState } from "~~/lib/solana-programs";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 import { getConnection } from "~~/lib/solana-connection";
+import { getCommentaryForRumble } from "~~/lib/commentary-hook";
 
 export const dynamic = "force-dynamic";
 const SLOT_MS_ESTIMATE = Math.max(250, Number(process.env.RUMBLE_SLOT_MS_ESTIMATE ?? "400"));
@@ -252,6 +253,17 @@ export async function GET(request: Request) {
         };
       }
 
+      // Pre-generated commentary clips for this rumble (shared stream)
+      const commentary = slotInfo.rumbleId
+        ? getCommentaryForRumble(slotInfo.rumbleId).map((e) => ({
+            clipKey: e.clipKey,
+            text: e.text,
+            audioUrl: e.audioUrl,
+            eventType: e.eventType,
+            createdAt: e.createdAt,
+          }))
+        : [];
+
       return {
         slotIndex: slotInfo.slotIndex,
         rumbleId: slotInfo.rumbleId,
@@ -266,6 +278,7 @@ export async function GET(request: Request) {
         turns,
         payout,
         fighterNames,
+        commentary,
       };
     });
 

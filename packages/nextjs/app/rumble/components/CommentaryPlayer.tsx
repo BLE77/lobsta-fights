@@ -94,6 +94,7 @@ class RadioMixer {
     voiceId: string;
     allowedNames: string[];
     clipKey?: string;
+    audioUrl?: string;
     retries: number;
     priority: boolean;
   }> = [];
@@ -334,6 +335,7 @@ class RadioMixer {
     voiceId: string,
     allowedNames: string[],
     clipKey?: string,
+    audioUrl?: string,
   ) {
     if (clipKey) {
       if (this.currentClipKey === clipKey) return;
@@ -343,7 +345,7 @@ class RadioMixer {
     if (this.voiceQueue.length >= 5) return;
 
     const priority = HIGH_PRIORITY_EVENTS.has(eventType);
-    const item = { eventType, context, voiceId, allowedNames, clipKey, retries: 0, priority };
+    const item = { eventType, context, voiceId, allowedNames, clipKey, audioUrl, retries: 0, priority };
 
     if (priority) {
       // Insert before non-priority items
@@ -402,17 +404,20 @@ class RadioMixer {
     this._onStateChange();
 
     try {
-      const res = await fetch("/api/rumble/commentary", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          eventType: item.eventType,
-          context: item.context,
-          voiceId: item.voiceId,
-          allowedNames: item.allowedNames,
-          clipKey: item.clipKey,
-        }),
-      });
+      let res: Response;
+
+      // If we have a pre-generated audio URL from the server, fetch that directly
+      // instead of calling the commentary API (shared stream — all viewers hear same audio)
+      if (item.audioUrl) {
+        res = await fetch(item.audioUrl);
+        if (!res.ok) {
+          console.warn("[commentary] Pre-generated audio fetch failed, falling back to API");
+          // Fall through to API generation
+          res = await this.fetchFromCommentaryApi(item);
+        }
+      } else {
+        res = await this.fetchFromCommentaryApi(item);
+      }
 
       if (!res.ok) {
         if (res.status === 503) {
@@ -501,6 +506,26 @@ class RadioMixer {
       this.processNextVoice();
     }
   }
+
+  private async fetchFromCommentaryApi(item: {
+    eventType: CommentaryEventType;
+    context: string;
+    voiceId: string;
+    allowedNames: string[];
+    clipKey?: string;
+  }): Promise<Response> {
+    return fetch("/api/rumble/commentary", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        eventType: item.eventType,
+        context: item.context,
+        voiceId: item.voiceId,
+        allowedNames: item.allowedNames,
+        clipKey: item.clipKey,
+      }),
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -556,6 +581,7 @@ export default function CommentaryPlayer({
   const enqueuedIntrosRef = useRef<Set<string>>(new Set());
   const lastBettingHypeAtByRumbleRef = useRef<Map<string, number>>(new Map());
   const lastTurnSeenByRumbleRef = useRef<Map<string, number>>(new Map());
+  const playedSharedClipsRef = useRef<Set<string>>(new Set());
 
   // Init mixer
   useEffect(() => {
@@ -687,13 +713,62 @@ export default function CommentaryPlayer({
     });
   }, []);
 
-  // Process incoming SSE events
+  // Shared commentary stream: pick up pre-generated clips from status API
+  // These take priority over client-side generation — all viewers hear the same audio.
+  useEffect(() => {
+    if (!enabled || !slots?.length) return;
+    const mixer = mixerRef.current;
+    if (!mixer) return;
+
+    for (const slot of slots) {
+      const slotAny = slot as CommentarySlotData & {
+        rumbleId?: string;
+        commentary?: Array<{
+          clipKey: string;
+          text: string;
+          audioUrl: string | null;
+          eventType: string;
+          createdAt: number;
+        }>;
+      };
+      const commentary = slotAny.commentary;
+      if (!Array.isArray(commentary) || commentary.length === 0) continue;
+
+      for (const clip of commentary) {
+        if (!clip.audioUrl || !clip.clipKey) continue;
+        const fullKey = `${slotAny.rumbleId ?? ""}:${clip.clipKey}`;
+        if (playedSharedClipsRef.current.has(fullKey)) continue;
+        playedSharedClipsRef.current.add(fullKey);
+
+        // Enqueue with the pre-generated audio URL — mixer will fetch it directly
+        mixer.enqueue(
+          (clip.eventType as CommentaryEventType) ?? "big_hit",
+          clip.text,
+          getVoiceId(),
+          [],
+          clip.clipKey,
+          clip.audioUrl,
+        );
+      }
+    }
+  }, [enabled, slots, getVoiceId]);
+
+  // Process incoming SSE events (fallback when no pre-generated audio available)
   useEffect(() => {
     if (!enabled || !lastEvent || eventSeq === prevSeq.current) return;
     prevSeq.current = eventSeq;
 
     try {
       const slot = slots?.find((s) => s.slotIndex === lastEvent.slotIndex);
+
+      // Skip client-side generation if shared commentary already covers this event
+      const slotAnyCheck = slot as (CommentarySlotData & { commentary?: Array<{ clipKey: string; audioUrl: string | null }> }) | undefined;
+      if (slotAnyCheck?.commentary?.some((c) => c.audioUrl)) {
+        // Shared stream is active for this rumble — skip client-side generation
+        // (the shared commentary effect above handles playback)
+        return;
+      }
+
       if (lastEvent.type === "turn_resolved") {
         const slotAny = slot as (CommentarySlotData & { rumbleId?: string }) | undefined;
         const rumbleId =
@@ -732,7 +807,7 @@ export default function CommentaryPlayer({
         if (!enqueuedIntrosRef.current.has(rumbleId)) {
           enqueuedIntrosRef.current.add(rumbleId);
           const fighters = Array.isArray(slotAny.fighters) ? slotAny.fighters : [];
-          const introFighters = fighters.slice(0, 4);
+          const introFighters = fighters.slice(0, 2);
           for (const fighter of introFighters) {
             const introContext = buildFighterIntroContext(fighter);
             if (!introContext) continue;

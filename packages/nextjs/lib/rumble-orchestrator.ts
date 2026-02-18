@@ -3405,6 +3405,7 @@ export class RumbleOrchestrator {
 const g = globalThis as unknown as {
   __rumbleOrchestrator?: RumbleOrchestrator;
   __rumbleAutoTickTimer?: ReturnType<typeof setInterval>;
+  __rumbleCommentaryHookRegistered?: boolean;
 };
 
 function shouldAutoTick(): boolean {
@@ -3447,6 +3448,13 @@ export function getOrchestrator(): RumbleOrchestrator {
     g.__rumbleOrchestrator = new RumbleOrchestrator(getQueueManager());
   }
   ensureAutoTick(g.__rumbleOrchestrator);
+  // Register shared commentary hook once (Railway worker pre-generates audio)
+  if (!g.__rumbleCommentaryHookRegistered) {
+    g.__rumbleCommentaryHookRegistered = true;
+    import("./commentary-hook")
+      .then(({ registerCommentaryHook }) => registerCommentaryHook(g.__rumbleOrchestrator!))
+      .catch((err) => console.warn("[Orchestrator] Commentary hook registration failed:", err));
+  }
   return g.__rumbleOrchestrator;
 }
 
