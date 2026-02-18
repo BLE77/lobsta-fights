@@ -1447,7 +1447,7 @@ export async function createRumble(
       });
 
     try {
-      return await sendAdminTxFireAndForget(method, admin, conn);
+      return await sendAdminTxFireAndForget(method, admin, provider.connection);
     } catch (err: unknown) {
       const context =
         `[solana-programs] createRumble failed` +
