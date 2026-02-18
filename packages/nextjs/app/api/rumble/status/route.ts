@@ -350,6 +350,9 @@ export async function GET(request: Request) {
                 : 0n;
             turnIntervalMs = Number(slotSpan > 0n ? slotSpan : 0n) * SLOT_MS_ESTIMATE;
 
+            // On-chain turn timing: COMMIT_WINDOW=30 slots + REVEAL_WINDOW=30 slots
+            const ONCHAIN_TURN_MS_ESTIMATE = 60 * SLOT_MS_ESTIMATE; // ~24s
+
             let targetSlot: bigint | null = null;
             if (!onchainCombat.turnResolved) {
               targetSlot =
@@ -361,9 +364,20 @@ export async function GET(request: Request) {
             }
             if (targetSlot) {
               const etaMs = slotsToMs(targetSlot);
-              nextTurnAt = new Date(Date.now() + etaMs).toISOString();
+              // If target is in the past (turn resolved, next not opened yet),
+              // estimate based on turn interval so the UI always has a countdown.
+              nextTurnAt = etaMs > 0
+                ? new Date(Date.now() + etaMs).toISOString()
+                : new Date(Date.now() + ONCHAIN_TURN_MS_ESTIMATE).toISOString();
+            } else if (onchainCombat.remainingFighters > 1) {
+              nextTurnAt = new Date(Date.now() + ONCHAIN_TURN_MS_ESTIMATE).toISOString();
             } else {
               nextTurnAt = null;
+            }
+
+            // Ensure turnIntervalMs is always meaningful during combat
+            if (!turnIntervalMs || turnIntervalMs <= 0) {
+              turnIntervalMs = ONCHAIN_TURN_MS_ESTIMATE;
             }
 
             // Update fighter HP/damage/meter from on-chain CombatState
