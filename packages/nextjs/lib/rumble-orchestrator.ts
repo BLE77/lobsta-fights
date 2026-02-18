@@ -29,6 +29,7 @@ import {
   type RumbleResult,
   type RumbleFighter,
   type RumbleTurn,
+  type RumblePairing,
 } from "./rumble-engine";
 
 import {
@@ -190,6 +191,7 @@ interface SlotCombatState {
   previousPairings: Set<string>;
   turnDecisions: Map<number, Map<string, OnchainTurnDecision>>;
   lastOnchainTurnResolved: number;
+  previousDamageTaken: Map<string, number>;
   lastTickAt: number;
 }
 
@@ -1761,10 +1763,55 @@ export class RumbleOrchestrator {
 
     const sync = this.syncLocalFightersFromOnchain(slot, state, combat);
     if (combat.turnResolved && combat.currentTurn > state.lastOnchainTurnResolved) {
+      // Build pairings from on-chain data: derive who fought whom, look up
+      // moves from turnDecisions, and compute per-fighter damage deltas.
+      const turnPairings: RumblePairing[] = [];
+      const turnNum = combat.currentTurn;
+      const pairs = this.deriveOnchainPairings(slot, state, combat, rumbleIdNum);
+      const decisions = state.turnDecisions.get(turnNum);
+      let bye: string | undefined;
+
+      // Find bye fighter (odd one out)
+      const pairedFighters = new Set(pairs.flat());
+      for (const f of state.fighters) {
+        if (f.hp > 0 && !pairedFighters.has(f.id)) {
+          bye = f.id;
+          break;
+        }
+      }
+
+      for (const [fighterA, fighterB] of pairs) {
+        const idxA = slot.fighters.indexOf(fighterA);
+        const idxB = slot.fighters.indexOf(fighterB);
+        const prevDmgA = state.previousDamageTaken.get(fighterA) ?? 0;
+        const prevDmgB = state.previousDamageTaken.get(fighterB) ?? 0;
+        const curDmgA = Number(combat.totalDamageTaken[idxA] ?? 0n);
+        const curDmgB = Number(combat.totalDamageTaken[idxB] ?? 0n);
+        const moveA = decisions?.get(fighterA)?.move ?? "MID_STRIKE";
+        const moveB = decisions?.get(fighterB)?.move ?? "MID_STRIKE";
+        turnPairings.push({
+          fighterA,
+          fighterB,
+          moveA,
+          moveB,
+          damageToA: Math.max(0, curDmgA - prevDmgA),
+          damageToB: Math.max(0, curDmgB - prevDmgB),
+        });
+      }
+
+      // Update previous damage tracking for next turn
+      for (let i = 0; i < slot.fighters.length; i++) {
+        state.previousDamageTaken.set(
+          slot.fighters[i],
+          Number(combat.totalDamageTaken[i] ?? 0n),
+        );
+      }
+
       const turn: RumbleTurn = {
-        turnNumber: combat.currentTurn,
-        pairings: [],
+        turnNumber: turnNum,
+        pairings: turnPairings,
         eliminations: sync.newEliminations,
+        bye,
       };
       state.turns.push(turn);
       state.lastOnchainTurnResolved = combat.currentTurn;
@@ -1930,6 +1977,7 @@ export class RumbleOrchestrator {
       previousPairings: new Set(),
       turnDecisions: new Map(),
       lastOnchainTurnResolved: 0,
+      previousDamageTaken: new Map(),
       lastTickAt: Date.now(),
     });
   }

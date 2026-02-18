@@ -39,6 +39,7 @@ const VOICE_GAIN = 1.0;
 
 /** SFX map: eventType (+ optional threshold) → wav file */
 const SFX_MAP: Record<string, string> = {
+  betting_open: "/sounds/round-start.wav",
   combat_start: "/sounds/round-start.wav",
   elimination: "/sounds/ko-explosion.wav",
   big_hit_heavy: "/sounds/hit-heavy.wav",
@@ -60,6 +61,16 @@ const ALL_SOUND_URLS = [
 
 // Priority events that jump ahead in queue
 const HIGH_PRIORITY_EVENTS = new Set<CommentaryEventType>(["elimination", "ichor_shower"]);
+
+function deriveRumbleLabel(rumbleId: string | undefined, slotIndex: number): string {
+  const raw = typeof rumbleId === "string" ? rumbleId.trim() : "";
+  if (!raw) return `Rumble ${slotIndex + 1}`;
+  const parts = raw.split(/[_-]+/).filter(Boolean);
+  const numericTail = [...parts].reverse().find((part) => /^\d+$/.test(part));
+  if (!numericTail) return `Rumble ${slotIndex + 1}`;
+  if (numericTail.length <= 6) return `Rumble ${Number(numericTail)}`;
+  return `Rumble ${numericTail.slice(-4)}`;
+}
 
 // ---------------------------------------------------------------------------
 // RadioMixer — Web Audio API based audio engine
@@ -720,7 +731,7 @@ export default function CommentaryPlayer({
         // Enqueue fighter intros (up to 4 notable fighters)
         if (!enqueuedIntrosRef.current.has(rumbleId)) {
           enqueuedIntrosRef.current.add(rumbleId);
-          const fighters = Array.isArray(slotAny.fighters) ? slotAny.fighters.filter((f) => f.robotMeta) : [];
+          const fighters = Array.isArray(slotAny.fighters) ? slotAny.fighters : [];
           const introFighters = fighters.slice(0, 4);
           for (const fighter of introFighters) {
             const introContext = buildFighterIntroContext(fighter);
@@ -770,6 +781,7 @@ export default function CommentaryPlayer({
       })[0];
 
       const rumbleId = target.rumbleId!;
+      const rumbleLabel = deriveRumbleLabel(rumbleId, target.slotIndex);
       const lastAt = lastBettingHypeAtByRumbleRef.current.get(rumbleId) ?? 0;
       if (now - lastAt < BETTING_HYPE_INTERVAL_MS) return;
 
@@ -789,13 +801,24 @@ export default function CommentaryPlayer({
 
       const leaderText = leaders.length > 0 ? ` Current action leaders: ${leaders.join(", ")}.` : "";
 
-      // Vary the hype template so grounded mode doesn't repeat the same phrase
+      const featured = target.fighters
+        .map((fighter) => fighter.name?.trim())
+        .filter((name): name is string => Boolean(name))
+        .slice(0, 2);
+      const loreBite =
+        featured.length >= 2
+          ? ` Tale of the tape: ${featured[0]} vs ${featured[1]}.`
+          : featured.length === 1
+            ? ` Eyes on ${featured[0]} right now.`
+            : "";
+
+      // Vary the hype template while keeping the same betting-open phrasing.
       const templates = [
-        `Betting is still open in slot ${target.slotIndex + 1}! ${secondsLeft} seconds until lock. Pool stands at ${pool.toFixed(2)} SOL.${leaderText} Place your bets now!`,
-        `The clock is ticking! ${secondsLeft}s remain to get your bets in on slot ${target.slotIndex + 1}. Total pool: ${pool.toFixed(2)} SOL.${leaderText}`,
-        `Who's got the edge? ${secondsLeft} seconds left in the betting window. ${pool.toFixed(2)} SOL on the line.${leaderText} Lock in your fighter!`,
-        `Last call coming up! Only ${secondsLeft}s to deploy your SOL in slot ${target.slotIndex + 1}. Pool at ${pool.toFixed(2)} SOL.${leaderText}`,
-        `The arena is heating up! ${secondsLeft} seconds until combat begins. ${pool.toFixed(2)} SOL in the pool.${leaderText} Don't miss your chance!`,
+        `Betting is still OPEN for ${rumbleLabel}. ${secondsLeft} seconds until lock in slot ${target.slotIndex + 1}. Pool stands at ${pool.toFixed(2)} SOL.${leaderText}${loreBite} Place your bets now!`,
+        `Betting is still OPEN for ${rumbleLabel}. The clock is ticking at ${secondsLeft}s left. Total pool: ${pool.toFixed(2)} SOL.${leaderText}${loreBite}`,
+        `Betting is still OPEN for ${rumbleLabel}. ${secondsLeft} seconds left in the window and ${pool.toFixed(2)} SOL on the line.${leaderText}${loreBite}`,
+        `Betting is still OPEN for ${rumbleLabel}. Last call incoming: ${secondsLeft}s to deploy in slot ${target.slotIndex + 1}. Pool at ${pool.toFixed(2)} SOL.${leaderText}${loreBite}`,
+        `Betting is still OPEN for ${rumbleLabel}. Combat is getting close at ${secondsLeft}s out. ${pool.toFixed(2)} SOL in the pool.${leaderText}${loreBite}`,
       ];
       const templateIndex = Math.floor(secondsLeft / 20) % templates.length;
       const context = templates[templateIndex];

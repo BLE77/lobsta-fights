@@ -79,6 +79,41 @@ interface CommentaryCandidate {
 }
 
 const BIG_HIT_THRESHOLD = 18;
+const SYNTHETIC_ROBOT_TYPES = [
+  "salvage-class brawler",
+  "neon trench interceptor",
+  "void-forged enforcer",
+  "scrapyard tactician",
+  "overclocked arena bruiser",
+];
+const SYNTHETIC_STYLES = [
+  "pressure-counter",
+  "hit-and-slip",
+  "mid-range attrition",
+  "armor-first brawling",
+  "tempo-breaking feints",
+];
+const SYNTHETIC_SIGNATURES = [
+  "Railbreaker Uppercut",
+  "Static Reaper Sweep",
+  "Grinder Hook",
+  "Ghostline Feint",
+  "Sunder Pulse",
+];
+const SYNTHETIC_PERSONALITIES = [
+  "cold and methodical under pressure",
+  "chaotic and loud when cornered",
+  "mocking, patient, and lethal late",
+  "quiet until the first clean hit lands",
+  "all business with no wasted motion",
+];
+const SYNTHETIC_CHASSIS = [
+  "scarred alloy frame wrapped in heat-blued plates",
+  "lean carbon chassis with shock-absorbing knees",
+  "dense ferrosteel shell tuned for close exchanges",
+  "modular scrapplate body with reinforced shoulder guards",
+  "hybrid composite frame built for sustained punishment",
+];
 
 // ---------------------------------------------------------------------------
 // Fighter lore helpers — build compact context strings from robot_metadata
@@ -89,7 +124,7 @@ export function buildFighterLoreBlock(
 ): string {
   const lines: string[] = [];
   for (const f of fighters) {
-    const m = f.robotMeta;
+    const m = getEffectiveRobotMeta(f);
     if (!m || !f.name || isLikelyIdentifier(f.name)) continue;
     const parts: string[] = [`${f.name}`];
     if (m.robot_type) parts.push(`(${m.robot_type})`);
@@ -104,7 +139,7 @@ export function buildFighterLoreBlock(
 export function buildFighterIntroContext(
   fighter: CommentarySlotData["fighters"][number],
 ): string | null {
-  const m = fighter.robotMeta;
+  const m = getEffectiveRobotMeta(fighter);
   if (!m || !fighter.name || isLikelyIdentifier(fighter.name)) return null;
   const parts: string[] = [`Introducing ${fighter.name}.`];
   if (m.robot_type) parts.push(`A ${m.robot_type}.`);
@@ -172,6 +207,65 @@ function collectAllowedNames(slot: CommentarySlotData): string[] {
     uniq.add(name);
   }
   return [...uniq];
+}
+
+function deriveRumbleLabel(slot: CommentarySlotData): string {
+  const rumbleId = typeof slot.rumbleId === "string" ? slot.rumbleId.trim() : "";
+  if (!rumbleId) return `Rumble ${slot.slotIndex + 1}`;
+  const parts = rumbleId.split(/[_-]+/).filter(Boolean);
+  const numericTail = [...parts].reverse().find((part) => /^\d+$/.test(part));
+  if (!numericTail) return `Rumble ${slot.slotIndex + 1}`;
+  if (numericTail.length <= 6) return `Rumble ${Number(numericTail)}`;
+  return `Rumble ${numericTail.slice(-4)}`;
+}
+
+function buildSyntheticRobotMeta(
+  fighter: CommentarySlotData["fighters"][number],
+): CommentaryRobotMeta | null {
+  if (!fighter.name || isLikelyIdentifier(fighter.name)) return null;
+  const key = `${fighter.id}:${fighter.name}`;
+  const type = SYNTHETIC_ROBOT_TYPES[statFromName(key, 11, 0, SYNTHETIC_ROBOT_TYPES.length - 1)];
+  const style = SYNTHETIC_STYLES[statFromName(key, 29, 0, SYNTHETIC_STYLES.length - 1)];
+  const sig = SYNTHETIC_SIGNATURES[statFromName(key, 47, 0, SYNTHETIC_SIGNATURES.length - 1)];
+  const personality =
+    SYNTHETIC_PERSONALITIES[
+      statFromName(key, 61, 0, SYNTHETIC_PERSONALITIES.length - 1)
+    ];
+  const chassis =
+    SYNTHETIC_CHASSIS[statFromName(key, 73, 0, SYNTHETIC_CHASSIS.length - 1)];
+  return {
+    robot_type: type,
+    fighting_style: style,
+    signature_move: sig,
+    personality,
+    chassis_description: chassis,
+  };
+}
+
+function getEffectiveRobotMeta(
+  fighter: CommentarySlotData["fighters"][number],
+): CommentaryRobotMeta | null {
+  return fighter.robotMeta ?? buildSyntheticRobotMeta(fighter);
+}
+
+function buildBettingSpotlight(slot: CommentarySlotData): string {
+  const featured = slot.fighters
+    .filter((fighter) => !!fighter.name && !isLikelyIdentifier(fighter.name))
+    .map((fighter) => {
+      const meta = getEffectiveRobotMeta(fighter);
+      const score = statFromName(`${slot.rumbleId ?? slot.slotIndex}:${fighter.name}`, 89, 1, 1000);
+      return { fighter, meta, score };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 2);
+  if (featured.length === 0) return "";
+  const lines = featured.map(({ fighter, meta }) => {
+    if (!meta) return fighter.name;
+    const style = meta.fighting_style ? ` ${meta.fighting_style}` : "";
+    const sig = meta.signature_move ? `, signature ${meta.signature_move}` : "";
+    return `${fighter.name}${style}${sig}`;
+  });
+  return ` Spotlight: ${lines.join(" | ")}.`;
 }
 
 function statFromName(name: string, salt: number, min: number, max: number): number {
@@ -339,37 +433,25 @@ export function evaluateEvent(
     }
 
     case "combat_started": {
+      const rumbleLabel = deriveRumbleLabel(slot);
       const fighterNames = slot.fighters.map((f) => f.name).join(", ");
       const lore = buildFighterLoreBlock(slot.fighters);
       return {
         eventType: "combat_start",
-        context: `Combat begins in slot ${slot.slotIndex + 1}! ${slot.fighters.length} fighters enter: ${fighterNames}.${lore}`,
+        context: `${rumbleLabel} combat begins in slot ${slot.slotIndex + 1}! ${slot.fighters.length} fighters enter: ${fighterNames}.${lore}`,
         allowedNames,
         clipKey: clipKeyFor(slot, "combat-start"),
       };
     }
 
     case "betting_open": {
-      const namedFighters = slot.fighters
-        .map((f) => f.name?.trim())
-        .filter((name): name is string => !!name && !isLikelyIdentifier(name));
-
-      const statLines = namedFighters.slice(0, 4).map((name) => {
-        const aggression = statFromName(name, 11, 55, 99);
-        const armor = statFromName(name, 29, 45, 95);
-        const clutch = statFromName(name, 47, 50, 98);
-        return `${name} AGG ${aggression} ARM ${armor} CLT ${clutch}`;
-      });
-
-      const statsText =
-        statLines.length > 0
-          ? ` Stat board: ${statLines.join("; ")}.`
-          : "";
+      const rumbleLabel = deriveRumbleLabel(slot);
+      const spotlight = buildBettingSpotlight(slot);
       const lore = buildFighterLoreBlock(slot.fighters);
 
       return {
         eventType: "betting_open",
-        context: `Betting is OPEN in slot ${slot.slotIndex + 1}. Place your bets now.${statsText}${lore}`,
+        context: `Betting is now OPEN for ${rumbleLabel} in slot ${slot.slotIndex + 1}.${spotlight}${lore}`,
         allowedNames,
         clipKey: clipKeyFor(slot, "betting-open"),
       };
@@ -377,6 +459,7 @@ export function evaluateEvent(
 
     case "payout_complete":
     case "rumble_complete": {
+      const rumbleLabel = deriveRumbleLabel(slot);
       const winnerId =
         event.data?.result?.winner ??
         event.data?.winner ??
@@ -391,7 +474,7 @@ export function evaluateEvent(
       const victoryNote = winnerFighter?.robotMeta?.victory_line ? ` "${winnerFighter.robotMeta.victory_line}"` : "";
       return {
         eventType: "payout",
-        context: `Rumble in slot ${slot.slotIndex + 1} is over! ${winner} wins.${victoryNote} Total SOL pool: ${pool.toFixed(2)} SOL.`,
+        context: `${rumbleLabel} in slot ${slot.slotIndex + 1} is over! ${winner} wins.${victoryNote} Total SOL pool: ${pool.toFixed(2)} SOL.`,
         allowedNames,
         clipKey: clipKeyFor(slot, "payout"),
       };
@@ -401,35 +484,29 @@ export function evaluateEvent(
       const newState = event.data?.state;
 
       if (newState === "combat") {
+        const rumbleLabel = deriveRumbleLabel(slot);
         const fighterNames = slot.fighters.map((f) => f.name).join(", ");
         return {
           eventType: "combat_start",
-          context: `Combat begins in slot ${slot.slotIndex + 1}! ${slot.fighters.length} fighters enter the arena: ${fighterNames}.`,
+          context: `${rumbleLabel} combat begins in slot ${slot.slotIndex + 1}! ${slot.fighters.length} fighters enter the arena: ${fighterNames}.`,
           allowedNames,
           clipKey: clipKeyFor(slot, "combat-start"),
         };
       }
 
       if (newState === "betting") {
-        const namedFighters = slot.fighters
-          .map((f) => f.name?.trim())
-          .filter((name): name is string => !!name && !isLikelyIdentifier(name));
-        const statLines = namedFighters.slice(0, 4).map((name) => {
-          const aggression = statFromName(name, 11, 55, 99);
-          const armor = statFromName(name, 29, 45, 95);
-          const clutch = statFromName(name, 47, 50, 98);
-          return `${name} AGG ${aggression} ARM ${armor} CLT ${clutch}`;
-        });
-        const statsText = statLines.length > 0 ? ` Stat board: ${statLines.join("; ")}.` : "";
+        const rumbleLabel = deriveRumbleLabel(slot);
+        const spotlight = buildBettingSpotlight(slot);
         return {
           eventType: "betting_open",
-          context: `Betting is OPEN in slot ${slot.slotIndex + 1}. Place your bets now.${statsText}`,
+          context: `Betting is now OPEN for ${rumbleLabel} in slot ${slot.slotIndex + 1}.${spotlight}`,
           allowedNames,
           clipKey: clipKeyFor(slot, "betting-open"),
         };
       }
 
       if (newState === "payout") {
+        const rumbleLabel = deriveRumbleLabel(slot);
         const winner = slot.fighters
           .filter((f) => !f.eliminatedOnTurn)
           .sort((a, b) => a.placement - b.placement)[0];
@@ -438,7 +515,7 @@ export function evaluateEvent(
         const victoryNote = winner?.robotMeta?.victory_line ? ` "${winner.robotMeta.victory_line}"` : "";
         return {
           eventType: "payout",
-          context: `Rumble in slot ${slot.slotIndex + 1} is over! ${winnerName} takes the crown.${victoryNote} Total SOL pool: ${pool.toFixed(2)} SOL.`,
+          context: `${rumbleLabel} in slot ${slot.slotIndex + 1} is over! ${winnerName} takes the crown.${victoryNote} Total SOL pool: ${pool.toFixed(2)} SOL.`,
           allowedNames,
           clipKey: clipKeyFor(slot, "payout"),
         };
