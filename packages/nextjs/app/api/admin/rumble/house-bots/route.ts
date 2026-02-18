@@ -46,7 +46,7 @@ export async function POST(request: Request) {
     }
 
     if (action === "resume") {
-      orchestrator.resumeHouseBots();
+      await orchestrator.resumeHouseBots();
       return NextResponse.json({
         success: true,
         action,

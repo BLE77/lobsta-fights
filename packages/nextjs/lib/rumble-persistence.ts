@@ -982,3 +982,41 @@ export async function updateRumbleTxSignature(
     logError(`updateRumbleTxSignature(${rumbleId}, ${step}) failed`, err);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Admin Config — persistent key-value store (survives deploys)
+// ---------------------------------------------------------------------------
+
+export async function getAdminConfig(key: string): Promise<unknown> {
+  try {
+    const sb = freshServiceClient();
+    const { data, error } = await sb
+      .from("admin_config")
+      .select("value")
+      .eq("key", key)
+      .single();
+    if (error) {
+      if (error.code === "PGRST116") return null; // not found
+      throw error;
+    }
+    return data?.value ?? null;
+  } catch (err) {
+    logError(`getAdminConfig(${key}) failed`, err);
+    return null;
+  }
+}
+
+export async function setAdminConfig(key: string, value: unknown): Promise<void> {
+  try {
+    const sb = freshServiceClient();
+    const { error } = await sb
+      .from("admin_config")
+      .upsert(
+        { key, value, updated_at: new Date().toISOString() },
+        { onConflict: "key" },
+      );
+    if (error) throw error;
+  } catch (err) {
+    logError(`setAdminConfig(${key}) failed`, err);
+  }
+}

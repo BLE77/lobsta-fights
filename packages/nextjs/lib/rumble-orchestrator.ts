@@ -442,10 +442,23 @@ export class RumbleOrchestrator {
     this.queueManager = queueManager;
     this.loadConfiguredFighterSigners();
 
+    // Load persisted pause state from Supabase (survives deploys)
+    this.loadPersistedPauseState();
+
     // Hook into the queue manager's slot recycling so we can handle auto-requeue
     this.queueManager.onSlotRecycled = (slotIndex, previousFighters, previousRumbleId) => {
       this.handleSlotRecycled(slotIndex, previousFighters, previousRumbleId);
     };
+  }
+
+  private loadPersistedPauseState(): void {
+    persist.getAdminConfig("house_bots_paused").then((value) => {
+      const paused = value === true;
+      this.houseBotsPaused = paused;
+      console.log(`[Orchestrator] Loaded persisted house_bots_paused = ${paused}`);
+    }).catch(() => {
+      console.warn("[Orchestrator] Failed to load persisted pause state, defaulting to false");
+    });
   }
 
   private parseSecretKey(raw: unknown): Uint8Array | null {
@@ -860,6 +873,7 @@ export class RumbleOrchestrator {
     const removedQueuedHouseBots = await this.removeQueuedHouseBots();
     this.houseBotsPaused = false;
     this.houseBotsLastRestartAt = new Date().toISOString();
+    await persist.setAdminConfig("house_bots_paused", false);
     return {
       removedQueuedHouseBots,
       restartedAt: this.houseBotsLastRestartAt,
@@ -868,12 +882,14 @@ export class RumbleOrchestrator {
 
   async pauseHouseBots(): Promise<{ removedQueuedHouseBots: number }> {
     this.houseBotsPaused = true;
+    await persist.setAdminConfig("house_bots_paused", true);
     const removedQueuedHouseBots = await this.removeQueuedHouseBots();
     return { removedQueuedHouseBots };
   }
 
-  resumeHouseBots(): void {
+  async resumeHouseBots(): Promise<void> {
     this.houseBotsPaused = false;
+    await persist.setAdminConfig("house_bots_paused", false);
   }
 
   /**

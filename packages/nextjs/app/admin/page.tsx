@@ -791,9 +791,92 @@ export default function AdminPage() {
       </div>
 
       {/* Content */}
-      <div className="max-w-7xl mx-auto px-4 py-6">
-        <Section title="Rumble Controls">
-          <div className="bg-stone-900/60 border border-stone-800 rounded p-4 space-y-3">
+      <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+
+        {/* ============================================================= */}
+        {/* HOUSE BOTS — Big prominent toggle at top                       */}
+        {/* ============================================================= */}
+        <div
+          className={`rounded-lg border-2 p-5 transition-colors ${
+            houseBotStatus?.paused
+              ? "bg-red-950/30 border-red-700/60"
+              : "bg-emerald-950/30 border-emerald-700/60"
+          }`}
+        >
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-4">
+              <div
+                className={`w-4 h-4 rounded-full ${
+                  houseBotStatus?.paused
+                    ? "bg-red-500 shadow-[0_0_12px_rgba(239,68,68,0.5)]"
+                    : "bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.5)] animate-pulse"
+                }`}
+              />
+              <div>
+                <h2 className="font-mono text-lg font-bold tracking-wide">
+                  HOUSE BOTS:{" "}
+                  <span className={houseBotStatus?.paused ? "text-red-400" : "text-emerald-400"}>
+                    {houseBotStatus?.paused ? "OFF" : "RUNNING"}
+                  </span>
+                </h2>
+                <p className="font-mono text-[11px] text-stone-500">
+                  {houseBotStatus?.configuredHouseBotCount ?? 0} bots configured
+                  {" · "}target: {houseBotStatus?.targetPopulation ?? "-"}
+                  {" · "}persisted to DB
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() =>
+                runHouseBotAction(houseBotStatus?.paused ? "resume" : "pause")
+              }
+              disabled={!!actionBusy}
+              className={`px-6 py-3 rounded-lg font-mono text-sm font-bold transition-all disabled:opacity-50 ${
+                houseBotStatus?.paused
+                  ? "bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/50"
+                  : "bg-red-600 hover:bg-red-500 text-white shadow-lg shadow-red-900/50"
+              }`}
+            >
+              {actionBusy?.includes("House bots")
+                ? "..."
+                : houseBotStatus?.paused
+                  ? "START BOTS"
+                  : "STOP BOTS"}
+            </button>
+          </div>
+        </div>
+
+        {/* Action feedback */}
+        {actionMessage && (
+          <p className="font-mono text-xs text-amber-400">{actionMessage}</p>
+        )}
+
+        {/* System warnings */}
+        {(dashboard?.systemWarnings?.length ?? 0) > 0 && (
+          <div className="space-y-1">
+            {dashboard!.systemWarnings!.slice(0, 5).map((warning, idx) => (
+              <p key={`${idx}-${warning}`} className="font-mono text-[10px] text-red-400">
+                {warning}
+              </p>
+            ))}
+          </div>
+        )}
+        {(dashboard?.staleActiveRows ?? 0) > 0 || activeRumbles.length > dedupedActiveRumbles.length ? (
+          <p className="font-mono text-[10px] text-amber-500">
+            Hiding{" "}
+            {(dashboard?.staleActiveRows ?? 0) + Math.max(0, activeRumbles.length - dedupedActiveRumbles.length)}
+            {" "}stale active row(s).
+          </p>
+        ) : null}
+
+        {/* ============================================================= */}
+        {/* Rumble Controls (collapsible)                                  */}
+        {/* ============================================================= */}
+        <details className="group">
+          <summary className="font-mono text-sm text-amber-400 uppercase tracking-wider cursor-pointer hover:text-amber-300 select-none">
+            Rumble Controls
+          </summary>
+          <div className="bg-stone-900/60 border border-stone-800 rounded p-4 mt-2 space-y-3">
             <div className="flex flex-wrap gap-2 items-center">
               <button
                 onClick={runTickNow}
@@ -808,20 +891,6 @@ export default function AdminPage() {
                 className="px-3 py-2 rounded bg-amber-700 hover:bg-amber-600 disabled:opacity-50 font-mono text-xs"
               >
                 Restart House Bots
-              </button>
-              <button
-                onClick={() => runHouseBotAction("pause")}
-                disabled={!!actionBusy}
-                className="px-3 py-2 rounded bg-stone-700 hover:bg-stone-600 disabled:opacity-50 font-mono text-xs"
-              >
-                Pause House Bots
-              </button>
-              <button
-                onClick={() => runHouseBotAction("resume")}
-                disabled={!!actionBusy}
-                className="px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 font-mono text-xs"
-              >
-                Resume House Bots
               </button>
               <button
                 onClick={runHardReset}
@@ -926,6 +995,7 @@ export default function AdminPage() {
               ) : null}
             </div>
 
+            {/* On-Chain Turn Controls */}
             <div className="border-t border-stone-800 pt-3 space-y-2">
               <div className="font-mono text-[11px] text-amber-400">On-Chain Turn Controls</div>
               <div className="flex flex-wrap gap-2 items-center">
@@ -983,10 +1053,8 @@ export default function AdminPage() {
               ) : null}
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
-              <StatCard label="House Enabled" value={houseBotStatus?.configuredEnabled ? "YES" : "NO"} />
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
               <StatCard label="House Count" value={houseBotStatus?.configuredHouseBotCount ?? "-"} />
-              <StatCard label="Paused" value={houseBotStatus?.paused ? "YES" : "NO"} />
               <StatCard label="Target Pop" value={houseBotStatus?.targetPopulation ?? "-"} />
               <StatCard
                 label="Target Source"
@@ -997,32 +1065,8 @@ export default function AdminPage() {
                 value={houseBotStatus?.lastRestartAt ? new Date(houseBotStatus.lastRestartAt).toLocaleTimeString() : "-"}
               />
             </div>
-
-            {actionMessage ? (
-              <p className="font-mono text-xs text-amber-400">{actionMessage}</p>
-            ) : (
-              <p className="font-mono text-[10px] text-stone-600">
-                Run all rumble ops from here. No terminal needed.
-              </p>
-            )}
-            {(dashboard?.staleActiveRows ?? 0) > 0 || activeRumbles.length > dedupedActiveRumbles.length ? (
-              <p className="font-mono text-[10px] text-amber-500">
-                Admin cleaned view: hiding{" "}
-                {(dashboard?.staleActiveRows ?? 0) + Math.max(0, activeRumbles.length - dedupedActiveRumbles.length)}
-                {" "}stale active row(s).
-              </p>
-            ) : null}
-            {(dashboard?.systemWarnings?.length ?? 0) > 0 ? (
-              <div className="space-y-1">
-                {dashboard!.systemWarnings!.slice(0, 5).map((warning, idx) => (
-                  <p key={`${idx}-${warning}`} className="font-mono text-[10px] text-red-400">
-                    {warning}
-                  </p>
-                ))}
-              </div>
-            ) : null}
           </div>
-        </Section>
+        </details>
 
         {tab === "overview" && (
           <OverviewTab
