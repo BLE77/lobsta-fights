@@ -32,6 +32,18 @@ const MAX_ACTIVE_AGE_MS_BY_STATUS: Record<string, number> = {
 };
 
 // ---------------------------------------------------------------------------
+// Cached getSlot — avoids redundant RPC calls across concurrent status polls
+// ---------------------------------------------------------------------------
+let _slotCache: { slot: number; at: number } | null = null;
+async function getCachedSlot(): Promise<number | null> {
+  const now = Date.now();
+  if (_slotCache && now - _slotCache.at < 1500) return _slotCache.slot;
+  const slot = await getConnection().getSlot("processed").catch(() => null);
+  if (slot !== null) _slotCache = { slot, at: now };
+  return slot;
+}
+
+// ---------------------------------------------------------------------------
 // Fresh Supabase client (no-store cache)
 // ---------------------------------------------------------------------------
 
@@ -286,7 +298,7 @@ export async function GET(request: Request) {
 
     // Cross-check slot state/timing against on-chain data so UI pacing is
     // anchored to chain slots (ORE-style), not backend loop cadence.
-    const currentClusterSlot = await getConnection().getSlot("processed").catch(() => null);
+    const currentClusterSlot = await getCachedSlot();
     const currentClusterSlotBig =
       typeof currentClusterSlot === "number" && Number.isFinite(currentClusterSlot)
         ? BigInt(currentClusterSlot)

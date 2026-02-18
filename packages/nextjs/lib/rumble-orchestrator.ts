@@ -85,6 +85,7 @@ import {
   type RumbleCombatAccountState,
   readShowerRequest,
   RUMBLE_ENGINE_ID,
+  invalidateReadCache,
 } from "./solana-programs";
 import { Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
@@ -1380,6 +1381,7 @@ export class RumbleOrchestrator {
 
     const created = await this.createRumbleOnChain(rumbleId, fighterIds, bettingDeadlineUnix);
     if (!created) return false;
+    invalidateReadCache(`rumble:${rumbleIdNum}`);
 
     let after: Awaited<ReturnType<typeof readRumbleAccountState>> = null;
     for (let attempt = 0; attempt < ONCHAIN_CREATE_VERIFY_ATTEMPTS; attempt++) {
@@ -1430,6 +1432,7 @@ export class RumbleOrchestrator {
       } catch (err) {
         console.warn(`[OnChain] startCombat (recovery) failed for ${rumbleId}: ${formatError(err)}`);
       }
+      invalidateReadCache(`rumble:${rumbleIdNum}`);
       state = await readRumbleAccountState(rumbleIdNum).catch(() => null);
     }
     return state;
@@ -1862,6 +1865,7 @@ export class RumbleOrchestrator {
       }
       // Re-read combat state after open_turn so we can proceed to
       // commit/reveal/resolve in the same tick cycle.
+      invalidateReadCache(`combat:${rumbleIdNum}`);
       combat = await readRumbleCombatState(rumbleIdNum).catch(() => null);
       if (!combat || combat.currentTurn === 0) return;
     }
@@ -1900,6 +1904,7 @@ export class RumbleOrchestrator {
         }
       }
       // Re-read to check if resolve succeeded so we can advance in same tick.
+      invalidateReadCache(`combat:${rumbleIdNum}`);
       combat = await readRumbleCombatState(rumbleIdNum).catch(() => null);
       if (!combat) return;
     }
@@ -1922,6 +1927,7 @@ export class RumbleOrchestrator {
       } catch (err) {
         console.warn(`[OnChain] finalizeRumble failed for ${slot.id}: ${formatError(err)}`);
       }
+      invalidateReadCache(`rumble:${rumbleIdNum}`);
       onchainState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
       if (onchainState?.state === "payout" || onchainState?.state === "complete") {
         await this.finishCombatFromOnchain(slot, state, rumbleIdNum);

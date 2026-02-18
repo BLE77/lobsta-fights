@@ -66,6 +66,30 @@ const SLOT_HASHES_SYSVAR_ID = new PublicKey(
 );
 
 // ---------------------------------------------------------------------------
+// Time-based read cache — reduces RPC calls for hot on-chain reads
+// ---------------------------------------------------------------------------
+
+const _readCache = new Map<string, { data: unknown; expiresAt: number }>();
+
+function cachedRead<T>(key: string, ttlMs: number, fn: () => Promise<T>): Promise<T> {
+  const now = Date.now();
+  const hit = _readCache.get(key);
+  if (hit && hit.expiresAt > now) return Promise.resolve(hit.data as T);
+  return fn().then(r => {
+    _readCache.set(key, { data: r, expiresAt: now + ttlMs });
+    if (_readCache.size > 200) {
+      for (const [k, v] of _readCache) { if (v.expiresAt <= now) _readCache.delete(k); }
+    }
+    return r;
+  });
+}
+
+export function invalidateReadCache(prefix?: string) {
+  if (!prefix) { _readCache.clear(); return; }
+  for (const k of _readCache.keys()) { if (k.startsWith(prefix)) _readCache.delete(k); }
+}
+
+// ---------------------------------------------------------------------------
 // PDA Derivation Helpers (exported for frontend use)
 // ---------------------------------------------------------------------------
 
@@ -247,56 +271,59 @@ export async function readRumbleAccountState(
   rumbleId: bigint | number,
   connection?: Connection,
 ): Promise<RumbleAccountState | null> {
-  const conn = connection ?? getConnection();
-  const [rumblePda] = deriveRumblePda(rumbleId);
-  // Use processed commitment to minimize stale reads around betting close.
-  const info = await conn.getAccountInfo(rumblePda, "processed");
-  if (!info || info.data.length < 17) return null;
+  const key = `rumble:${rumbleId}`;
+  return cachedRead(key, 3000, async () => {
+    const conn = connection ?? getConnection();
+    const [rumblePda] = deriveRumblePda(rumbleId);
+    // Use processed commitment to minimize stale reads around betting close.
+    const info = await conn.getAccountInfo(rumblePda, "processed");
+    if (!info || info.data.length < 17) return null;
 
-  const data = info.data;
-  const parsedRumbleId = readU64LE(data, 8);
-  const rawState = data[16] ?? 0;
-  const state = ONCHAIN_RUMBLE_STATES[rawState];
-  if (!state) return null;
+    const data = info.data;
+    const parsedRumbleId = readU64LE(data, 8);
+    const rawState = data[16] ?? 0;
+    const state = ONCHAIN_RUMBLE_STATES[rawState];
+    if (!state) return null;
 
-  const fightersOffset = 8 + 8 + 1;
-  const fighterCountOffset = fightersOffset + 32 * 16;
-  const fighterCount = data[fighterCountOffset] ?? 0;
-  const bettingPoolsOffset = fighterCountOffset + 1;
-  const totalDeployedOffset = bettingPoolsOffset + 8 * 16;
-  const adminFeeCollectedOffset = totalDeployedOffset + 8;
-  const sponsorshipPaidOffset = adminFeeCollectedOffset + 8;
-  const placementsOffset = sponsorshipPaidOffset + 8;
-  const winnerIndexOffset = placementsOffset + 16;
-  const bettingDeadlineOffset = winnerIndexOffset + 1;
-  const combatStartedAtOffset = bettingDeadlineOffset + 8;
-  const completedAtOffset = combatStartedAtOffset + 8;
+    const fightersOffset = 8 + 8 + 1;
+    const fighterCountOffset = fightersOffset + 32 * 16;
+    const fighterCount = data[fighterCountOffset] ?? 0;
+    const bettingPoolsOffset = fighterCountOffset + 1;
+    const totalDeployedOffset = bettingPoolsOffset + 8 * 16;
+    const adminFeeCollectedOffset = totalDeployedOffset + 8;
+    const sponsorshipPaidOffset = adminFeeCollectedOffset + 8;
+    const placementsOffset = sponsorshipPaidOffset + 8;
+    const winnerIndexOffset = placementsOffset + 16;
+    const bettingDeadlineOffset = winnerIndexOffset + 1;
+    const combatStartedAtOffset = bettingDeadlineOffset + 8;
+    const completedAtOffset = combatStartedAtOffset + 8;
 
-  const winnerIndexRaw = data.length > winnerIndexOffset ? data[winnerIndexOffset] : undefined;
-  const winnerIndex =
-    typeof winnerIndexRaw === "number" && winnerIndexRaw < 16 ? winnerIndexRaw : null;
-  const placements: number[] = [];
-  for (let i = 0; i < 16; i++) {
-    const offset = placementsOffset + i;
-    placements.push(offset < data.length ? data[offset] ?? 0 : 0);
-  }
-  const bettingDeadlineRaw = data.length >= bettingDeadlineOffset + 8 ? readI64LE(data, bettingDeadlineOffset) : 0n;
-  const bettingCloseSlot = bettingDeadlineRaw > 0n ? bettingDeadlineRaw : 0n;
-  const combatStartedAtTs = data.length >= combatStartedAtOffset + 8 ? readI64LE(data, combatStartedAtOffset) : 0n;
-  const completedAtTs = data.length >= completedAtOffset + 8 ? readI64LE(data, completedAtOffset) : 0n;
+    const winnerIndexRaw = data.length > winnerIndexOffset ? data[winnerIndexOffset] : undefined;
+    const winnerIndex =
+      typeof winnerIndexRaw === "number" && winnerIndexRaw < 16 ? winnerIndexRaw : null;
+    const placements: number[] = [];
+    for (let i = 0; i < 16; i++) {
+      const offset = placementsOffset + i;
+      placements.push(offset < data.length ? data[offset] ?? 0 : 0);
+    }
+    const bettingDeadlineRaw = data.length >= bettingDeadlineOffset + 8 ? readI64LE(data, bettingDeadlineOffset) : 0n;
+    const bettingCloseSlot = bettingDeadlineRaw > 0n ? bettingDeadlineRaw : 0n;
+    const combatStartedAtTs = data.length >= combatStartedAtOffset + 8 ? readI64LE(data, combatStartedAtOffset) : 0n;
+    const completedAtTs = data.length >= completedAtOffset + 8 ? readI64LE(data, completedAtOffset) : 0n;
 
-  return {
-    address: rumblePda,
-    rumbleId: parsedRumbleId,
-    state,
-    fighterCount,
-    placements,
-    winnerIndex,
-    bettingCloseSlot,
-    bettingDeadlineTs: bettingDeadlineRaw,
-    combatStartedAtTs,
-    completedAtTs,
-  };
+    return {
+      address: rumblePda,
+      rumbleId: parsedRumbleId,
+      state,
+      fighterCount,
+      placements,
+      winnerIndex,
+      bettingCloseSlot,
+      bettingDeadlineTs: bettingDeadlineRaw,
+      combatStartedAtTs,
+      completedAtTs,
+    };
+  });
 }
 
 /**
@@ -306,85 +333,88 @@ export async function readRumbleCombatState(
   rumbleId: bigint | number,
   connection?: Connection,
 ): Promise<RumbleCombatAccountState | null> {
-  const conn = connection ?? getConnection();
-  const [combatStatePda] = deriveCombatStatePda(rumbleId);
-  const info = await conn.getAccountInfo(combatStatePda, "processed");
-  if (!info || info.data.length < 8 + 8 + 1 + 4 + 8 + 8 + 8 + 1 + 1 + 1) return null;
+  const key = `combat:${rumbleId}`;
+  return cachedRead(key, 2000, async () => {
+    const conn = connection ?? getConnection();
+    const [combatStatePda] = deriveCombatStatePda(rumbleId);
+    const info = await conn.getAccountInfo(combatStatePda, "processed");
+    if (!info || info.data.length < 8 + 8 + 1 + 4 + 8 + 8 + 8 + 1 + 1 + 1) return null;
 
-  const data = info.data;
-  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  let offset = 8; // discriminator
+    const data = info.data;
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    let offset = 8; // discriminator
 
-  const parsedRumbleId = view.getBigUint64(offset, true);
-  offset += 8;
-  const fighterCount = data[offset] ?? 0;
-  offset += 1;
-  const currentTurn = view.getUint32(offset, true);
-  offset += 4;
-  const turnOpenSlot = view.getBigUint64(offset, true);
-  offset += 8;
-  const commitCloseSlot = view.getBigUint64(offset, true);
-  offset += 8;
-  const revealCloseSlot = view.getBigUint64(offset, true);
-  offset += 8;
-  const turnResolved = data[offset] === 1;
-  offset += 1;
-  const remainingFighters = data[offset] ?? 0;
-  offset += 1;
-  const winnerIndexRaw = data[offset] ?? 255;
-  offset += 1;
-
-  const hp: number[] = [];
-  for (let i = 0; i < 16; i++) {
-    hp.push(view.getUint16(offset, true));
-    offset += 2;
-  }
-
-  const meter: number[] = [];
-  for (let i = 0; i < 16; i++) {
-    meter.push(data[offset] ?? 0);
-    offset += 1;
-  }
-
-  const eliminationRank: number[] = [];
-  for (let i = 0; i < 16; i++) {
-    eliminationRank.push(data[offset] ?? 0);
-    offset += 1;
-  }
-
-  const totalDamageDealt: bigint[] = [];
-  for (let i = 0; i < 16; i++) {
-    totalDamageDealt.push(view.getBigUint64(offset, true));
+    const parsedRumbleId = view.getBigUint64(offset, true);
     offset += 8;
-  }
-
-  const totalDamageTaken: bigint[] = [];
-  for (let i = 0; i < 16; i++) {
-    totalDamageTaken.push(view.getBigUint64(offset, true));
+    const fighterCount = data[offset] ?? 0;
+    offset += 1;
+    const currentTurn = view.getUint32(offset, true);
+    offset += 4;
+    const turnOpenSlot = view.getBigUint64(offset, true);
     offset += 8;
-  }
+    const commitCloseSlot = view.getBigUint64(offset, true);
+    offset += 8;
+    const revealCloseSlot = view.getBigUint64(offset, true);
+    offset += 8;
+    const turnResolved = data[offset] === 1;
+    offset += 1;
+    const remainingFighters = data[offset] ?? 0;
+    offset += 1;
+    const winnerIndexRaw = data[offset] ?? 255;
+    offset += 1;
 
-  const bump = data[offset] ?? 0;
-  const winnerIndex = winnerIndexRaw < 16 ? winnerIndexRaw : null;
+    const hp: number[] = [];
+    for (let i = 0; i < 16; i++) {
+      hp.push(view.getUint16(offset, true));
+      offset += 2;
+    }
 
-  return {
-    address: combatStatePda,
-    rumbleId: parsedRumbleId,
-    fighterCount,
-    currentTurn,
-    turnOpenSlot,
-    commitCloseSlot,
-    revealCloseSlot,
-    turnResolved,
-    remainingFighters,
-    winnerIndex,
-    hp,
-    meter,
-    eliminationRank,
-    totalDamageDealt,
-    totalDamageTaken,
-    bump,
-  };
+    const meter: number[] = [];
+    for (let i = 0; i < 16; i++) {
+      meter.push(data[offset] ?? 0);
+      offset += 1;
+    }
+
+    const eliminationRank: number[] = [];
+    for (let i = 0; i < 16; i++) {
+      eliminationRank.push(data[offset] ?? 0);
+      offset += 1;
+    }
+
+    const totalDamageDealt: bigint[] = [];
+    for (let i = 0; i < 16; i++) {
+      totalDamageDealt.push(view.getBigUint64(offset, true));
+      offset += 8;
+    }
+
+    const totalDamageTaken: bigint[] = [];
+    for (let i = 0; i < 16; i++) {
+      totalDamageTaken.push(view.getBigUint64(offset, true));
+      offset += 8;
+    }
+
+    const bump = data[offset] ?? 0;
+    const winnerIndex = winnerIndexRaw < 16 ? winnerIndexRaw : null;
+
+    return {
+      address: combatStatePda,
+      rumbleId: parsedRumbleId,
+      fighterCount,
+      currentTurn,
+      turnOpenSlot,
+      commitCloseSlot,
+      revealCloseSlot,
+      turnResolved,
+      remainingFighters,
+      winnerIndex,
+      hp,
+      meter,
+      eliminationRank,
+      totalDamageDealt,
+      totalDamageTaken,
+      bump,
+    };
+  });
 }
 
 /**
@@ -2371,51 +2401,53 @@ export async function readArenaConfig(
   /** @deprecated Use totalDistributed */
   totalMinted: bigint;
 } | null> {
-  const conn = connection ?? getConnection();
-  const [pda] = deriveArenaConfigPda();
-  const info = await conn.getAccountInfo(pda);
-  if (!info) return null;
+  return cachedRead('arena', 30000, async () => {
+    const conn = connection ?? getConnection();
+    const [pda] = deriveArenaConfigPda();
+    const info = await conn.getAccountInfo(pda);
+    if (!info) return null;
 
-  const d = info.data;
-  let offset = 8; // skip discriminator
-  const admin = new PublicKey(d.subarray(offset, offset + 32)).toBase58();
-  offset += 32;
-  const ichorMint = new PublicKey(d.subarray(offset, offset + 32)).toBase58();
-  offset += 32;
-  const distributionVault = new PublicKey(d.subarray(offset, offset + 32)).toBase58();
-  offset += 32;
-  const totalDistributed = d.readBigUInt64LE(offset);
-  offset += 8;
-  const totalRumblesCompleted = d.readBigUInt64LE(offset);
-  offset += 8;
-  const baseReward = d.readBigUInt64LE(offset);
-  offset += 8;
-  const ichorShowerPool = d.readBigUInt64LE(offset);
-  offset += 8;
-  const treasuryVault = d.readBigUInt64LE(offset);
-  offset += 8;
-  const bump = d[offset];
-  // season_reward was added in ArenaConfig V2. Legacy accounts (V1) end at bump.
-  const seasonRewardOffset = offset + 1;
-  const seasonReward =
-    d.length >= seasonRewardOffset + 8 ? d.readBigUInt64LE(seasonRewardOffset) : 0n;
-  const effectiveReward = seasonReward > 0n ? seasonReward : baseReward;
+    const d = info.data;
+    let offset = 8; // skip discriminator
+    const admin = new PublicKey(d.subarray(offset, offset + 32)).toBase58();
+    offset += 32;
+    const ichorMint = new PublicKey(d.subarray(offset, offset + 32)).toBase58();
+    offset += 32;
+    const distributionVault = new PublicKey(d.subarray(offset, offset + 32)).toBase58();
+    offset += 32;
+    const totalDistributed = d.readBigUInt64LE(offset);
+    offset += 8;
+    const totalRumblesCompleted = d.readBigUInt64LE(offset);
+    offset += 8;
+    const baseReward = d.readBigUInt64LE(offset);
+    offset += 8;
+    const ichorShowerPool = d.readBigUInt64LE(offset);
+    offset += 8;
+    const treasuryVault = d.readBigUInt64LE(offset);
+    offset += 8;
+    const bump = d[offset];
+    // season_reward was added in ArenaConfig V2. Legacy accounts (V1) end at bump.
+    const seasonRewardOffset = offset + 1;
+    const seasonReward =
+      d.length >= seasonRewardOffset + 8 ? d.readBigUInt64LE(seasonRewardOffset) : 0n;
+    const effectiveReward = seasonReward > 0n ? seasonReward : baseReward;
 
-  return {
-    admin,
-    ichorMint,
-    distributionVault,
-    totalDistributed,
-    totalRumblesCompleted,
-    baseReward,
-    seasonReward,
-    effectiveReward,
-    ichorShowerPool,
-    treasuryVault,
-    bump,
-    accountDataLen: d.length,
-    totalMinted: totalDistributed, // backwards compat alias
-  };
+    return {
+      admin,
+      ichorMint,
+      distributionVault,
+      totalDistributed,
+      totalRumblesCompleted,
+      baseReward,
+      seasonReward,
+      effectiveReward,
+      ichorShowerPool,
+      treasuryVault,
+      bump,
+      accountDataLen: d.length,
+      totalMinted: totalDistributed, // backwards compat alias
+    };
+  });
 }
 
 /**
