@@ -1,18 +1,39 @@
 // ---------------------------------------------------------------------------
 // Commentary Hook — registers listeners on the orchestrator to pre-generate
 // shared commentary clips (text + audio) so all spectators hear the same stream.
+//
+// Clips are persisted to Supabase (ucf_commentary_clips table) so the
+// Vercel status API can read them even though Railway generates them.
 // ---------------------------------------------------------------------------
 
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { RumbleOrchestrator } from "./rumble-orchestrator";
 import {
   evaluateEvent,
   type CommentarySlotData,
   type CommentarySSEEvent,
 } from "./commentary";
-import { generateAndUploadCommentary, type CommentaryClipResult } from "./commentary-generator";
+import { generateAndUploadCommentary } from "./commentary-generator";
 
 // ---------------------------------------------------------------------------
-// In-memory commentary store — keyed by rumbleId, holds latest clips
+// Supabase client (same pattern as rumble-persistence)
+// ---------------------------------------------------------------------------
+
+const noStoreFetch: typeof fetch = (input, init) =>
+  fetch(input, { ...init, cache: "no-store" });
+
+function freshServiceClient(): SupabaseClient {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) throw new Error("Missing Supabase env vars");
+  return createClient(url, key, {
+    auth: { autoRefreshToken: false, persistSession: false },
+    global: { fetch: noStoreFetch },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Types
 // ---------------------------------------------------------------------------
 
 export interface CommentaryEntry {
@@ -23,34 +44,59 @@ export interface CommentaryEntry {
   createdAt: number;
 }
 
-/** Per-rumble commentary log (latest N entries) */
-const MAX_ENTRIES_PER_RUMBLE = 20;
-const commentaryStore = new Map<string, CommentaryEntry[]>();
+// ---------------------------------------------------------------------------
+// Supabase persistence — write (Railway) + read (Vercel)
+// ---------------------------------------------------------------------------
 
-export function getCommentaryForRumble(rumbleId: string): CommentaryEntry[] {
-  return commentaryStore.get(rumbleId) ?? [];
-}
-
-export function getLatestCommentary(rumbleId: string): CommentaryEntry | null {
-  const entries = commentaryStore.get(rumbleId);
-  if (!entries || entries.length === 0) return null;
-  return entries[entries.length - 1];
-}
-
-export function clearCommentaryForRumble(rumbleId: string): void {
-  commentaryStore.delete(rumbleId);
-}
-
-function storeEntry(rumbleId: string, entry: CommentaryEntry): void {
-  let entries = commentaryStore.get(rumbleId);
-  if (!entries) {
-    entries = [];
-    commentaryStore.set(rumbleId, entries);
+async function persistClip(
+  rumbleId: string,
+  entry: CommentaryEntry,
+): Promise<void> {
+  try {
+    const sb = freshServiceClient();
+    await sb.from("ucf_commentary_clips").upsert(
+      {
+        rumble_id: rumbleId,
+        clip_key: entry.clipKey,
+        event_type: entry.eventType,
+        text: entry.text,
+        audio_url: entry.audioUrl,
+        created_at: new Date(entry.createdAt).toISOString(),
+      },
+      { onConflict: "rumble_id,clip_key" },
+    );
+  } catch (err) {
+    console.warn("[commentary-hook] persistClip failed:", err);
   }
-  entries.push(entry);
-  // Trim old entries
-  if (entries.length > MAX_ENTRIES_PER_RUMBLE) {
-    entries.splice(0, entries.length - MAX_ENTRIES_PER_RUMBLE);
+}
+
+/**
+ * Read commentary clips for a rumble from Supabase.
+ * Called by the status API (runs on Vercel, separate process from Railway).
+ */
+export async function getCommentaryForRumble(
+  rumbleId: string,
+): Promise<CommentaryEntry[]> {
+  try {
+    const sb = freshServiceClient();
+    const { data, error } = await sb
+      .from("ucf_commentary_clips")
+      .select("clip_key, text, audio_url, event_type, created_at")
+      .eq("rumble_id", rumbleId)
+      .order("created_at", { ascending: true })
+      .limit(20);
+    if (error) throw error;
+    if (!data) return [];
+    return data.map((row) => ({
+      clipKey: row.clip_key,
+      text: row.text,
+      audioUrl: row.audio_url,
+      eventType: row.event_type,
+      createdAt: new Date(row.created_at).getTime(),
+    }));
+  } catch (err) {
+    console.warn("[commentary-hook] getCommentaryForRumble failed:", err);
+    return [];
   }
 }
 
@@ -93,11 +139,55 @@ function buildSlotData(
 }
 
 // ---------------------------------------------------------------------------
+// Helper: generate + persist a clip
+// ---------------------------------------------------------------------------
+
+function fireAndPersist(
+  rumbleId: string,
+  clipKey: string,
+  eventType: string,
+  context: string,
+  allowedNames: string[],
+): void {
+  const fullKey = `${rumbleId}:${clipKey}`;
+  if (inflightKeys.has(fullKey)) return;
+  inflightKeys.add(fullKey);
+
+  generateAndUploadCommentary(
+    rumbleId,
+    clipKey,
+    eventType as any,
+    context,
+    allowedNames,
+  )
+    .then((result) => {
+      if (result) {
+        const entry: CommentaryEntry = {
+          clipKey,
+          text: result.text,
+          audioUrl: result.audioUrl,
+          eventType,
+          createdAt: Date.now(),
+        };
+        persistClip(rumbleId, entry);
+        console.log(
+          `[commentary-hook] Generated clip: ${clipKey} (${result.audioUrl ? "uploaded" : "no-upload"})`,
+        );
+      }
+    })
+    .catch((err) => {
+      console.warn(`[commentary-hook] ${eventType} generation failed:`, err);
+    })
+    .finally(() => {
+      inflightKeys.delete(fullKey);
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Register commentary listeners on orchestrator
 // ---------------------------------------------------------------------------
 
 export function registerCommentaryHook(orchestrator: RumbleOrchestrator): void {
-  // Guard: skip if no ElevenLabs key (commentary won't work)
   if (!process.env.ELEVENLABS_API_KEY) {
     console.log("[commentary-hook] No ELEVENLABS_API_KEY, skipping registration");
     return;
@@ -118,158 +208,53 @@ export function registerCommentaryHook(orchestrator: RumbleOrchestrator): void {
       placement: f.placement,
     }));
 
-    const slotData = buildSlotData(
-      data.slotIndex,
-      data.rumbleId,
-      "combat",
-      fighters,
-      data.turn.turnNumber,
-    );
-
+    const slotData = buildSlotData(data.slotIndex, data.rumbleId, "combat", fighters, data.turn.turnNumber);
     const sseEvent: CommentarySSEEvent = {
       type: "turn_resolved",
       slotIndex: data.slotIndex,
-      data: {
-        turn: data.turn,
-        remainingFighters: data.remainingFighters,
-      },
+      data: { turn: data.turn, remainingFighters: data.remainingFighters },
     };
 
     const candidate = evaluateEvent(sseEvent, slotData);
     if (!candidate) return;
 
-    const clipKey = candidate.clipKey ?? `turn-${data.turn.turnNumber}`;
-    const fullKey = `${data.rumbleId}:${clipKey}`;
-    if (inflightKeys.has(fullKey)) return;
-    inflightKeys.add(fullKey);
-
-    generateAndUploadCommentary(
-      data.rumbleId,
-      clipKey,
-      candidate.eventType,
-      candidate.context,
-      candidate.allowedNames,
-    )
-      .then((result) => {
-        if (result) {
-          storeEntry(data.rumbleId, {
-            clipKey,
-            text: result.text,
-            audioUrl: result.audioUrl,
-            eventType: candidate.eventType,
-            createdAt: Date.now(),
-          });
-          console.log(`[commentary-hook] Generated clip: ${clipKey} (${result.audioUrl ? "uploaded" : "no-upload"})`);
-        }
-      })
-      .catch((err) => {
-        console.warn("[commentary-hook] turn_resolved generation failed:", err);
-      })
-      .finally(() => {
-        inflightKeys.delete(fullKey);
-      });
+    fireAndPersist(data.rumbleId, candidate.clipKey ?? `turn-${data.turn.turnNumber}`, candidate.eventType, candidate.context, candidate.allowedNames);
   });
 
   // ---- combat_started ----
   orchestrator.on("combat_started", (data) => {
     const combatState = orchestrator.getCombatState(data.slotIndex);
-    const fighters = data.fighters.map((fid) => {
-      const profile = combatState?.fighterProfiles.get(fid);
-      return {
-        id: fid,
-        name: profile?.name ?? fid.slice(0, 8),
-        hp: 100,
-        eliminatedOnTurn: null,
-        placement: 0,
-      };
-    });
+    const fighters = data.fighters.map((fid) => ({
+      id: fid,
+      name: combatState?.fighterProfiles.get(fid)?.name ?? fid.slice(0, 8),
+      hp: 100,
+      eliminatedOnTurn: null,
+      placement: 0,
+    }));
 
     const slotData = buildSlotData(data.slotIndex, data.rumbleId, "combat", fighters, 0);
-    const sseEvent: CommentarySSEEvent = {
-      type: "combat_started",
-      slotIndex: data.slotIndex,
-      data: {},
-    };
-
-    const candidate = evaluateEvent(sseEvent, slotData);
+    const candidate = evaluateEvent({ type: "combat_started", slotIndex: data.slotIndex, data: {} }, slotData);
     if (!candidate) return;
 
-    const clipKey = candidate.clipKey ?? "combat-start";
-    const fullKey = `${data.rumbleId}:${clipKey}`;
-    if (inflightKeys.has(fullKey)) return;
-    inflightKeys.add(fullKey);
-
-    generateAndUploadCommentary(
-      data.rumbleId,
-      clipKey,
-      candidate.eventType,
-      candidate.context,
-      candidate.allowedNames,
-    )
-      .then((result) => {
-        if (result) {
-          storeEntry(data.rumbleId, {
-            clipKey,
-            text: result.text,
-            audioUrl: result.audioUrl,
-            eventType: candidate.eventType,
-            createdAt: Date.now(),
-          });
-        }
-      })
-      .catch((err) => console.warn("[commentary-hook] combat_started failed:", err))
-      .finally(() => inflightKeys.delete(fullKey));
+    fireAndPersist(data.rumbleId, candidate.clipKey ?? "combat-start", candidate.eventType, candidate.context, candidate.allowedNames);
   });
 
   // ---- betting_open ----
   orchestrator.on("betting_open", (data) => {
     const combatState = orchestrator.getCombatState(data.slotIndex);
-    const fighters = data.fighters.map((fid) => {
-      const profile = combatState?.fighterProfiles.get(fid);
-      return {
-        id: fid,
-        name: profile?.name ?? fid.slice(0, 8),
-        hp: 100,
-        eliminatedOnTurn: null,
-        placement: 0,
-      };
-    });
+    const fighters = data.fighters.map((fid) => ({
+      id: fid,
+      name: combatState?.fighterProfiles.get(fid)?.name ?? fid.slice(0, 8),
+      hp: 100,
+      eliminatedOnTurn: null,
+      placement: 0,
+    }));
 
     const slotData = buildSlotData(data.slotIndex, data.rumbleId, "betting", fighters, 0);
-    const sseEvent: CommentarySSEEvent = {
-      type: "betting_open",
-      slotIndex: data.slotIndex,
-      data: {},
-    };
-
-    const candidate = evaluateEvent(sseEvent, slotData);
+    const candidate = evaluateEvent({ type: "betting_open", slotIndex: data.slotIndex, data: {} }, slotData);
     if (!candidate) return;
 
-    const clipKey = candidate.clipKey ?? "betting-open";
-    const fullKey = `${data.rumbleId}:${clipKey}`;
-    if (inflightKeys.has(fullKey)) return;
-    inflightKeys.add(fullKey);
-
-    generateAndUploadCommentary(
-      data.rumbleId,
-      clipKey,
-      candidate.eventType,
-      candidate.context,
-      candidate.allowedNames,
-    )
-      .then((result) => {
-        if (result) {
-          storeEntry(data.rumbleId, {
-            clipKey,
-            text: result.text,
-            audioUrl: result.audioUrl,
-            eventType: candidate.eventType,
-            createdAt: Date.now(),
-          });
-        }
-      })
-      .catch((err) => console.warn("[commentary-hook] betting_open failed:", err))
-      .finally(() => inflightKeys.delete(fullKey));
+    fireAndPersist(data.rumbleId, candidate.clipKey ?? "betting-open", candidate.eventType, candidate.context, candidate.allowedNames);
   });
 
   // ---- rumble_complete ----
@@ -284,60 +269,13 @@ export function registerCommentaryHook(orchestrator: RumbleOrchestrator): void {
     }));
 
     const slotData = buildSlotData(data.slotIndex, data.rumbleId, "payout", fighters, data.result.totalTurns);
-    slotData.payout = {
-      totalPool: 0,
-      ichorShowerTriggered: false,
-    };
-    const sseEvent: CommentarySSEEvent = {
-      type: "rumble_complete",
-      slotIndex: data.slotIndex,
-      data: { result: data.result, winner: data.result.winner },
-    };
-
-    const candidate = evaluateEvent(sseEvent, slotData);
+    slotData.payout = { totalPool: 0, ichorShowerTriggered: false };
+    const candidate = evaluateEvent(
+      { type: "rumble_complete", slotIndex: data.slotIndex, data: { result: data.result, winner: data.result.winner } },
+      slotData,
+    );
     if (!candidate) return;
 
-    const clipKey = candidate.clipKey ?? "payout";
-    const fullKey = `${data.rumbleId}:${clipKey}`;
-    if (inflightKeys.has(fullKey)) return;
-    inflightKeys.add(fullKey);
-
-    generateAndUploadCommentary(
-      data.rumbleId,
-      clipKey,
-      candidate.eventType,
-      candidate.context,
-      candidate.allowedNames,
-    )
-      .then((result) => {
-        if (result) {
-          storeEntry(data.rumbleId, {
-            clipKey,
-            text: result.text,
-            audioUrl: result.audioUrl,
-            eventType: candidate.eventType,
-            createdAt: Date.now(),
-          });
-        }
-      })
-      .catch((err) => console.warn("[commentary-hook] rumble_complete failed:", err))
-      .finally(() => inflightKeys.delete(fullKey));
-  });
-
-  // ---- payout_complete (cleanup) ----
-  orchestrator.on("slot_recycled", (data) => {
-    // Clean up old commentary entries after a delay
-    // We keep them around for a bit so late-joining spectators can catch up
-    setTimeout(() => {
-      // Find rumble IDs that are no longer active for this slot
-      for (const [rumbleId] of commentaryStore) {
-        const entries = commentaryStore.get(rumbleId);
-        if (!entries || entries.length === 0) continue;
-        const oldest = entries[0].createdAt;
-        if (Date.now() - oldest > 10 * 60 * 1000) {
-          commentaryStore.delete(rumbleId);
-        }
-      }
-    }, 60_000);
+    fireAndPersist(data.rumbleId, candidate.clipKey ?? "payout", candidate.eventType, candidate.context, candidate.allowedNames);
   });
 }
