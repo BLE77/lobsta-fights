@@ -130,6 +130,17 @@ interface RumbleMoveRevealRequestEvent {
   move_hash?: string;
 }
 
+interface TxSignRequestEvent {
+  event: "tx_sign_request";
+  tx_type: "commit_move" | "reveal_move";
+  unsigned_tx: string;
+  rumble_id: string;
+  turn: number;
+  fighter_id: string;
+  fighter_wallet: string;
+  instructions?: string;
+}
+
 /**
  * Turn result event payload
  */
@@ -188,6 +199,7 @@ type WebhookEvent =
   | ChallengeEvent
   | RumbleMoveCommitRequestEvent
   | RumbleMoveRevealRequestEvent
+  | TxSignRequestEvent
   | MoveRequestEvent
   | TurnResultEvent
   | MatchResultEvent
@@ -215,6 +227,9 @@ export async function POST(request: Request) {
 
       case "move_reveal_request":
         return handleRumbleMoveRevealRequest(body as RumbleMoveRevealRequestEvent);
+
+      case "tx_sign_request":
+        return handleTxSignRequest(body as TxSignRequestEvent);
 
       case "move_request":
         return handleMoveRequest(body as MoveRequestEvent);
@@ -398,6 +413,49 @@ function handleRumbleMoveRevealRequest(event: RumbleMoveRevealRequestEvent) {
   return NextResponse.json({
     move: pending.move,
     salt: pending.salt,
+  });
+}
+
+/**
+ * Handle tx_sign_request — the orchestrator sends an unsigned transaction
+ * for the bot to sign and return (or submit directly).
+ *
+ * For bots that DON'T have their secret key stored on the server, this is
+ * how on-chain moves (commit_move, reveal_move) get signed.
+ *
+ * Option A: Sign and return { signed_tx: "base64..." } — orchestrator submits
+ * Option B: Sign, submit yourself, return { submitted: true, signature: "..." }
+ *
+ * This sample bot doesn't have its own keypair, so we just acknowledge.
+ * A real Phantom MCP bot would sign via sign_transaction and return it.
+ */
+function handleTxSignRequest(event: TxSignRequestEvent) {
+  const { tx_type, rumble_id, turn, fighter_id, unsigned_tx } = event;
+
+  logBotDecision("tx_sign_request received", tx_type, {
+    rumble_id,
+    turn,
+    fighter_id,
+    unsigned_tx_length: unsigned_tx?.length ?? 0,
+  });
+
+  // A real external bot would:
+  // 1. Deserialize the unsigned tx from base64
+  // 2. Sign it with their wallet (e.g., via Phantom MCP sign_transaction)
+  // 3. Return { signed_tx: "<base64 signed tx>" }
+  //
+  // Example with Phantom MCP:
+  //   const result = await phantomMcp.sign_transaction({ transaction: unsigned_tx });
+  //   return NextResponse.json({ signed_tx: result.signed_transaction });
+  //
+  // Or submit directly and return the signature:
+  //   const sig = await connection.sendRawTransaction(signedTxBytes);
+  //   return NextResponse.json({ submitted: true, signature: sig });
+
+  return NextResponse.json({
+    ack: true,
+    warning: "Sample bot does not have a keypair — cannot sign transactions. " +
+      "Use Phantom MCP or another wallet to sign.",
   });
 }
 
@@ -624,6 +682,7 @@ export async function GET() {
       "challenge",
       "move_commit_request",
       "move_reveal_request",
+      "tx_sign_request",
       "move_request",
       "turn_result",
       "match_result",

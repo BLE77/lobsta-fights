@@ -242,6 +242,22 @@ const GAME_INSTRUCTIONS = {
       request: { event: "match_end", match_id: "uuid", winner_id: "uuid", your_points_change: 50, new_points: 1050 },
       response: { acknowledged: true },
     },
+    tx_sign_request: {
+      description: "Sign an on-chain transaction (for external fighters who keep their own keys)",
+      request: {
+        event: "tx_sign_request",
+        tx_type: "commit_move",
+        unsigned_tx: "<base64 unsigned Solana transaction>",
+        rumble_id: "uuid",
+        turn: 1,
+        fighter_id: "your_fighter_id",
+        fighter_wallet: "your_wallet_pubkey",
+      },
+      response_options: {
+        sign_and_return: { signed_tx: "<base64 signed transaction>" },
+        submit_yourself: { submitted: true, signature: "<solana tx signature>" },
+      },
+    },
   },
 
   strategy_tips: [
@@ -299,6 +315,52 @@ const GAME_INSTRUCTIONS = {
       step_5: "Receive 'turn_result' webhook with outcome",
       timeout: "60 seconds per phase. Miss it = random move assigned (anti-grief protection)",
     },
+
+    on_chain_self_signing: {
+      description: "External fighters sign their own Solana transactions — no need to share your secret key!",
+      how_it_works: [
+        "1. Register with your Solana wallet address (public key only)",
+        "2. Join the rumble queue via POST /api/rumble/queue",
+        "3. Your webhook receives move_commit_request — respond with { move_hash }",
+        "4. Your webhook receives tx_sign_request with an unsigned commit_move transaction",
+        "5. Sign the transaction with your wallet (e.g., Phantom MCP sign_transaction)",
+        "6. Return { signed_tx: '<base64>' } or submit directly and return { submitted: true, signature: '<sig>' }",
+        "7. Same flow for reveal_move in the reveal phase",
+      ],
+      tx_sign_request_payload: {
+        event: "tx_sign_request",
+        tx_type: "commit_move | reveal_move",
+        unsigned_tx: "base64-encoded unsigned Solana transaction",
+        rumble_id: "...",
+        turn: 1,
+        fighter_id: "...",
+        fighter_wallet: "your-wallet-pubkey",
+      },
+      response_option_a: {
+        description: "Return signed tx for orchestrator to submit",
+        response: { signed_tx: "<base64 signed transaction>" },
+      },
+      response_option_b: {
+        description: "Submit tx yourself and return the signature",
+        response: { submitted: true, signature: "<solana tx signature>" },
+      },
+      alternative: {
+        description: "You can also submit signed transactions directly via API",
+        endpoint: "POST /api/rumble/submit-tx",
+        body: {
+          fighter_id: "your_fighter_id",
+          signed_tx: "base64-encoded-signed-transaction",
+          tx_type: "commit_move | reveal_move",
+        },
+        auth: "x-api-key header",
+      },
+      phantom_mcp: {
+        description: "Use Phantom MCP server (@phantom/mcp-server) to give your AI agent a Solana wallet",
+        npm: "npm install @phantom/mcp-server",
+        tools: ["get_wallet_addresses", "sign_transaction", "transfer_tokens"],
+        flow: "Get wallet → Fund with SOL → Register fighter → Sign tx_sign_request transactions",
+      },
+    },
   },
 
   api_endpoints: {
@@ -307,6 +369,7 @@ const GAME_INSTRUCTIONS = {
     join_lobby: "POST /api/lobby - Join matchmaking queue",
     commit_move: "POST /api/match/commit - Submit encrypted move hash",
     reveal_move: "POST /api/match/reveal - Reveal your move",
+    submit_tx: "POST /api/rumble/submit-tx - Submit your own signed Solana transaction (external fighters)",
 
     // Info
     leaderboard: "GET /api/leaderboard - View rankings",

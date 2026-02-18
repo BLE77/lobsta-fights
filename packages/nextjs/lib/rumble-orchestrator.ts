@@ -202,6 +202,8 @@ interface OnchainTurnDecision {
   commitmentHex: string;
   commitSubmitted: boolean;
   revealSubmitted: boolean;
+  /** true if the server holds the keypair for this fighter; false means external signing via webhook */
+  hasSigner: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -2036,6 +2038,87 @@ export class RumbleOrchestrator {
     return signature;
   }
 
+  /**
+   * Request an external fighter to sign a transaction via their webhook.
+   * The fighter can either:
+   *   1. Return { signed_tx: "<base64>" } for us to submit, or
+   *   2. Submit the tx themselves and return { submitted: true, signature: "<sig>" }
+   * Returns the transaction signature on success, or null on failure/timeout.
+   */
+  private async requestExternalSign(
+    webhookUrl: string,
+    tx: Transaction,
+    txType: "commit_move" | "reveal_move",
+    rumbleId: string,
+    turn: number,
+    fighterId: string,
+    fighterWallet: string,
+  ): Promise<string | null> {
+    try {
+      const unsignedBytes = tx.serialize({
+        requireAllSignatures: false,
+        verifySignatures: false,
+      });
+      const unsignedBase64 = unsignedBytes.toString("base64");
+
+      const response = await this.requestWebhookWithTimeout(webhookUrl, "tx_sign_request", {
+        tx_type: txType,
+        unsigned_tx: unsignedBase64,
+        rumble_id: rumbleId,
+        turn,
+        fighter_id: fighterId,
+        fighter_wallet: fighterWallet,
+        instructions:
+          "Sign this transaction with your wallet and return { signed_tx: '<base64>' }. " +
+          "You can also submit the transaction directly to Solana and return { submitted: true, signature: '<sig>' }.",
+      });
+
+      if (!response) {
+        console.warn(
+          `[OnChain] tx_sign_request webhook timeout/failed for ${fighterId} (${txType} turn ${turn})`,
+        );
+        return null;
+      }
+
+      // Case 1: Fighter submitted the tx themselves
+      if (
+        response.submitted === true &&
+        typeof response.signature === "string" &&
+        response.signature.length > 0
+      ) {
+        console.log(
+          `[OnChain] External fighter ${fighterId} self-submitted ${txType} turn ${turn}: ${response.signature}`,
+        );
+        return response.signature;
+      }
+
+      // Case 2: Fighter returned a signed transaction for us to submit
+      if (typeof response.signed_tx === "string" && response.signed_tx.length > 0) {
+        const signedTx = Transaction.from(Buffer.from(response.signed_tx, "base64"));
+        const conn = getConnection();
+        const signature = await conn.sendRawTransaction(signedTx.serialize(), {
+          skipPreflight: false,
+          preflightCommitment: "processed",
+          maxRetries: 3,
+        });
+        console.log(
+          `[OnChain] Submitted externally-signed ${txType} for ${fighterId} turn ${turn}: ${signature}`,
+        );
+        return signature;
+      }
+
+      console.warn(
+        `[OnChain] tx_sign_request response from ${fighterId} missing signed_tx or submitted fields`,
+      );
+      return null;
+    } catch (err) {
+      console.warn(
+        `[OnChain] requestExternalSign failed for ${fighterId} (${txType} turn ${turn}): ${formatError(err)}`,
+      );
+      return null;
+    }
+  }
+
   private hashU64(parts: Array<Buffer | Uint8Array>): bigint {
     const hasher = createHash("sha256");
     for (const part of parts) {
@@ -2141,8 +2224,16 @@ export class RumbleOrchestrator {
     if (existing) return existing;
 
     const fighterWallet = state.fighterWallets.get(fighterId) ?? null;
+    if (!fighterWallet) return null;
     const signer = this.getSignerForFighter(fighterId, fighterWallet);
-    if (!fighterWallet || !signer) return null;
+    const hasSigner = !!signer;
+
+    // If no local signer, check if the fighter has a webhook for external signing
+    if (!hasSigner) {
+      const profile = state.fighterProfiles.get(fighterId);
+      const webhookUrl = profile?.webhookUrl;
+      if (!webhookUrl) return null; // No signer AND no webhook — cannot participate on-chain
+    }
 
     const fighter = state.fighters.find((f) => f.id === fighterId);
     const opponent = state.fighters.find((f) => f.id === opponentId);
@@ -2166,6 +2257,7 @@ export class RumbleOrchestrator {
       commitmentHex: Buffer.from(commitment).toString("hex"),
       commitSubmitted: false,
       revealSubmitted: false,
+      hasSigner,
     };
     byTurn.set(fighterId, decision);
     state.turnDecisions.set(turn, byTurn);
@@ -2200,9 +2292,21 @@ export class RumbleOrchestrator {
 
     for (const [fighterId, decision] of decisionsByFighter.entries()) {
       const fighterWallet = state.fighterWallets.get(fighterId) ?? null;
-      const signer = this.getSignerForFighter(fighterId, fighterWallet);
-      if (!fighterWallet || !signer) continue;
+      if (!fighterWallet) continue;
 
+      const signer = decision.hasSigner
+        ? this.getSignerForFighter(fighterId, fighterWallet)
+        : null;
+
+      // Resolve webhook URL for external fighters (no local signer)
+      let webhookUrl: string | null = null;
+      if (!signer) {
+        const profile = state.fighterProfiles.get(fighterId);
+        webhookUrl = profile?.webhookUrl ?? null;
+        if (!webhookUrl) continue; // No signer and no webhook — skip
+      }
+
+      // --- COMMIT PHASE ---
       if (!decision.commitSubmitted && currentSlot <= combat.commitCloseSlot) {
         try {
           const tx = await buildCommitMoveTx(
@@ -2211,9 +2315,28 @@ export class RumbleOrchestrator {
             turn,
             Uint8Array.from(Buffer.from(decision.commitmentHex, "hex")),
           );
-          const sig = await this.sendFighterSignedTx(tx, signer);
-          decision.commitSubmitted = true;
-          console.log(`[OnChain] commitMove ${fighterId} turn ${turn}: ${sig}`);
+
+          let sig: string | null = null;
+          if (signer) {
+            // Case A: Local signer — sign and submit directly
+            sig = await this.sendFighterSignedTx(tx, signer);
+          } else {
+            // Case B: External signer — request signing via webhook
+            sig = await this.requestExternalSign(
+              webhookUrl!,
+              tx,
+              "commit_move",
+              slot.id,
+              turn,
+              fighterId,
+              fighterWallet.toBase58(),
+            );
+          }
+
+          if (sig) {
+            decision.commitSubmitted = true;
+            console.log(`[OnChain] commitMove ${fighterId} turn ${turn}: ${sig}`);
+          }
         } catch (err) {
           if (
             this.hasErrorTokenAny(err, [
@@ -2231,6 +2354,7 @@ export class RumbleOrchestrator {
         }
       }
 
+      // --- REVEAL PHASE ---
       if (
         decision.commitSubmitted &&
         !decision.revealSubmitted &&
@@ -2245,9 +2369,28 @@ export class RumbleOrchestrator {
             decision.moveCode,
             Uint8Array.from(Buffer.from(decision.salt32Hex, "hex")),
           );
-          const sig = await this.sendFighterSignedTx(tx, signer);
-          decision.revealSubmitted = true;
-          console.log(`[OnChain] revealMove ${fighterId} turn ${turn}: ${sig}`);
+
+          let sig: string | null = null;
+          if (signer) {
+            // Case A: Local signer — sign and submit directly
+            sig = await this.sendFighterSignedTx(tx, signer);
+          } else {
+            // Case B: External signer — request signing via webhook
+            sig = await this.requestExternalSign(
+              webhookUrl!,
+              tx,
+              "reveal_move",
+              slot.id,
+              turn,
+              fighterId,
+              fighterWallet.toBase58(),
+            );
+          }
+
+          if (sig) {
+            decision.revealSubmitted = true;
+            console.log(`[OnChain] revealMove ${fighterId} turn ${turn}: ${sig}`);
+          }
         } catch (err) {
           if (
             this.hasErrorTokenAny(err, [
