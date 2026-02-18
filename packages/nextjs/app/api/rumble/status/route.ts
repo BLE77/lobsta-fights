@@ -351,33 +351,29 @@ export async function GET(request: Request) {
             turnIntervalMs = Number(slotSpan > 0n ? slotSpan : 0n) * SLOT_MS_ESTIMATE;
 
             // On-chain turn timing: COMMIT_WINDOW=30 slots + REVEAL_WINDOW=30 slots
-            const ONCHAIN_TURN_MS_ESTIMATE = 60 * SLOT_MS_ESTIMATE; // ~24s
+            const ONCHAIN_TURN_MS = 60 * SLOT_MS_ESTIMATE; // ~24s
 
-            let targetSlot: bigint | null = null;
             if (!onchainCombat.turnResolved) {
-              targetSlot =
-                currentClusterSlotBig !== null && currentClusterSlotBig <= onchainCombat.commitCloseSlot
-                  ? onchainCombat.commitCloseSlot
-                  : onchainCombat.revealCloseSlot;
-            } else if (onchainCombat.remainingFighters > 1) {
-              targetSlot = onchainCombat.revealCloseSlot;
-            }
-            if (targetSlot) {
+              // Turn is active — countdown to commit/reveal window close
+              const inCommitPhase =
+                currentClusterSlotBig !== null &&
+                currentClusterSlotBig <= onchainCombat.commitCloseSlot;
+              const targetSlot = inCommitPhase
+                ? onchainCombat.commitCloseSlot
+                : onchainCombat.revealCloseSlot;
               const etaMs = slotsToMs(targetSlot);
-              // If target is in the past (turn resolved, next not opened yet),
-              // estimate based on turn interval so the UI always has a countdown.
               nextTurnAt = etaMs > 0
                 ? new Date(Date.now() + etaMs).toISOString()
-                : new Date(Date.now() + ONCHAIN_TURN_MS_ESTIMATE).toISOString();
+                : new Date(Date.now() + 3_000).toISOString(); // window just closed, resolve imminent
             } else if (onchainCombat.remainingFighters > 1) {
-              nextTurnAt = new Date(Date.now() + ONCHAIN_TURN_MS_ESTIMATE).toISOString();
+              // Turn resolved, waiting for worker to open next turn (~2s tick)
+              nextTurnAt = new Date(Date.now() + 3_000).toISOString();
             } else {
-              nextTurnAt = null;
+              nextTurnAt = null; // combat over
             }
 
-            // Ensure turnIntervalMs is always meaningful during combat
             if (!turnIntervalMs || turnIntervalMs <= 0) {
-              turnIntervalMs = ONCHAIN_TURN_MS_ESTIMATE;
+              turnIntervalMs = ONCHAIN_TURN_MS;
             }
 
             // Update fighter HP/damage/meter from on-chain CombatState
@@ -631,16 +627,13 @@ export async function GET(request: Request) {
       }),
     );
 
-    // Final pass: ensure combat slots always have a countdown timer.
-    // On-chain reads can fail (RPC rate limits, cold starts) leaving
-    // nextTurnAt null even when combat is actively running.
-    const FALLBACK_TURN_MS = 24_000; // ~60 Solana slots × 400ms
+    // Final pass: ensure combat slots have a turnIntervalMs for pacing.
+    // Don't fake nextTurnAt — only set it when we have real timing data.
     slots = slots.map((slot) => {
       if (slot.state !== "combat") return slot;
       return {
         ...slot,
-        nextTurnAt: slot.nextTurnAt ?? new Date(Date.now() + FALLBACK_TURN_MS).toISOString(),
-        turnIntervalMs: slot.turnIntervalMs ?? FALLBACK_TURN_MS,
+        turnIntervalMs: slot.turnIntervalMs ?? 24_000,
       };
     });
 

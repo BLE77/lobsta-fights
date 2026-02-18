@@ -945,6 +945,10 @@ export async function getStats(): Promise<{
 export type TxStep =
   | "createRumble"
   | "startCombat"
+  | "openTurn"
+  | "resolveTurn"
+  | "advanceTurn"
+  | "distributeReward"
   | "reportResult"
   | "mintRumbleReward"
   | "checkIchorShower"

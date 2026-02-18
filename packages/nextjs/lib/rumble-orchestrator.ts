@@ -1840,7 +1840,10 @@ export class RumbleOrchestrator {
     if (combat.currentTurn === 0 && combat.remainingFighters > 1) {
       try {
         const sig = await openTurnOnChain(rumbleIdNum);
-        if (sig) console.log(`[OnChain] openTurn succeeded: ${sig}`);
+        if (sig) {
+          console.log(`[OnChain] openTurn succeeded: ${sig}`);
+          persist.updateRumbleTxSignature(slot.id, "openTurn", sig);
+        }
       } catch (err) {
         // Idempotent/open-race failures are expected when multiple keepers
         // hit the same turn boundary.
@@ -1879,7 +1882,10 @@ export class RumbleOrchestrator {
           combat.currentTurn,
         );
         const sig = await resolveTurnOnChain(rumbleIdNum, commitmentAccounts);
-        if (sig) console.log(`[OnChain] resolveTurn succeeded: ${sig}`);
+        if (sig) {
+          console.log(`[OnChain] resolveTurn succeeded: ${sig}`);
+          persist.updateRumbleTxSignature(slot.id, "resolveTurn", sig);
+        }
       } catch (err) {
         if (
           !this.hasErrorTokenAny(err, [
@@ -1925,7 +1931,10 @@ export class RumbleOrchestrator {
     if (currentSlotBig >= combat.revealCloseSlot) {
       try {
         const sig = await advanceTurnOnChain(rumbleIdNum);
-        if (sig) console.log(`[OnChain] advanceTurn succeeded: ${sig}`);
+        if (sig) {
+          console.log(`[OnChain] advanceTurn succeeded: ${sig}`);
+          persist.updateRumbleTxSignature(slot.id, "advanceTurn", sig);
+        }
       } catch (err) {
         if (
           !this.hasErrorTokenAny(err, [
@@ -2881,6 +2890,7 @@ export class RumbleOrchestrator {
         const sig = await distributeRewardOnChain(winnerAta, showerVaultAta);
         if (sig) {
           console.log(`[OnChain] distributeReward (1st place) succeeded: ${sig}`);
+          persist.updateRumbleTxSignature(rumbleId, "distributeReward", sig);
           persist.updateRumbleTxSignature(rumbleId, "mintRumbleReward", sig);
         } else {
           console.warn(`[OnChain] distributeReward returned null — continuing off-chain`);
