@@ -1071,7 +1071,7 @@ export async function distributeReward(
   const [distributionVaultPda] = deriveDistributionVaultPda();
   const ichorMint = getIchorMint();
 
-  const tx = await (program.methods as any)
+  const method = (program.methods as any)
     .distributeReward()
     .accounts({
       authority: admin.publicKey,
@@ -1081,10 +1081,9 @@ export async function distributeReward(
       winnerTokenAccount,
       showerVault,
       tokenProgram: TOKEN_PROGRAM_ID,
-    })
-    .rpc();
+    });
 
-  return tx;
+  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
 }
 
 /** @deprecated Use distributeReward instead */
@@ -1138,13 +1137,11 @@ export async function checkIchorShower(
     accounts.entropyProgram = entropySettings.programId;
   }
 
-  const builder = (program.methods as any)
+  const method = (program.methods as any)
     .checkIchorShower()
     .accountsPartial(accounts);
 
-  const tx = await builder.rpc();
-
-  return tx;
+  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
 }
 
 // ---------------------------------------------------------------------------
@@ -1241,7 +1238,7 @@ export async function adminDistribute(
   const [arenaConfigPda] = deriveArenaConfigPda();
   const [distributionVaultPda] = deriveDistributionVaultPda();
 
-  const tx = await (program.methods as any)
+  const method = (program.methods as any)
     .adminDistribute(new anchor.BN(amount.toString()))
     .accounts({
       authority: admin.publicKey,
@@ -1249,10 +1246,9 @@ export async function adminDistribute(
       distributionVault: distributionVaultPda,
       recipientTokenAccount,
       tokenProgram: TOKEN_PROGRAM_ID,
-    })
-    .rpc();
+    });
 
-  return tx;
+  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
 }
 
 /**
@@ -1437,7 +1433,7 @@ export async function createRumble(
     closeValue: bigint,
     effectiveMode: "slot" | "unix",
   ): Promise<string> => {
-    return await (program.methods as any)
+    const method = (program.methods as any)
       .createRumble(
         new anchor.BN(rumbleId),
         fighters,
@@ -1448,27 +1444,29 @@ export async function createRumble(
         config: rumbleConfigPda,
         rumble: rumblePda,
         systemProgram: SystemProgram.programId,
-      })
-      .rpc()
-      .catch((err: unknown) => {
-        const context =
-          `[solana-programs] createRumble failed` +
-          ` rumbleId=${rumbleId}` +
-          ` currentSlot=${currentSlot}` +
-          ` closeValue=${closeValue.toString()}` +
-          ` bettingCloseSlot=${bettingCloseSlot.toString()}` +
-          ` bettingCloseUnix=${bettingCloseUnix.toString()}` +
-          ` bettingDeadlineUnix=${bettingDeadlineUnix}` +
-          ` nowUnix=${nowUnix}` +
-          ` deadlineModeRaw=${deadlineModeRaw}` +
-          ` effectiveDeadlineMode=${effectiveMode}` +
-          ` minCloseSlots=${minCloseSlots}` +
-          ` closeSafetySlots=${closeSafetySlots}`;
-        if (err instanceof Error) {
-          throw new Error(`${context} :: ${err.message}`);
-        }
-        throw new Error(`${context} :: ${String(err)}`);
       });
+
+    try {
+      return await sendAdminTxFireAndForget(method, admin, conn);
+    } catch (err: unknown) {
+      const context =
+        `[solana-programs] createRumble failed` +
+        ` rumbleId=${rumbleId}` +
+        ` currentSlot=${currentSlot}` +
+        ` closeValue=${closeValue.toString()}` +
+        ` bettingCloseSlot=${bettingCloseSlot.toString()}` +
+        ` bettingCloseUnix=${bettingCloseUnix.toString()}` +
+        ` bettingDeadlineUnix=${bettingDeadlineUnix}` +
+        ` nowUnix=${nowUnix}` +
+        ` deadlineModeRaw=${deadlineModeRaw}` +
+        ` effectiveDeadlineMode=${effectiveMode}` +
+        ` minCloseSlots=${minCloseSlots}` +
+        ` closeSafetySlots=${closeSafetySlots}`;
+      if (err instanceof Error) {
+        throw new Error(`${context} :: ${err.message}`);
+      }
+      throw new Error(`${context} :: ${String(err)}`);
+    }
   };
 
   try {
@@ -1819,7 +1817,7 @@ export async function startCombat(
   const [rumblePda] = deriveRumblePda(rumbleId);
   const [combatStatePda] = deriveCombatStatePda(rumbleId);
 
-  const tx = await (program.methods as any)
+  const method = (program.methods as any)
     .startCombat()
     .accounts({
       admin: admin.publicKey,
@@ -1827,10 +1825,9 @@ export async function startCombat(
       rumble: rumblePda,
       combatState: combatStatePda,
       systemProgram: SystemProgram.programId,
-    })
-    .rpc();
+    });
 
-  return tx;
+  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
 }
 
 /**
@@ -2007,16 +2004,15 @@ export async function reportResult(
   const [rumbleConfigPda] = deriveRumbleConfigPda();
   const [rumblePda] = deriveRumblePda(rumbleId);
 
-  const tx = await (program.methods as any)
+  const method = (program.methods as any)
     .reportResult(Buffer.from(placements), winnerIndex)
     .accounts({
       admin: admin.publicKey,
       config: rumbleConfigPda,
       rumble: rumblePda,
-    })
-    .rpc();
+    });
 
-  return tx;
+  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
 }
 
 /**
@@ -2198,16 +2194,15 @@ export async function completeRumble(
   const [rumbleConfigPda] = deriveRumbleConfigPda();
   const [rumblePda] = deriveRumblePda(rumbleId);
 
-  const tx = await (program.methods as any)
+  const method = (program.methods as any)
     .completeRumble()
     .accounts({
       admin: admin.publicKey,
       config: rumbleConfigPda,
       rumble: rumblePda,
-    })
-    .rpc();
+    });
 
-  return tx;
+  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
 }
 
 /**
@@ -2236,7 +2231,7 @@ export async function sweepTreasury(
   if (!configInfo) throw new Error("Rumble config not found");
   const treasury = new PublicKey(configInfo.data.subarray(8 + 32, 8 + 32 + 32));
 
-  const tx = await (program.methods as any)
+  const method = (program.methods as any)
     .sweepTreasury()
     .accounts({
       admin: admin.publicKey,
@@ -2245,10 +2240,9 @@ export async function sweepTreasury(
       vault: vaultPda,
       treasury,
       systemProgram: SystemProgram.programId,
-    })
-    .rpc();
+    });
 
-  return tx;
+  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
 }
 
 // ---------------------------------------------------------------------------
@@ -2279,7 +2273,7 @@ export async function updateFighterRecord(
 
   const [registryConfigPda] = deriveRegistryConfigPda();
 
-  const tx = await (program.methods as any)
+  const method = (program.methods as any)
     .updateRecord(
       new anchor.BN(wins),
       new anchor.BN(losses),
@@ -2292,10 +2286,9 @@ export async function updateFighterRecord(
       authority: admin.publicKey,
       registryConfig: registryConfigPda,
       fighter: fighterPubkey,
-    })
-    .rpc();
+    });
 
-  return tx;
+  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
 }
 
 // ---------------------------------------------------------------------------
