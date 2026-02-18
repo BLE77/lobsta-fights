@@ -3559,6 +3559,16 @@ export class RumbleOrchestrator {
   getPayoutResult(slotIndex: number): PayoutResult | null {
     return this.payoutResults.get(slotIndex) ?? null;
   }
+
+  /**
+   * Check if a slot has real spectators (non-zero bets from real users).
+   * Used by commentary hook to skip TTS when nobody is watching.
+   */
+  hasRealSpectators(slotIndex: number): boolean {
+    const pool = this.bettingPools.get(slotIndex);
+    if (pool && pool.bets.length > 0) return true;
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------

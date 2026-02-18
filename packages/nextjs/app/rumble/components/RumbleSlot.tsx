@@ -91,11 +91,11 @@ function formatCountdown(secondsRemaining: number): string {
 
 interface RumbleSlotProps {
   slot: SlotData;
-  onPlaceBet?: (slotIndex: number, fighterId: string, amount: number) => void;
+  onPlaceBet?: (slotIndex: number, fighterId: string, amount: number) => Promise<string | undefined> | void;
   onPlaceBatchBet?: (
     slotIndex: number,
     bets: Array<{ fighterId: string; amount: number }>,
-  ) => Promise<void> | void;
+  ) => Promise<string | undefined> | void;
   myBetAmounts?: Map<string, number>;
   lastCompletedResult?: {
     rumbleId: string;

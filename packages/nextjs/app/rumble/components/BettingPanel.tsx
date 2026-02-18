@@ -19,11 +19,11 @@ interface BettingPanelProps {
   fighters: FighterOdds[];
   totalPool: number;
   deadline: string | null;
-  onPlaceBet?: (slotIndex: number, fighterId: string, amount: number) => void;
+  onPlaceBet?: (slotIndex: number, fighterId: string, amount: number) => Promise<string | undefined> | void;
   onPlaceBatchBet?: (
     slotIndex: number,
     bets: Array<{ fighterId: string; amount: number }>,
-  ) => Promise<void> | void;
+  ) => Promise<string | undefined> | void;
   myBetAmounts?: Map<string, number>;
 }
 
@@ -39,6 +39,7 @@ export default function BettingPanel({
   const [bets, setBets] = useState<Map<string, string>>(new Map());
   const [timeLeft, setTimeLeft] = useState("");
   const [deploying, setDeploying] = useState<Set<string>>(new Set());
+  const [lastTxSignature, setLastTxSignature] = useState<string | null>(null);
 
   // Countdown timer — offset by the on-chain close guard so the UI shows
   // CLOSED at the same moment the bet placement code rejects submissions.
@@ -91,7 +92,8 @@ export default function BettingPanel({
 
     setDeploying((prev) => new Set(prev).add(fighterId));
     try {
-      await onPlaceBet(slotIndex, fighterId, amount);
+      const sig = await onPlaceBet(slotIndex, fighterId, amount);
+      if (sig) setLastTxSignature(sig);
       // Clear selection after submit to avoid accidental re-sending in later batch deploys.
       setBets((prev) => {
         const next = new Map(prev);
@@ -118,13 +120,15 @@ export default function BettingPanel({
 
     setDeploying(new Set(entries.map((e) => e.fighterId)));
     try {
+      let sig: string | undefined;
       if (onPlaceBatchBet) {
-        await onPlaceBatchBet(slotIndex, entries);
+        sig = await onPlaceBatchBet(slotIndex, entries) ?? undefined;
       } else if (onPlaceBet) {
         for (const leg of entries) {
-          await onPlaceBet(slotIndex, leg.fighterId, leg.amount);
+          sig = await onPlaceBet(slotIndex, leg.fighterId, leg.amount) ?? undefined;
         }
       }
+      if (sig) setLastTxSignature(sig);
       // Clear submitted selections so subsequent bets only include newly selected fighters.
       setBets(new Map());
     } finally {
@@ -204,6 +208,29 @@ export default function BettingPanel({
           <p className="font-mono text-[10px] text-stone-500 mt-2">
             TOTAL STAKED: <span className="text-cyan-300">{myStakeTotal.toFixed(3)} SOL</span>
           </p>
+        </div>
+      )}
+
+      {/* Last transaction explorer link */}
+      {lastTxSignature && (
+        <div className="flex items-center justify-between bg-stone-950/80 border border-green-700/30 rounded-sm px-2 py-1.5">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="text-green-400 text-[10px]">&#x2713;</span>
+            <a
+              href={`https://explorer.solana.com/tx/${lastTxSignature}?cluster=devnet`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-mono text-[10px] text-green-400 hover:text-green-300 hover:underline truncate"
+            >
+              View on Explorer: {lastTxSignature.slice(0, 8)}...{lastTxSignature.slice(-8)}
+            </a>
+          </div>
+          <button
+            onClick={() => setLastTxSignature(null)}
+            className="text-stone-600 hover:text-stone-400 text-[10px] font-mono ml-2 flex-shrink-0"
+          >
+            [x]
+          </button>
         </div>
       )}
 

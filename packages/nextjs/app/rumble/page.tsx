@@ -13,7 +13,9 @@ import PayoutDisplay from "./components/PayoutDisplay";
 import QueueSidebar from "./components/QueueSidebar";
 import IchorShowerPool from "./components/IchorShowerPool";
 import ClaimBalancePanel from "./components/ClaimBalancePanel";
+import ChatPanel from "./components/ChatPanel";
 import CommentaryPlayer from "./components/CommentaryPlayer";
+import { useBetConfirmation } from "./hooks/useBetConfirmation";
 import type { CommentarySSEEvent } from "~~/lib/commentary";
 
 // ---------------------------------------------------------------------------
@@ -597,6 +599,23 @@ export default function RumblePage() {
     }
   }, [publicKey]);
 
+  // Supabase Realtime: instant bet confirmation via Helius webhook path.
+  // Falls back to polling if Realtime is unavailable.
+  useBetConfirmation({
+    walletAddress: publicKey?.toBase58() ?? null,
+    onBetConfirmed: useCallback(() => {
+      // Webhook confirmed our tx on-chain — refresh bets + balance immediately
+      fetchMyBets();
+      fetchClaimBalance();
+      fetchStatus();
+    }, [fetchMyBets, fetchClaimBalance, fetchStatus]),
+    onPayoutUpdate: useCallback(() => {
+      // Settlement changed — refresh claim balance
+      fetchClaimBalance();
+      fetchMyBets();
+    }, [fetchClaimBalance, fetchMyBets]),
+  });
+
   // Connect to SSE for real-time combat updates
   const connectSSE = useCallback(() => {
     if (eventSourceRef.current) {
@@ -1047,6 +1066,8 @@ export default function RumblePage() {
       fetchMyBets();
       const newBalance = await connection.getBalance(publicKey, "confirmed");
       setSolBalance(newBalance / LAMPORTS_PER_SOL);
+
+      return txSig;
     } catch (e: any) {
       const message = String(e?.message ?? "");
       if (message.includes("User rejected")) {
@@ -1080,15 +1101,15 @@ export default function RumblePage() {
     slotIndex: number,
     fighterId: string,
     amount: number,
-  ) => {
-    await submitBets(slotIndex, [{ fighterId, amount }]);
+  ): Promise<string | undefined> => {
+    return await submitBets(slotIndex, [{ fighterId, amount }]);
   }, [submitBets]);
 
   const handlePlaceBatchBet = useCallback(async (
     slotIndex: number,
     bets: Array<{ fighterId: string; amount: number }>,
-  ) => {
-    await submitBets(slotIndex, bets);
+  ): Promise<string | undefined> => {
+    return await submitBets(slotIndex, bets);
   }, [submitBets]);
 
   const ichorShower = status?.ichorShower ?? {
@@ -1336,6 +1357,8 @@ export default function RumblePage() {
                     <IchorShowerPool
                       currentPool={ichorShower.currentPool}
                     />
+
+                    <ChatPanel walletAddress={publicKey?.toBase58() ?? null} />
                   </div>
                 </div>
               );
@@ -1364,6 +1387,7 @@ export default function RumblePage() {
               <IchorShowerPool
                 currentPool={ichorShower.currentPool}
               />
+              <ChatPanel walletAddress={publicKey?.toBase58() ?? null} />
             </>
           )}
         </div>
