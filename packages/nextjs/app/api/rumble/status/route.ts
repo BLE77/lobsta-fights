@@ -631,6 +631,19 @@ export async function GET(request: Request) {
       }),
     );
 
+    // Final pass: ensure combat slots always have a countdown timer.
+    // On-chain reads can fail (RPC rate limits, cold starts) leaving
+    // nextTurnAt null even when combat is actively running.
+    const FALLBACK_TURN_MS = 24_000; // ~60 Solana slots × 400ms
+    slots = slots.map((slot) => {
+      if (slot.state !== "combat") return slot;
+      return {
+        ...slot,
+        nextTurnAt: slot.nextTurnAt ?? new Date(Date.now() + FALLBACK_TURN_MS).toISOString(),
+        turnIntervalMs: slot.turnIntervalMs ?? FALLBACK_TURN_MS,
+      };
+    });
+
     // ---- Ichor shower state ------------------------------------------------
     const showerState = await getIchorShowerState();
     const arenaConfig = await readArenaConfig().catch(() => null);
