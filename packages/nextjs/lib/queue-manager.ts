@@ -110,7 +110,7 @@ function generateRumbleId(): string {
 
 function createEmptySlot(slotIndex: number): RumbleSlot {
   return {
-    id: generateRumbleId(),
+    id: `idle_slot_${slotIndex}`,
     slotIndex,
     state: "idle",
     fighters: [],
@@ -328,7 +328,7 @@ export class RumbleQueueManager implements QueueManager {
     const fighters = [...slot.fighters];
     const previousRumbleId = slot.id;
 
-    slot.id = generateRumbleId();
+    slot.id = `idle_slot_${slotIndex}`;
     slot.state = "idle";
     slot.fighters = [];
     slot.bettingPool = new Map();
@@ -459,7 +459,7 @@ export class RumbleQueueManager implements QueueManager {
     // Reset slot to idle
     const oldFighters = slot.fighters;
     const oldRumbleId = slot.id;
-    slot.id = generateRumbleId();
+    slot.id = `idle_slot_${slot.slotIndex}`;
     slot.state = "idle";
     slot.fighters = [];
     slot.bettingPool = new Map();
