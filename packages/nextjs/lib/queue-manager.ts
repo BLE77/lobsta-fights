@@ -553,7 +553,8 @@ export function getQueueManager(): RumbleQueueManager {
   return g.__rumbleQueueManager;
 }
 
-/** Reset the singleton -- useful for tests. */
+/** Reset the singleton and rumble counter -- useful for tests and admin resets. */
 export function resetQueueManager(): void {
   g.__rumbleQueueManager = undefined;
+  rumbleCounter = 0;
 }
