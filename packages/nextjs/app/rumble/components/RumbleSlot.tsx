@@ -179,14 +179,23 @@ export default function RumbleSlot({
   >([]);
   const seenTurnsRef = useRef<number>(0);
   const [countdownNow, setCountdownNow] = useState(() => Date.now());
+  // Track when the current turn last changed (client-side anchor for countdown)
+  const lastTurnChangeRef = useRef<{ turn: number; at: number }>({ turn: 0, at: Date.now() });
 
   useEffect(() => {
-    const trackCombat = slot.state === "combat" && !!slot.nextTurnAt;
+    const curTurn = slot.currentTurn ?? 0;
+    if (curTurn > 0 && curTurn !== lastTurnChangeRef.current.turn) {
+      lastTurnChangeRef.current = { turn: curTurn, at: Date.now() };
+    }
+  }, [slot.currentTurn]);
+
+  useEffect(() => {
+    const trackCombat = slot.state === "combat";
     const trackBetting = slot.state === "betting" && !!slot.bettingDeadline;
     if (!trackCombat && !trackBetting) return;
     const timer = setInterval(() => setCountdownNow(Date.now()), 1_000);
     return () => clearInterval(timer);
-  }, [slot.state, slot.nextTurnAt, slot.bettingDeadline]);
+  }, [slot.state, slot.bettingDeadline]);
 
   const liveCountdown = (() => {
     if (slot.state === "combat" && slot.nextTurnAt) {
@@ -195,6 +204,16 @@ export default function RumbleSlot({
       return {
         label: "NEXT TURN",
         seconds: Math.max(0, Math.ceil((targetMs - countdownNow) / 1_000)),
+      };
+    }
+    // Fallback: compute countdown from when we last saw the turn number change
+    if (slot.state === "combat" && !slot.nextTurnAt && slot.turnIntervalMs) {
+      const anchor = lastTurnChangeRef.current;
+      const targetMs = anchor.at + slot.turnIntervalMs;
+      const remaining = Math.max(0, Math.ceil((targetMs - countdownNow) / 1_000));
+      return {
+        label: "NEXT TURN",
+        seconds: remaining,
       };
     }
     if (slot.state === "betting" && slot.bettingDeadline) {
