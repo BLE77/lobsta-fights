@@ -448,7 +448,6 @@ export default function RumbleSlot({
               <CombatFeed
                 turns={slot.turns}
                 currentTurn={slot.currentTurn}
-                maxTurns={slot.maxTurns ?? 20}
                 fighterNames={slot.fighterNames}
               />
             </div>

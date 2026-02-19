@@ -23,7 +23,6 @@ interface TurnEvent {
 interface CombatFeedProps {
   turns: TurnEvent[];
   currentTurn: number;
-  maxTurns: number;
   fighterNames: Record<string, string>;
 }
 
@@ -90,7 +89,6 @@ function describeDamage(
 export default function CombatFeed({
   turns,
   currentTurn,
-  maxTurns,
   fighterNames,
 }: CombatFeedProps) {
   const feedRef = useRef<HTMLDivElement>(null);
@@ -145,7 +143,7 @@ export default function CombatFeed({
       {/* Turn header */}
       <div className="sticky top-0 bg-stone-900/95 py-1 border-b border-stone-800 text-center">
         <span className="font-mono text-xs text-amber-500">
-          TURN {currentTurn}/{maxTurns}
+          TURN {currentTurn}
         </span>
       </div>
 
