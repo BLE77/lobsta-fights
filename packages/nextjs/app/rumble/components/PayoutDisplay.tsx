@@ -86,13 +86,16 @@ export default function PayoutDisplay({
   return (
     <div className="space-y-4">
       {/* Season Badge */}
+      <div className="animate-payout-reveal" style={{ animationDelay: '0ms' }}>
       <div className="text-center">
         <span className="font-mono text-[10px] text-amber-600 bg-amber-900/30 border border-amber-700/30 px-2 py-0.5 rounded-sm">
           TRAINING SEASON — {ichorMined.toLocaleString()} ICHOR/FIGHT
         </span>
       </div>
+      </div>
 
       {/* Winner Banner */}
+      <div className="animate-payout-reveal" style={{ animationDelay: '150ms' }}>
       {winner && (
         <div className="text-center py-6 border border-amber-600/50 bg-amber-900/20 rounded-sm">
           <p className="font-fight-glow text-2xl text-amber-400 mb-3">
@@ -103,7 +106,7 @@ export default function PayoutDisplay({
               <img
                 src={winner.imageUrl}
                 alt={winner.fighterName}
-                className="w-28 h-28 rounded-sm border-3 border-amber-500 object-cover shadow-lg shadow-amber-500/20"
+                className="w-28 h-28 rounded-sm border-3 border-amber-500 object-cover shadow-lg shadow-amber-500/20 animate-winner-reveal"
               />
             ) : (
               <div className="w-28 h-28 rounded-sm bg-stone-800 flex items-center justify-center border-3 border-amber-500 shadow-lg shadow-amber-500/20">
@@ -122,7 +125,7 @@ export default function PayoutDisplay({
 
           {/* Your bet result */}
           {iWon && (
-            <p className="font-mono text-sm text-green-400 font-bold mt-3 bg-green-900/30 border border-green-700/40 inline-block px-3 py-1 rounded-sm">
+            <p className="font-mono text-sm text-green-400 font-bold mt-3 bg-green-900/30 border border-green-700/40 inline-block px-3 py-1 rounded-sm animate-you-won">
               YOU WON — You bet on this fighter!
             </p>
           )}
@@ -138,8 +141,10 @@ export default function PayoutDisplay({
           ) : null}
         </div>
       )}
+      </div>
 
       {/* All Fighters - Full Results */}
+      <div className="animate-payout-reveal" style={{ animationDelay: '400ms' }}>
       <div className="space-y-1">
         <p className="font-mono text-xs text-stone-500 uppercase">
           All Fighters — Final Results
@@ -204,8 +209,10 @@ export default function PayoutDisplay({
           );
         })}
       </div>
+      </div>
 
       {/* Payout Breakdown */}
+      <div className="animate-payout-reveal" style={{ animationDelay: '700ms' }}>
       <div className="border-t border-stone-800 pt-3 space-y-2">
         <p className="font-mono text-xs text-stone-500 uppercase">
           Bettor Payouts — Winner Takes All
@@ -242,10 +249,11 @@ export default function PayoutDisplay({
           </span>
         </div>
       </div>
+      </div>
 
       {/* Ichor Shower Banner */}
       {payout.ichorShowerTriggered && (
-        <div className="border border-amber-500 bg-amber-900/30 rounded-sm p-3 text-center animate-pulse">
+        <div className="border border-amber-500 bg-amber-900/30 rounded-sm p-3 text-center animate-ichor-shower">
           <p className="font-fight-glow text-xl text-amber-400">
             ICHOR SHOWER
           </p>

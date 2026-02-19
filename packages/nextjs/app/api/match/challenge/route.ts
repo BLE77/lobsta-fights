@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { supabase, freshSupabase } from "../../../../lib/supabase";
 import { sendChallenge, notifyFighter } from "../../../../lib/webhook";
 import { checkFighterCooldown } from "../../../../lib/fighter-cooldown";
-import { authenticateFighterByApiKey } from "../../../../lib/request-auth";
+import { authenticateFighterByApiKey, isValidUUID } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -28,6 +28,14 @@ export async function POST(request: Request) {
         { error: "Missing required fields: challenger_id, opponent_id, api_key" },
         { status: 400 }
       );
+    }
+
+    if (!isValidUUID(challenger_id)) {
+      return NextResponse.json({ error: "Invalid challenger ID" }, { status: 400 });
+    }
+
+    if (!isValidUUID(opponent_id)) {
+      return NextResponse.json({ error: "Invalid opponent ID" }, { status: 400 });
     }
 
     if (challenger_id === opponent_id) {
@@ -313,6 +321,10 @@ export async function GET(request: Request) {
       { error: "Missing fighter_id parameter" },
       { status: 400 }
     );
+  }
+
+  if (!isValidUUID(fighterId)) {
+    return NextResponse.json({ error: "Invalid fighter ID" }, { status: 400 });
   }
 
   // Return information about the fighter's challenge capabilities

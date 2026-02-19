@@ -2,7 +2,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { freshSupabase } from "../../../../lib/supabase";
 import crypto from "crypto";
-import { authenticateFighterByApiKey } from "../../../../lib/request-auth";
+import { authenticateFighterByApiKey, isValidUUID } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -54,11 +54,17 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Validate fighter_id is a valid UUID (prevents SQL injection via .or() template literals)
-    const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    if (!UUID_REGEX.test(fighter_id)) {
+    // Validate fighter_id is a valid UUID (prevents PostgREST filter injection via .or() template literals)
+    if (!isValidUUID(fighter_id)) {
       return NextResponse.json(
         { error: "Invalid fighter_id format" },
+        { status: 400 }
+      );
+    }
+
+    if (match_id && !isValidUUID(match_id)) {
+      return NextResponse.json(
+        { error: "Invalid match_id format" },
         { status: 400 }
       );
     }

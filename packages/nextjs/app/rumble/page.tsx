@@ -330,6 +330,7 @@ export default function RumblePage() {
   const [error, setError] = useState<string | null>(null);
   const [sseConnected, setSseConnected] = useState(false);
   const [betPending, setBetPending] = useState(false);
+  const [betError, setBetError] = useState<string | null>(null);
   const [solBalance, setSolBalance] = useState<number | null>(null);
   const [claimBalance, setClaimBalance] = useState<ClaimBalanceStatus | null>(null);
   const [claimLoading, setClaimLoading] = useState(false);
@@ -968,7 +969,8 @@ export default function RumblePage() {
     bets: Array<{ fighterId: string; amount: number }>,
   ) => {
     if (!publicKey || !phantomProvider || !walletConnected) {
-      alert("Connect your Phantom wallet first to place bets.");
+      setBetError("Connect your Phantom wallet first to place bets.");
+      setTimeout(() => setBetError(null), 5000);
       throw new Error("Wallet not connected");
     }
     if (!bets.length) {
@@ -976,7 +978,8 @@ export default function RumblePage() {
     }
     for (const bet of bets) {
       if (!Number.isFinite(bet.amount) || bet.amount <= 0 || bet.amount > 10) {
-        alert("Each bet must be between 0.01 and 10 SOL");
+        setBetError("Each bet must be between 0.01 and 10 SOL");
+        setTimeout(() => setBetError(null), 5000);
         throw new Error("Invalid amount");
       }
     }
@@ -984,7 +987,8 @@ export default function RumblePage() {
     // 0. Pre-validate: check slot is still in betting state before sending SOL
     const slotData = status?.slots?.find((slot) => slot.slotIndex === slotIndex);
     if (!slotData || slotData.state !== "betting") {
-      alert("Betting is not open for this slot right now.");
+      setBetError("Betting is not open for this slot right now.");
+      setTimeout(() => setBetError(null), 5000);
       throw new Error("Betting closed");
     }
     for (const bet of bets) {
@@ -992,7 +996,8 @@ export default function RumblePage() {
         (f: any) => f.id === bet.fighterId || f.fighterId === bet.fighterId
       );
       if (!fighterInSlot) {
-        alert("One or more selected fighters are not in the current rumble.");
+        setBetError("One or more selected fighters are not in the current rumble.");
+        setTimeout(() => setBetError(null), 5000);
         throw new Error("Fighter not in rumble");
       }
     }
@@ -1086,7 +1091,8 @@ export default function RumblePage() {
 
       if (!res.ok) {
         const data = await res.json();
-        alert(data.error || "Bet registered on-chain but API failed");
+        setBetError(data.error || "Bet registered on-chain but API failed");
+        setTimeout(() => setBetError(null), 5000);
         return;
       }
 
@@ -1122,10 +1128,12 @@ export default function RumblePage() {
         message.includes("On-chain betting is closed")
       ) {
         fetchStatus();
-        alert("Betting just closed on-chain for that rumble. No bet was placed.");
+        setBetError("Betting just closed on-chain for that rumble. No bet was placed.");
+        setTimeout(() => setBetError(null), 5000);
       } else {
         console.error("Failed to place bet:", e);
-        alert(message || "Failed to place bet");
+        setBetError(message || "Failed to place bet");
+        setTimeout(() => setBetError(null), 5000);
       }
     } finally {
       setBetPending(false);
@@ -1180,25 +1188,29 @@ export default function RumblePage() {
       <div className="relative z-10 w-full">
         {/* Header */}
         <header className="border-b border-stone-800 bg-stone-950/80 backdrop-blur-sm">
-          <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
-            <div className="flex items-center gap-4">
+          <div className="max-w-7xl mx-auto px-4 py-3 grid grid-cols-3 items-center">
+            {/* Left — Home */}
+            <div className="flex items-center">
               <Link
                 href="/"
-                className="text-amber-500 hover:text-amber-400 font-mono text-sm"
+                className="text-stone-500 hover:text-amber-400 font-mono text-xs uppercase tracking-wider transition-colors"
               >
-                Home
+                [ HOME ]
               </Link>
-              <div>
-                <h1 className="font-fight-glow text-2xl text-amber-400">
-                  RUMBLE
-                </h1>
-                <p className="font-mono text-[10px] text-stone-600">
-                  BATTLE ROYALE // 8-16 FIGHTERS // LAST BOT STANDING
-                </p>
-              </div>
             </div>
 
-            <div className="flex items-center gap-3">
+            {/* Center — RUMBLE title */}
+            <div className="text-center">
+              <h1 className="font-fight-glow text-3xl text-amber-400">
+                RUMBLE
+              </h1>
+              <p className="font-mono text-[10px] text-stone-600">
+                BATTLE ROYALE // 8-16 FIGHTERS // LAST BOT STANDING
+              </p>
+            </div>
+
+            {/* Right — Controls */}
+            <div className="flex items-center gap-3 justify-end">
               {/* AI Commentary */}
               <CommentaryPlayer
                 slots={Array.isArray(status?.slots) ? status.slots : []}
@@ -1210,7 +1222,7 @@ export default function RumblePage() {
               <div className="flex items-center gap-1.5">
                 <span
                   className={`inline-block w-2 h-2 rounded-full ${
-                    sseConnected ? "bg-green-500" : "bg-red-500 animate-pulse"
+                    sseConnected ? "bg-green-500" : "bg-amber-500 animate-pulse"
                   }`}
                 />
                 <span className="font-mono text-[10px] text-stone-500">
@@ -1237,12 +1249,11 @@ export default function RumblePage() {
               ) : (
                 <button
                   onClick={connectPhantom}
-                  className="px-3 py-1 bg-amber-600 hover:bg-amber-500 text-stone-950 font-mono text-xs font-bold rounded-sm transition-all"
+                  className="px-3 py-1 bg-amber-600 hover:bg-amber-500 text-stone-950 font-mono text-xs font-bold rounded-sm transition-all active:scale-95"
                 >
                   {phantomProvider ? "Connect Phantom" : "Install Phantom"}
                 </button>
               )}
-
             </div>
           </div>
         </header>
@@ -1250,14 +1261,13 @@ export default function RumblePage() {
         {/* Main Layout */}
         <div className="max-w-7xl mx-auto px-4 py-6">
           {loading ? (
-            <div className="flex items-center justify-center h-64">
-              <div className="text-center">
-                <p className="font-mono text-amber-500 text-lg animate-pulse">
-                  Loading Rumble Arena...
-                </p>
-                <p className="font-mono text-xs text-stone-600 mt-2">
-                  Connecting to battle feed
-                </p>
+            <div className="flex gap-6 justify-center">
+              <div className="flex-1 max-w-4xl">
+                <div className="h-[400px] bg-stone-900/50 border border-stone-800 rounded-sm animate-pulse" />
+              </div>
+              <div className="w-64 flex-shrink-0 space-y-4 hidden lg:block">
+                <div className="h-48 bg-stone-900/50 border border-stone-800 rounded-sm animate-pulse" />
+                <div className="h-32 bg-stone-900/50 border border-stone-800 rounded-sm animate-pulse" />
               </div>
             </div>
           ) : error && !status ? (
@@ -1288,6 +1298,12 @@ export default function RumblePage() {
 
               return (
                 <div className="flex gap-6 justify-center">
+                  {betError && (
+                    <div className="fixed bottom-4 right-4 z-50 bg-red-900/90 border border-red-600 text-red-300 font-mono text-xs px-4 py-2 rounded-sm shadow-lg animate-fade-in-up">
+                      {betError}
+                    </div>
+                  )}
+
                   {/* Main content: Single featured rumble */}
                   <div className="flex-1 max-w-4xl">
                     {/* Slot selector pills (only if multiple active) */}

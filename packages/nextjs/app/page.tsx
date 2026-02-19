@@ -365,7 +365,7 @@ export default function Home() {
         {/* Enter Arena Button */}
         <Link
           href="/rumble"
-          className="mb-4 px-8 py-3 bg-amber-600 hover:bg-amber-500 text-stone-950 font-fight text-xl tracking-wider transition-all"
+          className="mb-4 px-8 py-3 bg-amber-600 hover:bg-amber-500 text-stone-950 font-fight text-xl tracking-wider transition-all rounded-sm"
         >
           ENTER RUMBLE ARENA
         </Link>

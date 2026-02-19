@@ -1,5 +1,7 @@
 "use client";
 
+import { useRef, useState, useEffect } from "react";
+
 interface FighterHPProps {
   name: string;
   hp: number;
@@ -23,27 +25,25 @@ export default function FighterHP({
 }: FighterHPProps) {
   const hpPercent = Math.max(0, Math.min(100, (hp / maxHp) * 100));
 
-  const barColor =
-    hpPercent > 60
-      ? "bg-green-500"
-      : hpPercent > 30
-      ? "bg-yellow-500"
-      : "bg-red-500";
+  const prevHpRef = useRef(hp);
+  const [showDamageFlash, setShowDamageFlash] = useState(false);
 
-  const barGlow =
-    hpPercent > 60
-      ? "shadow-green-500/30"
-      : hpPercent > 30
-      ? "shadow-yellow-500/30"
-      : "shadow-red-500/30";
+  useEffect(() => {
+    if (hp < prevHpRef.current) {
+      setShowDamageFlash(true);
+      const timer = setTimeout(() => setShowDamageFlash(false), 500);
+      return () => clearTimeout(timer);
+    }
+    prevHpRef.current = hp;
+  }, [hp]);
 
   return (
     <div
-      className={`flex items-center gap-3 p-2 rounded-sm transition-all ${
+      className={`flex items-center gap-3 p-2 rounded-sm transition-all duration-700 ${
         isEliminated
           ? "opacity-40 line-through decoration-red-500"
           : ""
-      } ${isMyBet && !isEliminated ? "ring-1 ring-cyan-500/50 bg-cyan-950/10" : ""}`}
+      } ${isMyBet && !isEliminated ? "ring-1 ring-cyan-500/50 bg-cyan-950/10" : ""} ${showDamageFlash ? "animate-damage-flash" : ""}`}
     >
       {/* Avatar */}
       <div className="relative flex-shrink-0">
@@ -51,7 +51,7 @@ export default function FighterHP({
           <img
             src={imageUrl}
             alt={name}
-            className={`w-8 h-8 rounded-sm object-cover border ${
+            className={`w-8 h-8 rounded-sm object-cover border transition-all duration-700 ${
               isEliminated ? "border-red-800 grayscale" : isMyBet ? "border-cyan-500" : "border-stone-700"
             }`}
           />
@@ -117,8 +117,15 @@ export default function FighterHP({
         {/* HP Bar */}
         <div className="w-full h-2 bg-stone-800 rounded-sm overflow-hidden">
           <div
-            className={`h-full ${barColor} shadow-sm ${barGlow} transition-all duration-500 ease-out`}
-            style={{ width: `${hpPercent}%` }}
+            className="h-full shadow-sm rounded-r-sm"
+            style={{
+              width: `${hpPercent}%`,
+              backgroundColor:
+                hpPercent > 60 ? 'rgb(34,197,94)'
+                : hpPercent > 30 ? 'rgb(234,179,8)'
+                : 'rgb(239,68,68)',
+              transition: 'width 500ms ease-out, background-color 400ms ease-in-out',
+            }}
           />
         </div>
 

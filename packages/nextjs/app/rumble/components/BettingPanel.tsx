@@ -40,6 +40,7 @@ export default function BettingPanel({
   const [timeLeft, setTimeLeft] = useState("");
   const [deploying, setDeploying] = useState<Set<string>>(new Set());
   const [lastTxSignature, setLastTxSignature] = useState<string | null>(null);
+  const [successFighterId, setSuccessFighterId] = useState<string | null>(null);
 
   // Countdown timer — offset by the on-chain close guard so the UI shows
   // CLOSED at the same moment the bet placement code rejects submissions.
@@ -100,6 +101,9 @@ export default function BettingPanel({
         next.delete(fighterId);
         return next;
       });
+      // Flash green on the fighter row for success feedback
+      setSuccessFighterId(fighterId);
+      setTimeout(() => setSuccessFighterId(null), 1500);
     } finally {
       setDeploying((prev) => {
         const next = new Set(prev);
@@ -249,9 +253,11 @@ export default function BettingPanel({
               <button
                 onClick={() => toggleFighter(f.fighterId)}
                 className={`w-full flex items-center justify-between p-2 rounded-sm border transition-all text-left ${
-                  isSelected
-                    ? "border-amber-500 bg-amber-900/20"
-                    : "border-stone-800 bg-stone-900/50 hover:border-stone-600"
+                  successFighterId === f.fighterId
+                    ? "border-green-500 bg-green-900/20"
+                    : isSelected
+                      ? "border-amber-500 bg-amber-900/20"
+                      : "border-stone-800 bg-stone-900/50 hover:border-stone-600"
                 }`}
               >
                 <div className="flex items-center gap-2 flex-1 min-w-0">
@@ -279,8 +285,8 @@ export default function BettingPanel({
                 </div>
               </button>
 
-              {/* Inline bet controls when selected */}
-              {isSelected && (
+              {/* Inline bet controls when selected — animated slide */}
+              <div className={`overflow-hidden transition-all duration-200 ${isSelected ? 'max-h-20 opacity-100' : 'max-h-0 opacity-0'}`}>
                 <div className="flex items-center gap-1 px-2 py-1 bg-stone-900/80 border-x border-b border-amber-500/30 rounded-b-sm">
                   {/* Quick amount buttons */}
                   {[0.05, 0.1, 0.25, 0.5].map((amt) => (
@@ -313,7 +319,7 @@ export default function BettingPanel({
                     {isDeploying ? "..." : "BET"}
                   </button>
                 </div>
-              )}
+              </div>
             </div>
           );
         })}

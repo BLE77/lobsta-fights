@@ -353,7 +353,8 @@ export default function RumbleSlot({
       <div className="p-4">
         {/* IDLE state */}
         {slot.state === "idle" && (
-          lastCompletedResult ? (
+          <div className="animate-fade-in-up">
+          {lastCompletedResult ? (
             <div className="space-y-3">
               <div className="flex items-center justify-between text-[10px] font-mono uppercase">
                 <span className="text-stone-500">Last Rumble Result</span>
@@ -378,11 +379,13 @@ export default function RumbleSlot({
                 </p>
               </div>
             </div>
-          )
+          )}
+          </div>
         )}
 
         {/* BETTING state */}
         {slot.state === "betting" && (
+          <div className="animate-fade-in-up">
           <BettingPanel
             slotIndex={slot.slotIndex}
             fighters={slot.odds}
@@ -392,56 +395,59 @@ export default function RumbleSlot({
             onPlaceBatchBet={onPlaceBatchBet}
             myBetAmounts={myBetAmounts}
           />
+          </div>
         )}
 
         {/* COMBAT state */}
         {slot.state === "combat" && (
-          <div className="space-y-3">
-            {/* Alive fighters HP bars */}
-            <div className="space-y-0.5">
-              <p className="font-mono text-[10px] text-stone-500 uppercase mb-1">
-                Fighters ({slot.remainingFighters ?? slot.fighters.filter((f) => f.eliminatedOnTurn === null || f.eliminatedOnTurn === undefined).length} alive)
-              </p>
-              <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
-                {slot.fighters
-                  .sort((a, b) => {
-                    // Alive first (using eliminatedOnTurn, not HP — on-chain doesn't zero HP)
-                    const aElim = a.eliminatedOnTurn != null;
-                    const bElim = b.eliminatedOnTurn != null;
-                    if (!aElim && bElim) return -1;
-                    if (aElim && !bElim) return 1;
-                    if (aElim && bElim) return (b.eliminatedOnTurn ?? 0) - (a.eliminatedOnTurn ?? 0);
-                    return b.hp - a.hp;
-                  })
-                  .map((f) => (
-                    <FighterHP
-                      key={f.id}
-                      name={f.name}
-                      hp={f.hp}
-                      maxHp={f.maxHp}
-                      imageUrl={f.imageUrl}
-                      isEliminated={f.eliminatedOnTurn != null}
-                      damageDealt={f.totalDamageDealt}
-                      isMyBet={myBetFighterIds?.has(f.id)}
+          <div className="animate-fade-in-up space-y-3">
+            {/* Alive fighters HP bars + elimination overlays */}
+            <div className="relative">
+              <div className="space-y-0.5">
+                <p className="font-mono text-[10px] text-stone-500 uppercase mb-1">
+                  Fighters ({slot.remainingFighters ?? slot.fighters.filter((f) => f.eliminatedOnTurn === null || f.eliminatedOnTurn === undefined).length} alive)
+                </p>
+                <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
+                  {slot.fighters
+                    .sort((a, b) => {
+                      // Alive first (using eliminatedOnTurn, not HP — on-chain doesn't zero HP)
+                      const aElim = a.eliminatedOnTurn != null;
+                      const bElim = b.eliminatedOnTurn != null;
+                      if (!aElim && bElim) return -1;
+                      if (aElim && !bElim) return 1;
+                      if (aElim && bElim) return (b.eliminatedOnTurn ?? 0) - (a.eliminatedOnTurn ?? 0);
+                      return 0;
+                    })
+                    .map((f) => (
+                      <FighterHP
+                        key={f.id}
+                        name={f.name}
+                        hp={f.hp}
+                        maxHp={f.maxHp}
+                        imageUrl={f.imageUrl}
+                        isEliminated={f.eliminatedOnTurn != null}
+                        damageDealt={f.totalDamageDealt}
+                        isMyBet={myBetFighterIds?.has(f.id)}
+                      />
+                    ))}
+                </div>
+              </div>
+
+              {/* Elimination popups (overlay) */}
+              {activeEliminations.length > 0 && (
+                <div className="absolute inset-x-0 top-0 z-20 pointer-events-none space-y-2">
+                  {activeEliminations.map((elim) => (
+                    <EliminationPopup
+                      key={elim.key}
+                      fighterName={elim.fighterName}
+                      imageUrl={elim.imageUrl}
+                      placement={elim.placement}
+                      totalFighters={elim.totalFighters}
                     />
                   ))}
-              </div>
+                </div>
+              )}
             </div>
-
-            {/* Elimination popups */}
-            {activeEliminations.length > 0 && (
-              <div className="space-y-2">
-                {activeEliminations.map((elim) => (
-                  <EliminationPopup
-                    key={elim.key}
-                    fighterName={elim.fighterName}
-                    imageUrl={elim.imageUrl}
-                    placement={elim.placement}
-                    totalFighters={elim.totalFighters}
-                  />
-                ))}
-              </div>
-            )}
 
             {/* Turn feed */}
             <div className="border-t border-stone-800 pt-2">
@@ -456,6 +462,7 @@ export default function RumbleSlot({
 
         {/* PAYOUT state */}
         {slot.state === "payout" && slot.payout && (
+          <div className="animate-fade-in-up">
           <PayoutDisplay
             placements={slot.fighters
               .filter((f) => f.placement > 0)
@@ -471,6 +478,7 @@ export default function RumbleSlot({
             payout={slot.payout}
             myBetFighterIds={myBetFighterIds}
           />
+          </div>
         )}
       </div>
     </div>

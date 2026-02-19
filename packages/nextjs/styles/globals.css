@@ -26,19 +26,40 @@ body {
   );
 }
 
+/* ---------------------------------------------------------------------------
+   Custom scrollbar — dark theme
+   --------------------------------------------------------------------------- */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: #0c0a09; /* stone-950 */
+}
+::-webkit-scrollbar-thumb {
+  background: #44403c; /* stone-700 */
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #d97706; /* amber-600 */
+}
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #44403c #0c0a09;
+}
+
+/* ---------------------------------------------------------------------------
+   Themed focus ring — amber, keyboard-only
+   --------------------------------------------------------------------------- */
+:focus-visible {
+  outline: 2px solid #d97706; /* amber-600 */
+  outline-offset: 2px;
+}
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
 @layer components {
-  .btn {
-    @apply px-4 py-2 rounded font-medium transition-colors;
-  }
-  .btn-primary {
-    @apply bg-amber-600 text-white hover:bg-amber-700;
-  }
-  .btn-secondary {
-    @apply bg-stone-700 text-stone-200 hover:bg-stone-600;
-  }
-  .btn-ghost {
-    @apply bg-transparent hover:bg-stone-800 text-stone-400;
-  }
   .input {
     @apply bg-stone-950 border border-stone-700 rounded px-3 py-2 text-stone-200 focus:outline-none focus:border-amber-600;
   }
@@ -81,7 +102,9 @@ body {
   }
 }
 
-/* Elimination popup animation for KO overlay */
+/* ---------------------------------------------------------------------------
+   Elimination popup animations
+   --------------------------------------------------------------------------- */
 .animate-elimination-popup {
   animation: elimination-popup 0.4s ease-out forwards;
 }
@@ -91,43 +114,86 @@ body {
 }
 
 @keyframes elimination-popup {
-  0% {
-    opacity: 0;
-    transform: scale(0.8);
-  }
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
+  0% { opacity: 0; transform: scale(0.8); }
+  100% { opacity: 1; transform: scale(1); }
 }
 
 @keyframes elimination-glow {
-  0%,
-  100% {
-    box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
-  }
-  50% {
-    box-shadow: 0 0 20px rgba(239, 68, 68, 0.7);
-  }
+  0%, 100% { box-shadow: 0 0 8px rgba(239, 68, 68, 0.4); }
+  50% { box-shadow: 0 0 20px rgba(239, 68, 68, 0.7); }
 }
 
 @keyframes elimination-flash {
-  0% {
-    background-color: rgba(239, 68, 68, 0.4);
-    transform: translateX(-4px);
-  }
-  25% {
-    transform: translateX(4px);
-  }
-  50% {
-    background-color: rgba(239, 68, 68, 0.2);
-    transform: translateX(-2px);
-  }
-  75% {
-    transform: translateX(2px);
-  }
-  100% {
-    background-color: rgba(127, 29, 29, 0.15);
-    transform: translateX(0);
-  }
+  0% { background-color: rgba(239, 68, 68, 0.4); transform: translateX(-4px); }
+  25% { transform: translateX(4px); }
+  50% { background-color: rgba(239, 68, 68, 0.2); transform: translateX(-2px); }
+  75% { transform: translateX(2px); }
+  100% { background-color: rgba(127, 29, 29, 0.15); transform: translateX(0); }
+}
+
+/* ---------------------------------------------------------------------------
+   Reusable UI animations
+   --------------------------------------------------------------------------- */
+
+/* Fade + slide up — state transitions, content reveal */
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in-up { animation: fade-in-up 0.3s ease-out; }
+
+/* Timer tick pulse */
+@keyframes tick-in {
+  0% { transform: scale(1.15); opacity: 0.6; }
+  100% { transform: scale(1); opacity: 1; }
+}
+.animate-tick-in { animation: tick-in 0.15s ease-out; }
+
+/* Damage flash on fighter row */
+@keyframes damage-flash {
+  0% { background-color: rgba(239, 68, 68, 0.4); }
+  100% { background-color: transparent; }
+}
+.animate-damage-flash { animation: damage-flash 0.5s ease-out; }
+
+/* Staggered payout reveal */
+@keyframes payout-reveal {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-payout-reveal { animation: payout-reveal 0.4s ease-out both; }
+
+/* Winner image entrance */
+@keyframes winner-reveal {
+  0% { transform: scale(0.7); box-shadow: 0 0 0 rgba(245, 158, 11, 0); opacity: 0; }
+  60% { transform: scale(1.05); box-shadow: 0 0 30px rgba(245, 158, 11, 0.6); opacity: 1; }
+  100% { transform: scale(1); box-shadow: 0 0 15px rgba(245, 158, 11, 0.3); }
+}
+.animate-winner-reveal { animation: winner-reveal 0.6s ease-out both; }
+
+/* Ichor Shower jackpot glow */
+@keyframes ichor-shower-glow {
+  0%, 100% { box-shadow: 0 0 10px rgba(245, 158, 11, 0.3), inset 0 0 10px rgba(245, 158, 11, 0.05); }
+  50% { box-shadow: 0 0 30px rgba(245, 158, 11, 0.6), inset 0 0 20px rgba(245, 158, 11, 0.1); }
+}
+.animate-ichor-shower { animation: ichor-shower-glow 2s ease-in-out infinite; }
+
+/* YOU WON flash */
+@keyframes you-won-flash {
+  0%, 100% { box-shadow: 0 0 0 rgba(34, 197, 94, 0); }
+  50% { box-shadow: 0 0 16px rgba(34, 197, 94, 0.5); }
+}
+.animate-you-won { animation: you-won-flash 0.8s ease-in-out 3; animation-delay: 400ms; }
+
+/* Betting closed flash */
+@keyframes bet-close-flash {
+  0%, 100% { outline: 2px solid transparent; }
+  30% { outline: 2px solid rgba(239, 68, 68, 0.6); }
+}
+.animate-bet-close-flash { animation: bet-close-flash 1.2s ease-out; }
+
+/* Equalizer bars (CommentaryPlayer) */
+@keyframes eqBar {
+  0% { height: 20%; }
+  100% { height: 100%; }
 }

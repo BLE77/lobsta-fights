@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { NextResponse } from "next/server";
 import { freshSupabase } from "../../../lib/supabase";
-import { getApiKeyFromHeaders, authenticateFighterByApiKey } from "../../../lib/request-auth";
+import { getApiKeyFromHeaders, authenticateFighterByApiKey, isValidUUID } from "../../../lib/request-auth";
 import { checkFighterCooldown } from "../../../lib/fighter-cooldown";
 
 export const dynamic = "force-dynamic";
@@ -21,6 +21,10 @@ export async function POST(request: Request) {
         { error: "Missing fighter_id or api_key", required: ["fighter_id", "api_key"], optional: ["points_wager"] },
         { status: 400 }
       );
+    }
+
+    if (!isValidUUID(fighterId)) {
+      return NextResponse.json({ error: "Invalid fighter ID" }, { status: 400 });
     }
 
     // Verify fighter and API key (hash-first with legacy fallback)

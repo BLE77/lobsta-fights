@@ -1,11 +1,66 @@
 import { NextResponse } from "next/server";
 import { freshSupabase } from "~~/lib/supabase";
+import { PublicKey } from "@solana/web3.js";
+import { getAssociatedTokenAddressSync } from "@solana/spl-token";
+import { getConnection } from "~~/lib/solana-connection";
 
 export const dynamic = "force-dynamic";
 
 // Rate limit: simple in-memory per-wallet cooldown (1 message per 2 seconds)
 const lastMessageTime = new Map<string, number>();
 const COOLDOWN_MS = 2000;
+
+// Cache chat eligibility per wallet for 60s to avoid hammering DB + RPC
+const eligibilityCache = new Map<string, { eligible: boolean; expiresAt: number }>();
+const ELIGIBILITY_TTL_MS = 60_000;
+
+// Token mint for chat gating (ICHOR — will be updated to pump.fun CA)
+const CHAT_TOKEN_MINT = process.env.NEXT_PUBLIC_ICHOR_TOKEN_MINT
+  ?? process.env.NEXT_PUBLIC_ICHOR_MINT
+  ?? null;
+
+async function isEligibleToChat(walletAddress: string): Promise<boolean> {
+  const now = Date.now();
+  const cached = eligibilityCache.get(walletAddress);
+  if (cached && cached.expiresAt > now) return cached.eligible;
+
+  // Check 1: Has the wallet placed any bet?
+  const db = freshSupabase();
+  const { count } = await db
+    .from("ucf_bets")
+    .select("id", { count: "exact", head: true })
+    .eq("wallet_address", walletAddress)
+    .limit(1);
+
+  if (count && count > 0) {
+    eligibilityCache.set(walletAddress, { eligible: true, expiresAt: now + ELIGIBILITY_TTL_MS });
+    return true;
+  }
+
+  // Check 2: Does the wallet hold the token?
+  if (CHAT_TOKEN_MINT) {
+    try {
+      const mint = new PublicKey(CHAT_TOKEN_MINT);
+      const owner = new PublicKey(walletAddress);
+      const ata = getAssociatedTokenAddressSync(mint, owner);
+      const conn = getConnection();
+      const info = await conn.getAccountInfo(ata);
+      if (info && info.data.length >= 64) {
+        // SPL token account data: bytes 64-72 = amount (u64 LE)
+        const amount = info.data.readBigUInt64LE(64);
+        if (amount > 0n) {
+          eligibilityCache.set(walletAddress, { eligible: true, expiresAt: now + ELIGIBILITY_TTL_MS });
+          return true;
+        }
+      }
+    } catch {
+      // RPC error or invalid address — fall through
+    }
+  }
+
+  eligibilityCache.set(walletAddress, { eligible: false, expiresAt: now + ELIGIBILITY_TTL_MS });
+  return false;
+}
 
 export async function GET() {
   try {
@@ -40,7 +95,9 @@ export async function POST(request: Request) {
     }
 
     const trimmed = message.trim();
-    if (trimmed.length === 0 || trimmed.length > 500) {
+    // Strip HTML tags and control characters
+    const sanitized = trimmed.replace(/<[^>]*>/g, '').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+    if (sanitized.length === 0 || sanitized.length > 500) {
       return NextResponse.json({ error: "Message must be 1-500 characters" }, { status: 400 });
     }
 
@@ -50,6 +107,16 @@ export async function POST(request: Request) {
     if (now - last < COOLDOWN_MS) {
       return NextResponse.json({ error: "Slow down! Wait a moment before sending another message." }, { status: 429 });
     }
+
+    // Eligibility check: must have bet or hold the token
+    const eligible = await isEligibleToChat(wallet_address);
+    if (!eligible) {
+      return NextResponse.json(
+        { error: "You need to place a bet or hold $ICHOR to chat." },
+        { status: 403 },
+      );
+    }
+
     lastMessageTime.set(wallet_address, now);
 
     // Clean up rate limit map periodically (prevent memory leak)
@@ -72,7 +139,7 @@ export async function POST(request: Request) {
       .insert({
         user_id: wallet_address,
         username,
-        message: trimmed,
+        message: sanitized,
       })
       .select("id, user_id, username, message, created_at")
       .single();

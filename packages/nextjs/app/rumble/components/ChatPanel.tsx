@@ -145,7 +145,7 @@ export default function ChatPanel({ walletAddress }: ChatPanelProps) {
   return (
     <div className="bg-stone-900/90 border border-stone-700 rounded-sm backdrop-blur-sm flex flex-col h-[340px]">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-stone-800">
+      <div className="flex items-center justify-between px-4 py-2 border-b border-stone-800">
         <h3 className="font-mono text-sm text-amber-500 uppercase font-bold">
           Live Chat
         </h3>
@@ -158,7 +158,7 @@ export default function ChatPanel({ walletAddress }: ChatPanelProps) {
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto px-3 py-2 space-y-1.5 scrollbar-thin scrollbar-thumb-stone-700 scrollbar-track-transparent"
+        className="flex-1 overflow-y-auto px-4 py-2 space-y-1.5 scrollbar-thin scrollbar-thumb-stone-700 scrollbar-track-transparent"
       >
         {messages.length === 0 ? (
           <div className="flex items-center justify-center h-full">
@@ -193,7 +193,7 @@ export default function ChatPanel({ walletAddress }: ChatPanelProps) {
       </div>
 
       {/* Input */}
-      <div className="border-t border-stone-800 px-3 py-2">
+      <div className="border-t border-stone-800 px-4 py-2">
         {error && (
           <p className="font-mono text-[10px] text-red-400 mb-1">{error}</p>
         )}

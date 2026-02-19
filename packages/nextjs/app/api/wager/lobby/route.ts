@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { NextResponse } from "next/server";
 import { supabase, freshSupabase } from "../../../../lib/supabase";
-import { authenticateFighterByApiKey } from "../../../../lib/request-auth";
+import { authenticateFighterByApiKey, isValidUUID } from "../../../../lib/request-auth";
 import {
   getFighterBalance,
   getFighterWallet,
@@ -28,6 +28,10 @@ export async function POST(request: Request) {
         { error: "Missing fighterId or apiKey" },
         { status: 400 }
       );
+    }
+
+    if (!isValidUUID(fighterId)) {
+      return NextResponse.json({ error: "Invalid fighter ID" }, { status: 400 });
     }
 
     // Check if on-chain wagering is enabled

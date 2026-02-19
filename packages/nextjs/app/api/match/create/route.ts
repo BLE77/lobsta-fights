@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { NextResponse } from "next/server";
 import { freshSupabase } from "../../../../lib/supabase";
-import { isAuthorizedInternalRequest } from "../../../../lib/request-auth";
+import { isAuthorizedInternalRequest, isValidUUID } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -32,6 +32,14 @@ export async function POST(request: Request) {
         { error: "Missing fighter_a_id or fighter_b_id" },
         { status: 400 }
       );
+    }
+
+    if (!isValidUUID(fighter_a_id)) {
+      return NextResponse.json({ error: "Invalid fighter_a_id" }, { status: 400 });
+    }
+
+    if (!isValidUUID(fighter_b_id)) {
+      return NextResponse.json({ error: "Invalid fighter_b_id" }, { status: 400 });
     }
 
     if (fighter_a_id === fighter_b_id) {
@@ -201,6 +209,10 @@ export async function GET(request: Request) {
       { error: "Missing match_id parameter" },
       { status: 400 }
     );
+  }
+
+  if (!isValidUUID(matchId)) {
+    return NextResponse.json({ error: "Invalid match_id" }, { status: 400 });
   }
 
   const { data: match, error } = await freshSupabase()

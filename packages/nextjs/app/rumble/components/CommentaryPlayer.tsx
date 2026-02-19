@@ -546,12 +546,7 @@ function EqualizerBars({ active }: { active: boolean }) {
           }}
         />
       ))}
-      <style>{`
-        @keyframes eqBar {
-          0% { height: 20%; }
-          100% { height: 100%; }
-        }
-      `}</style>
+      {/* eqBar keyframe defined in globals.css */}
     </div>
   );
 }
