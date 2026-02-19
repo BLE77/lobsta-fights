@@ -43,9 +43,14 @@ function freshServiceClient() {
 function verifyWebhookAuth(request: Request): boolean {
   const secret = getWebhookSecret();
 
-  // If no secret is configured, allow all requests (development mode)
+  // Never fail open in production. In local/dev, allow missing secret so
+  // webhook testing still works without extra setup.
   if (!secret) {
-    console.warn("[HeliusWebhook] No HELIUS_WEBHOOK_SECRET configured — skipping auth check");
+    if (process.env.NODE_ENV === "production") {
+      console.error("[HeliusWebhook] HELIUS_WEBHOOK_SECRET is missing in production");
+      return false;
+    }
+    console.warn("[HeliusWebhook] No HELIUS_WEBHOOK_SECRET configured — allowing dev request");
     return true;
   }
 

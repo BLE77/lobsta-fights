@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 // Fresh service-role client with no-store to bypass Next.js fetch caching.
 function freshServiceClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) throw new Error("Missing Supabase env vars");
   return createClient(url, key, {
     auth: { autoRefreshToken: false, persistSession: false },

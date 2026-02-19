@@ -60,6 +60,20 @@ async function getCachedSlot(): Promise<number | null> {
 // ---------------------------------------------------------------------------
 const _nextTurnAtCache = new Map<string, { iso: string; expiresAt: number }>();
 
+const _bettingDeadlineCache = new Map<number, { iso: string; expiresAt: number }>();
+
+function getStableBettingDeadline(rumbleIdNum: number, computeIso: () => string): string {
+  const now = Date.now();
+  const cached = _bettingDeadlineCache.get(rumbleIdNum);
+  if (cached && cached.expiresAt > now) return cached.iso;
+  if (_bettingDeadlineCache.size > 50) {
+    for (const [k, v] of _bettingDeadlineCache) { if (v.expiresAt <= now) _bettingDeadlineCache.delete(k); }
+  }
+  const iso = computeIso();
+  _bettingDeadlineCache.set(rumbleIdNum, { iso, expiresAt: now + 30_000 });
+  return iso;
+}
+
 function getStableNextTurnAt(
   rumbleIdNum: number,
   turn: number,
@@ -78,7 +92,7 @@ function getStableNextTurnAt(
     }
   }
   const iso = computeIso();
-  _nextTurnAtCache.set(key, { iso, expiresAt: now + 60_000 });
+  _nextTurnAtCache.set(key, { iso, expiresAt: now + 20_000 });
   return iso;
 }
 
@@ -461,6 +475,8 @@ export async function GET(request: Request) {
         nextTurnAt: slotInfo.nextTurnAt?.toISOString() ?? null,
         turnIntervalMs: slotInfo.turnIntervalMs ?? null,
         currentTurn: combatState?.turns.length ?? 0,
+        remainingFighters: null as number | null,
+        turnPhase: null as string | null,
         turns,
         payout,
         fighterNames,
@@ -527,7 +543,9 @@ export async function GET(request: Request) {
               bettingDeadline = Number.isFinite(unixMs) ? new Date(unixMs).toISOString() : slot.bettingDeadline;
             } else {
               const etaMs = slotsToMs(closeRaw);
-              bettingDeadline = new Date(Date.now() + etaMs).toISOString();
+              bettingDeadline = getStableBettingDeadline(rumbleIdNum, () =>
+                new Date(Date.now() + etaMs).toISOString(),
+              );
             }
           }
         } else {
@@ -537,11 +555,14 @@ export async function GET(request: Request) {
         // Enriched fighters/turns from on-chain + Supabase persistence
         let enrichedFighters = slot.fighters;
         let turns = slot.turns;
+        let remainingFighters = slot.remainingFighters;
+        let turnPhase = slot.turnPhase;
 
         if (state === "combat") {
           const onchainCombat = await readRumbleCombatState(rumbleIdNum).catch(() => null);
           if (onchainCombat) {
             currentTurn = Math.max(currentTurn ?? 0, onchainCombat.currentTurn ?? 0);
+            remainingFighters = onchainCombat.remainingFighters;
 
             const slotSpan =
               onchainCombat.revealCloseSlot > onchainCombat.turnOpenSlot
@@ -561,6 +582,7 @@ export async function GET(request: Request) {
                 ? onchainCombat.commitCloseSlot
                 : onchainCombat.revealCloseSlot;
               const phase = inCommitPhase ? "commit" : "reveal";
+              turnPhase = phase;
               const etaMs = slotsToMs(targetSlot);
               nextTurnAt = getStableNextTurnAt(rumbleIdNum, currentTurn, phase, () =>
                 etaMs > 0
@@ -569,10 +591,12 @@ export async function GET(request: Request) {
               );
             } else if (onchainCombat.remainingFighters > 1) {
               // Turn resolved, waiting for worker to open next turn (~2s tick)
+              turnPhase = "resolved";
               nextTurnAt = getStableNextTurnAt(rumbleIdNum, currentTurn, "resolved", () =>
                 new Date(Date.now() + 3_000).toISOString(),
               );
             } else {
+              turnPhase = "resolved";
               nextTurnAt = null; // combat over
             }
 
@@ -639,6 +663,8 @@ export async function GET(request: Request) {
           nextTurnAt,
           turnIntervalMs,
           currentTurn,
+          remainingFighters,
+          turnPhase,
           turns,
         };
       }),
@@ -726,7 +752,6 @@ export async function GET(request: Request) {
         const sameRumble = existing.rumbleId === row.id;
         const shouldOverlay =
           sameRumble ||
-          existing.rumbleId !== row.id ||
           existing.state === "idle" ||
           (existing.state === "betting" && !existing.bettingDeadline);
         if (!shouldOverlay) continue;
@@ -738,7 +763,7 @@ export async function GET(request: Request) {
         base.set(slotIndex, {
           ...existing,
           rumbleId: row.id,
-          state: (row.status as "idle" | "betting" | "combat" | "payout") ?? "idle",
+          state: sameRumble ? existing.state : (row.status as "idle" | "betting" | "combat" | "payout") ?? "idle",
           fighters: useFighters,
           odds: sameRumble
             ? existing.odds

@@ -19,8 +19,16 @@ function getSupabaseAnonKey() {
 
 function getServerKey() {
   // Prefer service role key (bypasses RLS) for server-side operations.
-  // Falls back to anon key only if service role key is unavailable.
-  return process.env.SUPABASE_SERVICE_ROLE_KEY || getSupabaseAnonKey();
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+  if (serviceRoleKey) return serviceRoleKey;
+
+  // Never silently downgrade to anon permissions in production.
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");
+  }
+
+  // Local/dev fallback only.
+  return getSupabaseAnonKey();
 }
 
 // CRITICAL: Next.js App Router caches ALL fetch() responses by default.

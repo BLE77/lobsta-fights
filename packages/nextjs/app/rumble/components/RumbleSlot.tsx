@@ -73,6 +73,8 @@ export interface SlotData {
   nextTurnAt?: string | null;
   turnIntervalMs?: number | null;
   currentTurn: number;
+  remainingFighters?: number | null;
+  turnPhase?: string | null;
   turns: SlotTurn[];
   payout: SlotPayout | null;
   fighterNames: Record<string, string>;
@@ -181,6 +183,9 @@ export default function RumbleSlot({
   const [countdownNow, setCountdownNow] = useState(() => Date.now());
   // Track when the current turn last changed (client-side anchor for countdown)
   const lastTurnChangeRef = useRef<{ turn: number; at: number }>({ turn: 0, at: Date.now() });
+  // Stabilize nextTurnAt — only accept new values when turn changes or large time diff
+  const stableNextTurnAtRef = useRef<string | null>(null);
+  const lastCurrentTurnRef = useRef<number>(0);
 
   useEffect(() => {
     const curTurn = slot.currentTurn ?? 0;
@@ -188,6 +193,26 @@ export default function RumbleSlot({
       lastTurnChangeRef.current = { turn: curTurn, at: Date.now() };
     }
   }, [slot.currentTurn]);
+
+  // Only accept new nextTurnAt if turn changed or big difference (>5s)
+  useEffect(() => {
+    if (slot.currentTurn !== lastCurrentTurnRef.current || !stableNextTurnAtRef.current) {
+      stableNextTurnAtRef.current = slot.nextTurnAt ?? null;
+      lastCurrentTurnRef.current = slot.currentTurn;
+    } else if (slot.nextTurnAt) {
+      const stableVal = stableNextTurnAtRef.current;
+      if (stableVal) {
+        const diff = Math.abs(new Date(slot.nextTurnAt).getTime() - new Date(stableVal).getTime());
+        if (diff > 5000) {
+          stableNextTurnAtRef.current = slot.nextTurnAt;
+        }
+      } else {
+        stableNextTurnAtRef.current = slot.nextTurnAt;
+      }
+    } else {
+      stableNextTurnAtRef.current = null;
+    }
+  }, [slot.nextTurnAt, slot.currentTurn]);
 
   useEffect(() => {
     const trackCombat = slot.state === "combat";
@@ -197,9 +222,11 @@ export default function RumbleSlot({
     return () => clearInterval(timer);
   }, [slot.state, slot.bettingDeadline]);
 
+  const stableNextTurnAt = stableNextTurnAtRef.current;
+
   const liveCountdown = (() => {
-    if (slot.state === "combat" && slot.nextTurnAt) {
-      const targetMs = new Date(slot.nextTurnAt).getTime();
+    if (slot.state === "combat" && stableNextTurnAt) {
+      const targetMs = new Date(stableNextTurnAt).getTime();
       if (!Number.isFinite(targetMs)) return null;
       return {
         label: "NEXT TURN",
@@ -207,7 +234,7 @@ export default function RumbleSlot({
       };
     }
     // Fallback: compute countdown from when we last saw the turn number change
-    if (slot.state === "combat" && !slot.nextTurnAt && slot.turnIntervalMs) {
+    if (slot.state === "combat" && !stableNextTurnAt && slot.turnIntervalMs) {
       const anchor = lastTurnChangeRef.current;
       const targetMs = anchor.at + slot.turnIntervalMs;
       const remaining = Math.max(0, Math.ceil((targetMs - countdownNow) / 1_000));
@@ -360,7 +387,7 @@ export default function RumbleSlot({
             {/* Alive fighters HP bars */}
             <div className="space-y-0.5">
               <p className="font-mono text-[10px] text-stone-500 uppercase mb-1">
-                Fighters ({slot.fighters.filter((f) => f.hp > 0).length} alive)
+                Fighters ({slot.remainingFighters ?? slot.fighters.filter((f) => f.eliminatedOnTurn === null || f.eliminatedOnTurn === undefined).length} alive)
               </p>
               <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
                 {slot.fighters

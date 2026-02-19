@@ -282,6 +282,11 @@ function normalizeStatusPayload(raw: any): RumbleStatus {
               ? null
               : safeNumber(slot?.turnIntervalMs, 0),
           currentTurn: safeNumber(slot?.currentTurn, 0),
+          remainingFighters:
+            slot?.remainingFighters === null || slot?.remainingFighters === undefined
+              ? null
+              : safeNumber(slot?.remainingFighters, 0),
+          turnPhase: typeof slot?.turnPhase === "string" ? slot.turnPhase : null,
           turns,
           payout,
           fighterNames,
@@ -359,6 +364,7 @@ export default function RumblePage() {
   const [myBetAmountsBySlot, setMyBetAmountsBySlot] = useState<Map<number, Map<string, number>>>(new Map());
   const claimFetchInFlightRef = useRef(false);
   const claimBalanceRef = useRef<ClaimBalanceStatus | null>(null);
+  const pollSeqRef = useRef(0);
 
   // ---- Direct Phantom wallet management (no wallet adapter) ----
   const [phantomProvider, setPhantomProvider] = useState<any>(null);
@@ -458,12 +464,14 @@ export default function RumblePage() {
 
   // Fetch full status via polling
   const fetchStatus = useCallback(async () => {
+    const seq = ++pollSeqRef.current;
     try {
       const res = await fetch(`/api/rumble/status?_t=${Date.now()}`, {
         cache: "no-store",
       });
       if (!res.ok) throw new Error(`Status ${res.status}`);
       const raw = await res.json();
+      if (seq !== pollSeqRef.current) return; // stale response, discard
       const data = normalizeStatusPayload(raw);
       setStatus(data);
       setError(null);
@@ -710,6 +718,24 @@ export default function RumblePage() {
             slot.turns = [...slot.turns, turn];
           }
           slot.currentTurn = Math.max(slot.currentTurn, turn.turnNumber);
+          // Apply damage from turn pairings to fighters
+          if (turn.pairings) {
+            for (const p of turn.pairings) {
+              slot.fighters = slot.fighters.map(f => {
+                if (f.id === p.fighterA) return { ...f, hp: Math.max(0, f.hp - (p.damageToA ?? 0)) };
+                if (f.id === p.fighterB) return { ...f, hp: Math.max(0, f.hp - (p.damageToB ?? 0)) };
+                return f;
+              });
+            }
+          }
+          // Mark eliminations
+          if (turn.eliminations) {
+            for (const elimId of turn.eliminations) {
+              slot.fighters = slot.fighters.map(f =>
+                f.id === elimId ? { ...f, hp: 0, eliminatedOnTurn: turn.turnNumber ?? slot.currentTurn } : f
+              );
+            }
+          }
           break;
         }
 
@@ -803,21 +829,23 @@ export default function RumblePage() {
     });
   }, []);
 
-  // Initialize: poll + SSE
+  // Connect SSE once for real-time updates.
   useEffect(() => {
-    fetchStatus();
-
-    // Poll every 4 seconds as fallback; SSE handles live updates.
-    const pollInterval = setInterval(fetchStatus, 4000);
-
-    // Connect SSE for real-time updates
     const es = connectSSE();
-
     return () => {
-      clearInterval(pollInterval);
       es.close();
     };
-  }, [fetchStatus, connectSSE]);
+  }, [connectSSE]);
+
+  // Poll as a safety net:
+  // - fast when SSE is down
+  // - slower when SSE is healthy to reduce server/RPC load
+  useEffect(() => {
+    fetchStatus();
+    const intervalMs = sseConnected ? 10_000 : 4_000;
+    const pollInterval = setInterval(fetchStatus, intervalMs);
+    return () => clearInterval(pollInterval);
+  }, [fetchStatus, sseConnected]);
 
   // Wallet payout/claimable balance polling
   useEffect(() => {
