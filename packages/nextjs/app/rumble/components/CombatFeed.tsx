@@ -26,14 +26,18 @@ interface CombatFeedProps {
   fighterNames: Record<string, string>;
 }
 
-function getMoveIcon(move: string | undefined | null): string {
-  const safeMove = typeof move === "string" ? move : "";
-  if (safeMove.includes("STRIKE")) return ">>>";
-  if (safeMove.includes("GUARD")) return "[=]";
-  if (safeMove === "DODGE") return "~~~";
-  if (safeMove === "CATCH") return "<< ";
-  if (safeMove === "SPECIAL") return "***";
-  return "???";
+function getMoveLabel(move: string | undefined | null): string {
+  const m = typeof move === "string" ? move : "";
+  if (m === "HIGH_STRIKE") return "HI-STRIKE";
+  if (m === "MID_STRIKE") return "MID-STRIKE";
+  if (m === "LOW_STRIKE") return "LO-STRIKE";
+  if (m === "GUARD_HIGH") return "GUARD-HI";
+  if (m === "GUARD_MID") return "GUARD-MID";
+  if (m === "GUARD_LOW") return "GUARD-LO";
+  if (m === "DODGE") return "DODGE";
+  if (m === "CATCH") return "CATCH";
+  if (m === "SPECIAL") return "SPECIAL";
+  return m || "???";
 }
 
 function getMoveColor(move: string | undefined | null): string {
@@ -73,7 +77,6 @@ function describeDamage(
     return { label: `-${dmg}`, className: "text-yellow-400" };
   }
 
-  // Explicit zero-damage outcomes so spectators can see why no damage landed.
   if ((isStrike(attackerMove) || attackerMove === "SPECIAL") && defenderMove === "DODGE") {
     return { label: "DODGED", className: "text-green-400 font-semibold" };
   }
@@ -138,14 +141,14 @@ export default function CombatFeed({
       className="space-y-2 max-h-64 overflow-y-auto pr-1 scrollbar-thin"
     >
       {/* Turn header */}
-      <div className="sticky top-0 bg-stone-900/95 py-1 border-b border-stone-800">
+      <div className="sticky top-0 bg-stone-900/95 py-1 border-b border-stone-800 text-center">
         <span className="font-mono text-xs text-amber-500">
           TURN {currentTurn}/{20}
         </span>
       </div>
 
       {turns.slice().reverse().map((turn) => (
-        <div key={turn.turnNumber} className="space-y-1">
+        <div key={turn.turnNumber} className="space-y-1.5">
           {/* Turn separator */}
           <div className="flex items-center gap-2 mt-1">
             <div className="flex-1 h-px bg-stone-800" />
@@ -155,45 +158,45 @@ export default function CombatFeed({
             <div className="flex-1 h-px bg-stone-800" />
           </div>
 
-          {/* Pairings */}
+          {/* Pairings — centered, each on its own line */}
           {turn.pairings.map((p, i) => {
             const aToB = describeDamage(p.damageToB, p.moveA, p.moveB);
             const bToA = describeDamage(p.damageToA, p.moveB, p.moveA);
             return (
-            <div
-              key={`${turn.turnNumber}-${i}`}
-              className="font-mono text-xs flex items-center gap-1 px-1 flex-wrap"
-            >
-              {/* Fighter A */}
-              <span className="text-stone-300 truncate max-w-[100px]" title={p.fighterAName}>
-                {p.fighterAName}
-              </span>
-              <span className={getMoveColor(p.moveA)} title={p.moveA}>
-                {getMoveIcon(p.moveA)}
-              </span>
-              <span className={`text-[10px] ${aToB.className}`}>
-                {aToB.label}
-              </span>
+              <div
+                key={`${turn.turnNumber}-${i}`}
+                className="font-mono text-xs text-center py-0.5"
+              >
+                {/* Fighter A: name + move + damage */}
+                <span className="text-stone-300">{p.fighterAName}</span>
+                {" "}
+                <span className={`${getMoveColor(p.moveA)} text-[10px]`}>
+                  {getMoveLabel(p.moveA)}
+                </span>
+                {" "}
+                <span className={`text-[10px] ${aToB.className}`}>
+                  {aToB.label}
+                </span>
 
-              <span className="text-stone-700 mx-0.5">|</span>
+                <span className="text-stone-700 mx-1">|</span>
 
-              {/* Fighter B */}
-              <span className={`text-[10px] ${bToA.className}`}>
-                {bToA.label}
-              </span>
-              <span className={getMoveColor(p.moveB)} title={p.moveB}>
-                {getMoveIcon(p.moveB)}
-              </span>
-              <span className="text-stone-300 truncate max-w-[100px]" title={p.fighterBName}>
-                {p.fighterBName}
-              </span>
-            </div>
+                {/* Fighter B: damage + move + name */}
+                <span className={`text-[10px] ${bToA.className}`}>
+                  {bToA.label}
+                </span>
+                {" "}
+                <span className={`${getMoveColor(p.moveB)} text-[10px]`}>
+                  {getMoveLabel(p.moveB)}
+                </span>
+                {" "}
+                <span className="text-stone-300">{p.fighterBName}</span>
+              </div>
             );
           })}
 
           {/* Bye */}
           {turn.bye && (
-            <div className="font-mono text-[10px] text-stone-600 px-1">
+            <div className="font-mono text-[10px] text-stone-600 text-center">
               {fighterNames[turn.bye] || turn.bye} gets a bye
             </div>
           )}
@@ -202,7 +205,7 @@ export default function CombatFeed({
           {turn.eliminations.map((elim) => (
             <div
               key={`elim-${turn.turnNumber}-${elim}`}
-              className="font-mono text-xs text-red-500 px-1 py-0.5 bg-red-950/30 border-l-2 border-red-600 animate-elimination"
+              className="font-mono text-xs text-red-500 py-0.5 bg-red-950/30 border-l-2 border-red-600 text-center animate-elimination"
             >
               ELIMINATED: {fighterNames[elim] || elim}
             </div>
