@@ -400,6 +400,7 @@ export class RumbleOrchestrator {
   private houseBotsPaused = false;
   private houseBotTargetPopulationOverride: number | null = null;
   private houseBotsLastRestartAt: string | null = null;
+  private lastPauseSyncAt = 0;
 
   // Betting pools indexed by slot
   private bettingPools: Map<number, BettingPool> = new Map();
@@ -622,6 +623,19 @@ export class RumbleOrchestrator {
     // Track when this tick started for serverless budget management.
     // Combat loop uses this to stop before the function is killed.
     this.tickStartedAt = Date.now();
+
+    // Sync pause state from DB every 10s so admin page toggles take effect
+    if (Date.now() - this.lastPauseSyncAt > 10_000) {
+      this.lastPauseSyncAt = Date.now();
+      try {
+        const dbPaused = await persist.getAdminConfig("house_bots_paused");
+        const paused = dbPaused === true;
+        if (paused !== this.houseBotsPaused) {
+          console.log(`[Orchestrator] Pause state synced from DB: ${this.houseBotsPaused} → ${paused}`);
+          this.houseBotsPaused = paused;
+        }
+      } catch {}
+    }
 
     let onchainAdminHealthy = true;
     if (ONCHAIN_TURN_AUTHORITY) {
