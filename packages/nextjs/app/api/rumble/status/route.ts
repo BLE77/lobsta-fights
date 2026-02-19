@@ -577,15 +577,17 @@ export async function GET(request: Request) {
             const ONCHAIN_TURN_MS = 60 * SLOT_MS_ESTIMATE; // ~24s
 
             if (!onchainCombat.turnResolved) {
-              // Turn is active — countdown to commit/reveal window close
+              // Turn is active — always countdown to revealCloseSlot (when
+              // the turn actually resolves). Previously we showed separate
+              // commit and reveal countdowns, which looked like the timer
+              // reset from 10→0 twice before a move happened.
               const inCommitPhase =
                 currentClusterSlotBig !== null &&
                 currentClusterSlotBig <= onchainCombat.commitCloseSlot;
-              const targetSlotVal = inCommitPhase
-                ? onchainCombat.commitCloseSlot
-                : onchainCombat.revealCloseSlot;
-              const phase = inCommitPhase ? "commit" : "reveal";
-              turnPhase = phase;
+              turnPhase = inCommitPhase ? "commit" : "reveal";
+
+              // Always target revealCloseSlot — single continuous countdown
+              const targetSlotVal = onchainCombat.revealCloseSlot;
 
               // Send raw slot numbers so frontend computes countdown locally
               // (prevents timer reset on refresh / different Vercel instances)
@@ -593,7 +595,9 @@ export async function GET(request: Request) {
               slot.currentSlot = currentClusterSlotBig !== null ? Number(currentClusterSlotBig) : null;
 
               const etaMs = slotsToMs(targetSlotVal);
-              nextTurnAt = getStableNextTurnAt(rumbleIdNum, currentTurn, phase, () =>
+              // Use turn number only (not phase) as cache key so the
+              // countdown doesn't jump when phase transitions commit→reveal
+              nextTurnAt = getStableNextTurnAt(rumbleIdNum, currentTurn, "turn", () =>
                 etaMs > 0
                   ? new Date(Date.now() + etaMs).toISOString()
                   : new Date(Date.now() + 3_000).toISOString(),
@@ -902,14 +906,12 @@ export async function GET(request: Request) {
           const inCommitPhase =
             currentClusterSlotBig !== null &&
             currentClusterSlotBig <= onchainCombat.commitCloseSlot;
-          const targetSlotVal = inCommitPhase
-            ? onchainCombat.commitCloseSlot
-            : onchainCombat.revealCloseSlot;
-          const phase = inCommitPhase ? "commit" : "reveal";
-          turnPhase = phase;
+          turnPhase = inCommitPhase ? "commit" : "reveal";
+          // Always target revealCloseSlot — single continuous countdown
+          const targetSlotVal = onchainCombat.revealCloseSlot;
           nextTurnTargetSlot = Number(targetSlotVal);
           const etaMs = slotsToMs(targetSlotVal);
-          nextTurnAt = getStableNextTurnAt(rumbleIdNum, currentTurn, phase, () =>
+          nextTurnAt = getStableNextTurnAt(rumbleIdNum, currentTurn, "turn", () =>
             etaMs > 0
               ? new Date(Date.now() + etaMs).toISOString()
               : new Date(Date.now() + 3_000).toISOString(),

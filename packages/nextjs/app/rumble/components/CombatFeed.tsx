@@ -90,10 +90,10 @@ export default function CombatFeed({
 }: CombatFeedProps) {
   const feedRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to bottom on new turns
+  // Newest turns first — scroll to top when new turns arrive
   useEffect(() => {
     if (feedRef.current) {
-      feedRef.current.scrollTop = feedRef.current.scrollHeight;
+      feedRef.current.scrollTop = 0;
     }
   }, [turns.length]);
 
@@ -144,7 +144,7 @@ export default function CombatFeed({
         </span>
       </div>
 
-      {turns.map((turn) => (
+      {turns.slice().reverse().map((turn) => (
         <div key={turn.turnNumber} className="space-y-1">
           {/* Turn separator */}
           <div className="flex items-center gap-2 mt-1">
@@ -162,13 +162,13 @@ export default function CombatFeed({
             return (
             <div
               key={`${turn.turnNumber}-${i}`}
-              className="font-mono text-xs flex items-center gap-1 px-1"
+              className="font-mono text-xs flex items-center gap-1 px-1 flex-wrap"
             >
               {/* Fighter A */}
-              <span className="text-stone-300 truncate max-w-[80px]">
+              <span className="text-stone-300 truncate max-w-[100px]" title={p.fighterAName}>
                 {p.fighterAName}
               </span>
-              <span className={getMoveColor(p.moveA)}>
+              <span className={getMoveColor(p.moveA)} title={p.moveA}>
                 {getMoveIcon(p.moveA)}
               </span>
               <span className={`text-[10px] ${aToB.className}`}>
@@ -181,10 +181,10 @@ export default function CombatFeed({
               <span className={`text-[10px] ${bToA.className}`}>
                 {bToA.label}
               </span>
-              <span className={getMoveColor(p.moveB)}>
+              <span className={getMoveColor(p.moveB)} title={p.moveB}>
                 {getMoveIcon(p.moveB)}
               </span>
-              <span className="text-stone-300 truncate max-w-[80px]">
+              <span className="text-stone-300 truncate max-w-[100px]" title={p.fighterBName}>
                 {p.fighterBName}
               </span>
             </div>
