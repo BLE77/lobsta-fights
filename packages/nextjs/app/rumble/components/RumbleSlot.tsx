@@ -183,8 +183,9 @@ export default function RumbleSlot({
   const [countdownNow, setCountdownNow] = useState(() => Date.now());
   // Track when the current turn last changed (client-side anchor for countdown)
   const lastTurnChangeRef = useRef<{ turn: number; at: number }>({ turn: 0, at: Date.now() });
-  // Stabilize nextTurnAt — only accept new values when turn changes or large time diff
-  const stableNextTurnAtRef = useRef<string | null>(null);
+  // Compute stable countdown from on-chain slot numbers (not server Date.now())
+  // This prevents timer reset on refresh — slot math is deterministic
+  const slotAnchorRef = useRef<{ targetSlot: number; currentSlot: number; anchoredAt: number } | null>(null);
   const lastCurrentTurnRef = useRef<number>(0);
 
   useEffect(() => {
@@ -194,25 +195,21 @@ export default function RumbleSlot({
     }
   }, [slot.currentTurn]);
 
-  // Only accept new nextTurnAt if turn changed or big difference (>5s)
+  // Anchor slot-based timer: when we receive slot data, record when we got it
   useEffect(() => {
-    if (slot.currentTurn !== lastCurrentTurnRef.current || !stableNextTurnAtRef.current) {
-      stableNextTurnAtRef.current = slot.nextTurnAt ?? null;
-      lastCurrentTurnRef.current = slot.currentTurn;
-    } else if (slot.nextTurnAt) {
-      const stableVal = stableNextTurnAtRef.current;
-      if (stableVal) {
-        const diff = Math.abs(new Date(slot.nextTurnAt).getTime() - new Date(stableVal).getTime());
-        if (diff > 5000) {
-          stableNextTurnAtRef.current = slot.nextTurnAt;
-        }
-      } else {
-        stableNextTurnAtRef.current = slot.nextTurnAt;
+    const target = (slot as any).nextTurnTargetSlot as number | null;
+    const current = (slot as any).currentSlot as number | null;
+    if (target && current && target > current) {
+      const turnChanged = slot.currentTurn !== lastCurrentTurnRef.current;
+      // Only re-anchor if turn changed, no existing anchor, or target slot changed
+      if (turnChanged || !slotAnchorRef.current || slotAnchorRef.current.targetSlot !== target) {
+        slotAnchorRef.current = { targetSlot: target, currentSlot: current, anchoredAt: Date.now() };
+        lastCurrentTurnRef.current = slot.currentTurn;
       }
-    } else {
-      stableNextTurnAtRef.current = null;
+    } else if (!target) {
+      slotAnchorRef.current = null;
     }
-  }, [slot.nextTurnAt, slot.currentTurn]);
+  }, [(slot as any).nextTurnTargetSlot, (slot as any).currentSlot, slot.currentTurn]);
 
   useEffect(() => {
     const trackCombat = slot.state === "combat";
@@ -222,19 +219,27 @@ export default function RumbleSlot({
     return () => clearInterval(timer);
   }, [slot.state, slot.bettingDeadline]);
 
-  const stableNextTurnAt = stableNextTurnAtRef.current;
-
   const liveCountdown = (() => {
-    if (slot.state === "combat" && stableNextTurnAt) {
-      const targetMs = new Date(stableNextTurnAt).getTime();
+    // Primary: compute from on-chain slot numbers (deterministic, survives refresh)
+    if (slot.state === "combat" && slotAnchorRef.current) {
+      const { targetSlot, currentSlot, anchoredAt } = slotAnchorRef.current;
+      const slotMs = (slot as any).slotMsEstimate ?? 400;
+      const totalEtaMs = (targetSlot - currentSlot) * slotMs;
+      const elapsed = countdownNow - anchoredAt;
+      const remaining = Math.max(0, Math.ceil((totalEtaMs - elapsed) / 1_000));
+      return { label: "NEXT TURN", seconds: remaining };
+    }
+    // Fallback: use server-computed nextTurnAt
+    if (slot.state === "combat" && slot.nextTurnAt) {
+      const targetMs = new Date(slot.nextTurnAt).getTime();
       if (!Number.isFinite(targetMs)) return null;
       return {
         label: "NEXT TURN",
         seconds: Math.max(0, Math.ceil((targetMs - countdownNow) / 1_000)),
       };
     }
-    // Fallback: compute countdown from when we last saw the turn number change
-    if (slot.state === "combat" && !stableNextTurnAt && slot.turnIntervalMs) {
+    // Fallback: compute from turn change anchor
+    if (slot.state === "combat" && slot.turnIntervalMs) {
       const anchor = lastTurnChangeRef.current;
       const targetMs = anchor.at + slot.turnIntervalMs;
       const remaining = Math.max(0, Math.ceil((targetMs - countdownNow) / 1_000));

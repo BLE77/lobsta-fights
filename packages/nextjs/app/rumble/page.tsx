@@ -287,6 +287,9 @@ function normalizeStatusPayload(raw: any): RumbleStatus {
               ? null
               : safeNumber(slot?.remainingFighters, 0),
           turnPhase: typeof slot?.turnPhase === "string" ? slot.turnPhase : null,
+          nextTurnTargetSlot: slot?.nextTurnTargetSlot != null ? safeNumber(slot.nextTurnTargetSlot, 0) : null,
+          currentSlot: slot?.currentSlot != null ? safeNumber(slot.currentSlot, 0) : null,
+          slotMsEstimate: safeNumber(slot?.slotMsEstimate, 400),
           turns,
           payout,
           fighterNames,

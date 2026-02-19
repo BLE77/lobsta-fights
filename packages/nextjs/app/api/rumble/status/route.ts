@@ -477,6 +477,9 @@ export async function GET(request: Request) {
         currentTurn: combatState?.turns.length ?? 0,
         remainingFighters: null as number | null,
         turnPhase: null as string | null,
+        nextTurnTargetSlot: null as number | null,
+        currentSlot: null as number | null,
+        slotMsEstimate: SLOT_MS_ESTIMATE,
         turns,
         payout,
         fighterNames,
@@ -578,12 +581,18 @@ export async function GET(request: Request) {
               const inCommitPhase =
                 currentClusterSlotBig !== null &&
                 currentClusterSlotBig <= onchainCombat.commitCloseSlot;
-              const targetSlot = inCommitPhase
+              const targetSlotVal = inCommitPhase
                 ? onchainCombat.commitCloseSlot
                 : onchainCombat.revealCloseSlot;
               const phase = inCommitPhase ? "commit" : "reveal";
               turnPhase = phase;
-              const etaMs = slotsToMs(targetSlot);
+
+              // Send raw slot numbers so frontend computes countdown locally
+              // (prevents timer reset on refresh / different Vercel instances)
+              slot.nextTurnTargetSlot = Number(targetSlotVal);
+              slot.currentSlot = currentClusterSlotBig !== null ? Number(currentClusterSlotBig) : null;
+
+              const etaMs = slotsToMs(targetSlotVal);
               nextTurnAt = getStableNextTurnAt(rumbleIdNum, currentTurn, phase, () =>
                 etaMs > 0
                   ? new Date(Date.now() + etaMs).toISOString()
@@ -592,6 +601,8 @@ export async function GET(request: Request) {
             } else if (onchainCombat.remainingFighters > 1) {
               // Turn resolved, waiting for worker to open next turn (~2s tick)
               turnPhase = "resolved";
+              slot.nextTurnTargetSlot = null;
+              slot.currentSlot = currentClusterSlotBig !== null ? Number(currentClusterSlotBig) : null;
               nextTurnAt = getStableNextTurnAt(rumbleIdNum, currentTurn, "resolved", () =>
                 new Date(Date.now() + 3_000).toISOString(),
               );
@@ -613,7 +624,7 @@ export async function GET(request: Request) {
                 meter: onchainCombat.meter[i],
                 totalDamageDealt: Number(onchainCombat.totalDamageDealt[i]),
                 totalDamageTaken: Number(onchainCombat.totalDamageTaken[i]),
-                eliminatedOnTurn: onchainCombat.hp[i] === 0 && onchainCombat.eliminationRank[i] > 0
+                eliminatedOnTurn: onchainCombat.eliminationRank[i] > 0
                   ? onchainCombat.eliminationRank[i]
                   : f.eliminatedOnTurn,
               };
