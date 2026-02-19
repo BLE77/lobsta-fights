@@ -30,6 +30,16 @@ const MAX_ACTIVE_AGE_MS_BY_STATUS: Record<string, number> = {
   combat: 45 * 60 * 1000,
   payout: 10 * 60 * 1000,
 };
+const STATUS_CACHE_TTLS_MS = {
+  slot: 1_500,
+  fighterLookup: 10_000,
+  commentary: 2_500,
+  turnLog: 2_500,
+  activeRumbles: 2_500,
+  showerState: 3_000,
+  arenaConfig: 3_000,
+  stats: 3_000,
+};
 
 // ---------------------------------------------------------------------------
 // Cached getSlot — avoids redundant RPC calls across concurrent status polls
@@ -37,7 +47,7 @@ const MAX_ACTIVE_AGE_MS_BY_STATUS: Record<string, number> = {
 let _slotCache: { slot: number; at: number } | null = null;
 async function getCachedSlot(): Promise<number | null> {
   const now = Date.now();
-  if (_slotCache && now - _slotCache.at < 1500) return _slotCache.slot;
+  if (_slotCache && now - _slotCache.at < STATUS_CACHE_TTLS_MS.slot) return _slotCache.slot;
   const slot = await getConnection().getSlot("processed").catch(() => null);
   if (slot !== null) _slotCache = { slot, at: now };
   return slot;
@@ -106,6 +116,20 @@ interface RobotMeta {
 }
 
 type FighterInfo = { name: string; imageUrl: string | null; robotMeta: RobotMeta | null };
+type CacheEntry<T> = { at: number; value: T };
+type CommentaryRows = Awaited<ReturnType<typeof getCommentaryForRumble>>;
+type ActiveRumbleRows = Awaited<ReturnType<typeof loadActiveRumbles>>;
+type IchorShowerState = Awaited<ReturnType<typeof getIchorShowerState>>;
+type ArenaConfigState = Awaited<ReturnType<typeof readArenaConfig>>;
+type StatsState = Awaited<ReturnType<typeof getStats>>;
+
+let _fighterLookupCache: CacheEntry<Map<string, FighterInfo>> | null = null;
+const _commentaryCache = new Map<string, CacheEntry<CommentaryRows>>();
+const _turnLogCache = new Map<string, CacheEntry<unknown[] | null>>();
+let _activeRumblesCache: CacheEntry<ActiveRumbleRows> | null = null;
+let _showerStateCache: CacheEntry<IchorShowerState> | null = null;
+let _arenaConfigCache: CacheEntry<ArenaConfigState | null> | null = null;
+let _statsCache: CacheEntry<StatsState> | null = null;
 
 async function loadFighterLookup(): Promise<Map<string, FighterInfo>> {
   const sb = freshServiceClient();
@@ -130,6 +154,120 @@ async function loadFighterLookup(): Promise<Map<string, FighterInfo>> {
     map.set(f.id, { name: f.name, imageUrl: f.image_url, robotMeta });
   }
   return map;
+}
+
+async function loadFighterLookupCached(): Promise<Map<string, FighterInfo>> {
+  const now = Date.now();
+  if (_fighterLookupCache && now - _fighterLookupCache.at < STATUS_CACHE_TTLS_MS.fighterLookup) {
+    return _fighterLookupCache.value;
+  }
+  const value = await loadFighterLookup();
+  _fighterLookupCache = { at: now, value };
+  return value;
+}
+
+async function getCommentaryForRumbleCached(rumbleId: string): Promise<CommentaryRows> {
+  const now = Date.now();
+  const hit = _commentaryCache.get(rumbleId);
+  if (hit && now - hit.at < STATUS_CACHE_TTLS_MS.commentary) {
+    return hit.value;
+  }
+  const rows = await getCommentaryForRumble(rumbleId);
+  _commentaryCache.set(rumbleId, { at: now, value: rows });
+  if (_commentaryCache.size > 200) {
+    for (const [key, entry] of _commentaryCache.entries()) {
+      if (now - entry.at >= STATUS_CACHE_TTLS_MS.commentary) {
+        _commentaryCache.delete(key);
+      }
+    }
+  }
+  return rows;
+}
+
+async function loadRumbleTurnLogCached(rumbleId: string): Promise<unknown[] | null> {
+  const now = Date.now();
+  const hit = _turnLogCache.get(rumbleId);
+  if (hit && now - hit.at < STATUS_CACHE_TTLS_MS.turnLog) {
+    return hit.value;
+  }
+  const rows = await loadRumbleTurnLog(rumbleId);
+  _turnLogCache.set(rumbleId, { at: now, value: rows });
+  if (_turnLogCache.size > 200) {
+    for (const [key, entry] of _turnLogCache.entries()) {
+      if (now - entry.at >= STATUS_CACHE_TTLS_MS.turnLog) {
+        _turnLogCache.delete(key);
+      }
+    }
+  }
+  return rows;
+}
+
+// Cache for total pool from Supabase bets
+const _poolCache = new Map<string, { at: number; value: number }>();
+
+async function loadTotalPoolFromDB(rumbleId: string): Promise<number> {
+  const now = Date.now();
+  const hit = _poolCache.get(rumbleId);
+  if (hit && now - hit.at < 3000) return hit.value;
+  try {
+    const sb = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      { auth: { autoRefreshToken: false, persistSession: false }, global: { fetch: (input, init) => fetch(input, { ...init, cache: "no-store" }) } },
+    );
+    const { data } = await sb
+      .from("ucf_bets")
+      .select("net_amount")
+      .eq("rumble_id", rumbleId);
+    const total = (data ?? []).reduce((s, r) => s + Number(r.net_amount ?? 0), 0);
+    _poolCache.set(rumbleId, { at: now, value: total });
+    if (_poolCache.size > 50) {
+      for (const [k, v] of _poolCache) { if (now - v.at > 30000) _poolCache.delete(k); }
+    }
+    return total;
+  } catch {
+    return _poolCache.get(rumbleId)?.value ?? 0;
+  }
+}
+
+async function loadActiveRumblesCached(): Promise<ActiveRumbleRows> {
+  const now = Date.now();
+  if (_activeRumblesCache && now - _activeRumblesCache.at < STATUS_CACHE_TTLS_MS.activeRumbles) {
+    return _activeRumblesCache.value;
+  }
+  const value = await loadActiveRumbles();
+  _activeRumblesCache = { at: now, value };
+  return value;
+}
+
+async function getIchorShowerStateCached(): Promise<IchorShowerState> {
+  const now = Date.now();
+  if (_showerStateCache && now - _showerStateCache.at < STATUS_CACHE_TTLS_MS.showerState) {
+    return _showerStateCache.value;
+  }
+  const value = await getIchorShowerState();
+  _showerStateCache = { at: now, value };
+  return value;
+}
+
+async function readArenaConfigCached(): Promise<ArenaConfigState | null> {
+  const now = Date.now();
+  if (_arenaConfigCache && now - _arenaConfigCache.at < STATUS_CACHE_TTLS_MS.arenaConfig) {
+    return _arenaConfigCache.value;
+  }
+  const value = await readArenaConfig().catch(() => null);
+  _arenaConfigCache = { at: now, value };
+  return value;
+}
+
+async function getStatsCached(): Promise<StatsState> {
+  const now = Date.now();
+  if (_statsCache && now - _statsCache.at < STATUS_CACHE_TTLS_MS.stats) {
+    return _statsCache.value;
+  }
+  const value = await getStats();
+  _statsCache = { at: now, value };
+  return value;
 }
 
 function fighterName(lookup: Map<string, FighterInfo>, id: string): string {
@@ -188,7 +326,7 @@ export async function GET(request: Request) {
     }
 
     // Load fighter info for name/image enrichment
-    const lookup = await loadFighterLookup();
+    const lookup = await loadFighterLookupCached();
 
     // ---- Build slots from in-memory orchestrator ----------------------------
     const orchStatus = orchestrator.getStatus();
@@ -244,6 +382,11 @@ export async function GET(request: Request) {
         oddsMap.set(o.fighterId, o);
       }
 
+      // If in-memory pool is 0, read from Supabase (Vercel doesn't have Railway's betting state)
+      if (totalPool === 0 && slotInfo.rumbleId) {
+        totalPool = await loadTotalPoolFromDB(slotInfo.rumbleId);
+      }
+
       const count = Math.max(1, slotInfo.fighters.length);
       const odds = slotInfo.fighters.map((fid) => {
         const betData = oddsMap.get(fid);
@@ -297,7 +440,7 @@ export async function GET(request: Request) {
       // Pre-generated commentary clips for this rumble (shared stream)
       // Reads from Supabase so Vercel can access clips generated by Railway worker
       const commentaryRows = slotInfo.rumbleId
-        ? await getCommentaryForRumble(slotInfo.rumbleId)
+        ? await getCommentaryForRumbleCached(slotInfo.rumbleId)
         : [];
       const commentary = commentaryRows.map((e) => ({
         clipKey: e.clipKey,
@@ -460,7 +603,7 @@ export async function GET(request: Request) {
         // Load real turn data from Supabase persistence (Railway worker saves
         // turn_log with pairings/moves/damage on each resolved turn).
         if (currentTurn > 0 && slot.rumbleId) {
-          const persistedTurns = await loadRumbleTurnLog(slot.rumbleId).catch(() => null);
+          const persistedTurns = await loadRumbleTurnLogCached(slot.rumbleId).catch(() => null);
           if (persistedTurns && persistedTurns.length > 0) {
             turns = (persistedTurns as Array<any>).map((t: any) => ({
               turnNumber: t.turnNumber ?? 0,
@@ -516,7 +659,7 @@ export async function GET(request: Request) {
     // This keeps UI accurate even when /status runs on a different lambda
     // instance than /tick.
     // ---------------------------------------------------------------------
-    const persistedActive = await loadActiveRumbles();
+    const persistedActive = await loadActiveRumblesCached();
     const nowMs = Date.now();
     const freshPersisted = persistedActive.filter((row) => {
       const status = String(row.status ?? "").toLowerCase();
@@ -587,11 +730,16 @@ export async function GET(request: Request) {
           existing.state === "idle" ||
           (existing.state === "betting" && !existing.bettingDeadline);
         if (!shouldOverlay) continue;
+        // When sameRumble, prefer existing fighters (enriched from on-chain)
+        // over turn-log replay which may be stale
+        const useFighters = sameRumble && existing.fighters.length > 0
+          ? existing.fighters
+          : fighters;
         base.set(slotIndex, {
           ...existing,
           rumbleId: row.id,
           state: (row.status as "idle" | "betting" | "combat" | "payout") ?? "idle",
-          fighters,
+          fighters: useFighters,
           odds: sameRumble
             ? existing.odds
             : fighterIds.map((fid) => ({
@@ -699,9 +847,9 @@ export async function GET(request: Request) {
     });
 
     // ---- Ichor shower state ------------------------------------------------
-    const showerState = await getIchorShowerState();
-    const arenaConfig = await readArenaConfig().catch(() => null);
-    const stats = await getStats();
+    const showerState = await getIchorShowerStateCached();
+    const arenaConfig = await readArenaConfigCached();
+    const stats = await getStatsCached();
     const rumblesSinceLastTrigger = stats?.total_rumbles ?? 0;
 
     // ---- nextRumbleIn estimate ---------------------------------------------
