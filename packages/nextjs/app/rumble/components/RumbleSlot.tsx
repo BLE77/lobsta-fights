@@ -397,9 +397,12 @@ export default function RumbleSlot({
               <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
                 {slot.fighters
                   .sort((a, b) => {
-                    // Alive first, then by HP descending
-                    if (a.hp > 0 && b.hp <= 0) return -1;
-                    if (a.hp <= 0 && b.hp > 0) return 1;
+                    // Alive first (using eliminatedOnTurn, not HP — on-chain doesn't zero HP)
+                    const aElim = a.eliminatedOnTurn != null;
+                    const bElim = b.eliminatedOnTurn != null;
+                    if (!aElim && bElim) return -1;
+                    if (aElim && !bElim) return 1;
+                    if (aElim && bElim) return (b.eliminatedOnTurn ?? 0) - (a.eliminatedOnTurn ?? 0);
                     return b.hp - a.hp;
                   })
                   .map((f) => (
@@ -409,7 +412,7 @@ export default function RumbleSlot({
                       hp={f.hp}
                       maxHp={f.maxHp}
                       imageUrl={f.imageUrl}
-                      isEliminated={f.hp <= 0}
+                      isEliminated={f.eliminatedOnTurn != null}
                       damageDealt={f.totalDamageDealt}
                       isMyBet={myBetFighterIds?.has(f.id)}
                     />

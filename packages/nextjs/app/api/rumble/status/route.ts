@@ -847,33 +847,113 @@ export async function GET(request: Request) {
       });
     }
 
-    // If persisted overlay replaced in-memory state after an instance swap,
-    // restore betting countdown from on-chain close slot.
+    // Post-overlay on-chain enrichment: fill in fighter HP, timer, and
+    // elimination data for slots that were hydrated from DB (Vercel cold start).
+    // The initial enrichment pass (above) skips slots with no rumbleId, which
+    // is every slot on Vercel before the DB overlay adds the rumbleId.
     slots = await Promise.all(
-      slots.map(async slot => {
-        if (slot.state !== "betting" || slot.bettingDeadline) return slot;
+      slots.map(async (slot) => {
+        if (!slot.rumbleId) return slot;
+        // Skip idle/payout — nothing to enrich
+        if (slot.state === "idle" || slot.state === "payout") return slot;
+        // Skip if already enriched (has on-chain timing data from first pass)
+        if (slot.remainingFighters !== null && slot.remainingFighters !== undefined) return slot;
         const rumbleIdNum = parseOnchainRumbleIdNumber(slot.rumbleId);
         if (rumbleIdNum === null) return slot;
-        const onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
-        if (!onchain || onchain.state !== "betting") return slot;
-        const closeRaw = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
-        if (!(closeRaw > 0n)) return slot;
-        const looksLikeUnix =
-          currentClusterSlotBig !== null
-            ? closeRaw > currentClusterSlotBig + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD
-            : closeRaw > 1_000_000_000n;
-        const bettingDeadline = looksLikeUnix
-          ? new Date(Number(closeRaw) * 1_000).toISOString()
-          : new Date(Date.now() + slotsToMs(closeRaw)).toISOString();
+
+        // --- Betting state: restore countdown from on-chain close slot ---
+        if (slot.state === "betting") {
+          const onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+          if (!onchain || onchain.state !== "betting") return slot;
+          const closeRaw = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
+          if (!(closeRaw > 0n)) return slot;
+          const looksLikeUnix =
+            currentClusterSlotBig !== null
+              ? closeRaw > currentClusterSlotBig + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD
+              : closeRaw > 1_000_000_000n;
+          const bettingDeadline = looksLikeUnix
+            ? new Date(Number(closeRaw) * 1_000).toISOString()
+            : new Date(Date.now() + slotsToMs(closeRaw)).toISOString();
+          return { ...slot, bettingDeadline };
+        }
+
+        // --- Combat state: enrich from on-chain CombatState PDA ---
+        if (slot.state !== "combat") return slot;
+        const onchainCombat = await readRumbleCombatState(rumbleIdNum).catch(() => null);
+        if (!onchainCombat) return slot;
+
+        const currentTurn = Math.max(slot.currentTurn ?? 0, onchainCombat.currentTurn ?? 0);
+        const remainingFighters = onchainCombat.remainingFighters;
+        const ONCHAIN_TURN_MS = 60 * SLOT_MS_ESTIMATE;
+
+        const slotSpan =
+          onchainCombat.revealCloseSlot > onchainCombat.turnOpenSlot
+            ? onchainCombat.revealCloseSlot - onchainCombat.turnOpenSlot
+            : 0n;
+        let turnIntervalMs = Number(slotSpan > 0n ? slotSpan : 0n) * SLOT_MS_ESTIMATE;
+        if (!turnIntervalMs || turnIntervalMs <= 0) turnIntervalMs = ONCHAIN_TURN_MS;
+
+        let nextTurnAt: string | null = slot.nextTurnAt;
+        let turnPhase: string | null = null;
+        let nextTurnTargetSlot: number | null = null;
+        const currentSlotVal = currentClusterSlotBig !== null ? Number(currentClusterSlotBig) : null;
+
+        if (!onchainCombat.turnResolved) {
+          const inCommitPhase =
+            currentClusterSlotBig !== null &&
+            currentClusterSlotBig <= onchainCombat.commitCloseSlot;
+          const targetSlotVal = inCommitPhase
+            ? onchainCombat.commitCloseSlot
+            : onchainCombat.revealCloseSlot;
+          const phase = inCommitPhase ? "commit" : "reveal";
+          turnPhase = phase;
+          nextTurnTargetSlot = Number(targetSlotVal);
+          const etaMs = slotsToMs(targetSlotVal);
+          nextTurnAt = getStableNextTurnAt(rumbleIdNum, currentTurn, phase, () =>
+            etaMs > 0
+              ? new Date(Date.now() + etaMs).toISOString()
+              : new Date(Date.now() + 3_000).toISOString(),
+          );
+        } else if (onchainCombat.remainingFighters > 1) {
+          turnPhase = "resolved";
+          nextTurnAt = getStableNextTurnAt(rumbleIdNum, currentTurn, "resolved", () =>
+            new Date(Date.now() + 3_000).toISOString(),
+          );
+        } else {
+          turnPhase = "resolved";
+          nextTurnAt = null;
+        }
+
+        // Enrich fighters from on-chain CombatState (accurate HP, damage, elimination)
+        const enrichedFighters = slot.fighters.map((f, i) => {
+          if (i >= onchainCombat.fighterCount) return f;
+          return {
+            ...f,
+            hp: onchainCombat.hp[i],
+            meter: onchainCombat.meter[i],
+            totalDamageDealt: Number(onchainCombat.totalDamageDealt[i]),
+            totalDamageTaken: Number(onchainCombat.totalDamageTaken[i]),
+            eliminatedOnTurn: onchainCombat.eliminationRank[i] > 0
+              ? onchainCombat.eliminationRank[i]
+              : f.eliminatedOnTurn,
+          };
+        });
+
         return {
           ...slot,
-          bettingDeadline,
+          fighters: enrichedFighters,
+          currentTurn,
+          remainingFighters,
+          turnPhase,
+          nextTurnAt,
+          nextTurnTargetSlot,
+          currentSlot: currentSlotVal,
+          turnIntervalMs,
         };
       }),
     );
 
     // Final pass: ensure combat slots have a turnIntervalMs for pacing.
-    // Don't fake nextTurnAt — only set it when we have real timing data.
     slots = slots.map((slot) => {
       if (slot.state !== "combat") return slot;
       return {
