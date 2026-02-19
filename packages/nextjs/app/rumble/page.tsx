@@ -271,6 +271,7 @@ function normalizeStatusPayload(raw: any): RumbleStatus {
         return {
           slotIndex: safeNumber(slot?.slotIndex, index),
           rumbleId: safeString(slot?.rumbleId, `slot_${index}`),
+          rumbleNumber: slot?.rumbleNumber != null ? safeNumber(slot.rumbleNumber, 0) || null : null,
           state: normalizeSlotState(slot?.state),
           fighters,
           odds,

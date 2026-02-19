@@ -143,10 +143,10 @@ export interface CreateRumbleInput {
   fighters: Array<{ id: string; name: string }>;
 }
 
-export async function createRumbleRecord(input: CreateRumbleInput): Promise<void> {
+export async function createRumbleRecord(input: CreateRumbleInput): Promise<number | null> {
   try {
     const sb = freshServiceClient();
-    const { error } = await sb
+    const { data, error } = await sb
       .from("ucf_rumbles")
       .insert({
         id: input.id,
@@ -154,11 +154,15 @@ export async function createRumbleRecord(input: CreateRumbleInput): Promise<void
         status: "betting",
         fighters: input.fighters,
       })
-      .select();
+      .select("rumble_number")
+      .single();
     if (error) throw error;
-    log("Created rumble record", input.id);
+    const num = data?.rumble_number ?? null;
+    log("Created rumble record", input.id, `#${num}`);
+    return num;
   } catch (err) {
     logError("createRumbleRecord failed", err);
+    return null;
   }
 }
 
@@ -259,13 +263,14 @@ export async function loadActiveRumbles(): Promise<
     started_at: string | null;
     turn_log: unknown[] | null;
     total_turns: number;
+    rumble_number: number | null;
   }>
 > {
   try {
     const sb = freshServiceClient();
     const { data, error } = await sb
       .from("ucf_rumbles")
-      .select("id, slot_index, status, fighters, created_at, started_at, turn_log, total_turns")
+      .select("id, slot_index, status, fighters, created_at, started_at, turn_log, total_turns, rumble_number")
       .in("status", ["betting", "combat", "payout"])
       .order("created_at", { ascending: true });
     if (error) throw error;

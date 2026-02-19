@@ -467,6 +467,7 @@ export async function GET(request: Request) {
       return {
         slotIndex: slotInfo.slotIndex,
         rumbleId: slotInfo.rumbleId,
+        rumbleNumber: null as number | null,
         state: slotInfo.state,
         fighters,
         odds,
@@ -778,6 +779,7 @@ export async function GET(request: Request) {
         base.set(slotIndex, {
           ...existing,
           rumbleId: row.id,
+          rumbleNumber: (row as any).rumble_number ?? existing.rumbleNumber ?? null,
           state: sameRumble ? existing.state : (row.status as "idle" | "betting" | "combat" | "payout") ?? "idle",
           fighters: useFighters,
           odds: sameRumble

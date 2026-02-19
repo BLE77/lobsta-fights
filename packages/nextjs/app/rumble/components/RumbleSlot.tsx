@@ -65,6 +65,7 @@ export interface SlotPayout {
 export interface SlotData {
   slotIndex: number;
   rumbleId: string;
+  rumbleNumber?: number | null;
   state: "idle" | "betting" | "combat" | "payout";
   fighters: SlotFighter[];
   odds: SlotOdds[];
@@ -335,9 +336,15 @@ export default function RumbleSlot({
               {liveCountdown.label} {formatCountdown(nextTurnCountdownSeconds)}
             </span>
           )}
-          <span className="font-mono text-[10px] text-stone-600 truncate max-w-[120px]">
-            {slot.rumbleId}
-          </span>
+          {slot.rumbleNumber ? (
+            <span className="font-mono text-[10px] text-amber-500/70 font-bold">
+              RUMBLE #{slot.rumbleNumber}
+            </span>
+          ) : (
+            <span className="font-mono text-[10px] text-stone-600 truncate max-w-[120px]">
+              {slot.rumbleId}
+            </span>
+          )}
         </div>
       </div>
 
