@@ -74,6 +74,7 @@ export interface SlotData {
   nextTurnAt?: string | null;
   turnIntervalMs?: number | null;
   currentTurn: number;
+  maxTurns?: number | null;
   remainingFighters?: number | null;
   turnPhase?: string | null;
   turns: SlotTurn[];
@@ -447,6 +448,7 @@ export default function RumbleSlot({
               <CombatFeed
                 turns={slot.turns}
                 currentTurn={slot.currentTurn}
+                maxTurns={slot.maxTurns ?? 20}
                 fighterNames={slot.fighterNames}
               />
             </div>

@@ -68,7 +68,7 @@ export interface RumbleResult {
 // Constants
 // -------------------------------------------------------------------
 
-const MAX_TURNS = 20;
+export const MAX_TURNS = 20;
 const MIN_FIGHTERS = 8;
 const MAX_FIGHTERS = 16;
 

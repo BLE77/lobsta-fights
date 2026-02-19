@@ -16,6 +16,7 @@ import { readArenaConfig, readRumbleAccountState, readRumbleCombatState } from "
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 import { getConnection } from "~~/lib/solana-connection";
 import { getCommentaryForRumble } from "~~/lib/commentary-hook";
+import { MAX_TURNS } from "~~/lib/rumble-engine";
 
 export const dynamic = "force-dynamic";
 const SLOT_MS_ESTIMATE = Math.max(250, Number(process.env.RUMBLE_SLOT_MS_ESTIMATE ?? "400"));
@@ -679,6 +680,7 @@ export async function GET(request: Request) {
           nextTurnAt,
           turnIntervalMs,
           currentTurn,
+          maxTurns: MAX_TURNS,
           remainingFighters,
           turnPhase,
           turns,

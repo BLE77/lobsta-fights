@@ -283,6 +283,7 @@ function normalizeStatusPayload(raw: any): RumbleStatus {
               ? null
               : safeNumber(slot?.turnIntervalMs, 0),
           currentTurn: safeNumber(slot?.currentTurn, 0),
+          maxTurns: slot?.maxTurns != null ? safeNumber(slot.maxTurns, 20) : 20,
           remainingFighters:
             slot?.remainingFighters === null || slot?.remainingFighters === undefined
               ? null
