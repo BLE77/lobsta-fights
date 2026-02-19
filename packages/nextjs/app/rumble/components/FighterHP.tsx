@@ -32,6 +32,7 @@ export default function FighterHP({
     if (hp < prevHpRef.current) {
       setShowDamageFlash(true);
       const timer = setTimeout(() => setShowDamageFlash(false), 500);
+      prevHpRef.current = hp;
       return () => clearTimeout(timer);
     }
     prevHpRef.current = hp;
@@ -41,7 +42,7 @@ export default function FighterHP({
     <div
       className={`flex items-center gap-3 p-2 rounded-sm transition-all duration-700 ${
         isEliminated
-          ? "opacity-40 line-through decoration-red-500"
+          ? "opacity-40"
           : ""
       } ${isMyBet && !isEliminated ? "ring-1 ring-cyan-500/50 bg-cyan-950/10" : ""} ${showDamageFlash ? "animate-damage-flash" : ""}`}
     >
@@ -94,7 +95,7 @@ export default function FighterHP({
           <span className="flex items-center gap-1 truncate">
             <span
               className={`font-mono text-xs font-bold truncate ${
-                isEliminated ? "text-stone-600" : "text-stone-200"
+                isEliminated ? "text-stone-600 line-through decoration-red-500" : "text-stone-200"
               }`}
             >
               {name}

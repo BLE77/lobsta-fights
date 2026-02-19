@@ -337,6 +337,8 @@ export default function RumblePage() {
   const [claimPending, setClaimPending] = useState(false);
   const [claimError, setClaimError] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  // Grace period: after an optimistic bet update, prevent fetchMyBets from overwriting for 10s
+  const optimisticBetUntilRef = useRef<number>(0);
   const [lastSseEvent, setLastSseEvent] = useState<CommentarySSEEvent | null>(null);
   const [sseEventSeq, setSseEventSeq] = useState(0);
   const LAST_RESULT_STORAGE_KEY = "ucf_last_result";
@@ -618,7 +620,28 @@ export default function RumblePage() {
           next.set(slot.slot_index, fighterMap);
         }
       }
-      setMyBetAmountsBySlot(next);
+      // During optimistic grace period, merge server data with local optimistic bets
+      // so the user's just-placed bet isn't wiped by stale server response
+      if (Date.now() < optimisticBetUntilRef.current) {
+        setMyBetAmountsBySlot(prev => {
+          const merged = new Map(next);
+          for (const [slotIndex, fighterMap] of prev) {
+            if (!merged.has(slotIndex)) {
+              merged.set(slotIndex, fighterMap);
+            } else {
+              const serverMap = merged.get(slotIndex)!;
+              for (const [fighterId, amount] of fighterMap) {
+                if (!serverMap.has(fighterId)) {
+                  serverMap.set(fighterId, amount);
+                }
+              }
+            }
+          }
+          return merged;
+        });
+      } else {
+        setMyBetAmountsBySlot(next);
+      }
     } catch {
       // keep last known values on transient errors
     }
@@ -1097,6 +1120,8 @@ export default function RumblePage() {
       }
 
       // Optimistic local update for clear "your stake" UI.
+      // Set grace period so polling/fetchMyBets won't overwrite with stale server data
+      optimisticBetUntilRef.current = Date.now() + 10_000;
       setMyBetAmountsBySlot((prev) => {
         const next = new Map(prev);
         const existing = new Map(next.get(slotIndex) ?? new Map<string, number>());
@@ -1110,10 +1135,11 @@ export default function RumblePage() {
         return next;
       });
 
-      // Refresh status + balance
+      // Refresh status + balance immediately, but delay fetchMyBets
+      // to give the DB/chain time to propagate the new bet
       fetchStatus();
       fetchClaimBalance();
-      fetchMyBets();
+      setTimeout(() => fetchMyBets(), 4_000);
       const newBalance = await connection.getBalance(publicKey, "confirmed");
       setSolBalance(newBalance / LAMPORTS_PER_SOL);
 
@@ -1456,7 +1482,7 @@ export default function RumblePage() {
         <footer className="border-t border-stone-800 bg-stone-950/80 backdrop-blur-sm">
           <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
             <p className="font-mono text-[10px] text-stone-600">
-              // POLLING EVERY 2s + SSE LIVE FEED //
+              // UNDERGROUND CLAW FIGHTS //
             </p>
             <p className="font-mono text-[10px] text-stone-600">
               // RUMBLE: BATTLE ROYALE MODE //
