@@ -1186,7 +1186,7 @@ export default function RumblePage() {
                 href="/"
                 className="text-amber-500 hover:text-amber-400 font-mono text-sm"
               >
-                &lt; UCF
+                Home
               </Link>
               <div>
                 <h1 className="font-fight-glow text-2xl text-amber-400">
@@ -1287,9 +1287,9 @@ export default function RumblePage() {
               const allIdle = !featured || featured.state === "idle";
 
               return (
-                <div className="flex gap-6">
+                <div className="flex gap-6 justify-center">
                   {/* Main content: Single featured rumble */}
-                  <div className="flex-1">
+                  <div className="flex-1 max-w-4xl">
                     {/* Slot selector pills (only if multiple active) */}
                     {slots.filter((s) => s.state !== "idle").length > 1 && (
                       <div className="flex items-center gap-2 mb-3">
@@ -1329,7 +1329,7 @@ export default function RumblePage() {
                           <img
                             src="/rumble-arena.png"
                             alt="UCF Rumble Arena"
-                            className="w-full h-auto max-h-[420px] object-contain mx-auto opacity-70"
+                            className="w-full h-auto max-h-[520px] object-contain mx-auto opacity-70"
                           />
                           <div className="absolute inset-0 bg-gradient-to-t from-stone-950 via-stone-950/40 to-transparent" />
                           <div className="absolute inset-0 flex flex-col items-center justify-end pb-8">
