@@ -491,6 +491,14 @@ export default function RumblePage() {
             continue;
           }
 
+          // Clear stale results when slot is idle with no fighters (full reset)
+          if (slot.state === "idle" && slot.fighters.length === 0) {
+            if (next.delete(slot.slotIndex)) {
+              changed = true;
+            }
+            continue;
+          }
+
           const completed = buildLastCompletedResult(slot);
           if (!completed) continue;
           const existing = next.get(slot.slotIndex);
@@ -510,6 +518,9 @@ export default function RumblePage() {
                 JSON.stringify({ slotIndex, result }),
               );
             } catch {}
+          } else {
+            // All results cleared (full reset) — remove from localStorage too
+            try { localStorage.removeItem(LAST_RESULT_STORAGE_KEY); } catch {}
           }
         }
         return changed ? next : prev;
