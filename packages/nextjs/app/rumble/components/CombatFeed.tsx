@@ -121,7 +121,7 @@ export default function CombatFeed({
               {[0, 1, 2].map((i) => (
                 <div
                   key={i}
-                  className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-bounce"
+                  className="w-1.5 h-1.5 bg-amber-500 rounded-sm animate-bounce"
                   style={{ animationDelay: `${i * 150}ms` }}
                 />
               ))}
@@ -138,7 +138,8 @@ export default function CombatFeed({
   return (
     <div
       ref={feedRef}
-      className="space-y-2 max-h-64 overflow-y-auto pr-1 scrollbar-thin"
+      className="space-y-2 max-h-64 overflow-y-auto pr-1 scrollbar-thin relative pb-4"
+      style={{ maskImage: "linear-gradient(to bottom, black 85%, transparent)", WebkitMaskImage: "linear-gradient(to bottom, black 85%, transparent)" }}
     >
       {/* Turn header */}
       <div className="sticky top-0 bg-stone-900/95 py-1 border-b border-stone-800 text-center">

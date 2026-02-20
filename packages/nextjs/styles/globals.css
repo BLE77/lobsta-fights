@@ -19,11 +19,9 @@
 
 body {
   color: rgb(var(--foreground-rgb));
-  background: linear-gradient(
-    to bottom,
-    rgb(var(--background-start-rgb)),
-    rgb(var(--background-end-rgb))
-  );
+  background: linear-gradient(to bottom,
+      rgb(var(--background-start-rgb)),
+      rgb(var(--background-end-rgb)));
 }
 
 /* ---------------------------------------------------------------------------
@@ -32,16 +30,23 @@ body {
 ::-webkit-scrollbar {
   width: 4px;
 }
+
 ::-webkit-scrollbar-track {
-  background: #0c0a09; /* stone-950 */
+  background: #0c0a09;
+  /* stone-950 */
 }
+
 ::-webkit-scrollbar-thumb {
-  background: #44403c; /* stone-700 */
+  background: #44403c;
+  /* stone-700 */
   border-radius: 2px;
 }
+
 ::-webkit-scrollbar-thumb:hover {
-  background: #d97706; /* amber-600 */
+  background: #d97706;
+  /* amber-600 */
 }
+
 /* Firefox */
 * {
   scrollbar-width: thin;
@@ -52,9 +57,11 @@ body {
    Themed focus ring — amber, keyboard-only
    --------------------------------------------------------------------------- */
 :focus-visible {
-  outline: 2px solid #d97706; /* amber-600 */
+  outline: 2px solid #d97706;
+  /* amber-600 */
   outline-offset: 2px;
 }
+
 :focus:not(:focus-visible) {
   outline: none;
 }
@@ -114,21 +121,52 @@ body {
 }
 
 @keyframes elimination-popup {
-  0% { opacity: 0; transform: scale(0.8); }
-  100% { opacity: 1; transform: scale(1); }
+  0% {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 @keyframes elimination-glow {
-  0%, 100% { box-shadow: 0 0 8px rgba(239, 68, 68, 0.4); }
-  50% { box-shadow: 0 0 20px rgba(239, 68, 68, 0.7); }
+
+  0%,
+  100% {
+    box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
+  }
+
+  50% {
+    box-shadow: 0 0 20px rgba(239, 68, 68, 0.7);
+  }
 }
 
 @keyframes elimination-flash {
-  0% { background-color: rgba(239, 68, 68, 0.4); transform: translateX(-4px); }
-  25% { transform: translateX(4px); }
-  50% { background-color: rgba(239, 68, 68, 0.2); transform: translateX(-2px); }
-  75% { transform: translateX(2px); }
-  100% { background-color: rgba(127, 29, 29, 0.15); transform: translateX(0); }
+  0% {
+    background-color: rgba(239, 68, 68, 0.4);
+    transform: translateX(-4px);
+  }
+
+  25% {
+    transform: translateX(4px);
+  }
+
+  50% {
+    background-color: rgba(239, 68, 68, 0.2);
+    transform: translateX(-2px);
+  }
+
+  75% {
+    transform: translateX(2px);
+  }
+
+  100% {
+    background-color: rgba(127, 29, 29, 0.15);
+    transform: translateX(0);
+  }
 }
 
 /* ---------------------------------------------------------------------------
@@ -137,70 +175,224 @@ body {
 
 /* Fade + slide up — state transitions, content reveal */
 @keyframes fade-in-up {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
-.animate-fade-in-up { animation: fade-in-up 0.3s ease-out; }
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.3s ease-out;
+}
 
 /* Timer tick pulse */
 @keyframes tick-in {
-  0% { transform: scale(1.15); opacity: 0.6; }
-  100% { transform: scale(1); opacity: 1; }
+  0% {
+    transform: scale(1.15);
+    opacity: 0.6;
+  }
+
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
-.animate-tick-in { animation: tick-in 0.15s ease-out; }
+
+.animate-tick-in {
+  animation: tick-in 0.15s ease-out;
+}
 
 /* Damage flash on fighter row */
 @keyframes damage-flash {
-  0% { background-color: rgba(239, 68, 68, 0.4); }
-  100% { background-color: transparent; }
+  0% {
+    background-color: rgba(239, 68, 68, 0.4);
+  }
+
+  100% {
+    background-color: transparent;
+  }
 }
-.animate-damage-flash { animation: damage-flash 0.5s ease-out; }
+
+.animate-damage-flash {
+  animation: damage-flash 0.5s ease-out;
+}
 
 /* Staggered payout reveal */
 @keyframes payout-reveal {
-  from { opacity: 0; transform: translateY(12px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
-.animate-payout-reveal { animation: payout-reveal 0.4s ease-out both; }
+
+.animate-payout-reveal {
+  animation: payout-reveal 0.4s ease-out both;
+}
 
 /* Winner image entrance */
 @keyframes winner-reveal {
-  0% { transform: scale(0.7); box-shadow: 0 0 0 rgba(245, 158, 11, 0); opacity: 0; }
-  60% { transform: scale(1.05); box-shadow: 0 0 30px rgba(245, 158, 11, 0.6); opacity: 1; }
-  100% { transform: scale(1); box-shadow: 0 0 15px rgba(245, 158, 11, 0.3); }
+  0% {
+    transform: scale(0.7);
+    box-shadow: 0 0 0 rgba(245, 158, 11, 0);
+    opacity: 0;
+  }
+
+  60% {
+    transform: scale(1.05);
+    box-shadow: 0 0 30px rgba(245, 158, 11, 0.6);
+    opacity: 1;
+  }
+
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 15px rgba(245, 158, 11, 0.3);
+  }
 }
-.animate-winner-reveal { animation: winner-reveal 0.6s ease-out both; }
+
+.animate-winner-reveal {
+  animation: winner-reveal 0.6s ease-out both;
+}
 
 /* Ichor Shower jackpot glow */
 @keyframes ichor-shower-glow {
-  0%, 100% { box-shadow: 0 0 10px rgba(245, 158, 11, 0.3), inset 0 0 10px rgba(245, 158, 11, 0.05); }
-  50% { box-shadow: 0 0 30px rgba(245, 158, 11, 0.6), inset 0 0 20px rgba(245, 158, 11, 0.1); }
+
+  0%,
+  100% {
+    box-shadow: 0 0 10px rgba(245, 158, 11, 0.3), inset 0 0 10px rgba(245, 158, 11, 0.05);
+  }
+
+  50% {
+    box-shadow: 0 0 30px rgba(245, 158, 11, 0.6), inset 0 0 20px rgba(245, 158, 11, 0.1);
+  }
 }
-.animate-ichor-shower { animation: ichor-shower-glow 2s ease-in-out infinite; }
+
+.animate-ichor-shower {
+  animation: ichor-shower-glow 2s ease-in-out infinite;
+}
 
 /* YOU WON flash */
 @keyframes you-won-flash {
-  0%, 100% { box-shadow: 0 0 0 rgba(34, 197, 94, 0); }
-  50% { box-shadow: 0 0 16px rgba(34, 197, 94, 0.5); }
+
+  0%,
+  100% {
+    box-shadow: 0 0 0 rgba(34, 197, 94, 0);
+  }
+
+  50% {
+    box-shadow: 0 0 16px rgba(34, 197, 94, 0.5);
+  }
 }
-.animate-you-won { animation: you-won-flash 0.8s ease-in-out 3; animation-delay: 400ms; }
+
+.animate-you-won {
+  animation: you-won-flash 0.8s ease-in-out 3;
+  animation-delay: 400ms;
+}
 
 /* Betting closed flash */
 @keyframes bet-close-flash {
-  0%, 100% { outline: 2px solid transparent; }
-  30% { outline: 2px solid rgba(239, 68, 68, 0.6); }
+
+  0%,
+  100% {
+    outline: 2px solid transparent;
+  }
+
+  30% {
+    outline: 2px solid rgba(239, 68, 68, 0.6);
+  }
 }
-.animate-bet-close-flash { animation: bet-close-flash 1.2s ease-out; }
+
+.animate-bet-close-flash {
+  animation: bet-close-flash 1.2s ease-out;
+}
 
 /* Equalizer bars (CommentaryPlayer) */
 @keyframes eqBar {
-  0% { height: 20%; }
-  100% { height: 100%; }
+  0% {
+    height: 20%;
+  }
+
+  100% {
+    height: 100%;
+  }
+}
+
+/* Shake animation for combat hits */
+@keyframes shake {
+
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+
+  25% {
+    transform: translateX(-4px);
+  }
+
+  50% {
+    transform: translateX(4px);
+  }
+
+  75% {
+    transform: translateX(-4px);
+  }
+}
+
+/* Glitch animation for headers */
+@keyframes glitch {
+  0% {
+    transform: translate(0)
+  }
+
+  20% {
+    transform: translate(-2px, 2px)
+  }
+
+  40% {
+    transform: translate(-2px, -2px)
+  }
+
+  60% {
+    transform: translate(2px, 2px)
+  }
+
+  80% {
+    transform: translate(2px, -2px)
+  }
+
+  100% {
+    transform: translate(0)
+  }
+}
+
+.animate-glitch {
+  animation: glitch 0.3s cubic-bezier(.25, .46, .45, .94) both infinite;
+}
+
+.animate-glitch-occasional {
+  animation: glitch 0.2s cubic-bezier(.25, .46, .45, .94) both infinite;
+  animation-play-state: paused;
+}
+
+.animate-glitch-occasional:hover {
+  animation-play-state: running;
 }
 
 /* Accessibility: respect reduced motion preference */
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
+
+  *,
+  *::before,
+  *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;

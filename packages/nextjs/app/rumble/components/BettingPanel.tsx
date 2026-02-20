@@ -159,20 +159,19 @@ export default function BettingPanel({
         <div className="flex items-center gap-2">
           {bettingInitialized && !isClosed ? (
             <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-sm bg-amber-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-sm h-2 w-2 bg-amber-500"></span>
             </span>
           ) : (
-            <span className={`inline-flex h-2 w-2 rounded-full ${isClosed ? "bg-red-500" : "bg-stone-500"}`} />
+            <span className={`inline-flex h-2 w-2 rounded-sm ${isClosed ? "bg-red-500" : "bg-stone-500"}`} />
           )}
           <span className={`font-mono text-xs uppercase ${isClosed ? "text-red-500" : "text-amber-400"}`}>
             {bettingInitialized ? (isClosed ? "Betting Closed" : "Betting Open") : "Initializing On-Chain..."}
           </span>
         </div>
         <span
-          className={`font-mono text-sm font-bold ${
-            isClosed ? "text-red-500" : "text-amber-400"
-          }`}
+          className={`font-mono text-sm font-bold ${isClosed ? "text-red-500" : "text-amber-400"
+            }`}
         >
           {bettingInitialized ? timeLeft || "--:--" : "--:--"}
         </span>
@@ -252,13 +251,12 @@ export default function BettingPanel({
             <div key={f.fighterId} className="space-y-0">
               <button
                 onClick={() => toggleFighter(f.fighterId)}
-                className={`w-full flex items-center justify-between p-2 rounded-sm border transition-all text-left ${
-                  successFighterId === f.fighterId
-                    ? "border-green-500 bg-green-900/20"
-                    : isSelected
-                      ? "border-amber-500 bg-amber-900/20"
-                      : "border-stone-800 bg-stone-900/50 hover:border-stone-600"
-                }`}
+                className={`w-full flex items-center justify-between p-2 rounded-sm border transition-all text-left hover:scale-[1.01] hover:ring-1 hover:ring-amber-500/50 ${successFighterId === f.fighterId
+                  ? "border-green-500 bg-green-900/20"
+                  : isSelected
+                    ? "border-amber-500 bg-amber-900/20"
+                    : "border-stone-800 bg-stone-900/50 hover:border-stone-600"
+                  }`}
               >
                 <div className="flex items-center gap-2 flex-1 min-w-0">
                   <FighterHP
@@ -293,11 +291,10 @@ export default function BettingPanel({
                     <button
                       key={amt}
                       onClick={() => updateAmount(f.fighterId, String(amt))}
-                      className={`text-[10px] font-mono px-2 py-0.5 rounded-sm transition-all ${
-                        bets.get(f.fighterId) === String(amt)
-                          ? "bg-amber-600 text-stone-950"
-                          : "bg-stone-800 hover:bg-stone-700 text-stone-400"
-                      }`}
+                      className={`text-[10px] font-mono px-2 py-0.5 rounded-sm transition-all ${bets.get(f.fighterId) === String(amt)
+                        ? "bg-amber-600 text-stone-950"
+                        : "bg-stone-800 hover:bg-stone-700 text-stone-400"
+                        }`}
                     >
                       {amt}
                     </button>

@@ -159,6 +159,7 @@ export default function ChatPanel({ walletAddress }: ChatPanelProps) {
         ref={scrollRef}
         onScroll={handleScroll}
         className="flex-1 overflow-y-auto px-4 py-2 space-y-1.5 scrollbar-thin scrollbar-thumb-stone-700 scrollbar-track-transparent"
+        style={{ maskImage: "linear-gradient(to bottom, transparent, black 15%)", WebkitMaskImage: "linear-gradient(to bottom, transparent, black 15%)" }}
       >
         {messages.length === 0 ? (
           <div className="flex items-center justify-center h-full">
@@ -173,9 +174,8 @@ export default function ChatPanel({ walletAddress }: ChatPanelProps) {
               <div key={msg.id} className="group">
                 <div className="flex items-baseline gap-1.5">
                   <span
-                    className={`font-mono text-[11px] font-bold flex-shrink-0 ${
-                      isMe ? "text-amber-400" : "text-stone-400"
-                    }`}
+                    className={`font-mono text-[11px] font-bold flex-shrink-0 ${isMe ? "text-amber-400" : "text-stone-400"
+                      }`}
                   >
                     {msg.username}
                   </span>

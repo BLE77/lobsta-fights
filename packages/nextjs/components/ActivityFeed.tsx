@@ -3,116 +3,199 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 
-interface ActivityEvent {
+interface SlotFighter {
   id: string;
-  type: "match_finished" | "fighter_registered" | "fighter_joined_lobby";
-  timestamp: string;
-  data: Record<string, any>;
+  name: string;
+  imageUrl?: string | null;
+  hp: number;
+  maxHp: number;
+  isEliminated?: boolean;
 }
 
-function relativeTime(timestamp: string): string {
-  const now = Date.now();
-  const then = new Date(timestamp).getTime();
-  const diff = Math.floor((now - then) / 1000);
-
-  if (diff < 60) return "just now";
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  return `${Math.floor(diff / 86400)}d ago`;
+interface RumbleSlot {
+  slotIndex: number;
+  rumbleId: string | null;
+  rumbleNumber: number | null;
+  state: "idle" | "betting" | "combat" | "payout";
+  fighters: SlotFighter[];
+  currentTurn?: number;
+  winnerName?: string;
+  winnerImageUrl?: string | null;
 }
 
-function FighterAvatar({ src, name, size = "w-6 h-6" }: { src?: string | null; name: string; size?: string }) {
-  if (src) {
-    return <img src={src} alt={name} className={`${size} rounded-sm object-cover border border-stone-700`} />;
+interface FeedItem {
+  id: string;
+  tag: string;
+  tagColor: string;
+  borderColor: string;
+  message: string;
+  detail?: string;
+  imageUrl?: string | null;
+}
+
+function buildFeedItems(slots: RumbleSlot[], queueLength: number): FeedItem[] {
+  const items: FeedItem[] = [];
+
+  for (const slot of slots) {
+    const label = slot.rumbleNumber ? `Rumble #${slot.rumbleNumber}` : `Slot ${slot.slotIndex + 1}`;
+
+    if (slot.state === "betting") {
+      items.push({
+        id: `${slot.slotIndex}-betting`,
+        tag: "BETS OPEN",
+        tagColor: "text-green-400",
+        borderColor: "border-green-600",
+        message: `${label} — betting is live`,
+        detail: `${slot.fighters.length} fighters entered`,
+        imageUrl: slot.fighters[0]?.imageUrl,
+      });
+    }
+
+    if (slot.state === "combat") {
+      const alive = slot.fighters.filter(f => !f.isEliminated && f.hp > 0);
+      const eliminated = slot.fighters.length - alive.length;
+      items.push({
+        id: `${slot.slotIndex}-combat`,
+        tag: "FIGHTING",
+        tagColor: "text-red-400",
+        borderColor: "border-red-600",
+        message: `${label} — Turn ${slot.currentTurn ?? "?"}`,
+        detail: eliminated > 0
+          ? `${eliminated} eliminated, ${alive.length} remaining`
+          : `${alive.length} fighters battling`,
+        imageUrl: slot.fighters[0]?.imageUrl,
+      });
+    }
+
+    if (slot.state === "payout") {
+      items.push({
+        id: `${slot.slotIndex}-payout`,
+        tag: "WINNER",
+        tagColor: "text-amber-400",
+        borderColor: "border-amber-600",
+        message: `${label} — ${slot.winnerName ?? "Unknown"} wins!`,
+        detail: "Payouts distributing",
+        imageUrl: slot.winnerImageUrl ?? slot.fighters[0]?.imageUrl,
+      });
+    }
+
+    if (slot.state === "idle") {
+      items.push({
+        id: `${slot.slotIndex}-idle`,
+        tag: "STANDBY",
+        tagColor: "text-stone-500",
+        borderColor: "border-stone-600",
+        message: `${label} — awaiting fighters`,
+        detail: queueLength > 0 ? `${queueLength} in queue` : undefined,
+      });
+    }
   }
+
+  // Sort: active states first (combat > betting > payout > idle)
+  const stateOrder: Record<string, number> = { combat: 0, betting: 1, payout: 2, idle: 3 };
+  items.sort((a, b) => {
+    const aState = a.id.split("-").pop() ?? "idle";
+    const bState = b.id.split("-").pop() ?? "idle";
+    return (stateOrder[aState] ?? 9) - (stateOrder[bState] ?? 9);
+  });
+
+  return items;
+}
+
+function FeedItemCard({ item }: { item: FeedItem }) {
   return (
-    <div className={`${size} rounded-sm bg-stone-800 flex items-center justify-center border border-stone-700`}>
-      <span className="text-stone-600 text-[8px] font-mono">BOT</span>
-    </div>
+    <Link
+      href="/rumble"
+      className={`flex items-center gap-3 p-2.5 bg-stone-900/50 hover:bg-stone-800/60 border-l-2 ${item.borderColor} transition-all group`}
+    >
+      {item.imageUrl ? (
+        <img
+          src={item.imageUrl}
+          alt=""
+          className="w-7 h-7 rounded-sm object-cover border border-stone-700 shrink-0"
+        />
+      ) : (
+        <div className="w-7 h-7 rounded-sm bg-stone-800 flex items-center justify-center border border-stone-700 shrink-0">
+          <span className="text-stone-600 text-[8px] font-mono">UCF</span>
+        </div>
+      )}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className={`${item.tagColor} font-mono text-[10px] font-bold shrink-0`}>
+            [{item.tag}]
+          </span>
+          <span className="text-stone-200 font-mono text-xs truncate">{item.message}</span>
+        </div>
+        {item.detail && (
+          <span className="text-stone-500 font-mono text-[10px]">{item.detail}</span>
+        )}
+      </div>
+    </Link>
   );
 }
 
-function EventCard({ event }: { event: ActivityEvent }) {
-  const { type, data, timestamp } = event;
-
-  if (type === "match_finished") {
-    return (
-      <Link
-        href={`/matches/${data.match_id}`}
-        className="flex items-center gap-3 p-2.5 bg-stone-900/50 hover:bg-stone-800/60 border-l-2 border-amber-600 transition-all group"
-      >
-        <div className="flex items-center gap-1.5 flex-1 min-w-0">
-          <span className="text-amber-500 font-mono text-[10px] font-bold shrink-0">[KO]</span>
-          <FighterAvatar src={data.winner_image} name={data.winner_name} />
-          <span className="text-green-400 font-mono text-xs font-bold truncate">{data.winner_name}</span>
-          <span className="text-stone-600 text-xs shrink-0">def.</span>
-          <FighterAvatar src={data.loser_image} name={data.loser_name} />
-          <span className="text-red-400 font-mono text-xs truncate">{data.loser_name}</span>
-          <span className="text-amber-600 text-[10px] font-mono shrink-0">+{data.points_wager}</span>
-        </div>
-        <span className="text-stone-600 text-[10px] font-mono shrink-0">{relativeTime(timestamp)}</span>
-      </Link>
-    );
-  }
-
-  if (type === "fighter_registered") {
-    return (
-      <Link
-        href={`/fighter/${data.fighter_id}`}
-        className="flex items-center gap-3 p-2.5 bg-stone-900/50 hover:bg-stone-800/60 border-l-2 border-red-600 transition-all group"
-      >
-        <div className="flex items-center gap-1.5 flex-1 min-w-0">
-          <span className="text-red-500 font-mono text-[10px] font-bold shrink-0">[NEW]</span>
-          <FighterAvatar src={data.fighter_image} name={data.fighter_name} />
-          <span className="text-stone-200 font-mono text-xs font-bold truncate">{data.fighter_name}</span>
-          <span className="text-stone-600 text-xs">entered the arena</span>
-        </div>
-        <span className="text-stone-600 text-[10px] font-mono shrink-0">{relativeTime(timestamp)}</span>
-      </Link>
-    );
-  }
-
-  if (type === "fighter_joined_lobby") {
-    return (
-      <Link
-        href={`/fighter/${data.fighter_id}`}
-        className="flex items-center gap-3 p-2.5 bg-stone-900/50 hover:bg-stone-800/60 border-l-2 border-yellow-600 transition-all group"
-      >
-        <div className="flex items-center gap-1.5 flex-1 min-w-0">
-          <span className="text-yellow-500 font-mono text-[10px] font-bold shrink-0">[QUEUE]</span>
-          <FighterAvatar src={data.fighter_image} name={data.fighter_name} />
-          <span className="text-stone-200 font-mono text-xs font-bold truncate">{data.fighter_name}</span>
-          <span className="text-stone-600 text-xs">looking for a fight</span>
-        </div>
-        <span className="text-stone-600 text-[10px] font-mono shrink-0">{relativeTime(timestamp)}</span>
-      </Link>
-    );
-  }
-
-  return null;
-}
-
 export default function ActivityFeed() {
-  const [events, setEvents] = useState<ActivityEvent[]>([]);
+  const [items, setItems] = useState<FeedItem[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const fetchActivity = async () => {
+    const fetchStatus = async () => {
       try {
-        const res = await fetch("/api/activity");
+        const res = await fetch(`/api/rumble/status?_t=${Date.now()}`, { cache: "no-store" });
+        if (!res.ok) return;
         const data = await res.json();
-        setEvents(data.events || []);
-      } catch (e) {
-        console.error("Failed to fetch activity:", e);
+
+        const slots: RumbleSlot[] = (data.slots ?? []).map((s: any) => {
+          const fighters: SlotFighter[] = (s.fighters ?? []).map((f: any) => ({
+            id: f.id,
+            name: f.name,
+            imageUrl: f.imageUrl ?? null,
+            hp: f.hp ?? 0,
+            maxHp: f.maxHp ?? 100,
+            isEliminated: f.isEliminated ?? false,
+          }));
+
+          // Find winner from payout state
+          let winnerName: string | undefined;
+          let winnerImageUrl: string | null | undefined;
+          if (s.state === "payout" && s.payout?.winnerName) {
+            winnerName = s.payout.winnerName;
+            winnerImageUrl = s.payout.winnerImageUrl;
+          } else if (s.state === "payout" && fighters.length > 0) {
+            const alive = fighters.filter((f: SlotFighter) => !f.isEliminated && f.hp > 0);
+            if (alive.length === 1) {
+              winnerName = alive[0].name;
+              winnerImageUrl = alive[0].imageUrl;
+            }
+          }
+
+          return {
+            slotIndex: s.slotIndex,
+            rumbleId: s.rumbleId,
+            rumbleNumber: s.rumbleNumber ?? null,
+            state: s.state ?? "idle",
+            fighters,
+            currentTurn: s.currentTurn,
+            winnerName,
+            winnerImageUrl,
+          };
+        });
+
+        const queueLength = data.queueLength ?? 0;
+        setItems(buildFeedItems(slots, queueLength));
+      } catch {
+        // keep last known values
       } finally {
         setLoading(false);
       }
     };
 
-    fetchActivity();
-    const interval = setInterval(fetchActivity, 8000);
+    fetchStatus();
+    const interval = setInterval(fetchStatus, 6000);
     return () => clearInterval(interval);
   }, []);
+
+  const activeCount = items.filter(i => !i.id.endsWith("-idle")).length;
 
   return (
     <div className="bg-stone-900/80 border border-stone-700 rounded-sm backdrop-blur-sm overflow-hidden">
@@ -122,22 +205,24 @@ export default function ActivityFeed() {
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
             <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
           </span>
-          <h3 className="text-xs font-mono text-stone-400 uppercase tracking-wider">Live Activity</h3>
+          <h3 className="text-xs font-mono text-stone-400 uppercase tracking-wider">Arena Status</h3>
         </div>
-        <span className="text-[10px] font-mono text-stone-600">{events.length} events</span>
+        {activeCount > 0 && (
+          <span className="text-[10px] font-mono text-amber-500">{activeCount} active</span>
+        )}
       </div>
 
       <div className="max-h-64 overflow-y-auto divide-y divide-stone-800/50">
         {loading ? (
           <div className="p-4 text-center">
-            <span className="text-stone-600 font-mono text-xs animate-pulse">Loading feed...</span>
+            <span className="text-stone-500 font-mono text-xs animate-pulse">Connecting to arena...</span>
           </div>
-        ) : events.length === 0 ? (
+        ) : items.length === 0 ? (
           <div className="p-4 text-center">
-            <span className="text-stone-600 font-mono text-xs">No recent activity</span>
+            <span className="text-stone-500 font-mono text-xs">Arena offline</span>
           </div>
         ) : (
-          events.map((event) => <EventCard key={event.id} event={event} />)
+          items.map((item) => <FeedItemCard key={item.id} item={item} />)
         )}
       </div>
     </div>

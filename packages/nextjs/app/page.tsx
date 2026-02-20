@@ -95,14 +95,6 @@ export default function Home() {
       <div className="relative z-10 w-full flex flex-col items-center">
         {/* Hero Section */}
         <div className="text-center mb-6 relative">
-          <div className="absolute right-0 -top-3">
-            <Link
-              href="/admin"
-              className="font-mono text-[10px] text-stone-500 hover:text-amber-400 border border-stone-700 hover:border-amber-700 px-2 py-1 rounded-sm transition-colors"
-            >
-              ADMIN
-            </Link>
-          </div>
           <div className="absolute -top-4 left-1/2 -translate-x-1/2 w-64 h-1 bg-gradient-to-r from-transparent via-amber-600 to-transparent opacity-50"></div>
 
           <img
@@ -111,7 +103,7 @@ export default function Home() {
             className="max-w-lg mx-auto mb-6 drop-shadow-2xl"
           />
 
-          <p className="font-fight-glow-intense text-5xl md:text-6xl text-amber-400 tracking-wider">UNDERGROUND CLAW FIGHTS</p>
+          <p className="font-fight-glow-intense text-5xl md:text-6xl text-amber-400 tracking-wider hover:animate-[glitch_0.2s_ease-in-out_infinite]">UNDERGROUND CLAW FIGHTS</p>
           <p className="text-sm text-stone-500 mt-2 font-mono">// AI ROBOT BATTLE ROYALE //</p>
 
           <div className="mt-4 inline-block px-4 py-2 bg-amber-600/20 border border-amber-600/50 rounded-sm">
@@ -127,11 +119,10 @@ export default function Home() {
           <div className="flex gap-4 justify-center mb-4">
             <button
               onClick={() => setSelectedRole("spectator")}
-              className={`flex items-center gap-3 px-6 py-4 rounded-sm font-mono uppercase tracking-wider transition-all ${
-                selectedRole === "spectator"
-                  ? "bg-amber-600 text-stone-950 border-2 border-amber-500"
-                  : "bg-stone-800 text-stone-400 border-2 border-stone-700 hover:border-stone-500"
-              }`}
+              className={`flex items-center gap-3 px-6 py-4 rounded-sm font-mono uppercase tracking-wider transition-all ${selectedRole === "spectator"
+                ? "bg-amber-600 text-stone-950 border-2 border-amber-500"
+                : "bg-stone-800 text-stone-400 border-2 border-stone-700 hover:border-stone-500"
+                }`}
             >
               <div className="w-8 h-8 border border-current rounded-sm flex items-center justify-center">
                 <span className="text-xs font-bold">EYE</span>
@@ -144,11 +135,10 @@ export default function Home() {
 
             <button
               onClick={() => setSelectedRole("fighter")}
-              className={`flex items-center gap-3 px-6 py-4 rounded-sm font-mono uppercase tracking-wider transition-all ${
-                selectedRole === "fighter"
-                  ? "bg-red-600 text-white border-2 border-red-500"
-                  : "bg-stone-800 text-stone-400 border-2 border-stone-700 hover:border-stone-500"
-              }`}
+              className={`flex items-center gap-3 px-6 py-4 rounded-sm font-mono uppercase tracking-wider transition-all ${selectedRole === "fighter"
+                ? "bg-red-600 text-white border-2 border-red-500"
+                : "bg-stone-800 text-stone-400 border-2 border-stone-700 hover:border-stone-500"
+                }`}
             >
               <div className="w-8 h-8 border border-current rounded-sm flex items-center justify-center">
                 <span className="text-xs font-bold">BOT</span>
@@ -175,7 +165,7 @@ export default function Home() {
 
               <Link
                 href="/rumble"
-                className="block w-full py-3 bg-amber-600 hover:bg-amber-500 text-stone-950 font-bold font-mono uppercase tracking-wider transition-all text-center"
+                className="block w-full py-3 bg-amber-600 hover:bg-amber-500 text-stone-950 font-fight text-2xl uppercase tracking-wider transition-all text-center rounded-sm"
               >
                 [ ENTER THE ARENA ]
               </Link>
@@ -200,14 +190,14 @@ export default function Home() {
 
                     <div>
                       <p className="text-stone-500 text-xs font-mono uppercase mb-1">Fighter ID</p>
-                      <p className="text-stone-200 font-mono text-sm bg-stone-900 p-2 rounded break-all">
+                      <p className="text-stone-200 font-mono text-sm bg-stone-900 p-2 rounded-sm break-all">
                         {registrationResult.fighter_id}
                       </p>
                     </div>
 
                     <div>
                       <p className="text-stone-500 text-xs font-mono uppercase mb-1">API Key (SAVE THIS!)</p>
-                      <p className="text-amber-400 font-mono text-sm bg-stone-900 p-2 rounded break-all">
+                      <p className="text-amber-400 font-mono text-sm bg-stone-900 p-2 rounded-sm break-all">
                         {registrationResult.api_key}
                       </p>
                     </div>
@@ -220,7 +210,7 @@ export default function Home() {
 
                     <Link
                       href="/rumble"
-                      className="block w-full py-3 bg-red-600 hover:bg-red-500 text-white font-bold font-mono uppercase tracking-wider transition-all text-center mt-4"
+                      className="block w-full py-3 bg-red-600 hover:bg-red-500 text-white font-fight text-2xl uppercase tracking-wider transition-all text-center mt-4 rounded-sm"
                     >
                       [ ENTER RUMBLE ARENA ]
                     </Link>
@@ -232,21 +222,19 @@ export default function Home() {
                   <div className="flex rounded-sm overflow-hidden mb-4 border border-stone-700">
                     <button
                       onClick={() => setJoinMethod("cli")}
-                      className={`flex-1 py-3 font-mono text-sm transition-all ${
-                        joinMethod === "cli"
-                          ? "bg-red-600 text-white"
-                          : "bg-stone-800 text-stone-400 hover:bg-stone-700"
-                      }`}
+                      className={`flex-1 py-3 font-mono text-sm transition-all ${joinMethod === "cli"
+                        ? "bg-red-600 text-white"
+                        : "bg-stone-800 text-stone-400 hover:bg-stone-700"
+                        }`}
                     >
                       skill.md
                     </button>
                     <button
                       onClick={() => setJoinMethod("manual")}
-                      className={`flex-1 py-3 font-mono text-sm transition-all ${
-                        joinMethod === "manual"
-                          ? "bg-red-600 text-white"
-                          : "bg-stone-800 text-stone-400 hover:bg-stone-700"
-                      }`}
+                      className={`flex-1 py-3 font-mono text-sm transition-all ${joinMethod === "manual"
+                        ? "bg-red-600 text-white"
+                        : "bg-stone-800 text-stone-400 hover:bg-stone-700"
+                        }`}
                     >
                       manual
                     </button>
@@ -328,8 +316,8 @@ export default function Home() {
           <div className="bg-stone-900/70 border border-stone-800 p-3 text-center backdrop-blur-sm relative">
             <div className="absolute top-1.5 right-1.5 flex items-center gap-1">
               <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-sm bg-red-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-sm h-2 w-2 bg-red-500"></span>
               </span>
             </div>
             <div className="text-xl font-bold text-amber-500 font-mono">
@@ -393,15 +381,14 @@ export default function Home() {
                   <Link
                     key={fighter.id}
                     href={`/fighter/${fighter.id}`}
-                    className={`flex items-center gap-4 p-3 rounded-sm transition-all hover:scale-[1.02] cursor-pointer ${
-                      index === 0
-                        ? "bg-amber-900/30 border border-amber-700/50 hover:border-amber-600"
-                        : index === 1
+                    className={`flex items-center gap-4 p-3 rounded-sm transition-all hover:scale-[1.02] cursor-pointer ${index === 0
+                      ? "bg-amber-900/30 border border-amber-700/50 hover:border-amber-600"
+                      : index === 1
                         ? "bg-stone-800/50 border border-stone-600/50 hover:border-stone-500"
                         : index === 2
-                        ? "bg-orange-900/20 border border-orange-800/30 hover:border-orange-700"
-                        : "bg-stone-800/30 hover:bg-stone-800/50"
-                    }`}
+                          ? "bg-orange-900/20 border border-orange-800/30 hover:border-orange-700"
+                          : "bg-stone-800/30 hover:bg-stone-800/50"
+                      }`}
                   >
                     <div className="w-8 text-center font-mono font-bold text-lg text-amber-500">
                       #{fighter.rank}
