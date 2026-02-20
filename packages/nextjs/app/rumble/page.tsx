@@ -83,6 +83,7 @@ interface MyBetsResponse {
 interface LastCompletedSlotResult {
   rumbleId: string;
   settledAtIso: string;
+  capturedAt: number; // Date.now() when captured — used for grace period
   placements: Array<{
     fighterId: string;
     fighterName: string;
@@ -100,11 +101,11 @@ interface LastCompletedSlotResult {
 
 interface SSEEvent {
   type:
-    | OrchestratorSseName
-    | "turn"
-    | "elimination"
-    | "slot_state_change"
-    | "bet_placed";
+  | OrchestratorSseName
+  | "turn"
+  | "elimination"
+  | "slot_state_change"
+  | "bet_placed";
   slotIndex: number;
   data: any;
 }
@@ -159,6 +160,7 @@ function buildLastCompletedResult(slot: SlotData): LastCompletedSlotResult | nul
   return {
     rumbleId: slot.rumbleId,
     settledAtIso: new Date().toISOString(),
+    capturedAt: Date.now(),
     placements,
     payout: slot.payout,
   };
@@ -183,15 +185,15 @@ function normalizeTurn(raw: any): SlotData["turns"][number] | null {
   if (!raw || typeof raw !== "object") return null;
   const pairings = Array.isArray(raw.pairings)
     ? raw.pairings.map((p: any) => ({
-        fighterA: safeString(p?.fighterA),
-        fighterB: safeString(p?.fighterB),
-        fighterAName: safeString(p?.fighterAName, safeString(p?.fighterA, "Unknown")),
-        fighterBName: safeString(p?.fighterBName, safeString(p?.fighterB, "Unknown")),
-        moveA: safeString(p?.moveA),
-        moveB: safeString(p?.moveB),
-        damageToA: safeNumber(p?.damageToA, 0),
-        damageToB: safeNumber(p?.damageToB, 0),
-      }))
+      fighterA: safeString(p?.fighterA),
+      fighterB: safeString(p?.fighterB),
+      fighterAName: safeString(p?.fighterAName, safeString(p?.fighterA, "Unknown")),
+      fighterBName: safeString(p?.fighterBName, safeString(p?.fighterB, "Unknown")),
+      moveA: safeString(p?.moveA),
+      moveB: safeString(p?.moveB),
+      damageToA: safeNumber(p?.damageToA, 0),
+      damageToB: safeNumber(p?.damageToB, 0),
+    }))
     : [];
   return {
     turnNumber: safeNumber(raw.turnNumber, 0),
@@ -206,106 +208,106 @@ function normalizeTurn(raw: any): SlotData["turns"][number] | null {
 function normalizeStatusPayload(raw: any): RumbleStatus {
   const slots: SlotData[] = Array.isArray(raw?.slots)
     ? raw.slots.map((slot: any, index: number) => {
-        const fightersRaw = Array.isArray(slot?.fighters) ? slot.fighters : [];
-        const fighters = fightersRaw.map((f: any) => ({
-          id: safeString(f?.id),
-          name: safeString(f?.name, safeString(f?.id)),
-          hp: safeNumber(f?.hp, 100),
-          maxHp: safeNumber(f?.maxHp, 100),
-          imageUrl: typeof f?.imageUrl === "string" ? f.imageUrl : null,
-          meter: safeNumber(f?.meter, 0),
-          totalDamageDealt: safeNumber(f?.totalDamageDealt, 0),
-          totalDamageTaken: safeNumber(f?.totalDamageTaken, 0),
-          eliminatedOnTurn:
-            f?.eliminatedOnTurn === null || f?.eliminatedOnTurn === undefined
-              ? null
-              : safeNumber(f?.eliminatedOnTurn, 0),
-          placement: safeNumber(f?.placement, 0),
-        }));
+      const fightersRaw = Array.isArray(slot?.fighters) ? slot.fighters : [];
+      const fighters = fightersRaw.map((f: any) => ({
+        id: safeString(f?.id),
+        name: safeString(f?.name, safeString(f?.id)),
+        hp: safeNumber(f?.hp, 100),
+        maxHp: safeNumber(f?.maxHp, 100),
+        imageUrl: typeof f?.imageUrl === "string" ? f.imageUrl : null,
+        meter: safeNumber(f?.meter, 0),
+        totalDamageDealt: safeNumber(f?.totalDamageDealt, 0),
+        totalDamageTaken: safeNumber(f?.totalDamageTaken, 0),
+        eliminatedOnTurn:
+          f?.eliminatedOnTurn === null || f?.eliminatedOnTurn === undefined
+            ? null
+            : safeNumber(f?.eliminatedOnTurn, 0),
+        placement: safeNumber(f?.placement, 0),
+      }));
 
-        const oddsRaw = Array.isArray(slot?.odds) ? slot.odds : [];
-        const odds = oddsRaw.map((o: any) => ({
-          fighterId: safeString(o?.fighterId),
-          fighterName: safeString(o?.fighterName, safeString(o?.fighterId)),
-          imageUrl: typeof o?.imageUrl === "string" ? o.imageUrl : null,
-          hp: safeNumber(o?.hp, 100),
-          solDeployed: safeNumber(o?.solDeployed, 0),
-          betCount: safeNumber(o?.betCount, 0),
-          impliedProbability: safeNumber(o?.impliedProbability, 0),
-          potentialReturn: safeNumber(o?.potentialReturn, 0),
-        }));
+      const oddsRaw = Array.isArray(slot?.odds) ? slot.odds : [];
+      const odds = oddsRaw.map((o: any) => ({
+        fighterId: safeString(o?.fighterId),
+        fighterName: safeString(o?.fighterName, safeString(o?.fighterId)),
+        imageUrl: typeof o?.imageUrl === "string" ? o.imageUrl : null,
+        hp: safeNumber(o?.hp, 100),
+        solDeployed: safeNumber(o?.solDeployed, 0),
+        betCount: safeNumber(o?.betCount, 0),
+        impliedProbability: safeNumber(o?.impliedProbability, 0),
+        potentialReturn: safeNumber(o?.potentialReturn, 0),
+      }));
 
-        const turns = Array.isArray(slot?.turns)
-          ? slot.turns
-              .map((turn: any) => normalizeTurn(turn))
-              .filter(
-                (turn: SlotData["turns"][number] | null): turn is SlotData["turns"][number] =>
-                  Boolean(turn),
-              )
-          : [];
+      const turns = Array.isArray(slot?.turns)
+        ? slot.turns
+          .map((turn: any) => normalizeTurn(turn))
+          .filter(
+            (turn: SlotData["turns"][number] | null): turn is SlotData["turns"][number] =>
+              Boolean(turn),
+          )
+        : [];
 
-        const payoutRaw = slot?.payout && typeof slot.payout === "object" ? slot.payout : null;
-        const payout = payoutRaw
-          ? {
-              winnerBettorsPayout: safeNumber(payoutRaw.winnerBettorsPayout, 0),
-              placeBettorsPayout: safeNumber(payoutRaw.placeBettorsPayout, 0),
-              showBettorsPayout: safeNumber(payoutRaw.showBettorsPayout, 0),
-              treasuryVault: safeNumber(payoutRaw.treasuryVault, 0),
-              totalPool: safeNumber(payoutRaw.totalPool, 0),
-              ichorMined: safeNumber(payoutRaw.ichorMined, 0),
-              ichorShowerTriggered: Boolean(payoutRaw.ichorShowerTriggered),
-              ichorShowerAmount:
-                payoutRaw.ichorShowerAmount === undefined || payoutRaw.ichorShowerAmount === null
-                  ? undefined
-                  : safeNumber(payoutRaw.ichorShowerAmount, 0),
-            }
-          : null;
-
-        const fighterNamesRaw =
-          slot?.fighterNames && typeof slot.fighterNames === "object" ? slot.fighterNames : {};
-        const fighterNames: Record<string, string> = {};
-        for (const [k, v] of Object.entries(fighterNamesRaw)) {
-          fighterNames[String(k)] = safeString(v, String(k));
+      const payoutRaw = slot?.payout && typeof slot.payout === "object" ? slot.payout : null;
+      const payout = payoutRaw
+        ? {
+          winnerBettorsPayout: safeNumber(payoutRaw.winnerBettorsPayout, 0),
+          placeBettorsPayout: safeNumber(payoutRaw.placeBettorsPayout, 0),
+          showBettorsPayout: safeNumber(payoutRaw.showBettorsPayout, 0),
+          treasuryVault: safeNumber(payoutRaw.treasuryVault, 0),
+          totalPool: safeNumber(payoutRaw.totalPool, 0),
+          ichorMined: safeNumber(payoutRaw.ichorMined, 0),
+          ichorShowerTriggered: Boolean(payoutRaw.ichorShowerTriggered),
+          ichorShowerAmount:
+            payoutRaw.ichorShowerAmount === undefined || payoutRaw.ichorShowerAmount === null
+              ? undefined
+              : safeNumber(payoutRaw.ichorShowerAmount, 0),
         }
+        : null;
 
-        return {
-          slotIndex: safeNumber(slot?.slotIndex, index),
-          rumbleId: safeString(slot?.rumbleId, `slot_${index}`),
-          rumbleNumber: slot?.rumbleNumber != null ? safeNumber(slot.rumbleNumber, 0) || null : null,
-          state: normalizeSlotState(slot?.state),
-          fighters,
-          odds,
-          totalPool: safeNumber(slot?.totalPool, 0),
-          bettingDeadline: typeof slot?.bettingDeadline === "string" ? slot.bettingDeadline : null,
-          nextTurnAt: typeof slot?.nextTurnAt === "string" ? slot.nextTurnAt : null,
-          turnIntervalMs:
-            slot?.turnIntervalMs === undefined || slot?.turnIntervalMs === null
-              ? null
-              : safeNumber(slot?.turnIntervalMs, 0),
-          currentTurn: safeNumber(slot?.currentTurn, 0),
-          maxTurns: slot?.maxTurns != null ? safeNumber(slot.maxTurns, 20) : 20,
-          remainingFighters:
-            slot?.remainingFighters === null || slot?.remainingFighters === undefined
-              ? null
-              : safeNumber(slot?.remainingFighters, 0),
-          turnPhase: typeof slot?.turnPhase === "string" ? slot.turnPhase : null,
-          nextTurnTargetSlot: slot?.nextTurnTargetSlot != null ? safeNumber(slot.nextTurnTargetSlot, 0) : null,
-          currentSlot: slot?.currentSlot != null ? safeNumber(slot.currentSlot, 0) : null,
-          slotMsEstimate: safeNumber(slot?.slotMsEstimate, 400),
-          turns,
-          payout,
-          fighterNames,
-        };
-      })
+      const fighterNamesRaw =
+        slot?.fighterNames && typeof slot.fighterNames === "object" ? slot.fighterNames : {};
+      const fighterNames: Record<string, string> = {};
+      for (const [k, v] of Object.entries(fighterNamesRaw)) {
+        fighterNames[String(k)] = safeString(v, String(k));
+      }
+
+      return {
+        slotIndex: safeNumber(slot?.slotIndex, index),
+        rumbleId: safeString(slot?.rumbleId, `slot_${index}`),
+        rumbleNumber: slot?.rumbleNumber != null ? safeNumber(slot.rumbleNumber, 0) || null : null,
+        state: normalizeSlotState(slot?.state),
+        fighters,
+        odds,
+        totalPool: safeNumber(slot?.totalPool, 0),
+        bettingDeadline: typeof slot?.bettingDeadline === "string" ? slot.bettingDeadline : null,
+        nextTurnAt: typeof slot?.nextTurnAt === "string" ? slot.nextTurnAt : null,
+        turnIntervalMs:
+          slot?.turnIntervalMs === undefined || slot?.turnIntervalMs === null
+            ? null
+            : safeNumber(slot?.turnIntervalMs, 0),
+        currentTurn: safeNumber(slot?.currentTurn, 0),
+        maxTurns: slot?.maxTurns != null ? safeNumber(slot.maxTurns, 20) : 20,
+        remainingFighters:
+          slot?.remainingFighters === null || slot?.remainingFighters === undefined
+            ? null
+            : safeNumber(slot?.remainingFighters, 0),
+        turnPhase: typeof slot?.turnPhase === "string" ? slot.turnPhase : null,
+        nextTurnTargetSlot: slot?.nextTurnTargetSlot != null ? safeNumber(slot.nextTurnTargetSlot, 0) : null,
+        currentSlot: slot?.currentSlot != null ? safeNumber(slot.currentSlot, 0) : null,
+        slotMsEstimate: safeNumber(slot?.slotMsEstimate, 400),
+        turns,
+        payout,
+        fighterNames,
+      };
+    })
     : [];
 
   const queue: QueueFighter[] = Array.isArray(raw?.queue)
     ? raw.queue.map((item: any, index: number) => ({
-        fighterId: safeString(item?.fighterId, `queue_${index}`),
-        name: safeString(item?.name, safeString(item?.fighterId)),
-        imageUrl: typeof item?.imageUrl === "string" ? item.imageUrl : null,
-        position: safeNumber(item?.position, index + 1),
-      }))
+      fighterId: safeString(item?.fighterId, `queue_${index}`),
+      name: safeString(item?.name, safeString(item?.fighterId)),
+      imageUrl: typeof item?.imageUrl === "string" ? item.imageUrl : null,
+      position: safeNumber(item?.position, index + 1),
+    }))
     : [];
 
   return {
@@ -363,7 +365,7 @@ export default function RumblePage() {
           return new Map([[0, parsed as LastCompletedSlotResult]]);
         }
       }
-    } catch {}
+    } catch { }
     return new Map();
   });
 
@@ -488,18 +490,27 @@ export default function RumblePage() {
       setLastCompletedBySlot((prev) => {
         let changed = false;
         const next = new Map(prev);
+        const now = Date.now();
         for (const slot of data.slots) {
           if (slot.state === "betting" || slot.state === "combat") {
-            if (next.delete(slot.slotIndex)) {
-              changed = true;
+            // Keep completed result visible for 20s after slot recycles
+            // so users can still see who won even when a new rumble starts
+            const existing = next.get(slot.slotIndex);
+            if (existing && now - existing.capturedAt > 20_000) {
+              if (next.delete(slot.slotIndex)) {
+                changed = true;
+              }
             }
             continue;
           }
 
           // Clear stale results when slot is idle with no fighters (full reset)
           if (slot.state === "idle" && slot.fighters.length === 0) {
-            if (next.delete(slot.slotIndex)) {
-              changed = true;
+            const existing = next.get(slot.slotIndex);
+            if (existing && now - existing.capturedAt > 20_000) {
+              if (next.delete(slot.slotIndex)) {
+                changed = true;
+              }
             }
             continue;
           }
@@ -522,10 +533,10 @@ export default function RumblePage() {
                 LAST_RESULT_STORAGE_KEY,
                 JSON.stringify({ slotIndex, result }),
               );
-            } catch {}
+            } catch { }
           } else {
             // All results cleared (full reset) — remove from localStorage too
-            try { localStorage.removeItem(LAST_RESULT_STORAGE_KEY); } catch {}
+            try { localStorage.removeItem(LAST_RESULT_STORAGE_KEY); } catch { }
           }
         }
         return changed ? next : prev;
@@ -804,10 +815,12 @@ export default function RumblePage() {
 
         case "rumble_complete":
           slot.state = "payout";
+          if (event.data?.payout) slot.payout = event.data.payout;
           break;
 
         case "payout_complete":
           slot.state = "payout";
+          if (event.data?.payout) slot.payout = event.data.payout;
           break;
 
         case "slot_recycled":
@@ -1121,7 +1134,7 @@ export default function RumblePage() {
 
       // Optimistic local update for clear "your stake" UI.
       // Set grace period so polling/fetchMyBets won't overwrite with stale server data
-      optimisticBetUntilRef.current = Date.now() + 10_000;
+      optimisticBetUntilRef.current = Date.now() + 45_000;
       setMyBetAmountsBySlot((prev) => {
         const next = new Map(prev);
         const existing = new Map(next.get(slotIndex) ?? new Map<string, number>());
@@ -1247,9 +1260,8 @@ export default function RumblePage() {
               {/* Connection indicator */}
               <div className="flex items-center gap-1.5">
                 <span
-                  className={`inline-block w-2 h-2 rounded-full ${
-                    sseConnected ? "bg-green-500" : "bg-amber-500 animate-pulse"
-                  }`}
+                  className={`inline-block w-2 h-2 rounded-full ${sseConnected ? "bg-green-500" : "bg-amber-500 animate-pulse"
+                    }`}
                 />
                 <span className="font-mono text-[10px] text-stone-500">
                   {sseConnected ? "LIVE" : "POLLING"}
@@ -1314,7 +1326,7 @@ export default function RumblePage() {
           ) : (
             (() => {
               // Pick the most interesting slot to feature
-              const STATE_PRIORITY: Record<string, number> = { combat: 0, betting: 1, payout: 2, idle: 3 };
+              const STATE_PRIORITY: Record<string, number> = { combat: 0, payout: 1, betting: 2, idle: 3 };
               const slots = status?.slots ?? [];
               const sorted = [...slots].sort(
                 (a, b) => (STATE_PRIORITY[a.state] ?? 9) - (STATE_PRIORITY[b.state] ?? 9),
@@ -1351,11 +1363,10 @@ export default function RumblePage() {
                                 onClick={() => {
                                   // Scroll to ensure visible — slot auto-selected by priority
                                 }}
-                                className={`font-mono text-[10px] px-2 py-0.5 border rounded-sm transition-all ${
-                                  active
+                                className={`font-mono text-[10px] px-2 py-0.5 border rounded-sm transition-all ${active
                                     ? `${stateColor} bg-stone-900/80`
                                     : "border-stone-700 text-stone-500 hover:text-stone-300"
-                                }`}
+                                  }`}
                               >
                                 SLOT {s.slotIndex + 1} [{s.state.toUpperCase()}]
                               </button>
