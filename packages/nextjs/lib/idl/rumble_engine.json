@@ -2142,6 +2142,16 @@
       "code": 6036,
       "name": "InvalidState",
       "msg": "Invalid rumble state for this operation"
+    },
+    {
+      "code": 6037,
+      "name": "FighterEliminated",
+      "msg": "Fighter has been eliminated"
+    },
+    {
+      "code": 6038,
+      "name": "InvalidFighterAccounts",
+      "msg": "Invalid fighter accounts provided"
     }
   ],
   "types": [

@@ -124,15 +124,13 @@ fn write_i64_le(data: &mut [u8], offset: &mut usize, value: i64) -> Result<()> {
 }
 
 fn parse_bettor_account_data(data: &[u8]) -> Result<ParsedBettorAccount> {
-    // Legacy V1 minimum: discriminator + authority + rumble_id + fighter_index + sol_deployed + claimed + bump
-    const LEGACY_V1_LEN: usize = 8 + 32 + 8 + 1 + 8 + 1 + 1; // 59
-                                                             // Legacy V2 minimum: discriminator + authority + rumble_id + fighter_index + sol_deployed
-                                                             // + claimable + total_claimed + last_claim_ts + claimed + bump
+    // Legacy V2 minimum: discriminator + authority + rumble_id + fighter_index + sol_deployed
+    // + claimable + total_claimed + last_claim_ts + claimed + bump
     const LEGACY_V2_LEN: usize = 8 + 32 + 8 + 1 + 8 + 8 + 8 + 8 + 1 + 1; // 83
     const CURRENT_LEN: usize = 8 + BettorAccount::INIT_SPACE; // 211
 
     require!(
-        data.len() >= LEGACY_V1_LEN,
+        data.len() >= LEGACY_V2_LEN,
         RumbleError::InvalidBettorAccount
     );
     require!(
@@ -152,23 +150,13 @@ fn parse_bettor_account_data(data: &[u8]) -> Result<ParsedBettorAccount> {
     offset += 1;
     let sol_deployed = read_u64_le(data, &mut offset)?;
 
-    let (claimable_lamports, total_claimed_lamports, last_claim_ts, claimed, bump) =
-        if data.len() >= LEGACY_V2_LEN {
-            let claimable = read_u64_le(data, &mut offset)?;
-            let total_claimed = read_u64_le(data, &mut offset)?;
-            let last_claim = read_i64_le(data, &mut offset)?;
-            let claimed = *data.get(offset).ok_or(RumbleError::InvalidBettorAccount)? == 1;
-            offset += 1;
-            let bump = *data.get(offset).ok_or(RumbleError::InvalidBettorAccount)?;
-            offset += 1;
-            (claimable, total_claimed, last_claim, claimed, bump)
-        } else {
-            let claimed = *data.get(offset).ok_or(RumbleError::InvalidBettorAccount)? == 1;
-            offset += 1;
-            let bump = *data.get(offset).ok_or(RumbleError::InvalidBettorAccount)?;
-            offset += 1;
-            (0u64, 0u64, 0i64, claimed, bump)
-        };
+    let claimable_lamports = read_u64_le(data, &mut offset)?;
+    let total_claimed_lamports = read_u64_le(data, &mut offset)?;
+    let last_claim_ts = read_i64_le(data, &mut offset)?;
+    let claimed = *data.get(offset).ok_or(RumbleError::InvalidBettorAccount)? == 1;
+    offset += 1;
+    let bump = *data.get(offset).ok_or(RumbleError::InvalidBettorAccount)?;
+    offset += 1;
 
     let mut fighter_deployments = [0u64; MAX_FIGHTERS];
     if data.len() >= CURRENT_LEN {
@@ -196,12 +184,13 @@ fn parse_bettor_account_data(data: &[u8]) -> Result<ParsedBettorAccount> {
 }
 
 fn write_bettor_account_data(data: &mut [u8], bettor: &ParsedBettorAccount) -> Result<()> {
-    const LEGACY_V1_LEN: usize = 8 + 32 + 8 + 1 + 8 + 1 + 1; // 59
+    // Legacy V2 minimum: discriminator + authority + rumble_id + fighter_index + sol_deployed
+    // + claimable + total_claimed + last_claim_ts + claimed + bump
     const LEGACY_V2_LEN: usize = 8 + 32 + 8 + 1 + 8 + 8 + 8 + 8 + 1 + 1; // 83
     const CURRENT_LEN: usize = 8 + BettorAccount::INIT_SPACE; // 211
 
     require!(
-        data.len() >= LEGACY_V1_LEN,
+        data.len() >= LEGACY_V2_LEN,
         RumbleError::InvalidBettorAccount
     );
     require!(
@@ -217,34 +206,28 @@ fn write_bettor_account_data(data: &mut [u8], bettor: &ParsedBettorAccount) -> R
     offset += 1;
     write_u64_le(data, &mut offset, bettor.sol_deployed)?;
 
-    if data.len() >= LEGACY_V2_LEN {
-        write_u64_le(data, &mut offset, bettor.claimable_lamports)?;
-        write_u64_le(data, &mut offset, bettor.total_claimed_lamports)?;
-        write_i64_le(data, &mut offset, bettor.last_claim_ts)?;
-        data[offset] = if bettor.claimed { 1 } else { 0 };
-        offset += 1;
-        data[offset] = bettor.bump;
-        offset += 1;
+    write_u64_le(data, &mut offset, bettor.claimable_lamports)?;
+    write_u64_le(data, &mut offset, bettor.total_claimed_lamports)?;
+    write_i64_le(data, &mut offset, bettor.last_claim_ts)?;
+    data[offset] = if bettor.claimed { 1 } else { 0 };
+    offset += 1;
+    data[offset] = bettor.bump;
+    offset += 1;
 
-        if data.len() >= CURRENT_LEN {
-            for value in bettor.fighter_deployments {
-                write_u64_le(data, &mut offset, value)?;
-            }
+    if data.len() >= CURRENT_LEN {
+        for value in bettor.fighter_deployments {
+            write_u64_le(data, &mut offset, value)?;
         }
-    } else {
-        data[offset] = if bettor.claimed { 1 } else { 0 };
-        offset += 1;
-        data[offset] = bettor.bump;
     }
 
     Ok(())
 }
 
-fn fighter_in_rumble(rumble: &Rumble, fighter: &Pubkey) -> bool {
+fn fighter_in_rumble(rumble: &Rumble, fighter: &Pubkey) -> Option<usize> {
     let fighter_count = rumble.fighter_count as usize;
     rumble.fighters[..fighter_count]
         .iter()
-        .any(|f| f == fighter)
+        .position(|f| f == fighter)
 }
 
 fn is_valid_move_code(move_code: u8) -> bool {
@@ -504,6 +487,22 @@ pub mod rumble_engine {
         let mut seen = std::collections::BTreeSet::new();
         for f in fighters.iter() {
             require!(seen.insert(f), RumbleError::DuplicateFighter);
+        }
+
+        // Validate fighters are real registry accounts
+        require!(
+            ctx.remaining_accounts.len() == fighters.len(),
+            RumbleError::InvalidFighterAccounts
+        );
+        for (i, fighter_account) in ctx.remaining_accounts.iter().enumerate() {
+            require!(
+                fighter_account.key() == fighters[i],
+                RumbleError::InvalidFighterAccounts
+            );
+            require!(
+                fighter_account.owner == &FIGHTER_REGISTRY_PROGRAM_ID,
+                RumbleError::InvalidFighterAccounts
+            );
         }
 
         let clock = Clock::get()?;
@@ -793,10 +792,10 @@ pub mod rumble_engine {
             RumbleError::InvalidStateTransition
         );
         require!(turn > 0, RumbleError::InvalidTurn);
-        require!(
-            fighter_in_rumble(rumble, &ctx.accounts.fighter.key()),
-            RumbleError::Unauthorized
-        );
+        let fighter_idx = fighter_in_rumble(rumble, &ctx.accounts.fighter.key())
+            .ok_or(error!(RumbleError::Unauthorized))?;
+        // Check fighter is still alive
+        require!(combat.hp[fighter_idx] > 0, RumbleError::FighterEliminated);
         require!(turn == combat.current_turn, RumbleError::InvalidTurn);
         require!(!combat.turn_resolved, RumbleError::TurnAlreadyResolved);
         require!(
@@ -844,7 +843,7 @@ pub mod rumble_engine {
         );
         require!(turn > 0, RumbleError::InvalidTurn);
         require!(
-            fighter_in_rumble(rumble, &ctx.accounts.fighter.key()),
+            fighter_in_rumble(rumble, &ctx.accounts.fighter.key()).is_some(),
             RumbleError::Unauthorized
         );
         require!(turn == combat.current_turn, RumbleError::InvalidTurn);
@@ -1061,6 +1060,13 @@ pub mod rumble_engine {
                 let next_meter = combat.meter[idx].saturating_add(METER_PER_TURN);
                 combat.meter[idx] = next_meter.min(SPECIAL_METER_COST);
             }
+        }
+
+        // Give bye fighter meter if odd count
+        if alive_indices.len() % 2 == 1 {
+            let bye_idx = alive_indices[alive_indices.len() - 1];
+            let next_meter = combat.meter[bye_idx].saturating_add(METER_PER_TURN);
+            combat.meter[bye_idx] = next_meter.min(SPECIAL_METER_COST);
         }
 
         for idx in eliminated_this_turn {
@@ -1439,6 +1445,8 @@ pub mod rumble_engine {
         // The authority pubkey is stored at bytes 8..40 (after Anchor's 8-byte discriminator).
         {
             let fighter_data = ctx.accounts.fighter.try_borrow_data()?;
+            // NOTE: This discriminator is tied to the fighter_registry program's FighterAccount struct.
+            // If that program is upgraded and changes its account layout, this must be updated.
             require!(fighter_data.len() >= 40, RumbleError::InvalidFighterAccount);
             require!(
                 fighter_data[..8] == FIGHTER_ACCOUNT_DISCRIMINATOR,
@@ -2358,4 +2366,10 @@ pub enum RumbleError {
 
     #[msg("Invalid rumble state for this operation")]
     InvalidState,
+
+    #[msg("Fighter has been eliminated")]
+    FighterEliminated,
+
+    #[msg("Invalid fighter accounts provided")]
+    InvalidFighterAccounts,
 }
