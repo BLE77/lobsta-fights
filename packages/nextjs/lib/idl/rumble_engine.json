@@ -30,6 +30,31 @@
           "signer": true
         },
         {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
           "name": "rumble",
           "writable": true,
           "pda": {
@@ -257,6 +282,130 @@
         }
       ],
       "args": []
+    },
+    {
+      "name": "close_move_commitment",
+      "docs": [
+        "Close a MoveCommitment PDA and return rent to a destination.",
+        "Admin-only. Only allowed when rumble is in Payout or Complete state."
+      ],
+      "discriminator": [
+        197,
+        6,
+        198,
+        67,
+        33,
+        102,
+        215,
+        102
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "rumble",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "rumble_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "move_commitment",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  111,
+                  118,
+                  101,
+                  95,
+                  99,
+                  111,
+                  109,
+                  109,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "rumble_id"
+              },
+              {
+                "kind": "account",
+                "path": "fighter"
+              },
+              {
+                "kind": "arg",
+                "path": "turn"
+              }
+            ]
+          }
+        },
+        {
+          "name": "fighter"
+        },
+        {
+          "name": "destination",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "_rumble_id",
+          "type": "u64"
+        },
+        {
+          "name": "_turn",
+          "type": "u32"
+        }
+      ]
     },
     {
       "name": "commit_move",
@@ -579,6 +728,31 @@
           "signer": true
         },
         {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
           "name": "rumble",
           "writable": true,
           "pda": {
@@ -714,6 +888,31 @@
           "name": "keeper",
           "writable": true,
           "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "rumble",
@@ -1054,6 +1253,31 @@
           "name": "keeper",
           "writable": true,
           "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "rumble",
@@ -1456,6 +1680,69 @@
         }
       ],
       "args": []
+    },
+    {
+      "name": "update_admin",
+      "docs": [
+        "Update the admin and/or treasury pubkeys.",
+        "Only the current admin can call this."
+      ],
+      "discriminator": [
+        161,
+        176,
+        40,
+        213,
+        60,
+        184,
+        179,
+        228
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "new_admin",
+          "type": {
+            "option": "pubkey"
+          }
+        },
+        {
+          "name": "new_treasury",
+          "type": {
+            "option": "pubkey"
+          }
+        }
+      ]
     }
   ],
   "accounts": [
@@ -1845,6 +2132,16 @@
       "code": 6034,
       "name": "DeprecatedInstruction",
       "msg": "Instruction is deprecated"
+    },
+    {
+      "code": 6035,
+      "name": "DuplicateFighter",
+      "msg": "Duplicate fighter in rumble"
+    },
+    {
+      "code": 6036,
+      "name": "InvalidState",
+      "msg": "Invalid rumble state for this operation"
     }
   ],
   "types": [

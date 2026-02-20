@@ -1899,6 +1899,7 @@ export async function openTurn(
   const admin = getAdminKeypair()!;
   const [rumblePda] = deriveRumblePda(rumbleId);
   const [combatStatePda] = deriveCombatStatePda(rumbleId);
+  const [rumbleConfigPda] = deriveRumbleConfigPda();
 
   const method = (program.methods as any)
     .openTurn()
@@ -1906,6 +1907,7 @@ export async function openTurn(
       keeper: admin.publicKey,
       rumble: rumblePda,
       combatState: combatStatePda,
+      config: rumbleConfigPda,
     });
 
   return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
@@ -1929,6 +1931,7 @@ export async function resolveTurnOnChain(
   const admin = getAdminKeypair()!;
   const [rumblePda] = deriveRumblePda(rumbleId);
   const [combatStatePda] = deriveCombatStatePda(rumbleId);
+  const [rumbleConfigPda] = deriveRumbleConfigPda();
 
   let method = (program.methods as any).resolveTurn();
   if (moveCommitmentAccounts.length > 0) {
@@ -1946,6 +1949,7 @@ export async function resolveTurnOnChain(
       keeper: admin.publicKey,
       rumble: rumblePda,
       combatState: combatStatePda,
+      config: rumbleConfigPda,
     })
     .preInstructions([
       ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }),
@@ -1970,6 +1974,7 @@ export async function advanceTurnOnChain(
   const admin = getAdminKeypair()!;
   const [rumblePda] = deriveRumblePda(rumbleId);
   const [combatStatePda] = deriveCombatStatePda(rumbleId);
+  const [rumbleConfigPda] = deriveRumbleConfigPda();
 
   const method = (program.methods as any)
     .advanceTurn()
@@ -1977,6 +1982,7 @@ export async function advanceTurnOnChain(
       keeper: admin.publicKey,
       rumble: rumblePda,
       combatState: combatStatePda,
+      config: rumbleConfigPda,
     });
 
   return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
@@ -1998,6 +2004,7 @@ export async function finalizeRumbleOnChain(
   const admin = getAdminKeypair()!;
   const [rumblePda] = deriveRumblePda(rumbleId);
   const [combatStatePda] = deriveCombatStatePda(rumbleId);
+  const [rumbleConfigPda] = deriveRumbleConfigPda();
 
   const method = (program.methods as any)
     .finalizeRumble()
@@ -2005,10 +2012,48 @@ export async function finalizeRumbleOnChain(
       keeper: admin.publicKey,
       rumble: rumblePda,
       combatState: combatStatePda,
+      config: rumbleConfigPda,
     })
     .preInstructions([
       ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }),
     ]);
+
+  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+}
+
+/**
+ * Close a move commitment PDA and reclaim rent (admin/server-side).
+ * Returns tx signature on success, null if admin keypair unavailable.
+ */
+export async function closeMoveCommitmentOnChain(
+  rumbleId: number,
+  fighter: PublicKey,
+  turn: number,
+  destination?: PublicKey,
+  connection?: Connection,
+): Promise<string | null> {
+  const provider = getAdminProvider(connection);
+  if (!provider) {
+    console.warn("[solana-programs] No admin keypair, skipping closeMoveCommitmentOnChain");
+    return null;
+  }
+  const program = getRumbleEngineProgram(provider);
+  const admin = getAdminKeypair()!;
+  const [rumblePda] = deriveRumblePda(rumbleId);
+  const [rumbleConfigPda] = deriveRumbleConfigPda();
+  const [moveCommitmentPda] = deriveMoveCommitmentPda(rumbleId, fighter, turn);
+  const dest = destination ?? admin.publicKey;
+
+  const method = (program.methods as any)
+    .closeMoveCommitment(new anchor.BN(rumbleId), turn)
+    .accounts({
+      admin: admin.publicKey,
+      config: rumbleConfigPda,
+      rumble: rumblePda,
+      moveCommitment: moveCommitmentPda,
+      fighter: fighter,
+      destination: dest,
+    });
 
   return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
 }
@@ -2233,6 +2278,38 @@ export async function completeRumble(
     });
 
   return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+}
+
+/**
+ * Read fighter public keys from an on-chain Rumble account.
+ * Returns an array of PublicKeys for the registered fighters.
+ */
+export async function readRumbleFighters(
+  rumbleId: bigint | number,
+  connection?: Connection,
+): Promise<PublicKey[]> {
+  const conn = connection ?? getConnection();
+  const [rumblePda] = deriveRumblePda(rumbleId);
+  const info = await conn.getAccountInfo(rumblePda, "processed");
+  if (!info || info.data.length < 17) return [];
+
+  const data = info.data;
+  // Layout: 8 (discriminator) + 8 (id) + 1 (state) + [32 * 16] (fighters) + 1 (fighter_count)
+  const fightersOffset = 8 + 8 + 1; // = 17
+  const fighterCountOffset = fightersOffset + 32 * 16; // = 529
+  const fighterCount = data[fighterCountOffset] ?? 0;
+
+  const fighters: PublicKey[] = [];
+  for (let i = 0; i < fighterCount; i++) {
+    const start = fightersOffset + i * 32;
+    const pubkeyBytes = data.slice(start, start + 32);
+    const pk = new PublicKey(pubkeyBytes);
+    // Skip zero/default pubkeys
+    if (!pk.equals(PublicKey.default)) {
+      fighters.push(pk);
+    }
+  }
+  return fighters;
 }
 
 /**

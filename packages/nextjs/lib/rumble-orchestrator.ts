@@ -86,6 +86,8 @@ import {
   readShowerRequest,
   RUMBLE_ENGINE_ID,
   invalidateReadCache,
+  closeMoveCommitmentOnChain,
+  readRumbleFighters,
 } from "./solana-programs";
 import { Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
@@ -1059,6 +1061,28 @@ export class RumbleOrchestrator {
     // Auto-sweeping drained the vault before bettors could claim, causing
     // InsufficientVaultFunds errors.  Treasury cut is effectively collected
     // when there are no more claimants (admin can sweep manually if needed).
+
+    // 3) Reclaim rent from MoveCommitment PDAs (~1.46 SOL per rumble, fire-and-forget)
+    try {
+      const [fighters, combat] = await Promise.all([
+        readRumbleFighters(entry.rumbleIdNum),
+        readRumbleCombatState(entry.rumbleIdNum),
+      ]);
+      const totalTurns = combat?.currentTurn ?? 0;
+      if (fighters.length > 0 && totalTurns > 0) {
+        for (let turn = 1; turn <= totalTurns; turn++) {
+          for (const fighter of fighters) {
+            closeMoveCommitmentOnChain(entry.rumbleIdNum, fighter, turn).catch(() => {});
+          }
+        }
+        console.log(
+          `[OnChain] queued ${fighters.length * totalTurns} MoveCommitment closures for rumble ${entry.rumbleId}`,
+        );
+      }
+    } catch (e) {
+      console.warn(`[OnChain] failed to queue MoveCommitment closures: ${e}`);
+    }
+
     this.pendingFinalizations.delete(entry.rumbleId);
     console.log(`[OnChain] finalization complete for ${entry.rumbleId} (sweep disabled — vault stays for claims)`);
   }

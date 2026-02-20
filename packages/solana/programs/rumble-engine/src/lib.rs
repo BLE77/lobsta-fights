@@ -38,6 +38,7 @@ const PAYOUT_CLAIM_WINDOW_SECONDS: i64 = 30;
 const COMMIT_WINDOW_SLOTS: u64 = 30;
 const REVEAL_WINDOW_SLOTS: u64 = 30;
 const MAX_ONCHAIN_COMBAT_TURNS: u32 = 120;
+const COMBAT_TIMEOUT_SLOTS: u64 = 5000; // ~33 minutes; prevents stuck rumbles
 
 const MOVE_HIGH_STRIKE: u8 = 0;
 const MOVE_MID_STRIKE: u8 = 1;
@@ -498,6 +499,12 @@ pub mod rumble_engine {
             fighters.len() >= 2 && fighters.len() <= MAX_FIGHTERS,
             RumbleError::InvalidFighterCount
         );
+
+        // Check for duplicate fighters
+        let mut seen = std::collections::BTreeSet::new();
+        for f in fighters.iter() {
+            require!(seen.insert(f), RumbleError::DuplicateFighter);
+        }
 
         let clock = Clock::get()?;
         require!(betting_deadline > 0, RumbleError::DeadlineInPast);
@@ -1153,12 +1160,21 @@ pub mod rumble_engine {
             rumble.state == RumbleState::Combat,
             RumbleError::InvalidStateTransition
         );
-        require!(combat.turn_resolved, RumbleError::TurnNotResolved);
         require!(combat.current_turn > 0, RumbleError::TurnNotOpen);
+
+        // Check for combat timeout: if current slot is >5000 past the turn_open_slot,
+        // allow finalization even if combat hasn't naturally ended (prevents stuck rumbles).
+        let timed_out = clock.slot > combat.turn_open_slot
+            .checked_add(COMBAT_TIMEOUT_SLOTS)
+            .ok_or(RumbleError::MathOverflow)?;
+
+        if !timed_out {
+            require!(combat.turn_resolved, RumbleError::TurnNotResolved);
+        }
 
         if combat.remaining_fighters > 1 {
             require!(
-                combat.current_turn >= MAX_ONCHAIN_COMBAT_TURNS,
+                combat.current_turn >= MAX_ONCHAIN_COMBAT_TURNS || timed_out,
                 RumbleError::CombatStillActive
             );
         }
@@ -1359,6 +1375,20 @@ pub mod rumble_engine {
         let claimable = bettor_account.claimable_lamports;
         require!(claimable > 0, RumbleError::NothingToClaim);
 
+        // State update BEFORE CPI transfer (checks-effects-interactions pattern)
+        bettor_account.claimable_lamports = 0;
+        bettor_account.total_claimed_lamports = bettor_account
+            .total_claimed_lamports
+            .checked_add(claimable)
+            .ok_or(RumbleError::MathOverflow)?;
+        bettor_account.last_claim_ts = clock.unix_timestamp;
+        bettor_account.claimed = true;
+
+        {
+            let mut data = ctx.accounts.bettor_account.try_borrow_mut_data()?;
+            write_bettor_account_data(&mut data, &bettor_account)?;
+        }
+
         // Transfer SOL from vault PDA to bettor via System Program CPI signed
         // by the vault PDA seeds.
         let vault_info = ctx.accounts.vault.to_account_info();
@@ -1383,19 +1413,6 @@ pub mod rumble_engine {
             ),
             claimable,
         )?;
-
-        bettor_account.claimable_lamports = 0;
-        bettor_account.total_claimed_lamports = bettor_account
-            .total_claimed_lamports
-            .checked_add(claimable)
-            .ok_or(RumbleError::MathOverflow)?;
-        bettor_account.last_claim_ts = clock.unix_timestamp;
-        bettor_account.claimed = true;
-
-        {
-            let mut data = ctx.accounts.bettor_account.try_borrow_mut_data()?;
-            write_bettor_account_data(&mut data, &bettor_account)?;
-        }
 
         msg!(
             "Payout claimed: {} lamports (deployed: {}) for rumble {}",
@@ -1573,6 +1590,26 @@ pub mod rumble_engine {
 
         Ok(())
     }
+
+    /// Close a MoveCommitment PDA and return rent to a destination.
+    /// Admin-only. Only allowed when rumble is in Payout or Complete state.
+    pub fn close_move_commitment(_ctx: Context<CloseMoveCommitment>, _rumble_id: u64, _turn: u32) -> Result<()> {
+        // Anchor's `close = destination` handles the lamport transfer
+        Ok(())
+    }
+
+    /// Update the admin and/or treasury pubkeys.
+    /// Only the current admin can call this.
+    pub fn update_admin(ctx: Context<UpdateAdmin>, new_admin: Option<Pubkey>, new_treasury: Option<Pubkey>) -> Result<()> {
+        let config = &mut ctx.accounts.config;
+        if let Some(admin) = new_admin {
+            config.admin = admin;
+        }
+        if let Some(treasury) = new_treasury {
+            config.treasury = treasury;
+        }
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1737,6 +1774,13 @@ pub struct CombatAction<'info> {
     pub keeper: Signer<'info>,
 
     #[account(
+        seeds = [CONFIG_SEED],
+        bump = config.bump,
+        constraint = keeper.key() == config.admin @ RumbleError::Unauthorized,
+    )]
+    pub config: Account<'info, RumbleConfig>,
+
+    #[account(
         mut,
         seeds = [RUMBLE_SEED, rumble.id.to_le_bytes().as_ref()],
         bump = rumble.bump,
@@ -1756,6 +1800,13 @@ pub struct CombatAction<'info> {
 pub struct FinalizeRumble<'info> {
     #[account(mut)]
     pub keeper: Signer<'info>,
+
+    #[account(
+        seeds = [CONFIG_SEED],
+        bump = config.bump,
+        constraint = keeper.key() == config.admin @ RumbleError::Unauthorized,
+    )]
+    pub config: Account<'info, RumbleConfig>,
 
     #[account(
         mut,
@@ -1942,6 +1993,60 @@ pub struct SweepTreasury<'info> {
     pub treasury: AccountInfo<'info>,
 
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(rumble_id: u64, turn: u32)]
+pub struct CloseMoveCommitment<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+
+    #[account(
+        seeds = [CONFIG_SEED],
+        bump = config.bump,
+        constraint = admin.key() == config.admin @ RumbleError::Unauthorized,
+    )]
+    pub config: Account<'info, RumbleConfig>,
+
+    #[account(
+        seeds = [RUMBLE_SEED, rumble_id.to_le_bytes().as_ref()],
+        bump = rumble.bump,
+        constraint = (rumble.state == RumbleState::Payout || rumble.state == RumbleState::Complete) @ RumbleError::InvalidState,
+    )]
+    pub rumble: Account<'info, Rumble>,
+
+    #[account(
+        mut,
+        close = destination,
+        seeds = [
+            MOVE_COMMIT_SEED,
+            rumble_id.to_le_bytes().as_ref(),
+            fighter.key().as_ref(),
+            turn.to_le_bytes().as_ref(),
+        ],
+        bump = move_commitment.bump,
+    )]
+    pub move_commitment: Account<'info, MoveCommitment>,
+
+    /// CHECK: Fighter pubkey used for PDA derivation.
+    pub fighter: UncheckedAccount<'info>,
+
+    /// CHECK: Destination for rent refund.
+    #[account(mut)]
+    pub destination: UncheckedAccount<'info>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateAdmin<'info> {
+    pub admin: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [CONFIG_SEED],
+        bump = config.bump,
+        constraint = admin.key() == config.admin @ RumbleError::Unauthorized,
+    )]
+    pub config: Account<'info, RumbleConfig>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2247,4 +2352,10 @@ pub enum RumbleError {
 
     #[msg("Instruction is deprecated")]
     DeprecatedInstruction,
+
+    #[msg("Duplicate fighter in rumble")]
+    DuplicateFighter,
+
+    #[msg("Invalid rumble state for this operation")]
+    InvalidState,
 }
