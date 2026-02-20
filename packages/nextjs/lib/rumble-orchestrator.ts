@@ -316,7 +316,7 @@ const HOUSE_BOT_TARGET_POPULATION = readInt(
   64,
 );
 const SHOWER_SETTLEMENT_POLL_MS = 12_000;
-const ONCHAIN_FINALIZATION_DELAY_MS = 30_000;
+const ONCHAIN_FINALIZATION_DELAY_MS = 30_000; // completeRumble after 30s claim window (sweep disabled)
 const ONCHAIN_FINALIZATION_RETRY_MS = 10_000;
 const ONCHAIN_CREATE_RETRY_MS = 5_000;
 const ONCHAIN_CREATE_STALL_TIMEOUT_MS = readIntervalMs(
@@ -1054,33 +1054,13 @@ export class RumbleOrchestrator {
       }
     }
 
-    // 2) sweepTreasury
-    try {
-      const sweepSig = await sweepTreasuryOnChain(entry.rumbleIdNum);
-      if (sweepSig) {
-        console.log(`[OnChain] sweepTreasury succeeded: ${sweepSig}`);
-        persist.updateRumbleTxSignature(entry.rumbleId, "sweepTreasury", sweepSig);
-      } else {
-        throw new Error("sweepTreasury returned null");
-      }
-      this.pendingFinalizations.delete(entry.rumbleId);
-    } catch (err) {
-      // If the vault is already drained, finalization is effectively complete.
-      if (hasErrorToken(err, "NothingToClaim") || hasErrorToken(err, "InsufficientVaultFunds")) {
-        console.log(`[OnChain] sweepTreasury already drained for ${entry.rumbleId}; marking finalization complete`);
-        this.pendingFinalizations.delete(entry.rumbleId);
-        return;
-      }
-      if (entry.attempts >= MAX_FINALIZATION_ATTEMPTS) {
-        this.pendingFinalizations.delete(entry.rumbleId);
-        console.error(`[OnChain] sweepTreasury failed permanently for ${entry.rumbleId}:`, err);
-        return;
-      }
-      entry.nextAttemptAt = Date.now() + ONCHAIN_FINALIZATION_RETRY_MS;
-      console.warn(
-        `[OnChain] sweepTreasury retry ${entry.attempts}/${MAX_FINALIZATION_ATTEMPTS} for ${entry.rumbleId} (${formatError(err)})`
-      );
-    }
+    // 2) sweepTreasury — DISABLED
+    // Vault SOL must remain available for winners to claim at any time.
+    // Auto-sweeping drained the vault before bettors could claim, causing
+    // InsufficientVaultFunds errors.  Treasury cut is effectively collected
+    // when there are no more claimants (admin can sweep manually if needed).
+    this.pendingFinalizations.delete(entry.rumbleId);
+    console.log(`[OnChain] finalization complete for ${entry.rumbleId} (sweep disabled — vault stays for claims)`);
   }
 
   private pollPendingIchorShower(): void {
