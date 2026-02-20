@@ -9,6 +9,7 @@ import {
   loadQueueState,
   loadActiveRumbles,
   loadRumbleTurnLog,
+  loadPayoutResult,
   getIchorShowerState,
   getStats,
 } from "~~/lib/rumble-persistence";
@@ -434,7 +435,7 @@ export async function GET(request: Request) {
         bye: t.bye,
       }));
 
-      // Build payout data from orchestrator (available during payout phase)
+      // Build payout data — try in-memory first, fallback to Supabase
       const payoutResult = orchestrator.getPayoutResult(slotInfo.slotIndex);
       let payout = null;
       if (payoutResult) {
@@ -450,6 +451,12 @@ export async function GET(request: Request) {
           ichorShowerTriggered: payoutResult.ichorShowerTriggered,
           ichorShowerAmount: payoutResult.ichorShowerAmount,
         };
+      } else if (slotInfo.rumbleId && (slotInfo.state === "payout" || slotInfo.state === "combat")) {
+        // Fallback: load pre-transformed payout from Supabase (persisted by Railway worker)
+        const dbPayout = await loadPayoutResult(slotInfo.rumbleId).catch(() => null);
+        if (dbPayout) {
+          payout = dbPayout;
+        }
       }
 
       // Pre-generated commentary clips for this rumble (shared stream)
@@ -762,6 +769,15 @@ export async function GET(request: Request) {
             }
           }
         }
+        // Apply placements from DB (set during finishCombat)
+        const dbPlacements = Array.isArray((row as any).placements) ? (row as any).placements as Array<{ id: string; placement: number }> : [];
+        if (dbPlacements.length > 0) {
+          const fMap = new Map(fighters.map(f => [f.id, f]));
+          for (const p of dbPlacements) {
+            const f = fMap.get(p.id);
+            if (f) f.placement = p.placement;
+          }
+        }
         const fighterNames: Record<string, string> = {};
         for (const fid of fighterIds) fighterNames[fid] = fighterName(lookup, fid);
 
@@ -824,7 +840,9 @@ export async function GET(request: Request) {
                   bye: t.bye,
                 }))
               : [],
-          payout: sameRumble ? existing.payout : null,
+          payout: sameRumble
+            ? (existing.payout ?? (row as any).payout_result ?? null)
+            : (row as any).payout_result ?? null,
           fighterNames,
         });
       }

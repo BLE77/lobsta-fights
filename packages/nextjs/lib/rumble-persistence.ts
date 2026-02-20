@@ -237,19 +237,54 @@ export async function completeRumbleRecord(
     const { error } = await sb
       .from("ucf_rumbles")
       .update({
-        status: "complete",
+        status: "payout",
         winner_id: winnerId,
         placements,
         turn_log: turnLog,
         total_turns: totalTurns,
-        completed_at: new Date().toISOString(),
       })
       .eq("id", rumbleId)
       .select();
     if (error) throw error;
-    log("Completed rumble record", rumbleId);
+    log("Completed rumble record (status=payout)", rumbleId);
   } catch (err) {
     logError("completeRumbleRecord failed", err);
+  }
+}
+
+export async function savePayoutResult(
+  rumbleId: string,
+  payoutResult: Record<string, unknown>,
+): Promise<void> {
+  try {
+    const sb = freshServiceClient();
+    const { error } = await sb
+      .from("ucf_rumbles")
+      .update({ payout_result: payoutResult })
+      .eq("id", rumbleId)
+      .select();
+    if (error) throw error;
+    log("Saved payout result", rumbleId);
+  } catch (err) {
+    logError("savePayoutResult failed", err);
+  }
+}
+
+export async function loadPayoutResult(
+  rumbleId: string,
+): Promise<Record<string, unknown> | null> {
+  try {
+    const sb = freshServiceClient();
+    const { data, error } = await sb
+      .from("ucf_rumbles")
+      .select("payout_result")
+      .eq("id", rumbleId)
+      .single();
+    if (error) throw error;
+    return (data?.payout_result as Record<string, unknown>) ?? null;
+  } catch (err) {
+    logError("loadPayoutResult failed", err);
+    return null;
   }
 }
 
@@ -264,13 +299,16 @@ export async function loadActiveRumbles(): Promise<
     turn_log: unknown[] | null;
     total_turns: number;
     rumble_number: number | null;
+    payout_result: unknown;
+    placements: unknown;
+    winner_id: string | null;
   }>
 > {
   try {
     const sb = freshServiceClient();
     const { data, error } = await sb
       .from("ucf_rumbles")
-      .select("id, slot_index, status, fighters, created_at, started_at, turn_log, total_turns, rumble_number")
+      .select("id, slot_index, status, fighters, created_at, started_at, turn_log, total_turns, rumble_number, payout_result, placements, winner_id")
       .in("status", ["betting", "combat", "payout"])
       .order("created_at", { ascending: true });
     if (error) throw error;

@@ -153,10 +153,21 @@ export interface CombatStartedEvent {
   fighters: string[];
 }
 
+export interface TransformedPayout {
+  winnerBettorsPayout: number;
+  placeBettorsPayout: number;
+  showBettorsPayout: number;
+  treasuryVault: number;
+  totalPool: number;
+  ichorMined: number;
+  ichorShowerTriggered: boolean;
+  ichorShowerAmount: number;
+}
+
 export interface PayoutCompleteEvent {
   slotIndex: number;
   rumbleId: string;
-  payout: PayoutResult;
+  payout: TransformedPayout;
 }
 
 export interface SlotRecycledEvent {
@@ -3286,6 +3297,21 @@ export class RumbleOrchestrator {
     // Store payout result for status API
     this.payoutResults.set(slotIndex, payoutResult);
 
+    // Persist transformed payout result to Supabase so Vercel can read it
+    const sumReturned = (arr: Array<{ solReturned: number; solProfit: number }>) =>
+      arr.reduce((s, b) => s + b.solReturned + b.solProfit, 0);
+    const transformedPayout = {
+      winnerBettorsPayout: sumReturned(payoutResult.winnerBettors),
+      placeBettorsPayout: sumReturned(payoutResult.placeBettors),
+      showBettorsPayout: sumReturned(payoutResult.showBettors),
+      treasuryVault: payoutResult.treasuryVault,
+      totalPool: payoutPool.totalDeployed,
+      ichorMined: payoutResult.ichorDistribution.totalMined,
+      ichorShowerTriggered: payoutResult.ichorShowerTriggered,
+      ichorShowerAmount: payoutResult.ichorShowerAmount ?? 0,
+    };
+    persist.savePayoutResult(slot.id, transformedPayout);
+
     // Log payout summary
     const summary = summarizePayouts(payoutResult);
     console.log(`[Orchestrator] Payout for ${slot.id}:`, summary);
@@ -3293,7 +3319,7 @@ export class RumbleOrchestrator {
     this.emit("payout_complete", {
       slotIndex,
       rumbleId: slot.id,
-      payout: payoutResult,
+      payout: transformedPayout,
     });
 
     // On-chain settlement uses the same computed payout distribution as source of truth.
@@ -3336,9 +3362,8 @@ export class RumbleOrchestrator {
       }
     }
 
-    // Persist: mark rumble as complete (status already set in finishCombat,
-    // but update payout status for safety)
-    persist.updateRumbleStatus(slot.id, "complete");
+    // Note: DB status stays "payout" until handleSlotRecycled sets "complete"
+    // after PAYOUT_DURATION_MS, giving Vercel status API time to read payout data.
 
     this.cleanupSlot(slotIndex, slot.id);
   }
@@ -3363,6 +3388,9 @@ export class RumbleOrchestrator {
     previousFighters: string[],
     previousRumbleId: string,
   ): void {
+    // Mark rumble as "complete" in DB now that payout display window is over
+    persist.updateRumbleStatus(previousRumbleId, "complete");
+
     this.payoutProcessed.delete(previousRumbleId);
     this.onchainRumbleCreateRetryAt.delete(previousRumbleId);
     this.onchainRumbleCreateStartedAt.delete(previousRumbleId);
