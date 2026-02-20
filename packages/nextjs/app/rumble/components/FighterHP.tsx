@@ -11,6 +11,7 @@ interface FighterHPProps {
   placement?: number;
   damageDealt?: number;
   isMyBet?: boolean;
+  size?: "normal" | "large";
 }
 
 export default function FighterHP({
@@ -22,6 +23,7 @@ export default function FighterHP({
   placement,
   damageDealt,
   isMyBet,
+  size = "normal",
 }: FighterHPProps) {
   const hpPercent = Math.max(0, Math.min(100, (hp / maxHp) * 100));
 
@@ -41,8 +43,8 @@ export default function FighterHP({
   return (
     <div
       className={`flex items-center gap-3 p-2 rounded-sm transition-all duration-700 ${isEliminated
-          ? "opacity-40"
-          : ""
+        ? "opacity-40"
+        : ""
         } ${isMyBet && !isEliminated ? "ring-1 ring-cyan-500/50 bg-cyan-950/10" : ""} ${showDamageFlash ? "animate-[shake_0.2s_ease-in-out] animate-damage-flash" : ""}`}
     >
       {/* Avatar */}
@@ -51,16 +53,16 @@ export default function FighterHP({
           <img
             src={imageUrl}
             alt={name}
-            className={`w-8 h-8 rounded-sm object-cover border transition-all duration-700 ${isEliminated ? "border-red-800 grayscale" : isMyBet ? "border-cyan-500" : "border-stone-700"
+            className={`${size === "large" ? "w-12 h-12" : "w-8 h-8"} rounded-sm object-cover border transition-all duration-700 ${isEliminated ? "border-red-800 grayscale" : isMyBet ? "border-cyan-500" : "border-stone-700"
               }`}
           />
         ) : (
           <div
-            className={`w-8 h-8 rounded-sm flex items-center justify-center border ${isEliminated
-                ? "border-red-800 bg-stone-900"
-                : isMyBet
-                  ? "border-cyan-500 bg-stone-800"
-                  : "border-stone-700 bg-stone-800"
+            className={`${size === "large" ? "w-12 h-12" : "w-8 h-8"} rounded-sm flex items-center justify-center border ${isEliminated
+              ? "border-red-800 bg-stone-900"
+              : isMyBet
+                ? "border-cyan-500 bg-stone-800"
+                : "border-stone-700 bg-stone-800"
               }`}
           >
             <span className="text-stone-500 font-mono text-[9px]">BOT</span>
@@ -69,10 +71,10 @@ export default function FighterHP({
         {placement && placement <= 3 && (
           <span
             className={`absolute -top-1 -left-1 text-[9px] font-mono font-bold px-0.5 rounded-sm ${placement === 1
-                ? "bg-amber-500 text-stone-950"
-                : placement === 2
-                  ? "bg-stone-300 text-stone-950"
-                  : "bg-amber-800 text-stone-200"
+              ? "bg-amber-500 text-stone-950"
+              : placement === 2
+                ? "bg-stone-300 text-stone-950"
+                : "bg-amber-800 text-stone-200"
               }`}
           >
             {placement}
@@ -90,7 +92,7 @@ export default function FighterHP({
         <div className="flex items-center justify-between mb-0.5">
           <span className="flex items-center gap-1 truncate">
             <span
-              className={`font-mono text-xs font-bold truncate ${isEliminated ? "text-stone-600 line-through decoration-red-500" : "text-stone-200"
+              className={`font-mono ${size === "large" ? "text-sm" : "text-xs"} font-bold truncate ${isEliminated ? "text-stone-600 line-through decoration-red-500" : "text-stone-200"
                 }`}
             >
               {name}
@@ -102,7 +104,7 @@ export default function FighterHP({
             )}
           </span>
           <span
-            className={`font-mono text-[10px] ml-2 flex-shrink-0 ${isEliminated ? "text-stone-600" : "text-stone-400"
+            className={`font-mono ${size === "large" ? "text-xs" : "text-[10px]"} ml-2 flex-shrink-0 ${isEliminated ? "text-stone-600" : "text-stone-400"
               }`}
           >
             {hp}/{maxHp}

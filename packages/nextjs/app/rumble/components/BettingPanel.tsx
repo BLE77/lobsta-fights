@@ -263,6 +263,7 @@ export default function BettingPanel({
                     name={f.fighterName}
                     hp={f.hp}
                     imageUrl={f.imageUrl}
+                    isMyBet={myStake > 0}
                   />
                 </div>
                 <div className="text-right flex-shrink-0 ml-2">

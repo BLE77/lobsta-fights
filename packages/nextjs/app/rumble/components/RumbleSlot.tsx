@@ -354,47 +354,47 @@ export default function RumbleSlot({
         {/* IDLE state */}
         {slot.state === "idle" && (
           <div className="animate-fade-in-up">
-          {lastCompletedResult ? (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between text-[10px] font-mono uppercase">
-                <span className="text-stone-500">Last Rumble Result</span>
-                <span className="text-stone-600">
-                  Waiting for next fighters
-                </span>
+            {lastCompletedResult ? (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-[10px] font-mono uppercase">
+                  <span className="text-stone-500">Last Rumble Result</span>
+                  <span className="text-stone-600">
+                    Waiting for next fighters
+                  </span>
+                </div>
+                <PayoutDisplay
+                  placements={lastCompletedResult.placements}
+                  payout={lastCompletedResult.payout}
+                  myBetFighterIds={myBetFighterIds}
+                />
               </div>
-              <PayoutDisplay
-                placements={lastCompletedResult.placements}
-                payout={lastCompletedResult.payout}
-                myBetFighterIds={myBetFighterIds}
-              />
-            </div>
-          ) : (
-            <div className="flex items-center justify-center h-32">
-              <div className="text-center">
-                <p className="font-mono text-sm text-stone-600">
-                  Waiting for fighters...
-                </p>
-                <p className="font-mono text-[10px] text-stone-700 mt-1">
-                  Rumble starts when queue fills
-                </p>
+            ) : (
+              <div className="flex items-center justify-center h-32">
+                <div className="text-center">
+                  <p className="font-mono text-sm text-stone-600">
+                    Waiting for fighters...
+                  </p>
+                  <p className="font-mono text-[10px] text-stone-700 mt-1">
+                    Rumble starts when queue fills
+                  </p>
+                </div>
               </div>
-            </div>
-          )}
+            )}
           </div>
         )}
 
         {/* BETTING state */}
         {slot.state === "betting" && (
           <div className="animate-fade-in-up">
-          <BettingPanel
-            slotIndex={slot.slotIndex}
-            fighters={slot.odds}
-            totalPool={slot.totalPool}
-            deadline={slot.bettingDeadline}
-            onPlaceBet={onPlaceBet}
-            onPlaceBatchBet={onPlaceBatchBet}
-            myBetAmounts={myBetAmounts}
-          />
+            <BettingPanel
+              slotIndex={slot.slotIndex}
+              fighters={slot.odds}
+              totalPool={slot.totalPool}
+              deadline={slot.bettingDeadline}
+              onPlaceBet={onPlaceBet}
+              onPlaceBatchBet={onPlaceBatchBet}
+              myBetAmounts={myBetAmounts}
+            />
           </div>
         )}
 
@@ -403,34 +403,137 @@ export default function RumbleSlot({
           <div className="animate-fade-in-up space-y-3">
             {/* Alive fighters HP bars + elimination overlays */}
             <div className="relative">
-              <div className="space-y-0.5">
-                <p className="font-mono text-[10px] text-stone-500 uppercase mb-1">
-                  Fighters ({slot.remainingFighters ?? slot.fighters.filter((f) => f.eliminatedOnTurn === null || f.eliminatedOnTurn === undefined).length} alive)
-                </p>
-                <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
-                  {slot.fighters
-                    .sort((a, b) => {
-                      // Alive first (using eliminatedOnTurn, not HP — on-chain doesn't zero HP)
-                      const aElim = a.eliminatedOnTurn != null;
-                      const bElim = b.eliminatedOnTurn != null;
-                      if (!aElim && bElim) return -1;
-                      if (aElim && !bElim) return 1;
-                      if (aElim && bElim) return (b.eliminatedOnTurn ?? 0) - (a.eliminatedOnTurn ?? 0);
-                      return 0;
-                    })
-                    .map((f) => (
-                      <FighterHP
-                        key={f.id}
-                        name={f.name}
-                        hp={f.hp}
-                        maxHp={f.maxHp}
-                        imageUrl={f.imageUrl}
-                        isEliminated={f.eliminatedOnTurn != null}
-                        damageDealt={f.totalDamageDealt}
-                        isMyBet={myBetFighterIds?.has(f.id)}
-                      />
-                    ))}
-                </div>
+              <div className="space-y-4">
+                {(() => {
+                  // Find current turn pairings
+                  const currentTurnData = slot.turns.find(t => t.turnNumber === slot.currentTurn) || slot.turns[slot.turns.length - 1];
+                  const hasPairings = currentTurnData && Array.isArray(currentTurnData.pairings) && currentTurnData.pairings.length > 0;
+
+                  if (!hasPairings) {
+                    // Fallback to strict grid if no pairings yet
+                    return (
+                      <div className="space-y-0.5">
+                        <p className="font-mono text-[10px] text-stone-500 uppercase mb-1">
+                          Deploying Fighters...
+                        </p>
+                        <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
+                          {slot.fighters.map((f) => (
+                            <FighterHP
+                              key={f.id}
+                              name={f.name}
+                              hp={f.hp}
+                              maxHp={f.maxHp}
+                              imageUrl={f.imageUrl}
+                              isEliminated={f.eliminatedOnTurn != null}
+                              damageDealt={f.totalDamageDealt}
+                              isMyBet={myBetFighterIds?.has(f.id)}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  // We have pairings! Let's extract active fighters and benched fighters.
+                  const activeFighterIds = new Set<string>();
+                  currentTurnData.pairings.forEach(p => {
+                    activeFighterIds.add(p.fighterA);
+                    activeFighterIds.add(p.fighterB);
+                  });
+
+                  const fighterMap = new Map(slot.fighters.map(f => [f.id, f]));
+
+                  // Benched or eliminated fighters not swinging this turn
+                  const bench = slot.fighters.filter(f => !activeFighterIds.has(f.id));
+
+                  return (
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between">
+                        <p className="font-mono text-xs font-bold text-amber-500 uppercase">
+                          Live Matchups // Turn {currentTurnData.turnNumber}
+                        </p>
+                        <p className="font-mono text-[10px] text-stone-500 uppercase">
+                          ({slot.remainingFighters ?? slot.fighters.filter((f) => f.eliminatedOnTurn === null || f.eliminatedOnTurn === undefined).length} alive)
+                        </p>
+                      </div>
+
+                      {/* Face-Off Rows */}
+                      <div className="space-y-3">
+                        {currentTurnData.pairings.map((p, idx) => {
+                          const fA = fighterMap.get(p.fighterA);
+                          const fB = fighterMap.get(p.fighterB);
+                          if (!fA || !fB) return null;
+
+                          return (
+                            <div key={`pairing-${idx}`} className="flex items-center gap-2 bg-stone-900/40 p-2 rounded-sm border border-stone-800">
+                              {/* Fighter A */}
+                              <div className="flex-1 min-w-0">
+                                <FighterHP
+                                  name={fA.name}
+                                  hp={fA.hp}
+                                  maxHp={fA.maxHp}
+                                  imageUrl={fA.imageUrl}
+                                  isEliminated={fA.eliminatedOnTurn != null}
+                                  damageDealt={fA.totalDamageDealt}
+                                  isMyBet={myBetFighterIds?.has(fA.id)}
+                                  size="large"
+                                />
+                              </div>
+
+                              {/* VS Badge */}
+                              <div className="flex-shrink-0 px-2 flex flex-col items-center">
+                                <span className="font-fight text-lg text-amber-500 opacity-60">VS</span>
+                              </div>
+
+                              {/* Fighter B */}
+                              <div className="flex-1 min-w-0">
+                                <FighterHP
+                                  name={fB.name}
+                                  hp={fB.hp}
+                                  maxHp={fB.maxHp}
+                                  imageUrl={fB.imageUrl}
+                                  isEliminated={fB.eliminatedOnTurn != null}
+                                  damageDealt={fB.totalDamageDealt}
+                                  isMyBet={myBetFighterIds?.has(fB.id)}
+                                  size="large"
+                                />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {/* The Bench / Graveyard */}
+                      {bench.length > 0 && (
+                        <div className="pt-2 border-t border-stone-800/50">
+                          <p className="font-mono text-[10px] text-stone-600 uppercase mb-2">Bench / Graveyard</p>
+                          <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 opacity-75">
+                            {bench
+                              .sort((a, b) => {
+                                const aElim = a.eliminatedOnTurn != null;
+                                const bElim = b.eliminatedOnTurn != null;
+                                if (!aElim && bElim) return -1;
+                                if (aElim && !bElim) return 1;
+                                return 0;
+                              })
+                              .map((f) => (
+                                <FighterHP
+                                  key={f.id}
+                                  name={f.name}
+                                  hp={f.hp}
+                                  maxHp={f.maxHp}
+                                  imageUrl={f.imageUrl}
+                                  isEliminated={f.eliminatedOnTurn != null}
+                                  damageDealt={f.totalDamageDealt}
+                                  isMyBet={myBetFighterIds?.has(f.id)}
+                                />
+                              ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Elimination popups (overlay) */}
@@ -463,21 +566,21 @@ export default function RumbleSlot({
         {/* PAYOUT state */}
         {slot.state === "payout" && slot.payout && (
           <div className="animate-fade-in-up">
-          <PayoutDisplay
-            placements={slot.fighters
-              .filter((f) => f.placement > 0)
-              .sort((a, b) => a.placement - b.placement)
-              .map((f) => ({
-                fighterId: f.id,
-                fighterName: f.name,
-                imageUrl: f.imageUrl,
-                placement: f.placement,
-                hp: f.hp,
-                damageDealt: f.totalDamageDealt,
-              }))}
-            payout={slot.payout}
-            myBetFighterIds={myBetFighterIds}
-          />
+            <PayoutDisplay
+              placements={slot.fighters
+                .filter((f) => f.placement > 0)
+                .sort((a, b) => a.placement - b.placement)
+                .map((f) => ({
+                  fighterId: f.id,
+                  fighterName: f.name,
+                  imageUrl: f.imageUrl,
+                  placement: f.placement,
+                  hp: f.hp,
+                  damageDealt: f.totalDamageDealt,
+                }))}
+              payout={slot.payout}
+              myBetFighterIds={myBetFighterIds}
+            />
           </div>
         )}
       </div>
