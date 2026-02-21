@@ -1,0 +1,17 @@
+FROM node:20-slim
+
+RUN groupadd -r verifier && useradd -r -g verifier -m verifier
+
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+
+RUN npm install --omit=dev --legacy-peer-deps && npm install tsx --legacy-peer-deps
+
+COPY scripts/verifier-bot.ts ./scripts/
+
+RUN chown -R verifier:verifier /app
+
+USER verifier
+
+CMD ["npx", "tsx", "scripts/verifier-bot.ts", "--watch", "--poll-interval", "15"]
