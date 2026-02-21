@@ -106,11 +106,16 @@ export async function POST(request: Request) {
     // Signature proves the sender actually controls this wallet
     if (signature && timestamp) {
       try {
-        const { default: nacl } = await import("tweetnacl");
+        const { verify, createPublicKey } = await import("node:crypto");
         const expectedMsg = `UCF Chat: ${timestamp}`;
-        const msgBytes = new TextEncoder().encode(expectedMsg);
+        const msgBytes = Buffer.from(expectedMsg);
         const sigBytes = Buffer.from(signature, "base64");
-        const valid = nacl.sign.detached.verify(msgBytes, sigBytes, walletPubkey.toBytes());
+        const pubKeyObj = createPublicKey({
+          key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), Buffer.from(walletPubkey.toBytes())]),
+          format: "der",
+          type: "spki",
+        });
+        const valid = verify(null, msgBytes, pubKeyObj, sigBytes);
         if (!valid) {
           return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
         }
