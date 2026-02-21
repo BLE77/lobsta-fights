@@ -366,6 +366,10 @@ const ONCHAIN_TURN_AUTHORITY = (process.env.RUMBLE_ONCHAIN_TURN_AUTHORITY ?? "fa
 // "hybrid"  => off-chain combat math, post_turn_result on-chain (Option D)
 const RESOLUTION_MODE = (process.env.RUMBLE_RESOLUTION_MODE ?? "onchain") as "onchain" | "hybrid";
 
+// Server-side secret mixed into fallback move hash so observers can't precompute fallback moves
+// from public on-chain data. Generate with: openssl rand -hex 32
+const FALLBACK_MOVE_SECRET = process.env.FALLBACK_MOVE_SECRET ?? randomBytes(32).toString("hex");
+
 interface OnchainAdminHealth {
   checkedAt: number;
   ready: boolean;
@@ -530,6 +534,7 @@ function pairFightersForTurn(
 
 function computeFallbackMove(rumbleId: number, turn: number, fighter: PublicKey, meter: number): number {
   const h = createHash("sha256");
+  h.update(Buffer.from(FALLBACK_MOVE_SECRET, "hex"));
   const ridBuf = Buffer.alloc(8);
   ridBuf.writeBigUInt64LE(BigInt(rumbleId));
   h.update(ridBuf);
@@ -1766,18 +1771,16 @@ export class RumbleOrchestrator {
 
   private async handleCombatPhase(slot: RumbleSlot): Promise<void> {
     if (ONCHAIN_TURN_AUTHORITY) {
-      // If on-chain admin is unhealthy, fall back to legacy combat to avoid
-      // slots stuck in combat with no turns progressing.
       if (!this.onchainAdminHealth.ready) {
         console.warn(
-          `[Orchestrator] Slot ${slot.slotIndex} falling back to legacy combat (on-chain admin unhealthy)`,
+          `[Orchestrator] Slot ${slot.slotIndex} skipping combat tick — on-chain admin unhealthy, waiting for recovery`,
         );
-        await this.handleCombatPhaseLegacy(slot);
-        return;
+        return; // Wait for on-chain to recover instead of falling back to unverifiable legacy mode
       }
       await this.handleCombatPhaseOnchain(slot);
       return;
     }
+    console.warn("[Orchestrator] RUMBLE_ONCHAIN_TURN_AUTHORITY is false — legacy off-chain mode is deprecated and insecure");
     await this.handleCombatPhaseLegacy(slot);
   }
 

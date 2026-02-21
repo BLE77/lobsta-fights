@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "../../../../lib/supabase";
+import { isValidUUID } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +15,10 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+
+  if (!isValidUUID(id)) {
+    return NextResponse.json({ error: "Invalid fighter ID" }, { status: 400 });
+  }
 
   // Get fighter (public fields only - no api_key or webhook_url)
   const { data: fighter, error: fighterError } = await supabase
