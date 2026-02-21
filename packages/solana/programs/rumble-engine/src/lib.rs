@@ -453,6 +453,16 @@ fn read_revealed_move_from_remaining_accounts(
     Some(parsed.revealed_move)
 }
 
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct DuelResult {
+    pub fighter_a_idx: u8,
+    pub fighter_b_idx: u8,
+    pub move_a: u8,
+    pub move_b: u8,
+    pub damage_to_a: u16,
+    pub damage_to_b: u16,
+}
+
 #[program]
 pub mod rumble_engine {
     use super::*;
@@ -1086,6 +1096,167 @@ pub mod rumble_engine {
                 .ok_or(RumbleError::MathOverflow)?;
         }
 
+        if combat.remaining_fighters == 1 {
+            if let Some((idx, _)) = (0..fighter_count)
+                .filter(|i| combat.hp[*i] > 0 && combat.elimination_rank[*i] == 0)
+                .map(|i| (i, combat.hp[i]))
+                .next()
+            {
+                combat.winner_index = idx as u8;
+            }
+        }
+
+        combat.turn_resolved = true;
+
+        emit!(TurnResolvedEvent {
+            rumble_id: rumble.id,
+            turn,
+            remaining_fighters: combat.remaining_fighters,
+        });
+
+        Ok(())
+    }
+
+    /// Accept pre-computed turn results from the admin/keeper.
+    /// Validates damage by re-running resolve_duel internally.
+    /// This is the "Option D hybrid" path — combat math runs off-chain,
+    /// but on-chain program validates correctness.
+    pub fn post_turn_result(
+        ctx: Context<CombatAction>,
+        duel_results: Vec<DuelResult>,
+        bye_fighter_idx: Option<u8>,
+    ) -> Result<()> {
+        let clock = Clock::get()?;
+        let rumble = &ctx.accounts.rumble;
+        let combat = &mut ctx.accounts.combat_state;
+
+        require!(
+            rumble.state == RumbleState::Combat,
+            RumbleError::InvalidStateTransition
+        );
+        require!(combat.current_turn > 0, RumbleError::TurnNotOpen);
+        require!(!combat.turn_resolved, RumbleError::TurnAlreadyResolved);
+        require!(
+            clock.slot >= combat.reveal_close_slot,
+            RumbleError::RevealWindowActive
+        );
+
+        let fighter_count = combat.fighter_count as usize;
+        let turn = combat.current_turn;
+
+        // Track which fighters were paired to give them meter later
+        let mut paired_indices: Vec<usize> = Vec::new();
+        let mut eliminated_this_turn: Vec<usize> = Vec::new();
+
+        for dr in duel_results.iter() {
+            let idx_a = dr.fighter_a_idx as usize;
+            let idx_b = dr.fighter_b_idx as usize;
+
+            // Validate indices
+            require!(idx_a < fighter_count && idx_b < fighter_count, RumbleError::InvalidFighterCount);
+            require!(idx_a != idx_b, RumbleError::DuplicateFighter);
+            // Fighters must be alive
+            require!(
+                combat.hp[idx_a] > 0 && combat.elimination_rank[idx_a] == 0,
+                RumbleError::FighterEliminated
+            );
+            require!(
+                combat.hp[idx_b] > 0 && combat.elimination_rank[idx_b] == 0,
+                RumbleError::FighterEliminated
+            );
+            // Validate moves
+            require!(is_valid_move_code(dr.move_a), RumbleError::InvalidState);
+            require!(is_valid_move_code(dr.move_b), RumbleError::InvalidState);
+
+            // RE-VALIDATE damage by running resolve_duel
+            let (expected_dmg_a, expected_dmg_b, expected_meter_a, expected_meter_b) =
+                resolve_duel(dr.move_a, dr.move_b, combat.meter[idx_a], combat.meter[idx_b]);
+            require!(
+                dr.damage_to_a == expected_dmg_a && dr.damage_to_b == expected_dmg_b,
+                RumbleError::DamageMismatch
+            );
+
+            // Apply damage
+            combat.meter[idx_a] = combat.meter[idx_a].saturating_sub(expected_meter_a);
+            combat.meter[idx_b] = combat.meter[idx_b].saturating_sub(expected_meter_b);
+
+            combat.hp[idx_a] = combat.hp[idx_a].saturating_sub(dr.damage_to_a);
+            combat.hp[idx_b] = combat.hp[idx_b].saturating_sub(dr.damage_to_b);
+
+            combat.total_damage_dealt[idx_a] = combat.total_damage_dealt[idx_a]
+                .checked_add(dr.damage_to_b as u64)
+                .ok_or(RumbleError::MathOverflow)?;
+            combat.total_damage_dealt[idx_b] = combat.total_damage_dealt[idx_b]
+                .checked_add(dr.damage_to_a as u64)
+                .ok_or(RumbleError::MathOverflow)?;
+            combat.total_damage_taken[idx_a] = combat.total_damage_taken[idx_a]
+                .checked_add(dr.damage_to_a as u64)
+                .ok_or(RumbleError::MathOverflow)?;
+            combat.total_damage_taken[idx_b] = combat.total_damage_taken[idx_b]
+                .checked_add(dr.damage_to_b as u64)
+                .ok_or(RumbleError::MathOverflow)?;
+
+            paired_indices.push(idx_a);
+            paired_indices.push(idx_b);
+
+            emit!(TurnPairResolvedEvent {
+                rumble_id: rumble.id,
+                turn,
+                fighter_a: rumble.fighters[idx_a],
+                fighter_b: rumble.fighters[idx_b],
+                move_a: dr.move_a,
+                move_b: dr.move_b,
+                damage_to_a: dr.damage_to_a,
+                damage_to_b: dr.damage_to_b,
+            });
+
+            if combat.hp[idx_a] == 0 && combat.elimination_rank[idx_a] == 0 {
+                eliminated_this_turn.push(idx_a);
+            }
+            if combat.hp[idx_b] == 0 && combat.elimination_rank[idx_b] == 0 {
+                eliminated_this_turn.push(idx_b);
+            }
+        }
+
+        // Give meter to paired survivors
+        for idx in paired_indices {
+            if combat.hp[idx] > 0 {
+                let next_meter = combat.meter[idx].saturating_add(METER_PER_TURN);
+                combat.meter[idx] = next_meter.min(SPECIAL_METER_COST);
+            }
+        }
+
+        // Bye fighter gets meter
+        if let Some(bye_idx) = bye_fighter_idx {
+            let bye = bye_idx as usize;
+            require!(bye < fighter_count, RumbleError::InvalidFighterCount);
+            require!(
+                combat.hp[bye] > 0 && combat.elimination_rank[bye] == 0,
+                RumbleError::FighterEliminated
+            );
+            let next_meter = combat.meter[bye].saturating_add(METER_PER_TURN);
+            combat.meter[bye] = next_meter.min(SPECIAL_METER_COST);
+        }
+
+        // Handle eliminations (same logic as resolve_turn)
+        for idx in eliminated_this_turn {
+            if combat.elimination_rank[idx] > 0 {
+                continue;
+            }
+            let eliminated_so_far = combat
+                .fighter_count
+                .checked_sub(combat.remaining_fighters)
+                .ok_or(RumbleError::MathOverflow)?;
+            combat.elimination_rank[idx] = eliminated_so_far
+                .checked_add(1)
+                .ok_or(RumbleError::MathOverflow)?;
+            combat.remaining_fighters = combat
+                .remaining_fighters
+                .checked_sub(1)
+                .ok_or(RumbleError::MathOverflow)?;
+        }
+
+        // Check for winner
         if combat.remaining_fighters == 1 {
             if let Some((idx, _)) = (0..fighter_count)
                 .filter(|i| combat.hp[*i] > 0 && combat.elimination_rank[*i] == 0)
@@ -2372,4 +2543,7 @@ pub enum RumbleError {
 
     #[msg("Invalid fighter accounts provided")]
     InvalidFighterAccounts,
+
+    #[msg("Posted damage does not match resolve_duel computation")]
+    DamageMismatch,
 }

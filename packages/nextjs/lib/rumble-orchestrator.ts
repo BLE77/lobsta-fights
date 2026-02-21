@@ -88,6 +88,8 @@ import {
   invalidateReadCache,
   closeMoveCommitmentOnChain,
   readRumbleFighters,
+  postTurnResultOnChain,
+  readMoveCommitmentData,
 } from "./solana-programs";
 import { Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
@@ -360,6 +362,10 @@ const ONCHAIN_ADMIN_HEALTH_CHECK_MS = readIntervalMs(
 // deployed and verified on the target cluster.
 const ONCHAIN_TURN_AUTHORITY = (process.env.RUMBLE_ONCHAIN_TURN_AUTHORITY ?? "false") === "true";
 
+// "onchain" => full on-chain resolve_turn (original path)
+// "hybrid"  => off-chain combat math, post_turn_result on-chain (Option D)
+const RESOLUTION_MODE = (process.env.RUMBLE_RESOLUTION_MODE ?? "onchain") as "onchain" | "hybrid";
+
 interface OnchainAdminHealth {
   checkedAt: number;
   ready: boolean;
@@ -398,6 +404,152 @@ function formatError(err: unknown): string {
 
 function hasErrorToken(err: unknown, token: string): boolean {
   return formatError(err).toLowerCase().includes(token.toLowerCase());
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic combat functions (match on-chain resolve_duel exactly)
+// Fixed damage values — NO variance/RNG
+// ---------------------------------------------------------------------------
+
+const D_STRIKE_HIGH = 26;
+const D_STRIKE_MID = 20;
+const D_STRIKE_LOW = 15;
+const D_CATCH = 30;
+const D_COUNTER = 12;
+const D_SPECIAL = 35;
+const D_METER_PER_TURN = 20;
+const D_SPECIAL_METER_COST = 100;
+
+function isStrikeCode(m: number): boolean { return m >= 0 && m <= 2; }
+function isGuardCode(m: number): boolean { return m >= 3 && m <= 5; }
+
+function guardForStrike(strike: number): number | null {
+  // HIGH_STRIKE(0)->GUARD_HIGH(3), MID(1)->GUARD_MID(4), LOW(2)->GUARD_LOW(5)
+  if (strike >= 0 && strike <= 2) return strike + 3;
+  return null;
+}
+
+function strikeDamage(m: number): number {
+  if (m === 0) return D_STRIKE_HIGH;
+  if (m === 1) return D_STRIKE_MID;
+  if (m === 2) return D_STRIKE_LOW;
+  return 0;
+}
+
+function resolveDuelDeterministic(
+  moveA: number, moveB: number, meterA: number, meterB: number
+): { damageToA: number; damageToB: number; meterUsedA: number; meterUsedB: number } {
+  let damageToA = 0, damageToB = 0;
+  let meterUsedA = 0, meterUsedB = 0;
+
+  const aSpecial = moveA === 8 && meterA >= D_SPECIAL_METER_COST;
+  const bSpecial = moveB === 8 && meterB >= D_SPECIAL_METER_COST;
+  if (aSpecial) meterUsedA = D_SPECIAL_METER_COST;
+  if (bSpecial) meterUsedB = D_SPECIAL_METER_COST;
+
+  const effectiveA = (moveA === 8 && !aSpecial) ? -1 : moveA;
+  const effectiveB = (moveB === 8 && !bSpecial) ? -1 : moveB;
+
+  // A's attack on B
+  if (effectiveA === 8) { // SPECIAL
+    if (effectiveB !== 6) damageToB = D_SPECIAL; // DODGE=6
+  } else if (effectiveA === 7) { // CATCH
+    if (effectiveB === 6) damageToB = D_CATCH;
+  } else if (effectiveA >= 0 && isStrikeCode(effectiveA)) {
+    if (effectiveB === 6) {
+      // dodged
+    } else if (guardForStrike(effectiveA) === effectiveB) {
+      damageToA = D_COUNTER;
+    } else {
+      damageToB = strikeDamage(effectiveA);
+    }
+  }
+
+  // B's attack on A
+  if (effectiveB === 8) {
+    if (effectiveA !== 6) damageToA = D_SPECIAL;
+  } else if (effectiveB === 7) {
+    if (effectiveA === 6) damageToA = D_CATCH;
+  } else if (effectiveB >= 0 && isStrikeCode(effectiveB)) {
+    if (effectiveA === 6) {
+      // dodged
+    } else if (guardForStrike(effectiveB) === effectiveA) {
+      damageToB = D_COUNTER;
+    } else {
+      damageToA = strikeDamage(effectiveB);
+    }
+  }
+
+  return { damageToA, damageToB, meterUsedA, meterUsedB };
+}
+
+// ---------------------------------------------------------------------------
+// SHA256-based deterministic pairing & fallback moves (mirror on-chain logic)
+// ---------------------------------------------------------------------------
+
+function hashU64ForPairing(rumbleId: number, turn: number, fighterPubkey: PublicKey): bigint {
+  const h = createHash("sha256");
+  h.update(Buffer.from("pair-order"));
+  const ridBuf = Buffer.alloc(8);
+  ridBuf.writeBigUInt64LE(BigInt(rumbleId));
+  h.update(ridBuf);
+  const turnBuf = Buffer.alloc(4);
+  turnBuf.writeUInt32LE(turn);
+  h.update(turnBuf);
+  h.update(fighterPubkey.toBuffer());
+  const digest = h.digest();
+  return digest.readBigUInt64LE(0);
+}
+
+function pairFightersForTurn(
+  aliveIndices: number[],
+  fighters: PublicKey[],
+  rumbleId: number,
+  turn: number,
+): { pairs: [number, number][]; byeIdx: number | null } {
+  const sorted = [...aliveIndices].sort((a, b) => {
+    const ha = hashU64ForPairing(rumbleId, turn, fighters[a]);
+    const hb = hashU64ForPairing(rumbleId, turn, fighters[b]);
+    if (ha < hb) return -1;
+    if (ha > hb) return 1;
+    return Buffer.compare(fighters[a].toBuffer(), fighters[b].toBuffer());
+  });
+
+  const pairs: [number, number][] = [];
+  let byeIdx: number | null = null;
+
+  for (let i = 0; i + 1 < sorted.length; i += 2) {
+    pairs.push([sorted[i], sorted[i + 1]]);
+  }
+  if (sorted.length % 2 === 1) {
+    byeIdx = sorted[sorted.length - 1];
+  }
+
+  return { pairs, byeIdx };
+}
+
+function computeFallbackMove(rumbleId: number, turn: number, fighter: PublicKey, meter: number): number {
+  const h = createHash("sha256");
+  const ridBuf = Buffer.alloc(8);
+  ridBuf.writeBigUInt64LE(BigInt(rumbleId));
+  h.update(ridBuf);
+  const turnBuf = Buffer.alloc(4);
+  turnBuf.writeUInt32LE(turn);
+  h.update(turnBuf);
+  h.update(fighter.toBuffer());
+  h.update(Buffer.from("fallback"));
+  const digest = h.digest();
+  const roll = Number(digest.readBigUInt64LE(0) % 100n);
+
+  if (meter >= D_SPECIAL_METER_COST && roll < 15) return 8; // SPECIAL
+  if (roll < 25) return 0; // HIGH_STRIKE
+  if (roll < 50) return 1; // MID_STRIKE
+  if (roll < 65) return 2; // LOW_STRIKE
+  if (roll < 75) return 3; // GUARD_HIGH
+  if (roll < 83) return 4; // GUARD_MID
+  if (roll < 90) return 5; // GUARD_LOW
+  if (roll < 95) return 6; // DODGE
+  return 7; // CATCH
 }
 
 // ---------------------------------------------------------------------------
@@ -1927,15 +2079,19 @@ export class RumbleOrchestrator {
       // missed on previous instances).
       await this.submitOnchainMovesForTurn(slot, state, combat, rumbleIdNum, currentSlotBig);
       try {
-        const commitmentAccounts = await this.collectExistingMoveCommitments(
-          state,
-          rumbleIdNum,
-          combat.currentTurn,
-        );
-        const sig = await resolveTurnOnChain(rumbleIdNum, commitmentAccounts);
-        if (sig) {
-          console.log(`[OnChain] resolveTurn succeeded: ${sig}`);
-          persist.updateRumbleTxSignature(slot.id, "resolveTurn", sig);
+        if (RESOLUTION_MODE === "hybrid") {
+          await this.resolveAndPostTurnResult(slot, state, combat, rumbleIdNum);
+        } else {
+          const commitmentAccounts = await this.collectExistingMoveCommitments(
+            state,
+            rumbleIdNum,
+            combat.currentTurn,
+          );
+          const sig = await resolveTurnOnChain(rumbleIdNum, commitmentAccounts);
+          if (sig) {
+            console.log(`[OnChain] resolveTurn succeeded: ${sig}`);
+            persist.updateRumbleTxSignature(slot.id, "resolveTurn", sig);
+          }
         }
       } catch (err) {
         if (
@@ -2477,6 +2633,92 @@ export class RumbleOrchestrator {
       resolved.push(pdas[i]);
     }
     return resolved;
+  }
+
+  /**
+   * Hybrid resolution: compute combat results off-chain and post them on-chain
+   * via the `post_turn_result` instruction (Option D).
+   */
+  private async resolveAndPostTurnResult(
+    slot: RumbleSlot,
+    state: SlotCombatState,
+    combat: NonNullable<Awaited<ReturnType<typeof readRumbleCombatState>>>,
+    rumbleIdNum: number,
+  ): Promise<void> {
+    const fighterCount = combat.fighterCount;
+    const turn = combat.currentTurn;
+
+    // Get fighter pubkeys from on-chain rumble account
+    const fighters = await readRumbleFighters(rumbleIdNum);
+    if (!fighters || fighters.length < fighterCount) {
+      console.warn(`[Hybrid] Could not read fighter pubkeys for rumble ${rumbleIdNum}`);
+      return;
+    }
+
+    // Get alive fighter indices
+    const aliveIndices: number[] = [];
+    for (let i = 0; i < fighterCount; i++) {
+      if (combat.hp[i] > 0 && combat.eliminationRank[i] === 0) {
+        aliveIndices.push(i);
+      }
+    }
+
+    if (aliveIndices.length <= 1) {
+      // Nothing to resolve — finalize will handle
+      return;
+    }
+
+    // Pair fighters deterministically
+    const { pairs, byeIdx } = pairFightersForTurn(aliveIndices, fighters, rumbleIdNum, turn);
+
+    // Read revealed moves from MoveCommitment PDAs
+    const movesByIdx = new Map<number, number>();
+    for (const idx of aliveIndices) {
+      const [pda] = deriveMoveCommitmentPda(rumbleIdNum, fighters[idx], turn);
+      try {
+        const data = await readMoveCommitmentData(pda);
+        if (data && data.revealedMove !== null) {
+          movesByIdx.set(idx, data.revealedMove);
+        }
+      } catch {
+        // Will use fallback
+      }
+    }
+
+    // Build duel results
+    const duelResults: Array<{
+      fighterAIdx: number;
+      fighterBIdx: number;
+      moveA: number;
+      moveB: number;
+      damageToA: number;
+      damageToB: number;
+    }> = [];
+
+    for (const [idxA, idxB] of pairs) {
+      const moveA = movesByIdx.get(idxA) ?? computeFallbackMove(rumbleIdNum, turn, fighters[idxA], combat.meter[idxA]);
+      const moveB = movesByIdx.get(idxB) ?? computeFallbackMove(rumbleIdNum, turn, fighters[idxB], combat.meter[idxB]);
+
+      const { damageToA, damageToB } = resolveDuelDeterministic(
+        moveA, moveB, combat.meter[idxA], combat.meter[idxB]
+      );
+
+      duelResults.push({
+        fighterAIdx: idxA,
+        fighterBIdx: idxB,
+        moveA,
+        moveB,
+        damageToA,
+        damageToB,
+      });
+    }
+
+    // Post results on-chain
+    const sig = await postTurnResultOnChain(rumbleIdNum, duelResults, byeIdx);
+    if (sig) {
+      console.log(`[Hybrid] postTurnResult succeeded: ${sig}`);
+      persist.updateRumbleTxSignature(slot.id, "postTurnResult", sig);
+    }
   }
 
   private async finishCombatFromOnchain(

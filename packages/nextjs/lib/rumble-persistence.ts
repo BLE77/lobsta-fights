@@ -996,7 +996,8 @@ export type TxStep =
   | "mintRumbleReward"
   | "checkIchorShower"
   | "completeRumble"
-  | "sweepTreasury";
+  | "sweepTreasury"
+  | "postTurnResult";
 
 export async function updateRumbleTxSignature(
   rumbleId: string,

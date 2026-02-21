@@ -1150,6 +1150,129 @@
       ]
     },
     {
+      "name": "post_turn_result",
+      "docs": [
+        "Accept pre-computed turn results from the admin/keeper.",
+        "Validates damage by re-running resolve_duel internally.",
+        "This is the \"Option D hybrid\" path — combat math runs off-chain,",
+        "but on-chain program validates correctness."
+      ],
+      "discriminator": [
+        214,
+        217,
+        109,
+        253,
+        150,
+        122,
+        8,
+        191
+      ],
+      "accounts": [
+        {
+          "name": "keeper",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "rumble",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.id",
+                "account": "Rumble"
+              }
+            ]
+          }
+        },
+        {
+          "name": "combat_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  109,
+                  98,
+                  97,
+                  116,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.id",
+                "account": "Rumble"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "duel_results",
+          "type": {
+            "vec": {
+              "defined": {
+                "name": "DuelResult"
+              }
+            }
+          }
+        },
+        {
+          "name": "bye_fighter_idx",
+          "type": {
+            "option": "u8"
+          }
+        }
+      ]
+    },
+    {
       "name": "report_result",
       "docs": [
         "Deprecated: result is now finalized permissionlessly from on-chain combat state."
@@ -2152,6 +2275,11 @@
       "code": 6038,
       "name": "InvalidFighterAccounts",
       "msg": "Invalid fighter accounts provided"
+    },
+    {
+      "code": 6039,
+      "name": "DamageMismatch",
+      "msg": "Posted damage does not match resolve_duel computation"
     }
   ],
   "types": [
@@ -2248,6 +2376,38 @@
           {
             "name": "timestamp",
             "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DuelResult",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "fighter_a_idx",
+            "type": "u8"
+          },
+          {
+            "name": "fighter_b_idx",
+            "type": "u8"
+          },
+          {
+            "name": "move_a",
+            "type": "u8"
+          },
+          {
+            "name": "move_b",
+            "type": "u8"
+          },
+          {
+            "name": "damage_to_a",
+            "type": "u16"
+          },
+          {
+            "name": "damage_to_b",
+            "type": "u16"
           }
         ]
       }

@@ -2634,3 +2634,89 @@ export async function readRegistryConfig(
 
   return { admin, totalFighters, bump };
 }
+
+/**
+ * Read a MoveCommitment PDA to extract the revealed move (if any).
+ */
+export async function readMoveCommitmentData(
+  pda: PublicKey,
+  connection?: Connection,
+): Promise<{ revealedMove: number | null; fighter: PublicKey } | null> {
+  const conn = connection ?? getConnection();
+  const info = await conn.getAccountInfo(pda);
+  if (!info || !info.data || info.data.length < 8 + 8 + 32 + 4 + 32 + 1) return null;
+
+  // MoveCommitment layout:
+  // 8 bytes: discriminator
+  // 8 bytes: rumble_id (u64 LE)
+  // 32 bytes: fighter (Pubkey)
+  // 4 bytes: turn (u32 LE)
+  // 32 bytes: commitment (hash)
+  // 1 byte: revealed_move Option tag (0=None, 1=Some)
+  // 1 byte: revealed_move value (if Some)
+
+  let offset = 8; // skip discriminator
+  offset += 8; // skip rumble_id
+  const fighter = new PublicKey(info.data.subarray(offset, offset + 32));
+  offset += 32; // skip fighter
+  offset += 4; // skip turn
+  offset += 32; // skip commitment
+
+  const hasMove = info.data[offset] === 1;
+  offset += 1;
+  const revealedMove = hasMove ? info.data[offset] : null;
+
+  return { revealedMove, fighter };
+}
+
+/**
+ * Post off-chain-computed turn results on-chain via `post_turn_result`.
+ */
+export async function postTurnResultOnChain(
+  rumbleId: number,
+  duelResults: Array<{
+    fighterAIdx: number;
+    fighterBIdx: number;
+    moveA: number;
+    moveB: number;
+    damageToA: number;
+    damageToB: number;
+  }>,
+  byeFighterIdx: number | null,
+  connection?: Connection,
+): Promise<string | null> {
+  const provider = getAdminProvider(connection);
+  if (!provider) {
+    console.warn("[solana-programs] No admin keypair, skipping postTurnResultOnChain");
+    return null;
+  }
+  const program = getRumbleEngineProgram(provider);
+  const admin = getAdminKeypair()!;
+  const [rumblePda] = deriveRumblePda(rumbleId);
+  const [combatStatePda] = deriveCombatStatePda(rumbleId);
+  const [rumbleConfigPda] = deriveRumbleConfigPda();
+
+  const method = (program.methods as any)
+    .postTurnResult(
+      duelResults.map(d => ({
+        fighterAIdx: d.fighterAIdx,
+        fighterBIdx: d.fighterBIdx,
+        moveA: d.moveA,
+        moveB: d.moveB,
+        damageToA: d.damageToA,
+        damageToB: d.damageToB,
+      })),
+      byeFighterIdx,
+    )
+    .accounts({
+      keeper: admin.publicKey,
+      rumble: rumblePda,
+      combatState: combatStatePda,
+      config: rumbleConfigPda,
+    })
+    .preInstructions([
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+    ]);
+
+  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+}
