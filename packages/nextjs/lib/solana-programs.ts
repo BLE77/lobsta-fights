@@ -1476,11 +1476,15 @@ export async function createRumble(
         systemProgram: SystemProgram.programId,
       })
       .remainingAccounts(
-        fighters.map((pubkey) => ({
-          pubkey,
-          isSigner: false,
-          isWritable: false,
-        }))
+        fighters.map((walletPubkey) => {
+          // Derive fighter registry PDA (index 0) for each wallet
+          const [fighterPda] = deriveFighterPda(walletPubkey, 0);
+          return {
+            pubkey: fighterPda,
+            isSigner: false,
+            isWritable: false,
+          };
+        })
       );
 
     try {

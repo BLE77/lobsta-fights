@@ -499,18 +499,29 @@ pub mod rumble_engine {
             require!(seen.insert(f), RumbleError::DuplicateFighter);
         }
 
-        // Validate fighters are real registry accounts
+        // Validate fighters are registered in fighter_registry.
+        // fighters[] contains wallet pubkeys; remaining_accounts[] contains
+        // the corresponding fighter PDA accounts (owned by fighter_registry).
+        // We verify each PDA is owned by the registry program and that
+        // its authority field (first 32 bytes after 8-byte discriminator)
+        // matches the wallet pubkey in fighters[i].
         require!(
             ctx.remaining_accounts.len() == fighters.len(),
             RumbleError::InvalidFighterAccounts
         );
         for (i, fighter_account) in ctx.remaining_accounts.iter().enumerate() {
             require!(
-                fighter_account.key() == fighters[i],
+                fighter_account.owner == &FIGHTER_REGISTRY_PROGRAM_ID,
                 RumbleError::InvalidFighterAccounts
             );
+            let data = fighter_account.try_borrow_data()
+                .map_err(|_| error!(RumbleError::InvalidFighterAccounts))?;
+            // 8 byte discriminator + 32 byte authority
+            require!(data.len() >= 40, RumbleError::InvalidFighterAccounts);
+            let authority = Pubkey::try_from(&data[8..40])
+                .map_err(|_| error!(RumbleError::InvalidFighterAccounts))?;
             require!(
-                fighter_account.owner == &FIGHTER_REGISTRY_PROGRAM_ID,
+                authority == fighters[i],
                 RumbleError::InvalidFighterAccounts
             );
         }
