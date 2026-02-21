@@ -4,12 +4,12 @@ RUN groupadd -r verifier && useradd -r -g verifier -m verifier
 
 WORKDIR /app
 
-# Install deps
-COPY package.json package-lock.json* ./
+# Install deps from nextjs package
+COPY packages/nextjs/package.json ./package.json
 RUN npm install --omit=dev --legacy-peer-deps && npm install tsx --legacy-peer-deps
 
 # Copy only the verifier bot script (standalone, zero project imports)
-COPY scripts/verifier-bot.ts ./scripts/
+COPY packages/nextjs/scripts/verifier-bot.ts ./scripts/
 
 RUN chown -R verifier:verifier /app
 
