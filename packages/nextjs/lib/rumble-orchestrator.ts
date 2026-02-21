@@ -2757,6 +2757,48 @@ export class RumbleOrchestrator {
       });
     }
 
+    // Build local turn data BEFORE posting on-chain, so it's persisted
+    // even if the next tick advances past this turn.
+    const MOVE_CODE_NAMES: string[] = [
+      "HIGH_STRIKE", "MID_STRIKE", "LOW_STRIKE",
+      "GUARD_HIGH", "GUARD_MID", "GUARD_LOW",
+      "DODGE", "CATCH", "SPECIAL",
+    ];
+    const turnPairings: RumblePairing[] = [];
+    for (const dr of duelResults) {
+      const fighterAId = slot.fighters[dr.fighterAIdx] ?? `idx-${dr.fighterAIdx}`;
+      const fighterBId = slot.fighters[dr.fighterBIdx] ?? `idx-${dr.fighterBIdx}`;
+      turnPairings.push({
+        fighterA: fighterAId,
+        fighterB: fighterBId,
+        moveA: MOVE_CODE_NAMES[dr.moveA] ?? "MID_STRIKE",
+        moveB: MOVE_CODE_NAMES[dr.moveB] ?? "MID_STRIKE",
+        damageToA: dr.damageToA,
+        damageToB: dr.damageToB,
+      });
+    }
+    // Detect eliminations: fighter HP drops to 0 after this turn's damage
+    const turnEliminations: string[] = [];
+    for (const dr of duelResults) {
+      const hpA = combat.hp[dr.fighterAIdx] - dr.damageToA;
+      const hpB = combat.hp[dr.fighterBIdx] - dr.damageToB;
+      if (hpA <= 0) turnEliminations.push(slot.fighters[dr.fighterAIdx]);
+      if (hpB <= 0) turnEliminations.push(slot.fighters[dr.fighterBIdx]);
+    }
+    let byeFighterId: string | undefined;
+    if (byeIdx !== null) {
+      byeFighterId = slot.fighters[byeIdx];
+    }
+    const localTurn: RumbleTurn = {
+      turnNumber: turn,
+      pairings: turnPairings,
+      eliminations: turnEliminations.filter(Boolean),
+    };
+    if (byeFighterId) localTurn.bye = byeFighterId;
+    state.turns.push(localTurn);
+    state.lastOnchainTurnResolved = turn;
+    await persist.updateRumbleTurnLog(slot.id, state.turns, state.turns.length);
+
     // Post results on-chain
     const sig = await postTurnResultOnChain(rumbleIdNum, duelResults, byeIdx);
     if (sig) {
