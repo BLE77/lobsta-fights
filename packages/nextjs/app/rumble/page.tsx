@@ -383,15 +383,10 @@ export default function RumblePage() {
 
   // RPC connection — use Helius if available, otherwise public RPC
   const network = process.env.NEXT_PUBLIC_SOLANA_NETWORK ?? "devnet";
+  // Client-side RPC uses public endpoints only — Helius key stays server-side
   const rpcEndpoint = (() => {
     const explicit = process.env.NEXT_PUBLIC_SOLANA_RPC_URL?.trim();
     if (explicit) return explicit;
-    const heliusKey = process.env.NEXT_PUBLIC_HELIUS_API_KEY?.trim();
-    if (heliusKey) {
-      return network === "mainnet-beta"
-        ? `https://mainnet.helius-rpc.com/?api-key=${heliusKey}`
-        : `https://devnet.helius-rpc.com/?api-key=${heliusKey}`;
-    }
     return network === "mainnet-beta" ? "https://api.mainnet-beta.solana.com" : "https://api.devnet.solana.com";
   })();
   const connectionRef = useRef(new Connection(rpcEndpoint, "confirmed"));

@@ -21,8 +21,8 @@ import { createHash } from "crypto";
 
 const PROGRAM_ID = new PublicKey("2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC");
 
-const DEFAULT_RPC = process.env.NEXT_PUBLIC_HELIUS_API_KEY
-  ? `https://devnet.helius-rpc.com/?api-key=${process.env.NEXT_PUBLIC_HELIUS_API_KEY}`
+const DEFAULT_RPC = process.env.HELIUS_API_KEY
+  ? `https://devnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`
   : "https://api.devnet.solana.com";
 
 // ─── Combat Constants (exact match with on-chain lib.rs) ────────────────────

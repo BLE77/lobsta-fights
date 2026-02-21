@@ -12,10 +12,8 @@ import { RUMBLE_ENGINE_ID } from "./solana-programs";
 // ---------------------------------------------------------------------------
 
 function getHeliusApiKey(): string {
-  const key =
-    process.env.HELIUS_API_KEY?.trim() ||
-    process.env.NEXT_PUBLIC_HELIUS_API_KEY?.trim();
-  if (!key) throw new Error("Missing HELIUS_API_KEY or NEXT_PUBLIC_HELIUS_API_KEY");
+  const key = process.env.HELIUS_API_KEY?.trim();
+  if (!key) throw new Error("Missing HELIUS_API_KEY");
   return key;
 }
 

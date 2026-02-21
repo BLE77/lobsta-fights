@@ -31,8 +31,8 @@ const THIRD_PLACE_BPS: u64 = 0; // 0% — winner-takes-all
 /// Treasury cut from losers' pool before payout distribution
 const TREASURY_CUT_BPS: u64 = 1_000; // 10%
 
-/// Claim window after report_result before admin can finalize/sweep.
-const PAYOUT_CLAIM_WINDOW_SECONDS: i64 = 30;
+/// Claim window after report_result before admin can finalize/sweep (24 hours).
+const PAYOUT_CLAIM_WINDOW_SECONDS: i64 = 86_400;
 
 /// On-chain turn timing windows (slots).
 const COMMIT_WINDOW_SLOTS: u64 = 30;

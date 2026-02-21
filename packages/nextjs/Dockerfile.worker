@@ -1,5 +1,7 @@
 FROM node:20-slim
 
+RUN groupadd -r worker && useradd -r -g worker -m worker
+
 WORKDIR /app
 
 # Copy package files
@@ -10,6 +12,10 @@ RUN npm install --omit=dev --legacy-peer-deps && npm install tsx --legacy-peer-d
 
 # Copy source files
 COPY . .
+
+RUN chown -R worker:worker /app
+
+USER worker
 
 # Run the worker
 CMD ["npx", "tsx", "rumble-worker.ts"]

@@ -1,4 +1,15 @@
 node_modules
 .next
-.env*
+.env
+.env.local
+.env.*
+*.log
 .git
+.gitignore
+README.md
+docs/
+scripts/
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.spec.tsx
