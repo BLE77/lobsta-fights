@@ -265,17 +265,19 @@ export default function AdminPage() {
   const autoTickOwnerIdRef = useRef("");
   const secretRef = useRef("");
 
-  // Restore session
+  // Restore session from httpOnly cookie (check with server)
   useEffect(() => {
     autoTickOwnerIdRef.current = `tab_${Math.random().toString(36).slice(2)}`;
-    const saved = sessionStorage.getItem("ucf_admin_secret");
+    // Check if existing session cookie is valid
+    fetch("/api/admin/session", { cache: "no-store" })
+      .then(res => {
+        if (res.ok) {
+          setAuthenticated(true);
+        }
+      })
+      .catch(() => {});
     const savedAutoTickEnabled = sessionStorage.getItem("ucf_admin_auto_tick_enabled");
     const savedAutoTickInterval = sessionStorage.getItem("ucf_admin_auto_tick_interval_ms");
-    if (saved) {
-      secretRef.current = saved;
-      setSecret(saved);
-      setAuthenticated(true);
-    }
     if (savedAutoTickEnabled === "1") {
       setAutoTickEnabled(true);
     }
@@ -291,34 +293,38 @@ export default function AdminPage() {
     }
   }, []);
 
+  // Session cookie is sent automatically — no need for secret in headers
   const headers = useCallback(
-    () => ({
-      "x-admin-secret": secretRef.current,
-    }),
+    () => ({}),
     [],
   );
 
-  // Login
+  // Login — sends secret to session endpoint, gets httpOnly cookie back
   const handleLogin = async () => {
     setAuthError("");
     try {
-      const res = await fetch("/api/admin/dashboard", {
-        headers: { "x-admin-secret": secret },
-        cache: "no-store",
+      const sessionRes = await fetch("/api/admin/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ secret }),
       });
-      if (res.status === 401) {
+      if (sessionRes.status === 401) {
         setAuthError("Invalid admin secret");
         return;
       }
-      if (!res.ok) {
-        setAuthError(`Error: ${res.status}`);
+      if (!sessionRes.ok) {
+        setAuthError(`Error: ${sessionRes.status}`);
         return;
       }
-      secretRef.current = secret;
-      sessionStorage.setItem("ucf_admin_secret", secret);
+      // Cookie is set by the response — secret never stored client-side
+      setSecret(""); // Clear from component state
       setAuthenticated(true);
-      const data = await res.json();
-      setDashboard(data);
+      // Fetch dashboard using the session cookie
+      const res = await fetch("/api/admin/dashboard", { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        setDashboard(data);
+      }
     } catch (err: any) {
       setAuthError(err.message || "Connection failed");
     }
@@ -333,7 +339,7 @@ export default function AdminPage() {
       });
       if (res.status === 401) {
         setAuthenticated(false);
-        sessionStorage.removeItem("ucf_admin_secret");
+        fetch("/api/admin/session", { method: "DELETE" }).catch(() => {});
         return;
       }
       if (!res.ok) return;
@@ -367,7 +373,7 @@ export default function AdminPage() {
       });
       if (res.status === 401) {
         setAuthenticated(false);
-        sessionStorage.removeItem("ucf_admin_secret");
+        fetch("/api/admin/session", { method: "DELETE" }).catch(() => {});
         return;
       }
       if (!res.ok) return;
@@ -453,7 +459,7 @@ export default function AdminPage() {
       if (res.status === 401) {
         setAuthenticated(false);
         setAutoTickEnabled(false);
-        sessionStorage.removeItem("ucf_admin_secret");
+        fetch("/api/admin/session", { method: "DELETE" }).catch(() => {});
         return;
       }
       const data = await res.json().catch(() => ({}));
@@ -757,7 +763,7 @@ export default function AdminPage() {
             </span>
             <button
               onClick={() => {
-                sessionStorage.removeItem("ucf_admin_secret");
+                fetch("/api/admin/session", { method: "DELETE" }).catch(() => {});
                 setAuthenticated(false);
                 setAutoTickEnabled(false);
                 setDashboard(null);

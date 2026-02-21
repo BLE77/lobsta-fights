@@ -52,8 +52,24 @@ export function isAuthorizedAdminToken(token: string | null | undefined): boolea
 }
 
 export function isAuthorizedAdminRequest(headers: Headers): boolean {
+  // Check header-based auth first (backwards compat for API callers)
   const adminKey = headers.get("x-admin-secret") ?? headers.get("x-admin-key");
-  return isAuthorizedAdminToken(adminKey);
+  if (isAuthorizedAdminToken(adminKey)) return true;
+
+  // Check httpOnly session cookie
+  const cookie = headers.get("cookie") ?? "";
+  const match = cookie.match(/ucf_admin_session=([^;]+)/);
+  if (match?.[1]) {
+    // Lazy import to avoid circular deps
+    try {
+      const { isValidAdminSession } = require("~~/app/api/admin/session/route");
+      return isValidAdminSession(match[1]);
+    } catch {
+      return false;
+    }
+  }
+
+  return false;
 }
 
 export function isAuthorizedCronRequest(headers: Headers): boolean {
