@@ -984,14 +984,12 @@ export class RumbleOrchestrator {
   }
 
   /**
-   * Keep "house bots" queued when no real fighters are present.
+   * Keep "house bots" queued to fill rumbles.
    *
    * Behavior:
-   * - If at least one non-house fighter exists in queue or active slots:
-   *   remove waiting house bots so real fighters get priority.
-   * - If no real fighters are present:
-   *   fill house bots up to RUMBLE_HOUSE_BOT_TARGET_POPULATION
-   *   (counting queued + active).
+   * - Fill house bots up to TARGET_POPULATION minus real fighters present.
+   * - Real fighters count toward the target, so house bots fill remaining slots.
+   * - If more house bots than needed, remove excess from queue.
    */
   private async maintainHouseBotQueue(): Promise<void> {
     if (!HOUSE_BOTS_ENABLED) return;
@@ -1014,14 +1012,25 @@ export class RumbleOrchestrator {
     const presentIds = new Set<string>([...queuedIds, ...activeSet]);
     const realFighterPresent = [...presentIds].some((id) => !this.houseBotSet.has(id));
 
-    if (realFighterPresent) {
-      // Drain only queued house bots; active matches continue uninterrupted.
-      await this.removeQueuedHouseBots();
+    // When real fighters are present, fill remaining slots with house bots
+    // instead of draining all bots (which starves the queue).
+    const realCount = [...presentIds].filter((id) => !this.houseBotSet.has(id)).length;
+    const houseCount = [...presentIds].filter((id) => this.houseBotSet.has(id)).length;
+    const target = this.getHouseBotTargetPopulation();
+    // Fill up to target minus real fighters already present
+    const desiredHouseBots = Math.max(0, target - realCount);
+    const missing = Math.max(0, desiredHouseBots - houseCount);
+
+    // Remove excess queued house bots if we have more than needed
+    if (houseCount > desiredHouseBots) {
+      const excess = houseCount - desiredHouseBots;
+      const queuedHouseBots = queuedIds.filter((id) => this.houseBotSet.has(id));
+      for (let i = 0; i < Math.min(excess, queuedHouseBots.length); i++) {
+        this.queueManager.removeFromQueue(queuedHouseBots[i]);
+      }
       return;
     }
 
-    const currentHousePopulation = [...presentIds].filter((id) => this.houseBotSet.has(id)).length;
-    const missing = Math.max(0, this.getHouseBotTargetPopulation() - currentHousePopulation);
     if (missing === 0) return;
 
     const walletMap = await persist.lookupFighterWallets(this.houseBotIds);
@@ -1596,6 +1605,8 @@ export class RumbleOrchestrator {
           setTimeout(resolve, ONCHAIN_CREATE_VERIFY_BACKOFF_MS * attempt)
         );
       }
+      // Invalidate cache before each attempt so we don't re-read a cached null
+      invalidateReadCache(`rumble:${rumbleIdNum}`);
       after = await readRumbleAccountState(rumbleIdNum).catch(() => null);
       if (after) break;
     }

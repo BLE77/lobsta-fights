@@ -69,7 +69,7 @@ export interface RumbleResult {
 // -------------------------------------------------------------------
 
 export const MAX_TURNS = 20;
-const MIN_FIGHTERS = 8;
+const MIN_FIGHTERS = Math.max(2, Math.min(64, Number(process.env.FIGHTERS_PER_RUMBLE) || 8));
 const MAX_FIGHTERS = 16;
 
 // -------------------------------------------------------------------

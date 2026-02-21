@@ -995,16 +995,15 @@ export async function GET(request: Request) {
     // ---- nextRumbleIn estimate ---------------------------------------------
     const effectiveQueueLen = queueEntries.length;
     let nextRumbleIn: string | null = null;
-    if (effectiveQueueLen > 0 && effectiveQueueLen < 8) {
-      nextRumbleIn = `Need ${8 - effectiveQueueLen} more fighters`;
-    } else if (effectiveQueueLen >= 8) {
+    const fightersNeeded = Number(process.env.FIGHTERS_PER_RUMBLE) || 8;
+    if (effectiveQueueLen > 0 && effectiveQueueLen < fightersNeeded) {
+      nextRumbleIn = `Need ${fightersNeeded - effectiveQueueLen} more fighters`;
+    } else if (effectiveQueueLen >= fightersNeeded) {
       const hasIdleSlot = slots.some((s) => s.state === "idle");
       if (!hasIdleSlot) {
         nextRumbleIn = "All slots active";
-      } else if (effectiveQueueLen >= 16) {
-        nextRumbleIn = "Starting now...";
       } else {
-        nextRumbleIn = "Starting soon...";
+        nextRumbleIn = "Starting now...";
       }
     }
 
