@@ -60,9 +60,8 @@ export function isAuthorizedAdminRequest(headers: Headers): boolean {
   const cookie = headers.get("cookie") ?? "";
   const match = cookie.match(/ucf_admin_session=([^;]+)/);
   if (match?.[1]) {
-    // Lazy import to avoid circular deps
     try {
-      const { isValidAdminSession } = require("~~/app/api/admin/session/route");
+      const { isValidAdminSession } = require("~~/lib/admin-session");
       return isValidAdminSession(match[1]);
     } catch {
       return false;
