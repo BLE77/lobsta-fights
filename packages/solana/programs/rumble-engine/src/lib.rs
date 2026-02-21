@@ -1148,6 +1148,20 @@ pub mod rumble_engine {
         let mut paired_indices: Vec<usize> = Vec::new();
         let mut eliminated_this_turn: Vec<usize> = Vec::new();
 
+        // M2 fix: track seen indices to prevent duplicate pairing
+        let mut seen = vec![false; fighter_count];
+
+        // M3 fix: count alive fighters to verify all are accounted for
+        let alive_count = (0..fighter_count)
+            .filter(|&i| combat.hp[i] > 0 && combat.elimination_rank[i] == 0)
+            .count();
+        let expected_duels = alive_count / 2;
+        let expected_bye = if alive_count % 2 == 1 { 1usize } else { 0usize };
+        require!(
+            duel_results.len() == expected_duels,
+            RumbleError::InvalidFighterCount
+        );
+
         for dr in duel_results.iter() {
             let idx_a = dr.fighter_a_idx as usize;
             let idx_b = dr.fighter_b_idx as usize;
@@ -1155,6 +1169,10 @@ pub mod rumble_engine {
             // Validate indices
             require!(idx_a < fighter_count && idx_b < fighter_count, RumbleError::InvalidFighterCount);
             require!(idx_a != idx_b, RumbleError::DuplicateFighter);
+            // M2 fix: ensure no fighter appears in multiple duels
+            require!(!seen[idx_a] && !seen[idx_b], RumbleError::DuplicateFighter);
+            seen[idx_a] = true;
+            seen[idx_b] = true;
             // Fighters must be alive
             require!(
                 combat.hp[idx_a] > 0 && combat.elimination_rank[idx_a] == 0,
@@ -1226,6 +1244,13 @@ pub mod rumble_engine {
             }
         }
 
+        // M3 fix: verify bye fighter matches expected parity
+        if expected_bye == 1 {
+            require!(bye_fighter_idx.is_some(), RumbleError::InvalidFighterCount);
+        } else {
+            require!(bye_fighter_idx.is_none(), RumbleError::InvalidFighterCount);
+        }
+
         // Bye fighter gets meter
         if let Some(bye_idx) = bye_fighter_idx {
             let bye = bye_idx as usize;
@@ -1234,6 +1259,8 @@ pub mod rumble_engine {
                 combat.hp[bye] > 0 && combat.elimination_rank[bye] == 0,
                 RumbleError::FighterEliminated
             );
+            // M2 fix: bye fighter must not also appear in a duel
+            require!(!seen[bye], RumbleError::DuplicateFighter);
             let next_meter = combat.meter[bye].saturating_add(METER_PER_TURN);
             combat.meter[bye] = next_meter.min(SPECIAL_METER_COST);
         }

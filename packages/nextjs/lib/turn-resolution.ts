@@ -127,7 +127,18 @@ export async function resolveTurn(matchId: string): Promise<TurnResolutionResult
     // Determine round winner
     if (isKO) {
       if (agentA.hp <= 0 && agentB.hp <= 0) {
-        // Both KO'd at same time - no one wins the round (rare double KO)
+        // Double KO — award round to fighter who dealt more total damage this round
+        // If tied, fighter A gets the edge (deterministic tiebreak)
+        const dmgA = (agentA as any).totalDamageDealt ?? 0;
+        const dmgB = (agentB as any).totalDamageDealt ?? 0;
+        if (dmgA >= dmgB) {
+          roundWinner = match.fighter_a_id;
+          agentA.rounds_won += 1;
+        } else {
+          roundWinner = match.fighter_b_id;
+          agentB.rounds_won += 1;
+        }
+        console.log(`[Turn Resolution] Match ${matchId}: Double KO! Round awarded to ${roundWinner} (dmg: A=${dmgA} B=${dmgB})`);
       } else if (agentA.hp <= 0) {
         roundWinner = match.fighter_b_id;
         agentB.rounds_won += 1;
@@ -145,7 +156,19 @@ export async function resolveTurn(matchId: string): Promise<TurnResolutionResult
         roundWinner = match.fighter_b_id;
         agentB.rounds_won += 1;
       }
-      // If HP tied, no one wins the round (like double KO)
+      // HP tied — same tiebreak as double KO (higher damage dealt wins, A gets edge)
+      else {
+        const dmgA = (agentA as any).totalDamageDealt ?? 0;
+        const dmgB = (agentB as any).totalDamageDealt ?? 0;
+        if (dmgA >= dmgB) {
+          roundWinner = match.fighter_a_id;
+          agentA.rounds_won += 1;
+        } else {
+          roundWinner = match.fighter_b_id;
+          agentB.rounds_won += 1;
+        }
+        console.log(`[Turn Resolution] Match ${matchId}: HP tied at max turns. Round awarded to ${roundWinner} (dmg: A=${dmgA} B=${dmgB})`);
+      }
     }
 
     // Check for match end

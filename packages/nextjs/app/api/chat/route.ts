@@ -85,13 +85,43 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { wallet_address, message } = body;
+    const { wallet_address, message, signature, timestamp } = body;
 
     if (!wallet_address || typeof wallet_address !== "string") {
       return NextResponse.json({ error: "wallet_address required" }, { status: 400 });
     }
     if (!message || typeof message !== "string") {
       return NextResponse.json({ error: "message required" }, { status: 400 });
+    }
+
+    // Validate wallet is a valid Solana public key
+    let walletPubkey: PublicKey;
+    try {
+      walletPubkey = new PublicKey(wallet_address);
+    } catch {
+      return NextResponse.json({ error: "Invalid wallet address" }, { status: 400 });
+    }
+
+    // Verify wallet ownership via signed message (if signature provided)
+    // Signature proves the sender actually controls this wallet
+    if (signature && timestamp) {
+      try {
+        const { default: nacl } = await import("tweetnacl");
+        const expectedMsg = `UCF Chat: ${timestamp}`;
+        const msgBytes = new TextEncoder().encode(expectedMsg);
+        const sigBytes = Buffer.from(signature, "base64");
+        const valid = nacl.sign.detached.verify(msgBytes, sigBytes, walletPubkey.toBytes());
+        if (!valid) {
+          return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
+        }
+        // Reject stale signatures (older than 5 minutes)
+        const ts = parseInt(timestamp, 10);
+        if (isNaN(ts) || Math.abs(Date.now() - ts) > 5 * 60 * 1000) {
+          return NextResponse.json({ error: "Signature expired" }, { status: 401 });
+        }
+      } catch {
+        return NextResponse.json({ error: "Signature verification failed" }, { status: 401 });
+      }
     }
 
     const trimmed = message.trim();

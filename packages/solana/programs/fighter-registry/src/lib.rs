@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::pubkey;
 use anchor_spl::token::{self, Burn, Mint, Token, TokenAccount};
 
 declare_id!("2hA6Jvj1yjP2Uj3qrJcsBeYA2R9xPM95mDKw1ncKVExa");
@@ -19,6 +20,9 @@ const MAX_FIGHTERS_PER_WALLET: u8 = 5;
 const FIGHTER_SEED: &[u8] = b"fighter";
 const WALLET_STATE_SEED: &[u8] = b"wallet_state";
 const REGISTRY_SEED: &[u8] = b"registry_config";
+
+/// Canonical ICHOR mint address — prevents fake token bypass on registration/transfer fees
+const EXPECTED_ICHOR_MINT: Pubkey = pubkey!("4amdLk5Ue4pbM1CXRZeUn3ZBAf8QTXXGu4HqH5dQv3qM");
 
 #[program]
 pub mod fighter_registry {
@@ -377,7 +381,7 @@ pub struct RegisterFighter<'info> {
     )]
     pub ichor_token_account: Option<Account<'info, TokenAccount>>,
 
-    #[account(mut)]
+    #[account(mut, address = EXPECTED_ICHOR_MINT)]
     pub ichor_mint: Option<Account<'info, Mint>>,
 
     pub token_program: Option<Program<'info, Token>>,
@@ -459,7 +463,7 @@ pub struct TransferFighter<'info> {
     pub new_wallet_state: Account<'info, WalletState>,
 
     // ICHOR burn for transfer fee
-    #[account(mut)]
+    #[account(mut, address = EXPECTED_ICHOR_MINT)]
     pub ichor_mint: Account<'info, Mint>,
 
     #[account(
