@@ -1010,7 +1010,6 @@ export class RumbleOrchestrator {
     );
 
     const presentIds = new Set<string>([...queuedIds, ...activeSet]);
-    const realFighterPresent = [...presentIds].some((id) => !this.houseBotSet.has(id));
 
     // When real fighters are present, fill remaining slots with house bots
     // instead of draining all bots (which starves the queue).
@@ -1027,6 +1026,7 @@ export class RumbleOrchestrator {
       const queuedHouseBots = queuedIds.filter((id) => this.houseBotSet.has(id));
       for (let i = 0; i < Math.min(excess, queuedHouseBots.length); i++) {
         this.queueManager.removeFromQueue(queuedHouseBots[i]);
+        await persist.removeQueueFighter(queuedHouseBots[i]);
       }
       return;
     }
@@ -2702,6 +2702,11 @@ export class RumbleOrchestrator {
   ): Promise<void> {
     const fighterCount = combat.fighterCount;
     const turn = combat.currentTurn;
+
+    // Guard: prevent duplicate turn if on-chain post failed and next tick retries
+    if (turn <= state.lastOnchainTurnResolved) {
+      return;
+    }
 
     // Get fighter pubkeys from on-chain rumble account
     const fighters = await readRumbleFighters(rumbleIdNum);
