@@ -1475,17 +1475,7 @@ export async function createRumble(
         rumble: rumblePda,
         systemProgram: SystemProgram.programId,
       })
-      .remainingAccounts(
-        fighters.map((walletPubkey) => {
-          // Derive fighter registry PDA (index 0) for each wallet
-          const [fighterPda] = deriveFighterPda(walletPubkey, 0);
-          return {
-            pubkey: fighterPda,
-            isSigner: false,
-            isWritable: false,
-          };
-        })
-      );
+;
 
     try {
       return await sendAdminTxFireAndForget(method, admin, provider.connection);
