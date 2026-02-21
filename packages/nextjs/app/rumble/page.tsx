@@ -1212,7 +1212,7 @@ export default function RumblePage() {
     <main className="relative flex flex-col min-h-screen text-stone-200">
       {/* Background */}
       <div
-        className="fixed inset-0 z-0"
+        className="fixed inset-0 z-0 animate-breathe"
         style={{
           backgroundImage: "url('/rumble-arena.png')",
           backgroundSize: "cover",
@@ -1364,8 +1364,8 @@ export default function RumblePage() {
                                   // Scroll to ensure visible — slot auto-selected by priority
                                 }}
                                 className={`font-mono text-[10px] px-2 py-0.5 border rounded-sm transition-all ${active
-                                    ? `${stateColor} bg-stone-900/80`
-                                    : "border-stone-700 text-stone-500 hover:text-stone-300"
+                                  ? `${stateColor} bg-stone-900/80`
+                                  : "border-stone-700 text-stone-500 hover:text-stone-300"
                                   }`}
                               >
                                 SLOT {s.slotIndex + 1} [{s.state.toUpperCase()}]
@@ -1386,7 +1386,7 @@ export default function RumblePage() {
                           />
                           <div className="absolute inset-0 bg-gradient-to-t from-stone-950 via-stone-950/40 to-transparent" />
                           <div className="absolute inset-0 flex flex-col items-center justify-end pb-8">
-                            <h2 className="font-fight-glow text-3xl text-amber-400 mb-2">
+                            <h2 className="font-fight-glow text-3xl text-amber-400 mb-2 animate-pulse-slow">
                               THE CAGE AWAITS
                             </h2>
                             <p className="font-mono text-sm text-stone-400 mb-1">
@@ -1436,26 +1436,34 @@ export default function RumblePage() {
                   {/* Sidebar: Queue + Ichor Shower */}
                   <div className="w-64 flex-shrink-0 space-y-4 hidden lg:block">
                     {walletConnected && (
-                      <ClaimBalancePanel
-                        balance={claimBalance}
-                        loading={claimLoading}
-                        pending={claimPending}
-                        error={claimError}
-                        onClaim={handleClaimWinnings}
-                      />
+                      <div className="animate-fade-in-up">
+                        <ClaimBalancePanel
+                          balance={claimBalance}
+                          loading={claimLoading}
+                          pending={claimPending}
+                          error={claimError}
+                          onClaim={handleClaimWinnings}
+                        />
+                      </div>
                     )}
 
-                    <QueueSidebar
-                      queue={status?.queue ?? []}
-                      totalLength={status?.queueLength ?? 0}
-                      nextRumbleIn={status?.nextRumbleIn ?? null}
-                    />
+                    <div className="animate-fade-in-up" style={{ animationDelay: '100ms', animationFillMode: 'both' }}>
+                      <QueueSidebar
+                        queue={status?.queue ?? []}
+                        totalLength={status?.queueLength ?? 0}
+                        nextRumbleIn={status?.nextRumbleIn ?? null}
+                      />
+                    </div>
 
-                    <IchorShowerPool
-                      currentPool={ichorShower.currentPool}
-                    />
+                    <div className="animate-fade-in-up" style={{ animationDelay: '200ms', animationFillMode: 'both' }}>
+                      <IchorShowerPool
+                        currentPool={ichorShower.currentPool}
+                      />
+                    </div>
 
-                    <ChatPanel walletAddress={publicKey?.toBase58() ?? null} />
+                    <div className="animate-fade-in-up" style={{ animationDelay: '300ms', animationFillMode: 'both' }}>
+                      <ChatPanel walletAddress={publicKey?.toBase58() ?? null} />
+                    </div>
                   </div>
                 </div>
               );

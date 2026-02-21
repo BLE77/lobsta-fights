@@ -387,6 +387,42 @@ body {
   animation-play-state: running;
 }
 
+/* Breathing background */
+@keyframes breathe {
+
+  0%,
+  100% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(1.05);
+  }
+}
+
+.animate-breathe {
+  animation: breathe 20s ease-in-out infinite;
+}
+
+/* Slow UI pulse */
+@keyframes pulse-slow {
+
+  0%,
+  100% {
+    opacity: 1;
+    filter: drop-shadow(0 0 8px rgba(245, 158, 11, 0.4));
+  }
+
+  50% {
+    opacity: 0.7;
+    filter: drop-shadow(0 0 2px rgba(245, 158, 11, 0.1));
+  }
+}
+
+.animate-pulse-slow {
+  animation: pulse-slow 3s ease-in-out infinite;
+}
+
 /* Accessibility: respect reduced motion preference */
 @media (prefers-reduced-motion: reduce) {
 

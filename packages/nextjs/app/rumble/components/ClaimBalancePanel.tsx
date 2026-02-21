@@ -53,7 +53,7 @@ export default function ClaimBalancePanel({
     ? "CLAIMING..."
     : initialLoading
       ? "LOADING..."
-    : canClaim
+      : canClaim
         ? "CLAIM ALL WINS"
         : payoutMode !== "accrue_claim"
           ? "INSTANT MODE"
@@ -62,15 +62,14 @@ export default function ClaimBalancePanel({
             : "NO CLAIMABLE WINS";
 
   return (
-    <div className="bg-stone-900/70 border border-stone-800 rounded-sm p-3 space-y-2">
+    <div className="bg-stone-950/60 border border-stone-800 rounded-sm p-3 space-y-2 backdrop-blur-md">
       <div className="flex items-center justify-between">
         <p className="font-mono text-[10px] text-stone-500 uppercase">Payout Wallet</p>
         <span
-          className={`font-mono text-[10px] px-1.5 py-0.5 rounded-sm border ${
-            payoutMode === "accrue_claim"
+          className={`font-mono text-[10px] px-1.5 py-0.5 rounded-sm border ${payoutMode === "accrue_claim"
               ? "text-green-400 border-green-700/40 bg-green-900/20"
               : "text-stone-400 border-stone-700 bg-stone-800/40"
-          }`}
+            }`}
         >
           {payoutMode === "accrue_claim" ? "CLAIM MODE" : "INSTANT"}
         </span>
@@ -121,11 +120,10 @@ export default function ClaimBalancePanel({
         <button
           onClick={onClaim}
           disabled={!canClaim}
-          className={`w-full py-1.5 font-mono text-xs font-bold rounded-sm transition-all ${
-            canClaim
+          className={`w-full py-1.5 font-mono text-xs font-bold rounded-sm transition-all ${canClaim
               ? "bg-green-600 hover:bg-green-500 text-stone-950"
               : "bg-stone-800 text-stone-500 cursor-not-allowed"
-          }`}
+            }`}
         >
           {buttonLabel}
         </button>

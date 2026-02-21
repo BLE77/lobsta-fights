@@ -19,7 +19,7 @@ export default function QueueSidebar({
   nextRumbleIn,
 }: QueueSidebarProps) {
   return (
-    <div className="bg-stone-900/90 border border-stone-700 rounded-sm p-4 backdrop-blur-sm">
+    <div className="bg-stone-950/60 border border-stone-700 rounded-sm p-4 backdrop-blur-md">
       <div className="flex items-center justify-between mb-3">
         <h3 className="font-mono text-sm text-amber-500 uppercase font-bold">
           Fighter Queue

@@ -8,7 +8,7 @@ export default function IchorShowerPool({
   currentPool,
 }: IchorShowerPoolProps) {
   return (
-    <div className="bg-stone-900/90 border border-stone-700 rounded-sm p-4 backdrop-blur-sm">
+    <div className="bg-stone-950/60 border border-stone-700 rounded-sm p-4 backdrop-blur-md">
       <h3 className="font-mono text-sm text-amber-500 uppercase font-bold mb-2">
         Ichor Shower
       </h3>
