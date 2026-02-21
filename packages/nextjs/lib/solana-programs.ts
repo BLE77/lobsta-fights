@@ -1474,7 +1474,14 @@ export async function createRumble(
         config: rumbleConfigPda,
         rumble: rumblePda,
         systemProgram: SystemProgram.programId,
-      });
+      })
+      .remainingAccounts(
+        fighters.map((pubkey) => ({
+          pubkey,
+          isSigner: false,
+          isWritable: false,
+        }))
+      );
 
     try {
       return await sendAdminTxFireAndForget(method, admin, provider.connection);
