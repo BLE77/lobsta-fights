@@ -779,14 +779,18 @@ export class RumbleOrchestrator {
    * awaited on-chain calls) completes for this tick.
    */
   async tick(): Promise<void> {
-    if (this.tickInFlight) {
-      return this.tickInFlight;
+    // Atomic guard: if a tick is already running, return the existing promise
+    // instead of starting a concurrent one (prevents TOCTOU race).
+    const existing = this.tickInFlight;
+    if (existing) {
+      return existing;
     }
 
-    this.tickInFlight = this.tickInternal().finally(() => {
+    const p = this.tickInternal().finally(() => {
       this.tickInFlight = null;
     });
-    return this.tickInFlight;
+    this.tickInFlight = p;
+    return p;
   }
 
   private async tickInternal(): Promise<void> {
@@ -1819,12 +1823,17 @@ export class RumbleOrchestrator {
         // Persist status (also sets started_at) — AWAITED
         await persist.updateRumbleStatus(slot.id, "combat");
 
-        // On-chain: best-effort with 2s timeout to avoid eating the entire
-        // serverless function budget on RPC calls during cold starts.
-        await Promise.race([
-          this.startCombatOnChain(slot).catch(() => {}),
-          new Promise<void>(resolve => setTimeout(resolve, 2_000)),
-        ]);
+        // On-chain: start combat with 4s budget. If it fails, the on-chain
+        // tick loop (lines ~1957-1963) will detect state=betting and retry.
+        try {
+          await Promise.race([
+            this.startCombatOnChain(slot),
+            new Promise<void>((_, reject) => setTimeout(() => reject(new Error("startCombat timeout")), 4_000)),
+          ]);
+        } catch (err) {
+          console.warn(`[OnChain] startCombat initial attempt failed for ${slot.id}, will retry on next tick:`, err);
+          // Not fatal — the on-chain tick loop self-heals by detecting betting state
+        }
 
         this.emit("combat_started", {
           slotIndex: idx,
@@ -2243,9 +2252,25 @@ export class RumbleOrchestrator {
       preflightCommitment: "processed",
       maxRetries: 3,
     });
-    // Fire-and-forget: don't block on confirmation — the on-chain state
-    // polling loop will pick up the result on the next tick.
+    // Best-effort confirmation: check status once after a short delay.
+    // Don't block the combat loop, but log failures so they're visible.
+    this.bestEffortConfirm(conn, signature).catch(() => {});
     return signature;
+  }
+
+  /** Non-blocking single-check confirmation for fire-and-forget txs. */
+  private async bestEffortConfirm(conn: import("@solana/web3.js").Connection, signature: string): Promise<void> {
+    await new Promise(resolve => setTimeout(resolve, 2_000));
+    try {
+      const status = await conn.getSignatureStatus(signature);
+      if (status?.value?.err) {
+        console.warn(`[TxConfirm] Tx ${signature.slice(0, 12)}... failed on-chain:`, status.value.err);
+      } else if (!status?.value) {
+        console.warn(`[TxConfirm] Tx ${signature.slice(0, 12)}... not found after 2s — may have been dropped`);
+      }
+    } catch {
+      // RPC error — not critical, on-chain polling will catch up
+    }
   }
 
   /**
@@ -2290,16 +2315,32 @@ export class RumbleOrchestrator {
         return null;
       }
 
-      // Case 1: Fighter submitted the tx themselves
+      // Case 1: Fighter claims they submitted the tx themselves — verify on-chain
       if (
         response.submitted === true &&
         typeof response.signature === "string" &&
         response.signature.length > 0
       ) {
+        const claimedSig = response.signature;
+        // Verify the claimed signature actually landed on-chain
+        try {
+          const conn = getConnection();
+          await new Promise(resolve => setTimeout(resolve, 1_500));
+          const status = await conn.getSignatureStatus(claimedSig);
+          if (!status?.value || status.value.err) {
+            console.warn(
+              `[OnChain] External fighter ${fighterId} claimed self-submit but sig not confirmed: ${claimedSig}`,
+            );
+            return null; // Don't trust unverified claim
+          }
+        } catch {
+          console.warn(`[OnChain] Could not verify self-submitted sig for ${fighterId}: ${claimedSig}`);
+          return null;
+        }
         console.log(
-          `[OnChain] External fighter ${fighterId} self-submitted ${txType} turn ${turn}: ${response.signature}`,
+          `[OnChain] External fighter ${fighterId} self-submitted ${txType} turn ${turn} (verified): ${claimedSig}`,
         );
-        return response.signature;
+        return claimedSig;
       }
 
       // Case 2: Fighter returned a signed transaction for us to submit
@@ -2835,6 +2876,18 @@ export class RumbleOrchestrator {
     webhookUrl: string,
     turnNumber: number,
   ): Promise<MoveType | null> {
+    // Redact opponent exact values — provide tier hints instead of precise HP/meter
+    const opponentHpTier = opponent.hp > 75 ? "high" : opponent.hp > 40 ? "mid" : opponent.hp > 0 ? "low" : "ko";
+    const opponentMeterTier = opponent.meter >= 100 ? "full" : opponent.meter >= 60 ? "high" : opponent.meter >= 30 ? "mid" : "low";
+
+    // Redact turn history: strip opponent move details, keep only own moves + outcomes
+    const redactedHistory = state.turns.slice(-6).map((t: any) => ({
+      turn: t.turn,
+      your_move: t.fighter_a_id === fighter.id ? t.move_a : t.move_b,
+      outcome: t.outcome,
+      your_damage_taken: t.fighter_a_id === fighter.id ? t.damage_to_a : t.damage_to_b,
+    }));
+
     const sharedState = {
       mode: "rumble",
       rumble_id: slot.id,
@@ -2847,9 +2900,9 @@ export class RumbleOrchestrator {
       match_id: slot.id,
       match_state: {
         your_hp: fighter.hp,
-        opponent_hp: opponent.hp,
+        opponent_hp_tier: opponentHpTier,
         your_meter: fighter.meter,
-        opponent_meter: opponent.meter,
+        opponent_meter_tier: opponentMeterTier,
         round: 1,
         turn: turnNumber,
         your_rounds_won: 0,
@@ -2860,10 +2913,10 @@ export class RumbleOrchestrator {
         meter: fighter.meter,
       },
       opponent_state: {
-        hp: opponent.hp,
-        meter: opponent.meter,
+        hp_tier: opponentHpTier,
+        meter_tier: opponentMeterTier,
       },
-      turn_history: state.turns.slice(-6),
+      turn_history: redactedHistory,
       valid_moves: [
         "HIGH_STRIKE",
         "MID_STRIKE",
