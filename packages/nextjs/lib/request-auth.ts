@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { isValidAdminSession } from "~~/lib/admin-session";
 
 function secureEquals(a: string, b: string): boolean {
   const aBuf = Buffer.from(a);
@@ -60,12 +61,7 @@ export function isAuthorizedAdminRequest(headers: Headers): boolean {
   const cookie = headers.get("cookie") ?? "";
   const match = cookie.match(/ucf_admin_session=([^;]+)/);
   if (match?.[1]) {
-    try {
-      const { isValidAdminSession } = require("~~/lib/admin-session");
-      return isValidAdminSession(match[1]);
-    } catch {
-      return false;
-    }
+    return isValidAdminSession(match[1]);
   }
 
   return false;
