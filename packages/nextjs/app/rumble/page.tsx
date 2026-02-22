@@ -93,6 +93,7 @@ interface LastCompletedSlotResult {
     damageDealt: number;
   }>;
   payout: NonNullable<SlotData["payout"]>;
+  myBetFighterIds?: string[]; // fighter IDs the user had bet on (captured at result time)
 }
 
 // ---------------------------------------------------------------------------
@@ -341,6 +342,8 @@ export default function RumblePage() {
   const eventSourceRef = useRef<EventSource | null>(null);
   // Grace period: after an optimistic bet update, prevent fetchMyBets from overwriting for 10s
   const optimisticBetUntilRef = useRef<number>(0);
+  // Track rumbleId per slot to detect rumble transitions and clear stale bets
+  const slotRumbleIdRef = useRef<Map<number, string>>(new Map());
   const [lastSseEvent, setLastSseEvent] = useState<CommentarySSEEvent | null>(null);
   const [sseEventSeq, setSseEventSeq] = useState(0);
   const LAST_RESULT_STORAGE_KEY = "ucf_last_result";
@@ -372,6 +375,9 @@ export default function RumblePage() {
   // Track user stake per fighter per slot.
   // Map<slotIndex, Map<fighterId, totalSolStaked>>
   const [myBetAmountsBySlot, setMyBetAmountsBySlot] = useState<Map<number, Map<string, number>>>(new Map());
+  // Mirror myBetAmountsBySlot in a ref so fetchStatus can capture bet data at result time
+  const myBetAmountsBySlotRef = useRef(myBetAmountsBySlot);
+  myBetAmountsBySlotRef.current = myBetAmountsBySlot;
   const claimFetchInFlightRef = useRef(false);
   const claimBalanceRef = useRef<ClaimBalanceStatus | null>(null);
   const pollSeqRef = useRef(0);
@@ -569,6 +575,12 @@ export default function RumblePage() {
 
           const completed = buildLastCompletedResult(slot);
           if (!completed) continue;
+          // Capture user's bet fighter IDs at result time so PayoutDisplay
+          // can show "YOU WON" even after bets are cleared for the next rumble.
+          const slotBets = myBetAmountsBySlotRef.current.get(slot.slotIndex);
+          if (slotBets && slotBets.size > 0) {
+            completed.myBetFighterIds = [...slotBets.keys()];
+          }
           const existing = next.get(slot.slotIndex);
           if (!existing || existing.rumbleId !== completed.rumbleId) {
             next.set(slot.slotIndex, completed);
@@ -594,16 +606,26 @@ export default function RumblePage() {
         return changed ? next : prev;
       });
 
-      // Clear local bet-tracking for slots that returned to idle.
+      // Clear local bet-tracking when a slot goes idle OR its rumbleId changes
+      // (new rumble started). Also reset optimistic grace so stale bets from
+      // the previous rumble don't bleed into the new one.
       setMyBetAmountsBySlot((prev) => {
         let changed = false;
         const next = new Map(prev);
+        const prevRumbleIds = slotRumbleIdRef.current;
+        const nextRumbleIds = new Map<number, string>();
         for (const slot of data.slots) {
-          if (slot.state === "idle" && next.has(slot.slotIndex)) {
+          nextRumbleIds.set(slot.slotIndex, slot.rumbleId);
+          const prevId = prevRumbleIds.get(slot.slotIndex);
+          const rumbleChanged = prevId != null && prevId !== slot.rumbleId;
+          if ((slot.state === "idle" || rumbleChanged) && next.has(slot.slotIndex)) {
             next.delete(slot.slotIndex);
             changed = true;
+            // Kill optimistic grace so fetchMyBets uses fresh server data
+            optimisticBetUntilRef.current = 0;
           }
         }
+        slotRumbleIdRef.current = nextRumbleIds;
         return changed ? next : prev;
       });
     } catch (e: any) {
@@ -1475,7 +1497,9 @@ export default function RumblePage() {
                               <PayoutDisplay
                                 placements={lastResult.placements}
                                 payout={lastResult.payout}
-                                myBetFighterIds={undefined}
+                                myBetFighterIds={lastResult.myBetFighterIds?.length
+                                  ? new Set(lastResult.myBetFighterIds)
+                                  : undefined}
                               />
                             </div>
                           );

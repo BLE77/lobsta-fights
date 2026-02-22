@@ -113,6 +113,7 @@ interface RumbleSlotProps {
       damageDealt: number;
     }>;
     payout: SlotPayout;
+    myBetFighterIds?: string[];
   };
 }
 
@@ -421,7 +422,9 @@ export default function RumbleSlot({
                 <PayoutDisplay
                   placements={lastCompletedResult.placements}
                   payout={lastCompletedResult.payout}
-                  myBetFighterIds={myBetFighterIds}
+                  myBetFighterIds={lastCompletedResult.myBetFighterIds?.length
+                    ? new Set(lastCompletedResult.myBetFighterIds)
+                    : myBetFighterIds}
                 />
               </div>
             ) : (
