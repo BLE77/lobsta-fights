@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
-import { getOrchestrator } from "~~/lib/rumble-orchestrator";
 import { freshSupabase } from "~~/lib/supabase";
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 import { readBettorAccount } from "~~/lib/solana-programs";
 import { ADMIN_FEE_RATE, SPONSORSHIP_RATE } from "~~/lib/betting";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
+import { loadActiveRumbles } from "~~/lib/rumble-persistence";
 
 export const dynamic = "force-dynamic";
 
@@ -26,11 +26,15 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "Invalid wallet address" }, { status: 400 });
     }
 
-    const status = getOrchestrator().getStatus();
+    // Load active rumbles from Supabase instead of in-memory orchestrator
+    // so this works on Vercel (which doesn't run the Railway worker).
+    const activeRumbles = await loadActiveRumbles();
     const slotMap = new Map<number, string>();
-    for (const slot of status) {
-      if (slot.state === "idle") continue;
-      slotMap.set(slot.slotIndex, slot.rumbleId);
+    const slotFighters = new Map<number, string[]>();
+    for (const r of activeRumbles) {
+      slotMap.set(r.slot_index, r.id);
+      const fighters = Array.isArray(r.fighters) ? (r.fighters as string[]) : [];
+      slotFighters.set(r.slot_index, fighters);
     }
     const rumbleIds = [...slotMap.values()];
     if (rumbleIds.length === 0) {
@@ -53,11 +57,8 @@ export async function GET(request: Request) {
 
     const bySlot = new Map<number, Map<string, { solAmount: number; betCount: number }>>();
     const rumbleToSlot = new Map<string, number>();
-    const slotFighters = new Map<number, string[]>();
     for (const [slotIndex, rumbleId] of slotMap.entries()) {
       rumbleToSlot.set(rumbleId, slotIndex);
-      const slotStatus = status.find((s) => s.slotIndex === slotIndex);
-      slotFighters.set(slotIndex, slotStatus?.fighters ?? []);
     }
 
     for (const row of data ?? []) {
