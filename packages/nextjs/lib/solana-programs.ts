@@ -878,6 +878,32 @@ async function sendAdminInstructions(
   return await provider.sendAndConfirm(tx, []);
 }
 
+function getComputeUnitPriceMicrolamports(): number {
+  const raw = Number(process.env.COMPUTE_UNIT_PRICE_MICROLAMPORTS ?? "1000");
+  if (!Number.isFinite(raw)) return 1000;
+  return Math.max(0, Math.floor(raw));
+}
+
+function getComputeUnitPriceIx(
+  microLamports: number = getComputeUnitPriceMicrolamports(),
+): TransactionInstruction {
+  return ComputeBudgetProgram.setComputeUnitPrice({ microLamports });
+}
+
+function isAccountAlreadyExistsError(err: unknown): boolean {
+  const text = err instanceof Error
+    ? `${err.name}: ${err.message}`.toLowerCase()
+    : (() => {
+        try {
+          return JSON.stringify(err).toLowerCase();
+        } catch {
+          return String(err).toLowerCase();
+        }
+      })();
+
+  return text.includes("already in use") || text.includes("already been processed");
+}
+
 async function waitForSlot(
   connection: Connection,
   targetSlot: bigint,
@@ -1875,6 +1901,7 @@ async function sendAdminTxFireAndForget(
   tx.feePayer = admin.publicKey;
   const { blockhash } = await conn.getLatestBlockhash("processed");
   tx.recentBlockhash = blockhash;
+  tx.instructions.unshift(getComputeUnitPriceIx());
   tx.sign(admin);
   const signature = await conn.sendRawTransaction(tx.serialize(), {
     skipPreflight: false,
@@ -2449,9 +2476,16 @@ export async function ensureAta(
   tx.lastValidBlockHeight = lastValidBlockHeight;
   tx.partialSign(admin);
 
-  const sig = await conn.sendRawTransaction(tx.serialize());
-  await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
-  return ata;
+  try {
+    const sig = await conn.sendRawTransaction(tx.serialize());
+    await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+    return ata;
+  } catch (err) {
+    if (isAccountAlreadyExistsError(err)) {
+      return ata;
+    }
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------

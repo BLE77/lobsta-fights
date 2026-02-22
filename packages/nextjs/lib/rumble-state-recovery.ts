@@ -248,15 +248,15 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
 
     console.log(
       `[StateRecovery] Recovery complete: ${result.activeRumbles} active rumbles, ` +
-        `${result.restoredBetting} betting restored, ` +
+      `${result.restoredBetting} betting restored, ` +
         `${result.restoredCombat} combat restored, ` +
         `${result.staleMidCombat} stale mid-combat, ${result.queueFighters} queue fighters`
     );
+    g.__rumbleRecovered = true;
   } catch (err) {
     result.errors.push(`Top-level recovery error: ${String(err)}`);
     console.error("[StateRecovery] Recovery failed:", err);
   }
 
-  g.__rumbleRecovered = true;
   return result;
 }

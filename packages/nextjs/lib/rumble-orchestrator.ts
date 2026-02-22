@@ -609,6 +609,7 @@ export class RumbleOrchestrator {
     rumbleAdmin: null,
   };
   private tickInFlight: Promise<void> | null = null;
+  private inflightCleanup: Set<Promise<unknown>> = new Set();
 
   constructor(queueManager: RumbleQueueManager) {
     this.queueManager = queueManager;
@@ -1308,7 +1309,7 @@ export class RumbleOrchestrator {
           await this.handleCombatPhase(slot);
           break;
         case "payout":
-          this.handlePayoutPhase(slot);
+          await this.handlePayoutPhase(slot);
           break;
         // idle: nothing to do, queue manager handles transition
       }
@@ -3617,16 +3618,32 @@ export class RumbleOrchestrator {
   private payoutProcessed: Set<string> = new Set(); // track rumble IDs already paid out
   private payoutResults: Map<number, PayoutResult> = new Map(); // store payout results for status API
 
-  private handlePayoutPhase(slot: RumbleSlot): void {
+  private async handlePayoutPhase(slot: RumbleSlot): Promise<void> {
     const idx = slot.slotIndex;
 
     // Only process payout once per rumble
     if (this.payoutProcessed.has(slot.id)) return;
     this.payoutProcessed.add(slot.id);
 
-    this.runPayoutPhase(idx).catch((err) => {
+    try {
+      await this.runPayoutPhase(idx);
+    } catch (err) {
       console.error(`[Orchestrator] Payout error for slot ${idx}:`, err);
+    }
+  }
+
+  private async stop(): Promise<void> {
+    if (this.inflightCleanup.size === 0) return;
+    await Promise.allSettled([...this.inflightCleanup]);
+  }
+
+  private trackInFlightCleanup<T>(promise: Promise<T>): Promise<T> {
+    let tracked: Promise<T>;
+    tracked = promise.finally(() => {
+      this.inflightCleanup.delete(tracked);
     });
+    this.inflightCleanup.add(tracked);
+    return tracked;
   }
 
   async runPayoutPhase(slotIndex: number): Promise<void> {
@@ -3822,8 +3839,8 @@ export class RumbleOrchestrator {
     previousFighters: string[],
     previousRumbleId: string,
   ): void {
-    // Mark rumble as "complete" in DB now that payout display window is over
-    void (async () => {
+    const cleanup = (async () => {
+      // Mark rumble as "complete" in DB now that payout display window is over
       try {
         await persist.updateRumbleStatus(previousRumbleId, "complete");
       } catch (err) {
@@ -3855,6 +3872,8 @@ export class RumbleOrchestrator {
         previousFighters,
       });
     })();
+
+    this.trackInFlightCleanup(cleanup);
   }
 
   // ---- Pairing helper (duplicated from rumble-engine for incremental use) --

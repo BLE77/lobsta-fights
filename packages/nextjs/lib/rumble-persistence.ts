@@ -48,6 +48,44 @@ function toNumber(value: unknown): number {
   return 0;
 }
 
+function normalizeTxSignatures(value: unknown): Record<string, string | null> {
+  if (!value || typeof value !== "object") return {};
+  const output: Record<string, string | null> = {};
+  for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof key !== "string") continue;
+    if (typeof val === "string" || val === null) {
+      output[key] = val;
+    }
+  }
+  return output;
+}
+
+function isRpcMissingMergeTxSignatures(error: unknown): boolean {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code ?? "")
+    : "";
+  const message = typeof error === "object" && error !== null && "message" in error
+    ? String((error as { message?: unknown }).message ?? "")
+    : "";
+  const details = typeof error === "object" && error !== null && "details" in error
+    ? String((error as { details?: unknown }).details ?? "")
+    : "";
+  const lower = `${message} ${details}`.toLowerCase();
+  return (
+    code === "42883" ||
+    code === "PGRST202" ||
+    lower.includes("function merge_tx_signature") ||
+    lower.includes("could not find the function") ||
+    lower.includes("no function matches")
+  );
+}
+
+let canUseMergeTxSignatureRpc: boolean | null = null;
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // ---------------------------------------------------------------------------
 // Queue
 // ---------------------------------------------------------------------------
@@ -526,23 +564,99 @@ export async function updateBetPayouts(
   rumbleId: string,
   payouts: BetPayoutUpdate[],
 ): Promise<void> {
+  if (payouts.length === 0) return;
+
   try {
     const sb = freshServiceClient();
-    // Batch update: use individual updates within a single try/catch
-    // Supabase JS client doesn't support batch updates natively,
-    // so we run them in parallel with Promise.all.
-    const updates = payouts.map((p) =>
-      sb
+
+    const maxAttempts = 3;
+    let pending = payouts.slice();
+    const sleepMs = (attempt: number) => 25 * attempt;
+
+    const getMismatches = async (checkPayouts: BetPayoutUpdate[]) => {
+      const betIds = checkPayouts.map((p) => p.betId);
+      const { data: rows, error } = await sb
         .from("ucf_bets")
-        .update({ payout_amount: p.payoutAmount, payout_status: p.payoutStatus })
-        .eq("id", p.betId)
-        .select(),
-    );
-    const results = await Promise.all(updates);
-    for (const { error } of results) {
+        .select("id, payout_amount, payout_status")
+        .in("id", betIds);
       if (error) throw error;
+
+      const byId = new Map<string, { payout_amount: number; payout_status: string }>();
+      for (const row of rows ?? []) {
+        byId.set(String((row as any).id), {
+          payout_amount: toNumber((row as any).payout_amount),
+          payout_status: String((row as any).payout_status ?? ""),
+        });
+      }
+
+      return checkPayouts.filter((p) => {
+        const row = byId.get(p.betId);
+        if (!row) return true;
+        const amountMatches = Math.abs(row.payout_amount - p.payoutAmount) < 1e-9;
+        const statusMatches = row.payout_status === p.payoutStatus;
+        return !amountMatches || !statusMatches;
+      });
+    };
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const groups = new Map<
+          string,
+          { payoutAmount: number; payoutStatus: BetPayoutUpdate["payoutStatus"]; betIds: string[] }
+        >();
+
+        for (const p of pending) {
+          const key = `${p.payoutStatus}:${p.payoutAmount}`;
+          const entry = groups.get(key);
+          if (entry) {
+            entry.betIds.push(p.betId);
+            continue;
+          }
+          groups.set(key, {
+            payoutAmount: p.payoutAmount,
+            payoutStatus: p.payoutStatus,
+            betIds: [p.betId],
+          });
+        }
+
+        const updates = [...groups.values()].map((group) =>
+          sb
+            .from("ucf_bets")
+            .update({ payout_amount: group.payoutAmount, payout_status: group.payoutStatus })
+            .in("id", group.betIds)
+            .select(),
+        );
+        const results = await Promise.all(updates);
+        for (const { error } of results) {
+          if (error) throw error;
+        }
+
+        pending = await getMismatches(pending);
+        if (pending.length === 0) {
+          log(`Updated ${payouts.length} bet payouts for rumble ${rumbleId}`);
+          return;
+        }
+
+        if (attempt === maxAttempts) {
+          throw new Error(
+            `Unable to update ${pending.length} bet payouts after ${maxAttempts} attempts`,
+          );
+        }
+        await sleep(sleepMs(attempt));
+      } catch (err) {
+        if (attempt === maxAttempts) throw err;
+        try {
+          pending = await getMismatches(pending);
+        } catch (innerErr) {
+          throw innerErr;
+        }
+        if (pending.length === 0) {
+          log(`Updated ${payouts.length} bet payouts for rumble ${rumbleId}`);
+          return;
+        }
+        await sleep(sleepMs(attempt));
+      }
     }
-    log(`Updated ${payouts.length} bet payouts for rumble ${rumbleId}`);
   } catch (err) {
     logError("updateBetPayouts failed", err);
   }
@@ -1008,22 +1122,59 @@ export async function updateRumbleTxSignature(
 ): Promise<void> {
   try {
     const sb = freshServiceClient();
-    // Read current tx_signatures, merge, write back
-    const { data, error: readErr } = await sb
-      .from("ucf_rumbles")
-      .select("tx_signatures")
-      .eq("id", rumbleId)
-      .single();
-    if (readErr) throw readErr;
 
-    const existing = (data?.tx_signatures as Record<string, string | null>) ?? {};
-    existing[step] = sig;
+    if (canUseMergeTxSignatureRpc !== false) {
+      const { error: rpcErr } = await sb.rpc("merge_tx_signature", {
+        p_rumble_id: rumbleId,
+        p_step: step,
+        p_sig: sig,
+      });
 
-    const { error: writeErr } = await sb
-      .from("ucf_rumbles")
-      .update({ tx_signatures: existing })
-      .eq("id", rumbleId);
-    if (writeErr) throw writeErr;
+      if (!rpcErr) {
+        return;
+      }
+
+      if (!isRpcMissingMergeTxSignatures(rpcErr)) {
+        throw rpcErr;
+      }
+
+      canUseMergeTxSignatureRpc = false;
+      log(
+        `[RumblePersistence] merge_tx_signature RPC unavailable, falling back to optimistic locked update`,
+      );
+    }
+
+    const maxAttempts = 5;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const { data, error: readErr } = await sb
+        .from("ucf_rumbles")
+        .select("tx_signatures")
+        .eq("id", rumbleId)
+        .single();
+      if (readErr) throw readErr;
+
+      const existing = normalizeTxSignatures(data?.tx_signatures);
+      if (existing[step] === sig) return;
+
+      const merged = { ...existing, [step]: sig };
+      const { error: writeErr, count } = await sb
+        .from("ucf_rumbles")
+        .update({ tx_signatures: merged }, { count: "exact" })
+        .eq("id", rumbleId)
+        .eq("tx_signatures", existing);
+
+      if (writeErr) throw writeErr;
+      if (count === 0) {
+        if (attempt >= maxAttempts) {
+          throw new Error(
+            `Failed optimistic tx_signatures update for rumble ${rumbleId}, step ${step} after ${maxAttempts} attempts`,
+          );
+        }
+        await sleep(attempt * 25);
+        continue;
+      }
+      return;
+    }
   } catch (err) {
     logError(`updateRumbleTxSignature(${rumbleId}, ${step}) failed`, err);
   }

@@ -24,6 +24,7 @@ import {
 } from "./lib/rumble-state-recovery";
 import { reconcileOnchainReportResults } from "./lib/rumble-onchain-reconcile";
 import { reconcileStalePendingPayouts } from "./lib/rumble-payout-reconcile";
+import { createServer } from "node:http";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -38,6 +39,8 @@ const RECONCILE_INTERVAL_MS = Math.max(
   10_000,
   Number(process.env.RUMBLE_WORKER_RECONCILE_INTERVAL_MS) || 60_000,
 );
+const HEALTH_PORT = Math.max(1, Number(process.env.PORT) || 3001);
+const HEALTH_STALE_MS = 30_000;
 
 // ---------------------------------------------------------------------------
 // State
@@ -47,6 +50,7 @@ let stopping = false;
 let tickCount = 0;
 let consecutiveErrors = 0;
 let lastReconcileAt = 0;
+let lastTickAt = 0;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -78,6 +82,37 @@ function summarizeSlots(
     .join(" | ");
 }
 
+function startHealthServer(orchestrator: ReturnType<typeof getOrchestrator>): void {
+  const server = createServer((req, res) => {
+    if (req.method !== "GET" || req.url !== "/healthz") {
+      res.statusCode = 404;
+      res.end("not found");
+      return;
+    }
+
+    const now = Date.now();
+    const stale = now - lastTickAt > HEALTH_STALE_MS;
+    const status = stale ? "stale" : "ok";
+    const payload = {
+      status,
+      lastTickAt: lastTickAt ? new Date(lastTickAt).toISOString() : null,
+      uptime: process.uptime(),
+      activeSlots: orchestrator.getStatus().length,
+    };
+
+    res.statusCode = stale ? 503 : 200;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(payload));
+  });
+
+  server.listen(HEALTH_PORT, () => {
+    console.log(`[${ts()}] [worker] health server listening on :${HEALTH_PORT}/healthz`);
+  });
+  server.on("error", (err) => {
+    console.error(`[${ts()}] [worker] health server error:`, err);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Main loop
 // ---------------------------------------------------------------------------
@@ -87,6 +122,7 @@ async function run(): Promise<void> {
   console.log(`[${ts()}] [worker] tick interval=${TICK_INTERVAL_MS}ms  reconcile interval=${RECONCILE_INTERVAL_MS}ms`);
 
   const orchestrator = getOrchestrator();
+  startHealthServer(orchestrator);
 
   // ---- Initial recovery ---------------------------------------------------
   if (!hasRecovered()) {
@@ -102,6 +138,7 @@ async function run(): Promise<void> {
   // ---- Tick loop ----------------------------------------------------------
   while (!stopping) {
     const tickStart = Date.now();
+    lastTickAt = tickStart;
 
     try {
       // Periodic reconciliation (on-chain + payout)
