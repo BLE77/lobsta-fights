@@ -423,6 +423,311 @@ body {
   animation: pulse-slow 3s ease-in-out infinite;
 }
 
+/* ---------------------------------------------------------------------------
+   Combat UI Animations (New)
+   --------------------------------------------------------------------------- */
+
+/* Floating Damage Numbers */
+@keyframes float-up {
+  0% {
+    opacity: 1;
+    transform: translateY(0) scale(1.2);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translateY(-20px) scale(0.8);
+  }
+}
+
+.animate-float-up {
+  animation: float-up 1.5s ease-out forwards;
+}
+
+/* Intense Shake for Critical Hits / Eliminations */
+@keyframes intense-shake {
+
+  0%,
+  100% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+
+  10% {
+    transform: translate(-2px, -2px) rotate(-1deg);
+  }
+
+  20% {
+    transform: translate(2px, 2px) rotate(1deg);
+  }
+
+  30% {
+    transform: translate(-2px, 2px) rotate(0deg);
+  }
+
+  40% {
+    transform: translate(2px, -2px) rotate(1deg);
+  }
+
+  50% {
+    transform: translate(-2px, -2px) rotate(-1deg);
+  }
+
+  60% {
+    transform: translate(2px, 2px) rotate(0deg);
+  }
+
+  70% {
+    transform: translate(-2px, 2px) rotate(-1deg);
+  }
+
+  80% {
+    transform: translate(-2px, -2px) rotate(1deg);
+  }
+
+  90% {
+    transform: translate(2px, -2px) rotate(0deg);
+  }
+}
+
+.animate-intense-shake {
+  animation: intense-shake 0.3s cubic-bezier(.36, .07, .19, .97) both;
+}
+
+/* Matchup Clash - Attacker Lunge */
+@keyframes clash-lunge {
+  0% {
+    transform: translateX(0);
+    z-index: 10;
+  }
+
+  20% {
+    transform: translateX(-15%);
+    z-index: 10;
+  }
+
+  /* Pull back slightly */
+  40% {
+    transform: translateX(30%) scale(1.1);
+    z-index: 10;
+  }
+
+  /* Fast lunge forward */
+  60% {
+    transform: translateX(25%) scale(1.1);
+    z-index: 10;
+  }
+
+  /* Hold impact briefly */
+  100% {
+    transform: translateX(0) scale(1);
+    z-index: 1;
+  }
+
+  /* Return */
+}
+
+/* Reverse lunge for Fighter B (attacking to the left) */
+@keyframes clash-lunge-reverse {
+  0% {
+    transform: translateX(0);
+    z-index: 10;
+  }
+
+  20% {
+    transform: translateX(15%);
+    z-index: 10;
+  }
+
+  40% {
+    transform: translateX(-30%) scale(1.1);
+    z-index: 10;
+  }
+
+  60% {
+    transform: translateX(-25%) scale(1.1);
+    z-index: 10;
+  }
+
+  100% {
+    transform: translateX(0) scale(1);
+    z-index: 1;
+  }
+}
+
+.animate-clash-lunge {
+  animation: clash-lunge 0.5s cubic-bezier(0.25, 1, 0.5, 1) forwards;
+}
+
+.animate-clash-lunge-reverse {
+  animation: clash-lunge-reverse 0.5s cubic-bezier(0.25, 1, 0.5, 1) forwards;
+}
+
+/* Matchup Clash - Defender Recoil */
+@keyframes clash-recoil {
+  0% {
+    transform: translateX(0);
+    filter: brightness(1);
+  }
+
+  40% {
+    transform: translateX(0);
+    filter: brightness(1);
+  }
+
+  /* Wait for lunge impact */
+  45% {
+    transform: translateX(10%);
+    filter: brightness(2) sepia(1) hue-rotate(-50deg) saturate(5);
+  }
+
+  /* Get hit (flash red) */
+  60% {
+    transform: translateX(15%);
+    filter: brightness(1.2) sepia(0.5) hue-rotate(-50deg) saturate(2);
+  }
+
+  /* Pushed back */
+  100% {
+    transform: translateX(0);
+    filter: brightness(1);
+  }
+
+  /* Recover */
+}
+
+/* Reverse recoil for Fighter A (getting hit from the right) */
+@keyframes clash-recoil-reverse {
+  0% {
+    transform: translateX(0);
+    filter: brightness(1);
+  }
+
+  40% {
+    transform: translateX(0);
+    filter: brightness(1);
+  }
+
+  45% {
+    transform: translateX(-10%);
+    filter: brightness(2) sepia(1) hue-rotate(-50deg) saturate(5);
+  }
+
+  60% {
+    transform: translateX(-15%);
+    filter: brightness(1.2) sepia(0.5) hue-rotate(-50deg) saturate(2);
+  }
+
+  100% {
+    transform: translateX(0);
+    filter: brightness(1);
+  }
+}
+
+.animate-clash-recoil {
+  animation: clash-recoil 0.5s cubic-bezier(0.25, 1, 0.5, 1) forwards;
+}
+
+.animate-clash-recoil-reverse {
+  animation: clash-recoil-reverse 0.5s cubic-bezier(0.25, 1, 0.5, 1) forwards;
+}
+
+/* Matchup Flash - Green (Dodge) */
+@keyframes clash-flash-green {
+
+  0%,
+  100% {
+    color: #57534e;
+    text-shadow: none;
+    transform: scale(1);
+  }
+
+  40% {
+    color: #4ade80;
+    text-shadow: 0 0 10px rgba(74, 222, 128, 0.8);
+    transform: scale(1.2);
+  }
+}
+
+.animate-clash-flash-green {
+  animation: clash-flash-green 0.5s ease-out;
+}
+
+/* Matchup Flash - Blue (Block) */
+@keyframes clash-flash-blue {
+
+  0%,
+  100% {
+    color: #57534e;
+    text-shadow: none;
+    transform: scale(1);
+  }
+
+  40% {
+    color: #60a5fa;
+    text-shadow: 0 0 10px rgba(96, 165, 250, 0.8);
+    transform: scale(1.2);
+  }
+}
+
+.animate-clash-flash-blue {
+  animation: clash-flash-blue 0.5s ease-out;
+}
+
+/* Matchup Flash - Red (Heavy Hit) */
+@keyframes clash-flash-red {
+
+  0%,
+  100% {
+    color: #57534e;
+    text-shadow: none;
+    transform: scale(1);
+  }
+
+  40% {
+    color: #f87171;
+    text-shadow: 0 0 10px rgba(248, 113, 113, 0.8);
+    transform: scale(1.3);
+  }
+}
+
+.animate-clash-flash-red {
+  animation: clash-flash-red 0.5s ease-out;
+}
+
+
+/* Visceral Elimination - Flash to White then Grayscale */
+@keyframes elimination-death {
+  0% {
+    filter: brightness(1) grayscale(0);
+    transform: scale(1);
+  }
+
+  10% {
+    filter: brightness(3) grayscale(0);
+    transform: scale(1.1);
+    box-shadow: 0 0 20px rgba(255, 255, 255, 0.8);
+  }
+
+  /* Flash white */
+  30% {
+    filter: brightness(1) grayscale(0.8) contrast(1.5);
+    transform: scale(0.95);
+    box-shadow: none;
+  }
+
+  /* Shrink and desaturate */
+  100% {
+    filter: brightness(0.6) grayscale(1) contrast(1.2);
+    transform: scale(1);
+  }
+
+  /* Darker dead state */
+}
+
+.animate-elimination-death {
+  animation: elimination-death 0.8s ease-out forwards;
+}
+
 /* Accessibility: respect reduced motion preference */
 @media (prefers-reduced-motion: reduce) {
 
