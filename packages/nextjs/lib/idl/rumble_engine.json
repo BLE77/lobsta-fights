@@ -8,29 +8,32 @@
   },
   "instructions": [
     {
-      "name": "advance_turn",
+      "name": "accept_admin",
       "docs": [
-        "Advance to next turn after a resolved turn.",
-        "Permissionless keeper call."
+        "Accept a pending admin transfer. Must be signed by the proposed admin."
       ],
       "discriminator": [
-        20,
-        108,
-        166,
-        78,
-        43,
-        211,
-        57,
-        29
+        112,
+        42,
+        45,
+        90,
+        116,
+        181,
+        13,
+        170
       ],
       "accounts": [
         {
-          "name": "keeper",
+          "name": "new_admin",
+          "docs": [
+            "The proposed new admin must sign this transaction."
+          ],
           "writable": true,
           "signer": true
         },
         {
           "name": "config",
+          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -53,6 +56,59 @@
               }
             ]
           }
+        },
+        {
+          "name": "pending_admin",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  110,
+                  100,
+                  105,
+                  110,
+                  103,
+                  95,
+                  97,
+                  100,
+                  109,
+                  105,
+                  110,
+                  95,
+                  114,
+                  101
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "advance_turn",
+      "docs": [
+        "Advance to next turn after a resolved turn.",
+        "Permissionless keeper call."
+      ],
+      "discriminator": [
+        20,
+        108,
+        166,
+        78,
+        43,
+        211,
+        57,
+        29
+      ],
+      "accounts": [
+        {
+          "name": "keeper",
+          "writable": true,
+          "signer": true
         },
         {
           "name": "rumble",
@@ -284,6 +340,109 @@
       "args": []
     },
     {
+      "name": "close_combat_state",
+      "docs": [
+        "Close a RumbleCombatState PDA to reclaim rent. Admin-only.",
+        "Requires the associated rumble is Complete."
+      ],
+      "discriminator": [
+        66,
+        4,
+        82,
+        226,
+        189,
+        193,
+        188,
+        206
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "rumble",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.id",
+                "account": "Rumble"
+              }
+            ]
+          }
+        },
+        {
+          "name": "combat_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  109,
+                  98,
+                  97,
+                  116,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.id",
+                "account": "Rumble"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "close_move_commitment",
       "docs": [
         "Close a MoveCommitment PDA and return rent to a destination.",
@@ -406,6 +565,80 @@
           "type": "u32"
         }
       ]
+    },
+    {
+      "name": "close_rumble",
+      "docs": [
+        "Close a completed Rumble PDA to reclaim rent. Admin-only.",
+        "Requires Complete state and claim window expired."
+      ],
+      "discriminator": [
+        190,
+        220,
+        84,
+        196,
+        6,
+        36,
+        176,
+        156
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "rumble",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.id",
+                "account": "Rumble"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
     },
     {
       "name": "commit_move",
@@ -728,31 +961,6 @@
           "signer": true
         },
         {
-          "name": "config",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  114,
-                  117,
-                  109,
-                  98,
-                  108,
-                  101,
-                  95,
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
-        },
-        {
           "name": "rumble",
           "writable": true,
           "pda": {
@@ -888,31 +1096,6 @@
           "name": "keeper",
           "writable": true,
           "signer": true
-        },
-        {
-          "name": "config",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  114,
-                  117,
-                  109,
-                  98,
-                  108,
-                  101,
-                  95,
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
         },
         {
           "name": "rumble",
@@ -1378,31 +1561,6 @@
           "signer": true
         },
         {
-          "name": "config",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  114,
-                  117,
-                  109,
-                  98,
-                  108,
-                  101,
-                  95,
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
-        },
-        {
           "name": "rumble",
           "writable": true,
           "pda": {
@@ -1805,20 +1963,107 @@
       "args": []
     },
     {
-      "name": "update_admin",
+      "name": "transfer_admin",
       "docs": [
-        "Update the admin and/or treasury pubkeys.",
-        "Only the current admin can call this."
+        "Propose a new admin (two-step transfer).",
+        "Creates/overwrites PendingAdminRE PDA. New admin must call accept_admin."
       ],
       "discriminator": [
-        161,
-        176,
-        40,
-        213,
+        42,
+        242,
+        66,
+        106,
+        228,
+        10,
+        111,
+        156
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "pending_admin",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  110,
+                  100,
+                  105,
+                  110,
+                  103,
+                  95,
+                  97,
+                  100,
+                  109,
+                  105,
+                  110,
+                  95,
+                  114,
+                  101
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "new_admin",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "update_treasury",
+      "docs": [
+        "Update the treasury address. Admin-only, immediate (lower risk than admin transfer)."
+      ],
+      "discriminator": [
         60,
-        184,
-        179,
-        228
+        16,
+        243,
+        66,
+        96,
+        59,
+        254,
+        131
       ],
       "accounts": [
         {
@@ -1854,16 +2099,8 @@
       ],
       "args": [
         {
-          "name": "new_admin",
-          "type": {
-            "option": "pubkey"
-          }
-        },
-        {
           "name": "new_treasury",
-          "type": {
-            "option": "pubkey"
-          }
+          "type": "pubkey"
         }
       ]
     }
@@ -1893,6 +2130,19 @@
         93,
         13,
         220
+      ]
+    },
+    {
+      "name": "PendingAdminRE",
+      "discriminator": [
+        126,
+        145,
+        247,
+        186,
+        35,
+        200,
+        222,
+        112
       ]
     },
     {
@@ -2280,6 +2530,11 @@
       "code": 6039,
       "name": "DamageMismatch",
       "msg": "Posted damage does not match resolve_duel computation"
+    },
+    {
+      "code": 6040,
+      "name": "InvalidNewAdmin",
+      "msg": "Invalid new admin address"
     }
   ],
   "types": [
@@ -2557,6 +2812,26 @@
           {
             "name": "amount",
             "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PendingAdminRE",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "proposed_admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "proposed_at",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
           }
         ]
       }

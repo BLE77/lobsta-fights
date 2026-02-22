@@ -1927,7 +1927,6 @@ export async function openTurn(
   const admin = getAdminKeypair()!;
   const [rumblePda] = deriveRumblePda(rumbleId);
   const [combatStatePda] = deriveCombatStatePda(rumbleId);
-  const [rumbleConfigPda] = deriveRumbleConfigPda();
 
   const method = (program.methods as any)
     .openTurn()
@@ -1935,7 +1934,6 @@ export async function openTurn(
       keeper: admin.publicKey,
       rumble: rumblePda,
       combatState: combatStatePda,
-      config: rumbleConfigPda,
     });
 
   return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
@@ -1959,7 +1957,6 @@ export async function resolveTurnOnChain(
   const admin = getAdminKeypair()!;
   const [rumblePda] = deriveRumblePda(rumbleId);
   const [combatStatePda] = deriveCombatStatePda(rumbleId);
-  const [rumbleConfigPda] = deriveRumbleConfigPda();
 
   let method = (program.methods as any).resolveTurn();
   if (moveCommitmentAccounts.length > 0) {
@@ -1977,7 +1974,6 @@ export async function resolveTurnOnChain(
       keeper: admin.publicKey,
       rumble: rumblePda,
       combatState: combatStatePda,
-      config: rumbleConfigPda,
     })
     .preInstructions([
       ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }),
@@ -2002,7 +1998,6 @@ export async function advanceTurnOnChain(
   const admin = getAdminKeypair()!;
   const [rumblePda] = deriveRumblePda(rumbleId);
   const [combatStatePda] = deriveCombatStatePda(rumbleId);
-  const [rumbleConfigPda] = deriveRumbleConfigPda();
 
   const method = (program.methods as any)
     .advanceTurn()
@@ -2010,7 +2005,6 @@ export async function advanceTurnOnChain(
       keeper: admin.publicKey,
       rumble: rumblePda,
       combatState: combatStatePda,
-      config: rumbleConfigPda,
     });
 
   return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
@@ -2032,7 +2026,6 @@ export async function finalizeRumbleOnChain(
   const admin = getAdminKeypair()!;
   const [rumblePda] = deriveRumblePda(rumbleId);
   const [combatStatePda] = deriveCombatStatePda(rumbleId);
-  const [rumbleConfigPda] = deriveRumbleConfigPda();
 
   const method = (program.methods as any)
     .finalizeRumble()
@@ -2040,7 +2033,6 @@ export async function finalizeRumbleOnChain(
       keeper: admin.publicKey,
       rumble: rumblePda,
       combatState: combatStatePda,
-      config: rumbleConfigPda,
     })
     .preInstructions([
       ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }),
