@@ -4,7 +4,7 @@ export type SoundEffect =
   | "hit_light" | "hit_heavy" | "hit_special"
   | "block" | "dodge" | "catch"
   | "ko_explosion" | "round_start" | "crowd_cheer"
-  | "ambient_arena";
+  | "ambient_arena" | "radio_static";
 
 const SOUND_FILES: Record<SoundEffect, string> = {
   hit_light: "/sounds/hit-light.wav",
@@ -17,6 +17,7 @@ const SOUND_FILES: Record<SoundEffect, string> = {
   round_start: "/sounds/round-start.wav",
   crowd_cheer: "/sounds/crowd-cheer.wav",
   ambient_arena: "/sounds/ambient-arena.wav",
+  radio_static: "/sounds/radio-static.wav",
 };
 
 class UCFAudioManager {
@@ -144,3 +145,47 @@ class UCFAudioManager {
 export const audioManager = typeof window !== "undefined"
   ? new UCFAudioManager()
   : (null as unknown as UCFAudioManager);
+
+const STRIKE_MOVES = new Set(["HIGH_STRIKE", "MID_STRIKE", "LOW_STRIKE", "SPECIAL"]);
+const GUARD_MOVES = new Set(["GUARD_HIGH", "GUARD_MID", "GUARD_LOW"]);
+
+/** Pick the most impactful sound for a single pairing in a turn. */
+export function soundForPairing(p: {
+  moveA: string;
+  moveB: string;
+  damageToA: number;
+  damageToB: number;
+}): SoundEffect {
+  const totalDmg = p.damageToA + p.damageToB;
+
+  // Special move landed
+  if (p.moveA === "SPECIAL" && p.damageToB > 0) return "hit_special";
+  if (p.moveB === "SPECIAL" && p.damageToA > 0) return "hit_special";
+
+  // Catch
+  if (p.moveA === "CATCH" || p.moveB === "CATCH") return "catch";
+
+  // Dodge — no damage dealt
+  if (p.moveA === "DODGE" || p.moveB === "DODGE") {
+    if (totalDmg === 0) return "dodge";
+  }
+
+  // Guard blocked an attack
+  if (
+    (GUARD_MOVES.has(p.moveA) && STRIKE_MOVES.has(p.moveB)) ||
+    (GUARD_MOVES.has(p.moveB) && STRIKE_MOVES.has(p.moveA))
+  ) {
+    if (totalDmg <= 5) return "block";
+  }
+
+  // Both defend / no action
+  if (GUARD_MOVES.has(p.moveA) && GUARD_MOVES.has(p.moveB)) return "block";
+
+  // Heavy hit (>=18 damage to someone)
+  if (p.damageToA >= 18 || p.damageToB >= 18) return "hit_heavy";
+
+  // Any damage at all → light hit
+  if (totalDmg > 0) return "hit_light";
+
+  return "hit_light";
+}

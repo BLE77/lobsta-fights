@@ -17,6 +17,7 @@ import ChatPanel from "./components/ChatPanel";
 import CommentaryPlayer from "./components/CommentaryPlayer";
 import { useBetConfirmation } from "./hooks/useBetConfirmation";
 import type { CommentarySSEEvent } from "~~/lib/commentary";
+import { audioManager, soundForPairing } from "~~/lib/audio";
 
 // ---------------------------------------------------------------------------
 // Types for the status API response
@@ -804,6 +805,54 @@ export default function RumblePage() {
   const handleSSEEvent = useCallback((rawEvent: SSEEvent) => {
     const eventType = LEGACY_EVENT_MAP[rawEvent.type] ?? rawEvent.type;
     const event: SSEEvent = { ...rawEvent, type: eventType };
+
+    // ---- Sound effects (lazy-init on first audible event) ----
+    if (audioManager && !audioManager.isMuted) {
+      audioManager.init(); // no-op if already loaded
+      switch (event.type) {
+        case "combat_started":
+          audioManager.play("round_start");
+          audioManager.startAmbient();
+          break;
+
+        case "turn":
+        case "turn_resolved": {
+          const turnData = event.data?.turn ?? event.data;
+          const pairings = Array.isArray(turnData?.pairings) ? turnData.pairings : [];
+          if (pairings.length > 0) {
+            // Pick the most dramatic pairing to play
+            let best = pairings[0];
+            let bestDmg = (best.damageToA ?? 0) + (best.damageToB ?? 0);
+            for (let i = 1; i < pairings.length; i++) {
+              const dmg = (pairings[i].damageToA ?? 0) + (pairings[i].damageToB ?? 0);
+              if (dmg > bestDmg) { best = pairings[i]; bestDmg = dmg; }
+            }
+            audioManager.play(soundForPairing(best));
+          }
+          // Play KO for any eliminations this turn
+          const elims = turnData?.eliminations;
+          if (Array.isArray(elims) && elims.length > 0) {
+            setTimeout(() => audioManager.play("ko_explosion"), 150);
+          }
+          break;
+        }
+
+        case "elimination":
+        case "fighter_eliminated":
+          audioManager.play("ko_explosion");
+          break;
+
+        case "rumble_complete":
+        case "payout_complete":
+          audioManager.stopAmbient();
+          audioManager.play("crowd_cheer");
+          break;
+
+        case "slot_recycled":
+          audioManager.stopAmbient();
+          break;
+      }
+    }
 
     if (event.type === "betting_open") {
       setLastCompletedBySlot((prev) => {
