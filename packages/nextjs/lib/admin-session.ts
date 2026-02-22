@@ -3,8 +3,17 @@ import { randomBytes, createHmac } from "node:crypto";
 export const SESSION_COOKIE = "ucf_admin_session";
 export const SESSION_MAX_AGE = 8 * 60 * 60; // 8 hours
 
-// HMAC key — generated once at process start, sessions invalidate on restart
-const SESSION_KEY = process.env.ADMIN_SESSION_KEY ?? randomBytes(32).toString("hex");
+// HMAC key — must be stable across all serverless instances.
+// Priority: explicit env var > derived from ADMIN_SECRET > random (breaks on serverless)
+function resolveSessionKey(): string {
+  if (process.env.ADMIN_SESSION_KEY) return process.env.ADMIN_SESSION_KEY;
+  const adminSecret = process.env.ADMIN_SECRET ?? process.env.ADMIN_API_KEY;
+  if (adminSecret) {
+    return createHmac("sha256", "ucf-admin-session-key-v1").update(adminSecret).digest("hex");
+  }
+  return randomBytes(32).toString("hex");
+}
+const SESSION_KEY = resolveSessionKey();
 
 function signToken(payload: string): string {
   return createHmac("sha256", SESSION_KEY).update(payload).digest("hex");
