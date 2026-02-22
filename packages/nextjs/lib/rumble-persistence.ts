@@ -1027,6 +1027,25 @@ export async function updateRumbleTxSignature(
   }
 }
 
+export async function getRumbleTxSignature(
+  rumbleId: string,
+  step: TxStep,
+): Promise<string | null> {
+  try {
+    const sb = freshServiceClient();
+    const { data, error } = await sb
+      .from("ucf_rumbles")
+      .select("tx_signatures")
+      .eq("id", rumbleId)
+      .single();
+    if (error || !data) return null;
+    const sigs = (data.tx_signatures as Record<string, string | null>) ?? {};
+    return sigs[step] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Admin Config — persistent key-value store (survives deploys)
 // ---------------------------------------------------------------------------

@@ -3451,8 +3451,14 @@ export class RumbleOrchestrator {
           console.warn(`[Orchestrator] Failed to create winner ATA:`, ataErr);
         }
 
+        // Idempotency guard: skip if distributeReward already called for this rumble
+        const existingSig = await persist.getRumbleTxSignature(rumbleId, "distributeReward");
+        if (existingSig) {
+          console.log(`[OnChain] distributeReward already done for ${rumbleId} (${existingSig}), skipping`);
+        }
+
         // distributeReward: sends 1st place share + shower pool cut, increments rumble counter
-        const sig = await distributeRewardOnChain(winnerAta, showerVaultAta);
+        const sig = !existingSig ? await distributeRewardOnChain(winnerAta, showerVaultAta) : null;
         if (sig) {
           console.log(`[OnChain] distributeReward (1st place) succeeded: ${sig}`);
           persist.updateRumbleTxSignature(rumbleId, "distributeReward", sig);

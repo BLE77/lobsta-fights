@@ -1548,12 +1548,14 @@ pub mod rumble_engine {
 
             // Bettor's proportional share of the allocation
             // share = (bettor_winning_deployed / first_pool) * place_allocation
+            // Use u128 intermediate math to prevent overflow when pools exceed ~4 SOL
+            // (u64 overflows at ~1.8×10^19, but lamport products easily reach that)
             let winnings = if first_pool > 0 {
-                place_allocation
-                    .checked_mul(winning_deployed)
+                (place_allocation as u128)
+                    .checked_mul(winning_deployed as u128)
                     .ok_or(RumbleError::MathOverflow)?
-                    .checked_div(first_pool)
-                    .ok_or(RumbleError::MathOverflow)?
+                    .checked_div(first_pool as u128)
+                    .ok_or(RumbleError::MathOverflow)? as u64
             } else {
                 0
             };
