@@ -3498,9 +3498,20 @@ export class RumbleOrchestrator {
         try {
           await ensureAtaOnChain(ichorMint, fighterWallet);
           const ata = getAssociatedTokenAddressSync(ichorMint, fighterWallet);
+
+          const rewardKey: `ichor-fighter-${string}` = `ichor-fighter-${fighterWallet.toBase58()}`;
+          const existingSig = await persist.getRumbleTxSignature(rumbleId, rewardKey);
+          if (existingSig) {
+            console.log(
+              `[OnChain] adminDistribute fighter reward to ${fighterId} already done for ${rumbleId} (${existingSig}), skipping`,
+            );
+            continue;
+          }
+
           const sig = await adminDistributeOnChain(ata, amountLamports);
           if (sig) {
             console.log(`[OnChain] adminDistribute fighter reward to ${fighterId} succeeded: ${sig}`);
+            await persist.updateRumbleTxSignature(rumbleId, rewardKey, sig);
           } else {
             console.warn(`[OnChain] adminDistribute fighter reward to ${fighterId} returned null`);
           }
@@ -3525,9 +3536,20 @@ export class RumbleOrchestrator {
         try {
           await ensureAtaOnChain(ichorMint, bettorWallet);
           const ata = getAssociatedTokenAddressSync(ichorMint, bettorWallet);
+
+          const rewardKey: `ichor-bettor-${string}` = `ichor-bettor-${bettorWalletStr}`;
+          const existingSig = await persist.getRumbleTxSignature(rumbleId, rewardKey);
+          if (existingSig) {
+            console.log(
+              `[OnChain] adminDistribute bettor reward to ${bettorWalletStr} already done for ${rumbleId} (${existingSig}), skipping`,
+            );
+            continue;
+          }
+
           const sig = await adminDistributeOnChain(ata, amountLamports);
           if (sig) {
             console.log(`[OnChain] adminDistribute bettor reward to ${bettorWalletStr} succeeded: ${sig}`);
+            await persist.updateRumbleTxSignature(rumbleId, rewardKey, sig);
           } else {
             console.warn(`[OnChain] adminDistribute bettor reward to ${bettorWalletStr} returned null`);
           }

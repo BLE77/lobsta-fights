@@ -183,19 +183,74 @@ export default function RumbleSlot({
   >([]);
   const seenTurnsRef = useRef<number>(0);
   const [countdownNow, setCountdownNow] = useState(() => Date.now());
-  // Track when the current turn last changed (client-side anchor for countdown)
   const lastTurnChangeRef = useRef<{ turn: number; at: number }>({ turn: 0, at: Date.now() });
-  // Compute stable countdown from on-chain slot numbers (not server Date.now())
-  // This prevents timer reset on refresh — slot math is deterministic
   const slotAnchorRef = useRef<{ targetSlot: number; currentSlot: number; anchoredAt: number } | null>(null);
   const lastCurrentTurnRef = useRef<number>(0);
+  const containerShakeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const turnAnimationsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const eliminationTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  // Animation triggers
+  const [showContainerShake, setShowContainerShake] = useState(false);
+  const [turnAnimations, setTurnAnimations] = useState<{ turnNumber: number, pairings: any[] } | null>(null);
 
   useEffect(() => {
     const curTurn = slot.currentTurn ?? 0;
     if (curTurn > 0 && curTurn !== lastTurnChangeRef.current.turn) {
       lastTurnChangeRef.current = { turn: curTurn, at: Date.now() };
+
+      // Trigger animations for the new turn
+      const currentTurnData = slot.turns.find(t => t.turnNumber === curTurn) || slot.turns[slot.turns.length - 1];
+      if (currentTurnData) {
+        setTurnAnimations({ turnNumber: curTurn, pairings: currentTurnData.pairings });
+
+        // Check for massive damage or eliminations to trigger a slot-wide shake
+        let shouldShake = false;
+        if (currentTurnData.eliminations && currentTurnData.eliminations.length > 0) {
+          shouldShake = true;
+        }
+        if (currentTurnData.pairings) {
+          for (const p of currentTurnData.pairings) {
+            if (p.damageToA >= 20 || p.damageToB >= 20) {
+              shouldShake = true;
+              break;
+            }
+          }
+        }
+
+        if (shouldShake) {
+          setShowContainerShake(true);
+          if (containerShakeTimeoutRef.current) {
+            clearTimeout(containerShakeTimeoutRef.current);
+          }
+          containerShakeTimeoutRef.current = setTimeout(() => setShowContainerShake(false), 400); // Wait for intense-shake to finish
+        }
+
+        // Clear turn animations after 1s so they don't re-play if the component re-renders
+        if (turnAnimationsTimeoutRef.current) {
+          clearTimeout(turnAnimationsTimeoutRef.current);
+        }
+        turnAnimationsTimeoutRef.current = setTimeout(() => setTurnAnimations(null), 1000);
+      }
     }
-  }, [slot.currentTurn]);
+    return () => {
+      if (containerShakeTimeoutRef.current) {
+        clearTimeout(containerShakeTimeoutRef.current);
+      }
+      setShowContainerShake(false);
+      if (turnAnimationsTimeoutRef.current) {
+        clearTimeout(turnAnimationsTimeoutRef.current);
+      }
+      setTurnAnimations(null);
+    };
+  }, [slot.currentTurn, slot.turns]);
+
+  useEffect(() => {
+    return () => {
+      eliminationTimeoutsRef.current.forEach(clearTimeout);
+      eliminationTimeoutsRef.current.clear();
+    };
+  }, []);
 
   // Anchor slot-based timer: when we receive slot data, record when we got it
   useEffect(() => {
@@ -203,7 +258,6 @@ export default function RumbleSlot({
     const current = (slot as any).currentSlot as number | null;
     if (target && current && target > current) {
       const turnChanged = slot.currentTurn !== lastCurrentTurnRef.current;
-      // Only re-anchor if turn changed, no existing anchor, or target slot changed
       if (turnChanged || !slotAnchorRef.current || slotAnchorRef.current.targetSlot !== target) {
         slotAnchorRef.current = { targetSlot: target, currentSlot: current, anchoredAt: Date.now() };
         lastCurrentTurnRef.current = slot.currentTurn;
@@ -222,7 +276,6 @@ export default function RumbleSlot({
   }, [slot.state, slot.bettingDeadline]);
 
   const liveCountdown = (() => {
-    // Primary: compute from on-chain slot numbers (deterministic, survives refresh)
     if (slot.state === "combat" && slotAnchorRef.current) {
       const { targetSlot, currentSlot, anchoredAt } = slotAnchorRef.current;
       const slotMs = (slot as any).slotMsEstimate ?? 400;
@@ -231,7 +284,6 @@ export default function RumbleSlot({
       const remaining = Math.max(0, Math.ceil((totalEtaMs - elapsed) / 1_000));
       return { label: "NEXT TURN", seconds: remaining };
     }
-    // Fallback: use server-computed nextTurnAt
     if (slot.state === "combat" && slot.nextTurnAt) {
       const targetMs = new Date(slot.nextTurnAt).getTime();
       if (!Number.isFinite(targetMs)) return null;
@@ -240,7 +292,6 @@ export default function RumbleSlot({
         seconds: Math.max(0, Math.ceil((targetMs - countdownNow) / 1_000)),
       };
     }
-    // Fallback: compute from turn change anchor
     if (slot.state === "combat" && slot.turnIntervalMs) {
       const anchor = lastTurnChangeRef.current;
       const targetMs = anchor.at + slot.turnIntervalMs;
@@ -251,8 +302,6 @@ export default function RumbleSlot({
       };
     }
     if (slot.state === "betting" && slot.bettingDeadline) {
-      // Offset by bet close guard so the countdown matches when betting
-      // actually closes for the user (12s before the on-chain deadline).
       const BET_CLOSE_GUARD_MS = 12_000;
       const targetMs = new Date(slot.bettingDeadline).getTime() - BET_CLOSE_GUARD_MS;
       if (!Number.isFinite(targetMs)) return null;
@@ -266,14 +315,14 @@ export default function RumbleSlot({
 
   const nextTurnCountdownSeconds = liveCountdown?.seconds ?? null;
 
-  // Track new eliminations from incoming turns
   useEffect(() => {
     if (slot.state !== "combat" || slot.turns.length === 0) {
-      // Reset when not in combat
       if (seenTurnsRef.current !== 0) {
         seenTurnsRef.current = 0;
         setActiveEliminations([]);
       }
+      eliminationTimeoutsRef.current.forEach(clearTimeout);
+      eliminationTimeoutsRef.current.clear();
       return;
     }
 
@@ -308,18 +357,25 @@ export default function RumbleSlot({
 
     setActiveEliminations((prev) => [...prev, ...newEliminations]);
 
-    // Auto-remove after 3 seconds
-    const keys = newEliminations.map((e) => e.key);
-    setTimeout(() => {
-      setActiveEliminations((prev) =>
-        prev.filter((e) => !keys.includes(e.key))
-      );
-    }, 3000);
+    for (const elim of newEliminations) {
+      const existing = eliminationTimeoutsRef.current.get(elim.key);
+      if (existing) {
+        clearTimeout(existing);
+      }
+      const timeout = setTimeout(() => {
+        setActiveEliminations((prev) =>
+          prev.filter((e) => e.key !== elim.key)
+        );
+        eliminationTimeoutsRef.current.delete(elim.key);
+      }, 3000);
+      eliminationTimeoutsRef.current.set(elim.key, timeout);
+    }
   }, [slot.turns, slot.state, slot.fighters, slot.fighterNames]);
 
   return (
     <div
-      className={`${label.bgColor} border ${label.borderColor} rounded-sm backdrop-blur-sm overflow-hidden transition-all`}
+      className={`${label.bgColor} border ${label.borderColor} rounded-sm backdrop-blur-sm overflow-hidden transition-all ${showContainerShake ? "animate-intense-shake" : ""
+        }`}
     >
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-2 border-b border-stone-800/50 bg-stone-950/50">
@@ -405,12 +461,10 @@ export default function RumbleSlot({
             <div className="relative">
               <div className="space-y-4">
                 {(() => {
-                  // Find current turn pairings
                   const currentTurnData = slot.turns.find(t => t.turnNumber === slot.currentTurn) || slot.turns[slot.turns.length - 1];
                   const hasPairings = currentTurnData && Array.isArray(currentTurnData.pairings) && currentTurnData.pairings.length > 0;
 
                   if (!hasPairings) {
-                    // Fallback to strict grid if no pairings yet
                     return (
                       <div className="space-y-0.5">
                         <p className="font-mono text-[10px] text-stone-500 uppercase mb-1">
@@ -434,7 +488,6 @@ export default function RumbleSlot({
                     );
                   }
 
-                  // We have pairings! Let's extract active fighters and benched fighters.
                   const activeFighterIds = new Set<string>();
                   currentTurnData.pairings.forEach(p => {
                     activeFighterIds.add(p.fighterA);
@@ -442,8 +495,6 @@ export default function RumbleSlot({
                   });
 
                   const fighterMap = new Map(slot.fighters.map(f => [f.id, f]));
-
-                  // Benched or eliminated fighters not swinging this turn
                   const bench = slot.fighters.filter(f => !activeFighterIds.has(f.id));
 
                   return (
@@ -458,16 +509,44 @@ export default function RumbleSlot({
                       </div>
 
                       {/* Face-Off Rows */}
-                      <div className="space-y-3">
+                      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 overflow-hidden">
                         {currentTurnData.pairings.map((p, idx) => {
                           const fA = fighterMap.get(p.fighterA);
                           const fB = fighterMap.get(p.fighterB);
                           if (!fA || !fB) return null;
 
+                          // Determine clash animations based on turn active state
+                          let aClass = "";
+                          let bClass = "";
+                          let vsColorClass = "";
+
+                          if (turnAnimations && turnAnimations.turnNumber === currentTurnData.turnNumber) {
+                            const aStrikes = ["HIGH_STRIKE", "MID_STRIKE", "LOW_STRIKE", "SPECIAL"].includes(p.moveA);
+                            const bStrikes = ["HIGH_STRIKE", "MID_STRIKE", "LOW_STRIKE", "SPECIAL"].includes(p.moveB);
+
+                            if (aStrikes && !bStrikes) {
+                              aClass = "animate-clash-lunge";
+                              bClass = "animate-clash-recoil";
+                            } else if (bStrikes && !aStrikes) {
+                              aClass = "animate-clash-recoil-reverse";
+                              bClass = "animate-clash-lunge-reverse";
+                            } else if (aStrikes && bStrikes) {
+                              aClass = "animate-clash-lunge";
+                              bClass = "animate-clash-lunge-reverse";
+                            }
+
+                            if (p.damageToA >= 10 || p.damageToB >= 10) vsColorClass = "animate-clash-flash-red";
+                            else if (p.moveA === "DODGE" || p.moveB === "DODGE") vsColorClass = "animate-clash-flash-green";
+                            else if (p.moveA?.startsWith("GUARD") || p.moveB?.startsWith("GUARD")) vsColorClass = "animate-clash-flash-blue";
+                          }
+
+                          const isLastOdd = currentTurnData.pairings.length % 2 !== 0 && idx === currentTurnData.pairings.length - 1;
+                          const gridSpanClass = isLastOdd ? "xl:col-span-2 xl:w-[calc(50%-0.5rem)] xl:mx-auto" : "";
+
                           return (
-                            <div key={`pairing-${idx}`} className="flex items-center gap-2 bg-stone-900/40 p-2 rounded-sm border border-stone-800">
-                              {/* Fighter A */}
-                              <div className="flex-1 min-w-0">
+                            <div key={`pairing-${idx}`} className={`flex items-center justify-between bg-stone-900/40 p-4 rounded-sm border border-stone-800 relative z-10 w-full h-full ${gridSpanClass}`}>
+                              {/* Fighter A (Left aligned taking up 40%) */}
+                              <div className={`flex flex-col items-center w-[40%] ${aClass}`}>
                                 <FighterHP
                                   name={fA.name}
                                   hp={fA.hp}
@@ -476,17 +555,17 @@ export default function RumbleSlot({
                                   isEliminated={fA.eliminatedOnTurn != null}
                                   damageDealt={fA.totalDamageDealt}
                                   isMyBet={myBetFighterIds?.has(fA.id)}
-                                  size="large"
+                                  layout="vertical"
                                 />
                               </div>
 
-                              {/* VS Badge */}
-                              <div className="flex-shrink-0 px-2 flex flex-col items-center">
-                                <span className="font-fight text-lg text-amber-500 opacity-60">VS</span>
+                              {/* VS Badge (Centered taking up 20%) */}
+                              <div className="flex flex-col items-center justify-center w-[20%] relative z-20">
+                                <span className={`font-fight text-2xl md:text-3xl text-amber-500 opacity-60 ${vsColorClass}`}>VS</span>
                               </div>
 
-                              {/* Fighter B */}
-                              <div className="flex-1 min-w-0">
+                              {/* Fighter B (Right aligned taking up 40%) */}
+                              <div className={`flex flex-col items-center w-[40%] ${bClass}`}>
                                 <FighterHP
                                   name={fB.name}
                                   hp={fB.hp}
@@ -495,7 +574,7 @@ export default function RumbleSlot({
                                   isEliminated={fB.eliminatedOnTurn != null}
                                   damageDealt={fB.totalDamageDealt}
                                   isMyBet={myBetFighterIds?.has(fB.id)}
-                                  size="large"
+                                  layout="vertical"
                                 />
                               </div>
                             </div>

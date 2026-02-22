@@ -3,7 +3,6 @@ import { getOrchestrator } from "~~/lib/rumble-orchestrator";
 import { freshSupabase } from "~~/lib/supabase";
 import { getApiKeyFromHeaders } from "~~/lib/request-auth";
 import {
-  verifyBetTransaction,
   verifyRumblePlaceBetBatchTransaction,
   verifyRumblePlaceBetTransaction,
   isSignatureUsed,
@@ -263,73 +262,68 @@ export async function POST(request: Request) {
         .getStatus()
         .find((s) => s.slotIndex === parsedSlotIndex);
 
-      // Verify the transaction on-chain
-      const verification =
-        txKind === "rumble_place_bet" || txKind === "rumble_place_bet_batch"
-          ? await (async () => {
-              const slotRumbleId = slotForVerification?.rumbleId;
-              if (!slotRumbleId || typeof slotRumbleId !== "string") {
-                return {
-                  valid: false,
-                  error: "No active rumble found for the provided slot.",
-                };
-              }
-              const requestedRumbleId = body.rumble_id || body.rumbleId;
-              if (requestedRumbleId && requestedRumbleId !== slotRumbleId) {
-                return {
-                  valid: false,
-                  error: `Requested rumble_id (${requestedRumbleId}) does not match slot rumble (${slotRumbleId}).`,
-                };
-              }
+      // Verify the transaction on-chain.
+      // For wallet+signature bets we require a rumble_engine place_bet instruction
+      // and do not trust tx_kind from the request body.
+      const verification = await (async () => {
+        const slotRumbleId = slotForVerification?.rumbleId;
+        if (!slotRumbleId || typeof slotRumbleId !== "string") {
+          return {
+            valid: false,
+            error: "No active rumble found for the provided slot.",
+          };
+        }
+        const requestedRumbleId = body.rumble_id || body.rumbleId;
+        if (requestedRumbleId && requestedRumbleId !== slotRumbleId) {
+          return {
+            valid: false,
+            error: `Requested rumble_id (${requestedRumbleId}) does not match slot rumble (${slotRumbleId}).`,
+          };
+        }
 
-              const rumbleIdNum = parseOnchainRumbleIdNumber(slotRumbleId);
-              if (rumbleIdNum === null) {
-                return {
-                  valid: false,
-                  error: `Could not parse slot rumble id: ${slotRumbleId}`,
-                };
-              }
-              const verificationLegs = parsedBets.map((bet) => {
-                const fighterIndexFromBody =
-                  typeof bet.fighterIndex === "number"
-                    ? bet.fighterIndex
-                    : slotForVerification?.fighters.findIndex((f) => f === bet.fighterId) ?? -1;
-                return {
-                  fighterIndex: fighterIndexFromBody,
-                  amountSol: bet.solAmount,
-                };
-              });
-              if (verificationLegs.some((leg) => !Number.isInteger(leg.fighterIndex) || leg.fighterIndex < 0)) {
-                return {
-                  valid: false,
-                  error: "Missing fighter_index for on-chain bet verification.",
-                };
-              }
-              if (verificationLegs.length === 1) {
-                const singleLeg = await verifyRumblePlaceBetTransaction(
-                  txSignature,
-                  bettorWallet,
-                  rumbleIdNum,
-                  verificationLegs[0].fighterIndex,
-                  verificationLegs[0].amountSol,
-                );
-                if (singleLeg.valid) verifiedRumbleId = slotRumbleId;
-                return singleLeg;
-              }
-              const batch = await verifyRumblePlaceBetBatchTransaction(
-                txSignature,
-                bettorWallet,
-                rumbleIdNum,
-                verificationLegs,
-              );
-              if (batch.valid) verifiedRumbleId = slotRumbleId;
-              return batch;
-            })()
-          : await verifyBetTransaction(
-              txSignature,
-              bettorWallet,
-              parsedBets.reduce((sum, b) => sum + b.solAmount, 0),
-            );
+        const rumbleIdNum = parseOnchainRumbleIdNumber(slotRumbleId);
+        if (rumbleIdNum === null) {
+          return {
+            valid: false,
+            error: `Could not parse slot rumble id: ${slotRumbleId}`,
+          };
+        }
+        const verificationLegs = parsedBets.map((bet) => {
+          const fighterIndexFromBody =
+            typeof bet.fighterIndex === "number"
+              ? bet.fighterIndex
+              : slotForVerification?.fighters.findIndex((f) => f === bet.fighterId) ?? -1;
+          return {
+            fighterIndex: fighterIndexFromBody,
+            amountSol: bet.solAmount,
+          };
+        });
+        if (verificationLegs.some((leg) => !Number.isInteger(leg.fighterIndex) || leg.fighterIndex < 0)) {
+          return {
+            valid: false,
+            error: "Missing fighter_index for on-chain bet verification.",
+          };
+        }
+        if (verificationLegs.length === 1) {
+          const singleLeg = await verifyRumblePlaceBetTransaction(
+            txSignature,
+            bettorWallet,
+            rumbleIdNum,
+            verificationLegs[0].fighterIndex,
+            verificationLegs[0].amountSol,
+          );
+          if (singleLeg.valid) verifiedRumbleId = slotRumbleId;
+          return singleLeg;
+        }
+        const batch = await verifyRumblePlaceBetBatchTransaction(
+          txSignature,
+          bettorWallet,
+          rumbleIdNum,
+          verificationLegs,
+        );
+        if (batch.valid) verifiedRumbleId = slotRumbleId;
+        return batch;
+      })();
       if (!verification.valid) {
         return NextResponse.json(
           { error: `TX verification failed: ${verification.error}` },

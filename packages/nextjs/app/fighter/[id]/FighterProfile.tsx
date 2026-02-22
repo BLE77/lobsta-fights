@@ -57,6 +57,7 @@ export default function FighterProfile() {
 
   useEffect(() => {
     if (fighterId) {
+      setSelectedRival(null);
       fetchFighter();
       fetchStats();
     }
@@ -66,7 +67,7 @@ export default function FighterProfile() {
     if (selectedRival && fighterId) {
       fetchH2H(selectedRival);
     }
-  }, [selectedRival]);
+  }, [selectedRival, fighterId]);
 
   const fetchFighter = async () => {
     try {

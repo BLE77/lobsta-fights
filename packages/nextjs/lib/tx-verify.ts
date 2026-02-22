@@ -13,7 +13,7 @@ import { getConfiguredTreasuryAddress } from "./treasury";
 import { RUMBLE_ENGINE_ID } from "./solana-programs";
 
 /** Tolerance for SOL amount matching (accounts for rounding). */
-const AMOUNT_TOLERANCE_SOL = 0.001;
+const AMOUNT_TOLERANCE_SOL = 0.000000001;
 
 /** Retry getParsedTransaction until the tx is visible (handles fire-and-forget clients). */
 async function getParsedTxWithRetry(

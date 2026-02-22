@@ -380,6 +380,7 @@ export default function RumblePage() {
   const [phantomProvider, setPhantomProvider] = useState<any>(null);
   const [publicKey, setPublicKey] = useState<PublicKey | null>(null);
   const walletConnected = !!publicKey;
+  const phantomListenerCleanupRef = useRef<(() => void) | null>(null);
 
   // RPC connection — use Helius if available, otherwise public RPC
   const network = process.env.NEXT_PUBLIC_SOLANA_NETWORK ?? "devnet";
@@ -397,26 +398,44 @@ export default function RumblePage() {
     const checkPhantom = () => {
       const provider = (window as any).phantom?.solana;
       if (provider?.isPhantom) {
+        if (phantomListenerCleanupRef.current) {
+          phantomListenerCleanupRef.current();
+          phantomListenerCleanupRef.current = null;
+        }
+
         setPhantomProvider(provider);
         // Check if already connected (eager connect)
         if (provider.isConnected && provider.publicKey) {
           setPublicKey(new PublicKey(provider.publicKey.toString()));
         }
         // Listen for account changes
-        provider.on("accountChanged", (pk: any) => {
+        const handleAccountChanged = (pk: any) => {
           if (pk) {
             setPublicKey(new PublicKey(pk.toString()));
           } else {
             setPublicKey(null);
           }
-        });
-        provider.on("disconnect", () => setPublicKey(null));
+        };
+        const handleDisconnect = () => setPublicKey(null);
+        provider.on("accountChanged", handleAccountChanged);
+        provider.on("disconnect", handleDisconnect);
+
+        phantomListenerCleanupRef.current = () => {
+          provider.off("accountChanged", handleAccountChanged);
+          provider.off("disconnect", handleDisconnect);
+        };
       }
     };
     // Phantom injects after page load, so check with a small delay too
     checkPhantom();
     const timer = setTimeout(checkPhantom, 500);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      if (phantomListenerCleanupRef.current) {
+        phantomListenerCleanupRef.current();
+        phantomListenerCleanupRef.current = null;
+      }
+    };
   }, []);
 
   const connectPhantom = useCallback(async () => {
@@ -467,6 +486,15 @@ export default function RumblePage() {
     claimBalanceRef.current = claimBalance;
   }, [claimBalance]);
 
+  // Reset wallet-specific state immediately when wallet account changes
+  useEffect(() => {
+    setClaimBalance(null);
+    setMyBetAmountsBySlot(new Map());
+    setSolBalance(null);
+    setClaimError(null);
+    setBetError(null);
+  }, [publicKey]);
+
   // Fetch full status via polling
   const fetchStatus = useCallback(async () => {
     const seq = ++pollSeqRef.current;
@@ -475,7 +503,36 @@ export default function RumblePage() {
         cache: "no-store",
       });
       if (!res.ok) throw new Error(`Status ${res.status}`);
-      const raw = await res.json();
+      let raw = await res.json();
+
+      // Inject local mock data for UI testing if the server is empty
+      if (process.env.NODE_ENV === "development" && (!raw.slots || raw.slots.length === 0)) {
+        raw = {
+          ...raw,
+          slots: [{
+            slot: 999,
+            state: "betting",
+            phaseStart: Date.now() - 10000,
+            phaseEnd: Date.now() + 600000,
+            minFighters: 8,
+            minBet: 0.01,
+            poolSize: 15.4,
+            fighters: [
+              { fighterId: "f1", fighterName: "ClawdBot", hp: 100, maxHp: 100, solDeployed: 5.2, betCount: 14, impliedProbability: 0.33, potentialReturn: 3.0, imageUrl: "https://teal-distinct-tarantula-166.mypinata.cloud/ipfs/bafybeicgclzndr3wwk4d4qpxe5edv67j6shm4zffp7v6ps2bhmstex64ka" },
+              { fighterId: "f2", fighterName: "IronClaw", hp: 100, maxHp: 100, solDeployed: 2.1, betCount: 5, impliedProbability: 0.15, potentialReturn: 6.6, imageUrl: "https://teal-distinct-tarantula-166.mypinata.cloud/ipfs/bafybeidof5y26j44uqun5p6tpt6u2ndvgyg72ov3o2lfl4p5tw72g24sfi" },
+              { fighterId: "f3", fighterName: "RustBucket", hp: 100, maxHp: 100, solDeployed: 8.1, betCount: 30, impliedProbability: 0.52, potentialReturn: 1.9, imageUrl: "https://teal-distinct-tarantula-166.mypinata.cloud/ipfs/bafybeieffh6d2gqbs3n442aoxj42q7w5nndn2ndxsz2ofvwhcwngn2owee" },
+              { fighterId: "f4", fighterName: "SnapDragon", hp: 100, maxHp: 100, solDeployed: 0.5, betCount: 1, impliedProbability: 0.05, potentialReturn: 20.0, imageUrl: "https://teal-distinct-tarantula-166.mypinata.cloud/ipfs/bafybeidof5y26j44uqun5p6tpt6u2ndvgyg72ov3o2lfl4p5tw72g24sfi" },
+              { fighterId: "f5", fighterName: "NeonPincer", hp: 100, maxHp: 100, solDeployed: 1.0, betCount: 2, impliedProbability: 0.1, potentialReturn: 10.0, imageUrl: "https://teal-distinct-tarantula-166.mypinata.cloud/ipfs/bafybeicgclzndr3wwk4d4qpxe5edv67j6shm4zffp7v6ps2bhmstex64ka" }
+            ],
+            combatLog: [],
+            winnerId: null,
+            payouts: null
+          }],
+          queue: [{ id: "q1", title: "Heavyweight Prototype" }, { id: "q2", title: "MK-1 Aggressor" }],
+          queueLength: 2
+        };
+      }
+
       if (seq !== pollSeqRef.current) return; // stale response, discard
       const data = normalizeStatusPayload(raw);
       setStatus(data);
@@ -1222,9 +1279,9 @@ export default function RumblePage() {
       <div className="relative z-10 w-full">
         {/* Header */}
         <header className="border-b border-stone-800 bg-stone-950/80 backdrop-blur-sm">
-          <div className="max-w-7xl mx-auto px-4 py-3 grid grid-cols-3 items-center">
+          <div className="max-w-[1600px] mx-auto px-4 py-3 flex flex-col lg:grid lg:grid-cols-3 items-center gap-3 lg:gap-0">
             {/* Left — Home */}
-            <div className="flex items-center">
+            <div className="flex items-center w-full justify-center lg:justify-start order-2 lg:order-1">
               <Link
                 href="/"
                 className="text-stone-500 hover:text-amber-400 font-mono text-xs uppercase tracking-wider transition-colors"
@@ -1234,17 +1291,17 @@ export default function RumblePage() {
             </div>
 
             {/* Center — RUMBLE title */}
-            <div className="text-center">
+            <div className="text-center order-1 lg:order-2 w-full">
               <h1 className="font-fight-glow text-3xl text-amber-400">
                 RUMBLE
               </h1>
-              <p className="font-mono text-[10px] text-stone-600">
+              <p className="font-mono text-[10px] text-stone-600 hidden sm:block">
                 BATTLE ROYALE // 8-16 FIGHTERS // LAST BOT STANDING
               </p>
             </div>
 
             {/* Right — Controls */}
-            <div className="flex items-center gap-3 justify-end">
+            <div className="flex items-center gap-2 sm:gap-3 justify-center lg:justify-end order-3 w-full flex-wrap">
               {/* AI Commentary */}
               <CommentaryPlayer
                 slots={Array.isArray(status?.slots) ? status.slots : []}
@@ -1255,7 +1312,7 @@ export default function RumblePage() {
               {/* Connection indicator */}
               <div className="flex items-center gap-1.5">
                 <span
-                  className={`inline-block w-2 h-2 rounded-full ${sseConnected ? "bg-green-500" : "bg-amber-500 animate-pulse"
+                  className={`inline-block w-2 h-2 rounded-sm ${sseConnected ? "bg-green-500" : "bg-amber-500 animate-pulse"
                     }`}
                 />
                 <span className="font-mono text-[10px] text-stone-500">
@@ -1269,7 +1326,7 @@ export default function RumblePage() {
                   <span className="font-mono text-[10px] text-stone-400">
                     {solBalance !== null ? `${solBalance.toFixed(3)} SOL` : "..."}
                   </span>
-                  <span className="font-mono text-[10px] text-amber-400">
+                  <span className="font-mono text-[10px] text-amber-400 max-w-[80px] sm:max-w-none truncate">
                     {publicKey.toBase58().slice(0, 4)}...{publicKey.toBase58().slice(-4)}
                   </span>
                   <button
@@ -1292,7 +1349,7 @@ export default function RumblePage() {
         </header>
 
         {/* Main Layout */}
-        <div className="max-w-7xl mx-auto px-4 py-6">
+        <div className="max-w-[1600px] mx-auto px-4 py-6">
           {loading ? (
             <div className="flex gap-6 justify-center">
               <div className="flex-1 max-w-4xl">
@@ -1331,6 +1388,13 @@ export default function RumblePage() {
 
               return (
                 <div className="flex gap-6 justify-center">
+                  {/* Left Sidebar: Chat */}
+                  <div className="w-72 flex-shrink-0 hidden xl:block">
+                    <div className="animate-fade-in-up h-full sticky top-6">
+                      <ChatPanel walletAddress={publicKey?.toBase58() ?? null} />
+                    </div>
+                  </div>
+
                   {betError && (
                     <div className="fixed bottom-4 right-4 z-50 bg-red-900/90 border border-red-600 text-red-300 font-mono text-xs px-4 py-2 rounded-sm shadow-lg animate-fade-in-up">
                       {betError}
@@ -1455,10 +1519,6 @@ export default function RumblePage() {
                         currentPool={ichorShower.currentPool}
                       />
                     </div>
-
-                    <div className="animate-fade-in-up" style={{ animationDelay: '300ms', animationFillMode: 'both' }}>
-                      <ChatPanel walletAddress={publicKey?.toBase58() ?? null} />
-                    </div>
                   </div>
                 </div>
               );
@@ -1467,7 +1527,7 @@ export default function RumblePage() {
         </div>
 
         {/* Mobile sidebar (below slots) */}
-        <div className="lg:hidden max-w-7xl mx-auto px-4 pb-6 space-y-4">
+        <div className="lg:hidden max-w-[1600px] mx-auto px-4 pb-6 space-y-4">
           {status && (
             <>
               {walletConnected && (
@@ -1494,7 +1554,7 @@ export default function RumblePage() {
 
         {/* Footer */}
         <footer className="border-t border-stone-800 bg-stone-950/80 backdrop-blur-sm">
-          <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+          <div className="max-w-[1600px] mx-auto px-4 py-3 flex items-center justify-between">
             <p className="font-mono text-[10px] text-stone-600">
               // UNDERGROUND CLAW FIGHTS //
             </p>

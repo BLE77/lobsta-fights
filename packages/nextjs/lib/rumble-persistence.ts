@@ -997,7 +997,9 @@ export type TxStep =
   | "checkIchorShower"
   | "completeRumble"
   | "sweepTreasury"
-  | "postTurnResult";
+  | "postTurnResult"
+  | `ichor-fighter-${string}`
+  | `ichor-bettor-${string}`;
 
 export async function updateRumbleTxSignature(
   rumbleId: string,
