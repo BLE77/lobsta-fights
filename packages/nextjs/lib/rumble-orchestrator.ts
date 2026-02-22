@@ -612,6 +612,9 @@ export class RumbleOrchestrator {
   };
   private tickInFlight: Promise<void> | null = null;
   private inflightCleanup: Set<Promise<unknown>> = new Set();
+
+  // Track consecutive fatal openTurn failures per rumble to detect unrecoverable on-chain state
+  private openTurnFatalFailures: Map<string, number> = new Map();
   private lastTrackerCleanupAt = 0;
 
   constructor(queueManager: RumbleQueueManager) {
@@ -1532,6 +1535,50 @@ export class RumbleOrchestrator {
   }
 
   /**
+   * Abort a combat slot that is stuck due to an unrecoverable on-chain error
+   * (e.g. AccountDiscriminatorMismatch after program redeploy).
+   * Marks the rumble as complete with no winner and re-queues all fighters.
+   */
+  private async abortStuckCombat(
+    slot: RumbleSlot,
+    state: SlotCombatState,
+    reason: string,
+  ): Promise<void> {
+    const rumbleId = slot.id;
+    const slotIndex = slot.slotIndex;
+    const fighterIds = slot.fighters.slice();
+
+    // Report a no-contest result so the slot transitions normally through payout→idle
+    this.queueManager.reportResult(slotIndex, {
+      rumbleId,
+      fighters: state.fighters,
+      turns: [],
+      winner: state.fighters[0]?.id ?? "",
+      placements: state.fighters.map((f, i) => ({ id: f.id, placement: i + 1 })),
+      totalTurns: 0,
+    });
+
+    // Persist: mark rumble as complete (no real winner)
+    await persist.updateRumbleStatus(rumbleId, "complete").catch(() => {});
+
+    // Clean up tracking maps
+    this.openTurnFatalFailures.delete(rumbleId);
+    this.combatStates.delete(slotIndex);
+
+    // Re-queue fighters for next rumble
+    for (const fighterId of fighterIds) {
+      try {
+        this.queueManager.addToQueue(fighterId, false);
+        await persist.saveQueueFighter(fighterId, "waiting", false);
+      } catch {
+        // Ignore duplicates/conflicts during recovery
+      }
+    }
+
+    console.error(`[Orchestrator] Aborted stuck combat slot ${slotIndex} (${rumbleId}): ${reason}`);
+  }
+
+  /**
    * Create a rumble on-chain when betting opens.
    * Awaited but failures do not block the off-chain game loop.
    */
@@ -2114,11 +2161,27 @@ export class RumbleOrchestrator {
         if (sig) {
           console.log(`[OnChain] openTurn succeeded: ${sig}`);
           persist.updateRumbleTxSignature(slot.id, "openTurn", sig);
+          this.openTurnFatalFailures.delete(slot.id);
         }
       } catch (err) {
-        // Idempotent/open-race failures are expected when multiple keepers
-        // hit the same turn boundary.
-        if (
+        // Fatal: AccountDiscriminatorMismatch means the on-chain rumble account
+        // was created by a different program version. Retrying will never succeed.
+        const FATAL_TOKENS = ["accountdiscriminatormismatch", "account discriminator did not match"];
+        if (this.hasErrorTokenAny(err, FATAL_TOKENS)) {
+          const count = (this.openTurnFatalFailures.get(slot.id) ?? 0) + 1;
+          this.openTurnFatalFailures.set(slot.id, count);
+          if (count >= 3) {
+            console.error(
+              `[Orchestrator] Aborting rumble ${slot.id} — on-chain account has stale discriminator ` +
+              `(${count} consecutive fatal failures). Fighters will be re-queued.`,
+            );
+            await this.abortStuckCombat(slot, state, "on-chain account discriminator mismatch (program redeployed)");
+            return;
+          }
+          console.warn(`[OnChain] openTurn fatal failure ${count}/3 for ${slot.id}: ${formatError(err)}`);
+        } else if (
+          // Idempotent/open-race failures are expected when multiple keepers
+          // hit the same turn boundary.
           !this.hasErrorTokenAny(err, [
             "turn already open",
             "turnalreadyopen",
