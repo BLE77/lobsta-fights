@@ -1413,20 +1413,22 @@ pub mod rumble_engine {
             next_place = next_place.checked_add(1).ok_or(RumbleError::MathOverflow)?;
         }
 
-        for i in 0..fighter_count {
-            if placements[i] != 0 {
-                continue;
-            }
-            let elimination_rank = combat.elimination_rank[i];
-            if elimination_rank > 0 {
-                let place = (combat.fighter_count as u16)
-                    .checked_sub(elimination_rank as u16)
-                    .and_then(|v| v.checked_add(1))
-                    .ok_or(RumbleError::MathOverflow)?;
-                placements[i] = place as u8;
-            }
+        // Assign eliminated fighters by reverse elimination_rank (last eliminated = best rank).
+        // Using sequential next_place instead of formula to avoid duplicate placements
+        // when elimination_rank == fighter_count (which would produce placement 1, colliding
+        // with the winner).
+        let mut eliminated: Vec<(usize, u8)> = (0..fighter_count)
+            .filter(|i| placements[*i] == 0 && combat.elimination_rank[*i] > 0)
+            .map(|i| (i, combat.elimination_rank[i]))
+            .collect();
+        // Sort by rank descending: highest rank = last eliminated = best placement
+        eliminated.sort_by(|a, b| b.1.cmp(&a.1));
+        for (idx, _rank) in eliminated {
+            placements[idx] = next_place;
+            next_place = next_place.checked_add(1).ok_or(RumbleError::MathOverflow)?;
         }
 
+        // Any remaining unplaced fighters (should not happen, but safety net)
         for i in 0..fighter_count {
             if placements[i] == 0 {
                 placements[i] = next_place;

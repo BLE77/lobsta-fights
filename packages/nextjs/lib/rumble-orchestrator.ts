@@ -2846,6 +2846,21 @@ export class RumbleOrchestrator {
       .filter((row) => Number.isInteger(row.placement) && row.placement > 0)
       .sort((a, b) => a.placement - b.placement);
 
+    // Safety net: deduplicate placements from on-chain (e.g. double-1st bug
+    // when elimination_rank == fighter_count produced placement 1 colliding
+    // with the winner). Re-number sequentially if any duplicates found.
+    const seenPlacements = new Set<number>();
+    let hasDuplicates = false;
+    for (const p of placements) {
+      if (seenPlacements.has(p.placement)) { hasDuplicates = true; break; }
+      seenPlacements.add(p.placement);
+    }
+    if (hasDuplicates) {
+      for (let i = 0; i < placements.length; i++) {
+        placements[i].placement = i + 1;
+      }
+    }
+
     if (placements.length < 2) {
       const ranked = [...state.fighters].sort((a, b) => {
         if (a.hp > 0 || b.hp > 0) {
