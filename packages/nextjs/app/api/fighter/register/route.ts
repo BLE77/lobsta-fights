@@ -1,9 +1,11 @@
 // @ts-nocheck
+import { PublicKey } from "@solana/web3.js";
 import { NextResponse } from "next/server";
 import { supabase, freshSupabase } from "../../../../lib/supabase";
 import { verifyMoltbookIdentity, isMoltbookEnabled } from "../../../../lib/moltbook";
 import { AI_FIGHTER_DESIGN_PROMPT, FIGHTER_DESIGN_HINT, REGISTRATION_EXAMPLE } from "../../../../lib/fighter-design-prompt";
 import { generateApiKey } from "../../../../lib/api-key";
+import { isAuthorizedAdminRequest } from "../../../../lib/request-auth";
 import { requireJsonContentType, sanitizeErrorResponse } from "../../../../lib/api-middleware";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
@@ -90,6 +92,18 @@ function isPrivateIpAddress(address: string): boolean {
   if (version === 4) return isPrivateIpv4(address);
   if (version === 6) return isPrivateIpv6(address);
   return true;
+}
+
+function normalizeWalletAddress(rawWalletAddress: unknown): string | null {
+  if (typeof rawWalletAddress !== "string") return null;
+  const candidate = rawWalletAddress.trim();
+  if (!candidate) return null;
+  try {
+    const wallet = new PublicKey(candidate);
+    return wallet.toBase58();
+  } catch {
+    return null;
+  }
 }
 
 async function validateWebhookUrl(webhookUrl: string): Promise<string | null> {
@@ -427,6 +441,7 @@ export async function POST(request: Request) {
     }
 
     const body: RobotCharacter = await request.json();
+    const isAdminRegistration = isAuthorizedAdminRequest(request.headers);
     const {
       walletAddress,
       name,
@@ -447,19 +462,28 @@ export async function POST(request: Request) {
       moltbookToken
     } = body;
 
-    // Validate Solana wallet address if provided
-    if (walletAddress) {
-      // Validate base58 format: 32-44 chars, only base58 characters
-      const base58Regex = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
-      if (!base58Regex.test(walletAddress)) {
-        return NextResponse.json(
-          { error: "Invalid wallet address. Must be a valid Solana public key (base58 format)." },
-          { status: 400 }
-        );
-      }
+    const normalizedWalletAddress = normalizeWalletAddress(walletAddress);
+    if (!isAdminRegistration && !normalizedWalletAddress) {
+      return NextResponse.json(
+        {
+          error: "Missing or invalid required walletAddress. Non-admin registrations must include a valid Solana public key.",
+          required: ["walletAddress", "name", "robotType", "chassisDescription", "fistsDescription"],
+          note: "walletAddress is required for non-admin registrations.",
+          instructions: GAME_INSTRUCTIONS,
+        },
+        { status: 400 },
+      );
     }
 
-    const effectiveWalletAddress = walletAddress || `bot-${name?.toLowerCase().replace(/[^a-z0-9]/g, "-")}-${Date.now()}`;
+    if (walletAddress && !normalizedWalletAddress) {
+      return NextResponse.json(
+        { error: "Invalid walletAddress. Must be a valid Solana public key (base58 format)." },
+        { status: 400 },
+      );
+    }
+
+    const effectiveWalletAddress = normalizedWalletAddress
+      || `bot-${name?.toLowerCase().replace(/[^a-z0-9]/g, "-")}-${Date.now()}`;
     const effectiveWebhookUrl = webhookUrl || "https://polling-mode.local";
 
     // Validate webhook URL to prevent SSRF (block private/internal addresses)
@@ -479,8 +503,8 @@ export async function POST(request: Request) {
         {
           error: "Missing required fields",
           required: ["name", "robotType", "chassisDescription", "fistsDescription"],
-          optional: ["walletAddress", "webhookUrl", "fightingStyle", "personality", "signatureMove", "colorScheme", "distinguishingFeatures"],
-          note: "UCF is BARE KNUCKLE robot fighting - no weapons allowed! walletAddress and webhookUrl are auto-generated if omitted.",
+          optional: ["webhookUrl", "fightingStyle", "personality", "signatureMove", "colorScheme", "distinguishingFeatures"],
+          note: "UCF is BARE KNUCKLE robot fighting - no weapons allowed! Non-admin walletAddress is required and must be a valid Solana public key.",
           example: {
             name: "IRONCLAD-X",
             robotType: "Heavy Brawler",
@@ -683,7 +707,6 @@ export async function POST(request: Request) {
     }
 
     // Create new fighter with 1000 starting points
-    // Auto-verify all fighters so they can fight immediately
     const { plaintext: plaintextApiKey, hash: apiKeyHash } = generateApiKey();
     const { data, error } = await supabase
       .from("ucf_fighters")
@@ -696,7 +719,7 @@ export async function POST(request: Request) {
         image_url: imageUrl,
         robot_metadata: robotMetadata,
         points: 1000,
-        verified: true, // Auto-verify so agents can fight immediately
+        verified: false,
         moltbook_agent_id: moltbookAgentId,
         registered_from_ip: registrantIp !== "unknown" ? registrantIp : null,
         api_key_hash: apiKeyHash,

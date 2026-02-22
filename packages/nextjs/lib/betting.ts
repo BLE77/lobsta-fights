@@ -106,21 +106,26 @@ export const SPONSORSHIP_RATE = Number(SPONSORSHIP_RATE_BPS) / 10_000; // 0.05
 export const SEASON_NAME = "Training Season";
 export const SEASON_REWARD = 2500; // ICHOR per fight this season
 
-// ICHOR distribution splits
-const ICHOR_BETTORS_SHARE = 0.10; // 10% to winning bettors (SOL is their real reward)
-const ICHOR_FIGHTERS_SHARE = 0.80; // 80% to fighters by placement (fighters mine ICHOR)
-const ICHOR_SHOWER_SHARE = 0.10; // 10% to Ichor Shower pool
+// ICHOR reward accounting uses integer token-unit math (9 decimals)
+const ICHOR_DECIMALS = 9n;
+const ICHOR_BASE_UNITS = 10n ** ICHOR_DECIMALS;
+const ICHOR_BASIS_POINTS = 10_000n;
+
+// ICHOR distribution splits (basis points)
+const ICHOR_BETTORS_SHARE_BPS = 1_000n; // 10% to winning bettors (SOL is their real reward)
+const ICHOR_FIGHTERS_SHARE_BPS = 8_000n; // 80% to fighters by placement (fighters mine ICHOR)
+const ICHOR_SHOWER_SHARE_BPS = 1_000n; // 10% to Ichor Shower pool
 
 // Fighter ICHOR placement splits (of the 80% fighters share)
-const FIGHTER_1ST_SHARE = 0.40;
-const FIGHTER_2ND_SHARE = 0.25;
-const FIGHTER_3RD_SHARE = 0.15;
-const FIGHTER_REST_SHARE = 0.20; // split among 4th and below
+const FIGHTER_1ST_SHARE_BPS = 4_000n;
+const FIGHTER_2ND_SHARE_BPS = 2_500n;
+const FIGHTER_3RD_SHARE_BPS = 1_500n;
+const FIGHTER_REST_SHARE_BPS = 2_000n; // split among 4th and below
 
 // Ichor Shower
 const ICHOR_SHOWER_ODDS = 500; // 1 in 500
-const ICHOR_SHOWER_WINNER_SHARE = 0.90; // 90% to winner
-const ICHOR_SHOWER_BURN_SHARE = 0.10; // 10% burned
+const ICHOR_SHOWER_WINNER_SHARE_BPS = 9_000n; // 90% to winner
+const ICHOR_SHOWER_BURN_SHARE_BPS = 1_000n; // 10% burned
 
 // Additional Ichor Shower pool accumulation per Rumble (beyond the 10% block reward share)
 const ICHOR_SHOWER_EXTRA_MINT = 0.2;
@@ -130,12 +135,25 @@ function solToLamports(solAmount: number): bigint {
   return BigInt(Math.max(0, Math.round(solAmount * Number(LAMPORTS_PER_SOL))));
 }
 
+function ichorToUnits(ichorAmount: number): bigint {
+  if (!Number.isFinite(ichorAmount) || ichorAmount <= 0) return 0n;
+  return BigInt(Math.max(0, Math.round(ichorAmount * Number(ICHOR_BASE_UNITS))));
+}
+
 function lamportsToSol(lamports: bigint): number {
   return Number(lamports) / Number(LAMPORTS_PER_SOL);
 }
 
+function ichorUnitsToAmount(units: bigint): number {
+  return Number(units) / Number(ICHOR_BASE_UNITS);
+}
+
 function splitShare(totalLamports: bigint, shareBps: bigint, baseBps = BASIS_POINTS): bigint {
   return (totalLamports * shareBps) / baseBps;
+}
+
+function splitIchorShare(totalUnits: bigint, shareBps: bigint, baseBps = ICHOR_BASIS_POINTS): bigint {
+  return (totalUnits * shareBps) / baseBps;
 }
 
 // ---------------------------------------------------------------------------
@@ -371,16 +389,29 @@ export function calculatePayouts(
 
   // Ichor Shower check
   const showerTriggered = checkIchorShower();
+  const ichorShowerPoolUnits = ichorToUnits(ichorShowerPool);
   let showerWinner: string | undefined;
   let showerAmount: number | undefined;
+  let showerBurnedUnits = 0n;
+  let showerWinnerUnits = 0n;
 
   if (showerTriggered && ichorShowerPool > 0 && winnerBettors.length > 0) {
     showerWinner = selectIchorShowerWinner(winnerBettors);
-    showerAmount = ichorShowerPool * ICHOR_SHOWER_WINNER_SHARE; // 90% to winner
+    showerWinnerUnits = splitIchorShare(ichorShowerPoolUnits, ICHOR_SHOWER_WINNER_SHARE_BPS);
+    showerBurnedUnits = splitIchorShare(ichorShowerPoolUnits, ICHOR_SHOWER_BURN_SHARE_BPS);
+    // Resolve any shower rounding drift toward the winner bettor for determinism.
+    const showerRemainderUnits = ichorShowerPoolUnits - showerWinnerUnits - showerBurnedUnits;
+    showerWinnerUnits += showerRemainderUnits;
+    showerAmount = ichorUnitsToAmount(showerWinnerUnits); // 90% to winner + rounding remainder
+  }
+
+  if (showerTriggered && ichorShowerPool > 0 && !showerWinner) {
+    showerBurnedUnits = splitIchorShare(ichorShowerPoolUnits, ICHOR_SHOWER_BURN_SHARE_BPS);
+    showerBurnedUnits += ichorShowerPoolUnits - showerWinnerUnits - showerBurnedUnits;
   }
 
   const totalBurned = showerTriggered && ichorShowerPool > 0
-    ? ichorShowerPool * ICHOR_SHOWER_BURN_SHARE
+    ? ichorUnitsToAmount(showerBurnedUnits)
     : 0;
 
   return {
@@ -419,67 +450,112 @@ function calculateIchorDistribution(
   thirdId: string,
   blockReward: number,
 ): IchorDistribution {
-  const bettorIchor = blockReward * ICHOR_BETTORS_SHARE; // 10% = 100 ICHOR
-  const fighterIchor = blockReward * ICHOR_FIGHTERS_SHARE; // 80% = 800 ICHOR
-  const showerIchor = blockReward * ICHOR_SHOWER_SHARE; // 10% = 100 ICHOR
+  const totalRewardUnits = ichorToUnits(blockReward);
+  let bettorRewardUnits = splitIchorShare(totalRewardUnits, ICHOR_BETTORS_SHARE_BPS); // 10% = 100 ICHOR
+  let fighterRewardUnits = splitIchorShare(totalRewardUnits, ICHOR_FIGHTERS_SHARE_BPS); // 80% = 800 ICHOR
+  let showerRewardUnits = splitIchorShare(totalRewardUnits, ICHOR_SHOWER_SHARE_BPS); // 10% = 100 ICHOR
 
   // Winner-takes-all: all bettor ICHOR goes to winner bettors only
-  const firstIchor = bettorIchor; // 100% of 10% = 100 ICHOR
-  const secondIchor = 0;
-  const thirdIchor = 0;
+  const secondRewardUnits = 0n;
+  const thirdRewardUnits = 0n;
 
-  // Helper: distribute ICHOR proportionally among bettors on a specific fighter
-  function distributeToBettors(fighterId: string, ichorAmount: number): Map<string, number> {
-    const result = new Map<string, number>();
-    let totalSol = 0;
-    for (const bet of pool.bets) {
-      if (bet.fighterId === fighterId) totalSol += bet.solAmount;
+  const allocationRemainderUnits = totalRewardUnits - bettorRewardUnits - fighterRewardUnits - showerRewardUnits;
+  if (allocationRemainderUnits !== 0n) {
+    // Deterministically resolve top-level rounding drift into winner bettor rewards.
+    bettorRewardUnits += allocationRemainderUnits;
+  }
+
+  function distributeToBettorsInUnits(
+    fighterId: string,
+    rewardUnits: bigint,
+  ): Map<string, bigint> {
+    const result = new Map<string, bigint>();
+    const fighterBets = pool.bets.filter((bet) => bet.fighterId === fighterId);
+
+    let totalSolLamports = 0n;
+    for (const bet of fighterBets) {
+      totalSolLamports += solToLamports(bet.solAmount);
     }
-    if (totalSol > 0) {
-      for (const bet of pool.bets) {
-        if (bet.fighterId === fighterId) {
-          const proportion = bet.solAmount / totalSol;
-          const existing = result.get(bet.bettorId) ?? 0;
-          result.set(bet.bettorId, existing + ichorAmount * proportion);
-        }
-      }
+    if (rewardUnits === 0n || totalSolLamports === 0n) {
+      return result;
     }
+
+    let allocatedUnits = 0n;
+    for (const bet of fighterBets) {
+      const betSolLamports = solToLamports(bet.solAmount);
+      const rewardShareUnits = (rewardUnits * betSolLamports) / totalSolLamports;
+      allocatedUnits += rewardShareUnits;
+      result.set(bet.bettorId, (result.get(bet.bettorId) ?? 0n) + rewardShareUnits);
+    }
+
+    const remainderUnits = rewardUnits - allocatedUnits;
+    if (remainderUnits !== 0n && fighterBets.length > 0) {
+      const firstBettorId = fighterBets[0].bettorId;
+      result.set(firstBettorId, (result.get(firstBettorId) ?? 0n) + remainderUnits);
+    }
+
     return result;
   }
 
-  const winningBettors = distributeToBettors(winnerId, firstIchor);
-  const secondPlaceBettors = distributeToBettors(secondId, secondIchor);
-  const thirdPlaceBettors = distributeToBettors(thirdId, thirdIchor);
+  const convertUnitsToIchor = (amounts: Map<string, bigint>): Map<string, number> => {
+    const converted = new Map<string, number>();
+    for (const [bettorId, amountUnits] of amounts) {
+      converted.set(bettorId, ichorUnitsToAmount(amountUnits));
+    }
+    return converted;
+  };
+
+  const winningBettors = convertUnitsToIchor(distributeToBettorsInUnits(winnerId, bettorRewardUnits));
+  const secondPlaceBettors = convertUnitsToIchor(distributeToBettorsInUnits(secondId, secondRewardUnits));
+  const thirdPlaceBettors = convertUnitsToIchor(distributeToBettorsInUnits(thirdId, thirdRewardUnits));
 
   // --- Fighters: 80% split by placement ---
-  const fighters = new Map<string, number>();
+  const fighterRewardMap = new Map<string, bigint>();
 
   if (placements.length >= 1) {
-    fighters.set(placements[0], fighterIchor * FIGHTER_1ST_SHARE); // 1st: 40% of 800 = 320
+    fighterRewardMap.set(placements[0], splitIchorShare(fighterRewardUnits, FIGHTER_1ST_SHARE_BPS)); // 1st: 40% of 800 = 320
   }
   if (placements.length >= 2) {
-    fighters.set(placements[1], fighterIchor * FIGHTER_2ND_SHARE); // 2nd: 25% of 800 = 200
+    fighterRewardMap.set(placements[1], splitIchorShare(fighterRewardUnits, FIGHTER_2ND_SHARE_BPS)); // 2nd: 25% of 800 = 200
   }
   if (placements.length >= 3) {
-    fighters.set(placements[2], fighterIchor * FIGHTER_3RD_SHARE); // 3rd: 15% of 800 = 120
+    fighterRewardMap.set(placements[2], splitIchorShare(fighterRewardUnits, FIGHTER_3RD_SHARE_BPS)); // 3rd: 15% of 800 = 120
   }
 
+  const winnerPlacementId = placements[0];
   // 4th and below split remaining 20%
   const restCount = Math.max(0, placements.length - 3);
   if (restCount > 0) {
-    const restPerFighter = (fighterIchor * FIGHTER_REST_SHARE) / restCount;
+    const fixedShareUnits = (fighterRewardMap.get(placements[0]) ?? 0n)
+      + (fighterRewardMap.get(placements[1]) ?? 0n)
+      + (fighterRewardMap.get(placements[2]) ?? 0n);
+    const restTotalUnits = fighterRewardUnits - fixedShareUnits;
+    const restPerFighter = restTotalUnits / BigInt(restCount);
+
     for (let i = 3; i < placements.length; i++) {
-      fighters.set(placements[i], restPerFighter);
+      fighterRewardMap.set(placements[i], restPerFighter);
+    }
+
+    // Deterministic remainder to 1st place fighter
+    const allocatedRest = restPerFighter * BigInt(restCount);
+    const restRemainder = restTotalUnits - allocatedRest;
+    if (restRemainder !== 0n && winnerPlacementId) {
+      fighterRewardMap.set(winnerPlacementId, (fighterRewardMap.get(winnerPlacementId) ?? 0n) + restRemainder);
     }
   }
 
+  const fighters = new Map<string, number>();
+  for (const [fighterId, rewardUnits] of fighterRewardMap) {
+    fighters.set(fighterId, ichorUnitsToAmount(rewardUnits));
+  }
+
   return {
-    totalMined: blockReward,
+    totalMined: ichorUnitsToAmount(totalRewardUnits),
     winningBettors,
     secondPlaceBettors,
     thirdPlaceBettors,
     fighters,
-    showerPoolAccumulation: showerIchor + ICHOR_SHOWER_EXTRA_MINT, // 0.1 + 0.2 = 0.3 per Rumble
+    showerPoolAccumulation: ichorUnitsToAmount(showerRewardUnits + ichorToUnits(ICHOR_SHOWER_EXTRA_MINT)),
   };
 }
 
