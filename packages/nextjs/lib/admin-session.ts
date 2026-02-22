@@ -39,10 +39,18 @@ export function createSession(): string {
 /** Validate a session token */
 export function isValidAdminSession(token: string | undefined | null): boolean {
   if (!token) return false;
-  const dotIdx = token.lastIndexOf(".");
+  // Next.js cookies.set() URL-encodes values (: → %3A). Decode before
+  // verifying so the HMAC matches the original unencoded payload.
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(token);
+  } catch {
+    return false;
+  }
+  const dotIdx = decoded.lastIndexOf(".");
   if (dotIdx < 0) return false;
-  const payload = token.slice(0, dotIdx);
-  const sig = token.slice(dotIdx + 1);
+  const payload = decoded.slice(0, dotIdx);
+  const sig = decoded.slice(dotIdx + 1);
   if (!verifyToken(payload, sig)) return false;
   const parts = payload.split(":");
   const ts = parseInt(parts[1], 10);
