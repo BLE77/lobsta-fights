@@ -595,6 +595,7 @@ export class RumbleOrchestrator {
 
   // Dedup: track rumble IDs that have been settled on-chain to prevent double payouts
   private settledRumbleIds: Map<string, number> = new Map(); // rumbleId → timestamp
+  private settlingRumbleIds: Set<string> = new Set(); // rumble IDs currently attempting on-chain settlement
   private pendingFinalizations: Map<string, PendingFinalization> = new Map();
   private onchainRumbleCreateRetryAt: Map<string, number> = new Map();
   private onchainRumbleCreateStartedAt: Map<string, number> = new Map();
@@ -1952,7 +1953,12 @@ export class RumbleOrchestrator {
         });
       }
 
-      persist.updateRumbleStatus(slot.id, "combat");
+      try {
+        await persist.updateRumbleStatus(slot.id, "combat");
+      } catch (err) {
+        console.error(`[Orchestrator] Failed to persist combat status for rumble ${slot.id}:`, err);
+        return;
+      }
       await this.startCombatOnChain(slot);
 
       this.emit("combat_started", {
@@ -3384,19 +3390,26 @@ export class RumbleOrchestrator {
     payoutResult: PayoutResult,
     fighterOrder: string[],
   ): Promise<void> {
-    // Dedup guard: prevent double on-chain settlement for the same rumble
-    if (this.settledRumbleIds.has(rumbleId)) {
-      console.warn(`[Orchestrator] settleOnChain already processed for rumbleId "${rumbleId}", skipping`);
-      return;
-    }
-    this.settledRumbleIds.set(rumbleId, Date.now());
-
     const rumbleIdNum = parseOnchainRumbleIdNumber(rumbleId);
     if (rumbleIdNum === null) {
       console.warn(`[Orchestrator] Cannot parse rumbleId "${rumbleId}" as number, skipping on-chain`);
       return;
     }
 
+    // Dedup guard: prevent double on-chain settlement for the same rumble
+    if (this.settledRumbleIds.has(rumbleId)) {
+      console.warn(`[Orchestrator] settleOnChain already processed for rumbleId "${rumbleId}", skipping`);
+      return;
+    }
+    if (this.settlingRumbleIds.has(rumbleId)) {
+      console.warn(`[Orchestrator] settleOnChain already in progress for rumbleId "${rumbleId}", skipping`);
+      return;
+    }
+    this.settlingRumbleIds.add(rumbleId);
+
+    let settlementSucceeded = false;
+    let ichorSuccess = false;
+    try {
     // 1. Ensure on-chain result is finalized (payout-ready).
     try {
       let onchainState = await this.ensureOnchainRumbleIsCombatReady(
@@ -3421,9 +3434,11 @@ export class RumbleOrchestrator {
         console.warn(
           `[OnChain] rumble ${rumbleId} not payout-ready yet (state=${onchainState?.state ?? "unknown"})`,
         );
+        return;
       }
     } catch (err) {
       console.error(`[OnChain] finalizeRumble error:`, err);
+      return;
     }
 
     // 2. Distribute ICHOR rewards by placement
@@ -3557,12 +3572,22 @@ export class RumbleOrchestrator {
           console.error(`[OnChain] checkIchorShower error:`, err);
         }
       }
+      ichorSuccess = true;
     } catch (err) {
       console.error(`[OnChain] ICHOR distribution error:`, err);
     }
 
     // 4-5. completeRumble + sweepTreasury are finalized asynchronously after claim window.
-    this.enqueueRumbleFinalization(rumbleId, rumbleIdNum, ONCHAIN_FINALIZATION_DELAY_MS);
+    if (ichorSuccess) {
+      this.enqueueRumbleFinalization(rumbleId, rumbleIdNum, ONCHAIN_FINALIZATION_DELAY_MS);
+      settlementSucceeded = true;
+    }
+    } finally {
+      this.settlingRumbleIds.delete(rumbleId);
+      if (settlementSucceeded) {
+        this.settledRumbleIds.set(rumbleId, Date.now());
+      }
+    }
   }
 
   // ---- Payout phase --------------------------------------------------------
@@ -3691,7 +3716,13 @@ export class RumbleOrchestrator {
       ichorShowerTriggered: payoutResult.ichorShowerTriggered,
       ichorShowerAmount: payoutResult.ichorShowerAmount ?? 0,
     };
-    persist.savePayoutResult(slot.id, transformedPayout);
+    try {
+      await persist.savePayoutResult(slot.id, transformedPayout);
+    } catch (err) {
+      console.error(`[Orchestrator] Failed to persist payout result for ${slot.id}:`, err);
+      this.payoutProcessed.delete(slot.id);
+      return;
+    }
 
     // Log payout summary
     const summary = summarizePayouts(payoutResult);
@@ -3770,28 +3801,38 @@ export class RumbleOrchestrator {
     previousRumbleId: string,
   ): void {
     // Mark rumble as "complete" in DB now that payout display window is over
-    persist.updateRumbleStatus(previousRumbleId, "complete");
-
-    this.payoutProcessed.delete(previousRumbleId);
-    this.onchainRumbleCreateRetryAt.delete(previousRumbleId);
-    this.onchainRumbleCreateStartedAt.delete(previousRumbleId);
-    this.clearOnchainCreateFailure(previousRumbleId);
-    this.combatStates.delete(slotIndex);
-    this.payoutResults.delete(slotIndex);
-
-    // Prune settled rumble IDs older than 1 hour to prevent unbounded growth
-    const ONE_HOUR_MS = 60 * 60 * 1000;
-    const cutoff = Date.now() - ONE_HOUR_MS;
-    for (const [id, ts] of this.settledRumbleIds) {
-      if (ts < cutoff) {
-        this.settledRumbleIds.delete(id);
+    void (async () => {
+      try {
+        await persist.updateRumbleStatus(previousRumbleId, "complete");
+      } catch (err) {
+        console.error(
+          `[Orchestrator] Failed to persist payout-complete status for ${previousRumbleId}:`,
+          err,
+        );
+        return;
       }
-    }
 
-    this.emit("slot_recycled", {
-      slotIndex,
-      previousFighters,
-    });
+      this.payoutProcessed.delete(previousRumbleId);
+      this.onchainRumbleCreateRetryAt.delete(previousRumbleId);
+      this.onchainRumbleCreateStartedAt.delete(previousRumbleId);
+      this.clearOnchainCreateFailure(previousRumbleId);
+      this.combatStates.delete(slotIndex);
+      this.payoutResults.delete(slotIndex);
+
+      // Prune settled rumble IDs older than 1 hour to prevent unbounded growth
+      const ONE_HOUR_MS = 60 * 60 * 1000;
+      const cutoff = Date.now() - ONE_HOUR_MS;
+      for (const [id, ts] of this.settledRumbleIds) {
+        if (ts < cutoff) {
+          this.settledRumbleIds.delete(id);
+        }
+      }
+
+      this.emit("slot_recycled", {
+        slotIndex,
+        previousFighters,
+      });
+    })();
   }
 
   // ---- Pairing helper (duplicated from rumble-engine for incremental use) --

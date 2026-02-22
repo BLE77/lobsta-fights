@@ -9,6 +9,7 @@ import { hasRecovered, recoverOrchestratorState } from "~~/lib/rumble-state-reco
 import { getConnection } from "~~/lib/solana-connection";
 import { ensureRumblePublicHeartbeat } from "~~/lib/rumble-public-heartbeat";
 import { loadActiveRumbles } from "~~/lib/rumble-persistence";
+import { requireJsonContentType, sanitizeErrorResponse } from "~~/lib/api-middleware";
 
 export const dynamic = "force-dynamic";
 const BETTING_CLOSE_GUARD_MS = Math.max(1000, Number(process.env.RUMBLE_BETTING_CLOSE_GUARD_MS ?? "12000"));
@@ -67,6 +68,8 @@ export async function POST(request: Request) {
   const rlKey = getRateLimitKey(request);
   const rl = checkRateLimit("PUBLIC_WRITE", rlKey);
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+  const contentTypeError = requireJsonContentType(request);
+  if (contentTypeError) return contentTypeError;
 
   try {
     const body = await request.json().catch(() => ({}));
@@ -364,21 +367,20 @@ export async function POST(request: Request) {
         timestamp: new Date().toISOString(),
       });
     } catch (err: any) {
-      const msg = String(err?.message ?? err);
+      const errorText = String(err?.message ?? err ?? "").toLowerCase();
       const onchainNotReady =
-        msg.includes("Rumble account not found") || msg.includes("Rumble config not found");
+        errorText.includes("rumble account not found") || errorText.includes("rumble config not found");
       return NextResponse.json(
         {
           error: onchainNotReady
             ? "On-chain rumble is not ready yet. Try again in a few seconds."
             : "Failed to build on-chain bet transaction.",
-          detail: msg,
         },
         { status: onchainNotReady ? 409 : 500 },
       );
     }
   } catch (error) {
     console.error("[RumbleBetPrepareAPI]", error);
-    return NextResponse.json({ error: "Failed to prepare bet transaction" }, { status: 500 });
+    return NextResponse.json(sanitizeErrorResponse(error, "Failed to prepare bet transaction"), { status: 500 });
   }
 }

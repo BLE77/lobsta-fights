@@ -14,6 +14,7 @@ interface AgentState {
   hp: number;
   meter: number;
   rounds_won: number;
+  damageDealtTotal: number;
 }
 
 interface TurnHistoryEntry {
@@ -74,8 +75,21 @@ export async function resolveTurn(matchId: string): Promise<TurnResolutionResult
   const moveA: MoveType = match.move_a;
   const moveB: MoveType = match.move_b;
 
-  let agentA: AgentState = { ...match.agent_a_state };
-  let agentB: AgentState = { ...match.agent_b_state };
+  const persistedAgentAState = match.agent_a_state || {};
+  const persistedAgentBState = match.agent_b_state || {};
+
+  let agentA: AgentState = {
+    hp: persistedAgentAState.hp ?? MAX_HP,
+    meter: persistedAgentAState.meter ?? 0,
+    rounds_won: persistedAgentAState.rounds_won ?? 0,
+    damageDealtTotal: persistedAgentAState.damageDealtTotal ?? 0,
+  };
+  let agentB: AgentState = {
+    hp: persistedAgentBState.hp ?? MAX_HP,
+    meter: persistedAgentBState.meter ?? 0,
+    rounds_won: persistedAgentBState.rounds_won ?? 0,
+    damageDealtTotal: persistedAgentBState.damageDealtTotal ?? 0,
+  };
 
   // Add meter for this turn (before combat resolution so SPECIAL can be used)
   agentA.meter = Math.min(agentA.meter + METER_PER_TURN, 100);
@@ -90,6 +104,8 @@ export async function resolveTurn(matchId: string): Promise<TurnResolutionResult
   );
 
   // Apply damage and meter usage
+  agentA.damageDealtTotal += damageToB;
+  agentB.damageDealtTotal += damageToA;
   agentA.hp = Math.max(0, agentA.hp - damageToA);
   agentB.hp = Math.max(0, agentB.hp - damageToB);
   agentA.meter -= meterUsedA;
@@ -129,8 +145,8 @@ export async function resolveTurn(matchId: string): Promise<TurnResolutionResult
       if (agentA.hp <= 0 && agentB.hp <= 0) {
         // Double KO — award round to fighter who dealt more total damage this round
         // If tied, fighter A gets the edge (deterministic tiebreak)
-        const dmgA = (agentA as any).totalDamageDealt ?? 0;
-        const dmgB = (agentB as any).totalDamageDealt ?? 0;
+        const dmgA = agentA.damageDealtTotal;
+        const dmgB = agentB.damageDealtTotal;
         if (dmgA >= dmgB) {
           roundWinner = match.fighter_a_id;
           agentA.rounds_won += 1;
@@ -158,8 +174,8 @@ export async function resolveTurn(matchId: string): Promise<TurnResolutionResult
       }
       // HP tied — same tiebreak as double KO (higher damage dealt wins, A gets edge)
       else {
-        const dmgA = (agentA as any).totalDamageDealt ?? 0;
-        const dmgB = (agentB as any).totalDamageDealt ?? 0;
+        const dmgA = agentA.damageDealtTotal;
+        const dmgB = agentB.damageDealtTotal;
         if (dmgA >= dmgB) {
           roundWinner = match.fighter_a_id;
           agentA.rounds_won += 1;
@@ -187,6 +203,8 @@ export async function resolveTurn(matchId: string): Promise<TurnResolutionResult
       agentB.hp = MAX_HP;
       agentA.meter = 0;
       agentB.meter = 0;
+      agentA.damageDealtTotal = 0;
+      agentB.damageDealtTotal = 0;
     }
   }
 

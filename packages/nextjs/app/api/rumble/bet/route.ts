@@ -13,6 +13,7 @@ import {
   MAX_BET_SOL,
 } from "~~/lib/tx-verify";
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
+import { requireJsonContentType, sanitizeErrorResponse } from "~~/lib/api-middleware";
 import { hashApiKey } from "~~/lib/api-key";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 import { hasRecovered, recoverOrchestratorState } from "~~/lib/rumble-state-recovery";
@@ -105,7 +106,7 @@ export async function GET(request: Request) {
       timestamp: new Date().toISOString(),
     });
   } catch (error: any) {
-    return NextResponse.json({ error: "Failed to fetch betting info" }, { status: 500 });
+    return NextResponse.json(sanitizeErrorResponse(error, "Failed to fetch betting info"), { status: 500 });
   }
 }
 
@@ -123,6 +124,8 @@ export async function POST(request: Request) {
   const rlKey = getRateLimitKey(request);
   const rl = checkRateLimit("PUBLIC_WRITE", rlKey);
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+  const contentTypeError = requireJsonContentType(request);
+  if (contentTypeError) return contentTypeError;
 
   let signatureLock: BetSignatureLock = null;
   let betRegistered = false;
@@ -484,6 +487,6 @@ export async function POST(request: Request) {
     if (!betRegistered) {
       await releaseBetSignatureLock(signatureLock);
     }
-    return NextResponse.json({ error: "Failed to place bet" }, { status: 500 });
+    return NextResponse.json(sanitizeErrorResponse(error, "Failed to place bet"), { status: 500 });
   }
 }

@@ -3,6 +3,7 @@ import { freshSupabase } from "~~/lib/supabase";
 import { PublicKey } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { getConnection } from "~~/lib/solana-connection";
+import { requireJsonContentType, sanitizeErrorResponse } from "~~/lib/api-middleware";
 
 export const dynamic = "force-dynamic";
 
@@ -72,18 +73,21 @@ export async function GET() {
       .limit(50);
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json(sanitizeErrorResponse(error, "Failed to fetch chat messages"), { status: 500 });
     }
 
     // Return in ascending order (oldest first) for display
     return NextResponse.json(data?.reverse() ?? []);
   } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
+    return NextResponse.json(sanitizeErrorResponse(e, "Failed to fetch chat messages"), { status: 500 });
   }
 }
 
 export async function POST(request: Request) {
   try {
+    const contentTypeError = requireJsonContentType(request);
+    if (contentTypeError) return contentTypeError;
+
     const body = await request.json();
     const { wallet_address, message, signature, timestamp } = body;
 
@@ -180,11 +184,11 @@ export async function POST(request: Request) {
       .single();
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json(sanitizeErrorResponse(error, "Failed to post chat message"), { status: 500 });
     }
 
     return NextResponse.json(data);
   } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
+    return NextResponse.json(sanitizeErrorResponse(e, "Failed to post chat message"), { status: 500 });
   }
 }

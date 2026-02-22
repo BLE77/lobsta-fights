@@ -3,6 +3,7 @@ import { Transaction } from "@solana/web3.js";
 import { freshSupabase } from "~~/lib/supabase";
 import { getApiKeyFromHeaders } from "~~/lib/request-auth";
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
+import { requireJsonContentType, sanitizeErrorResponse } from "~~/lib/api-middleware";
 import { hashApiKey } from "~~/lib/api-key";
 import { getConnection } from "~~/lib/solana-connection";
 
@@ -83,6 +84,8 @@ export async function POST(request: Request) {
   const rlKey = getRateLimitKey(request);
   const rl = checkRateLimit("AUTHENTICATED", rlKey);
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+  const contentTypeError = requireJsonContentType(request);
+  if (contentTypeError) return contentTypeError;
 
   try {
     const body = await request.json();
@@ -164,10 +167,7 @@ export async function POST(request: Request) {
     try {
       transaction = Transaction.from(txBuffer);
     } catch (err: any) {
-      return NextResponse.json(
-        { error: `Failed to deserialize transaction: ${err.message}` },
-        { status: 400 },
-      );
+      return NextResponse.json(sanitizeErrorResponse(err, "Failed to deserialize transaction"), { status: 400 });
     }
 
     // Basic sanity check: transaction should have at least one signature
@@ -193,9 +193,7 @@ export async function POST(request: Request) {
     } catch (err: any) {
       console.error(`[submit-tx] RPC error for fighter=${fighterId} tx_type=${txType}:`, err);
       return NextResponse.json(
-        {
-          error: `Solana RPC rejected the transaction: ${err.message}`,
-        },
+        sanitizeErrorResponse(err, "Solana RPC rejected the transaction"),
         { status: 500 },
       );
     }
@@ -212,9 +210,6 @@ export async function POST(request: Request) {
     });
   } catch (error: any) {
     console.error("[submit-tx] Unexpected error:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 },
-    );
+    return NextResponse.json(sanitizeErrorResponse(error, "Internal server error"), { status: 500 });
   }
 }

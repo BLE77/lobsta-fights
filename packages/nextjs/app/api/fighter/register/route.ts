@@ -4,6 +4,7 @@ import { supabase, freshSupabase } from "../../../../lib/supabase";
 import { verifyMoltbookIdentity, isMoltbookEnabled } from "../../../../lib/moltbook";
 import { AI_FIGHTER_DESIGN_PROMPT, FIGHTER_DESIGN_HINT, REGISTRATION_EXAMPLE } from "../../../../lib/fighter-design-prompt";
 import { generateApiKey } from "../../../../lib/api-key";
+import { requireJsonContentType, sanitizeErrorResponse } from "../../../../lib/api-middleware";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 
@@ -411,6 +412,9 @@ interface RobotCharacter {
 
 export async function POST(request: Request) {
   try {
+    const contentTypeError = requireJsonContentType(request);
+    if (contentTypeError) return contentTypeError;
+
     const quota = consumeRegistrationQuota(request);
     if (!quota.allowed) {
       return NextResponse.json(
@@ -728,7 +732,10 @@ export async function POST(request: Request) {
     });
   } catch (error: any) {
     console.error("Fighter registration error:", error);
-    return NextResponse.json({ error: "An error occurred during registration", instructions: GAME_INSTRUCTIONS }, { status: 500 });
+    return NextResponse.json(
+      { ...sanitizeErrorResponse(error, "An error occurred during registration"), instructions: GAME_INSTRUCTIONS },
+      { status: 500 },
+    );
   }
 }
 

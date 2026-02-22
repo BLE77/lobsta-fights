@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { supabase, freshSupabase } from "../../../../lib/supabase";
 import { authenticateFighterByApiKey } from "../../../../lib/request-auth";
+import { requireJsonContentType, sanitizeErrorResponse } from "../../../../lib/api-middleware";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +17,9 @@ export const dynamic = "force-dynamic";
  */
 export async function POST(request: Request) {
   try {
+    const contentTypeError = requireJsonContentType(request);
+    if (contentTypeError) return contentTypeError;
+
     const body = await request.json();
     const { match_id, fighter_id, api_key, move_hash } = body;
 
@@ -153,10 +157,7 @@ export async function POST(request: Request) {
     return NextResponse.json(response);
   } catch (error: any) {
     console.error("Error committing move:", error);
-    return NextResponse.json(
-      { error: "An error occurred while processing your request" },
-      { status: 500 }
-    );
+    return NextResponse.json(sanitizeErrorResponse(error, "An error occurred while processing your request"), { status: 500 });
   }
 }
 

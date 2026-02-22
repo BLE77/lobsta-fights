@@ -87,13 +87,24 @@ export function isValidMove(move: string): move is MoveType {
 }
 
 /**
- * Cryptographically-secure random integer in [0, max) (exclusive).
+ * Cryptographically-secure random integer in [min, max].
  * Uses crypto.getRandomValues for fairness in game-critical paths.
  */
-function secureRandomInt(max: number): number {
+function secureRandomInt(min: number, max: number): number {
+  if (max < min) {
+    const temp = min;
+    min = max;
+    max = temp;
+  }
+
+  if (max === min) {
+    return min;
+  }
+
   const arr = new Uint32Array(1);
   crypto.getRandomValues(arr);
-  return arr[0] % max;
+  const range = max - min + 1;
+  return min + (arr[0] % range);
 }
 
 /**
@@ -102,9 +113,13 @@ function secureRandomInt(max: number): number {
  * Uses crypto.getRandomValues for fair damage rolls.
  */
 export function randomDamage(base: number, variance: number = DAMAGE_VARIANCE): number {
+  if (!Number.isFinite(base) || base <= 0 || !Number.isFinite(variance) || variance <= 0) {
+    return 1;
+  }
+
   const min = Math.max(1, base - variance);
   const max = base + variance;
-  return min + secureRandomInt(max - min + 1);
+  return secureRandomInt(min, max);
 }
 
 export interface CombatResult {

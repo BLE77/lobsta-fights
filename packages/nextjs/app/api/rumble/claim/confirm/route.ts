@@ -7,6 +7,7 @@ import { isAccrueClaimMode } from "~~/lib/rumble-payout-mode";
 import { getConnection } from "~~/lib/solana-connection";
 import { RUMBLE_ENGINE_ID, deriveRumblePda } from "~~/lib/solana-programs";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
+import { requireJsonContentType, sanitizeErrorResponse } from "~~/lib/api-middleware";
 
 export const dynamic = "force-dynamic";
 const CLAIM_PAYOUT_DISCRIMINATOR = createHash("sha256")
@@ -18,6 +19,8 @@ export async function POST(request: Request) {
   const rlKey = getRateLimitKey(request);
   const rl = checkRateLimit("PUBLIC_WRITE", rlKey);
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+  const contentTypeError = requireJsonContentType(request);
+  if (contentTypeError) return contentTypeError;
 
   try {
     if (!isAccrueClaimMode()) {
@@ -165,6 +168,6 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     console.error("[RumbleClaimConfirmAPI]", error);
-    return NextResponse.json({ error: "Failed to confirm claim transaction" }, { status: 500 });
+    return NextResponse.json(sanitizeErrorResponse(error, "Failed to confirm claim transaction"), { status: 500 });
   }
 }

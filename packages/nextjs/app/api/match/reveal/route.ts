@@ -21,6 +21,7 @@ import {
   UCF_NEGATIVE_PROMPT,
   type BattleResultDetails,
 } from "../../../../lib/art-style";
+import { requireJsonContentType, sanitizeErrorResponse } from "../../../../lib/api-middleware";
 
 export const dynamic = "force-dynamic";
 
@@ -55,6 +56,9 @@ interface TurnHistoryEntry {
  */
 export async function POST(request: Request) {
   try {
+    const contentTypeError = requireJsonContentType(request);
+    if (contentTypeError) return contentTypeError;
+
     const body = await request.json();
     const { match_id, fighter_id, api_key, move, salt } = body;
 
@@ -459,10 +463,7 @@ export async function POST(request: Request) {
     return NextResponse.json(response);
   } catch (error: any) {
     console.error("Error revealing move:", error);
-    return NextResponse.json(
-      { error: "An error occurred while processing your request" },
-      { status: 500 }
-    );
+    return NextResponse.json(sanitizeErrorResponse(error, "An error occurred while processing your request"), { status: 500 });
   }
 }
 

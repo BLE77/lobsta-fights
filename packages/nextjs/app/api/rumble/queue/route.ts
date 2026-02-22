@@ -7,6 +7,7 @@ import { freshSupabase } from "~~/lib/supabase";
 import { getApiKeyFromHeaders } from "~~/lib/request-auth";
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 import { hashApiKey } from "~~/lib/api-key";
+import { requireJsonContentType, sanitizeErrorResponse } from "~~/lib/api-middleware";
 import { getConnection } from "~~/lib/solana-connection";
 
 /** Minimum SOL balance required to join queue (covers MoveCommitment rent per turn) */
@@ -60,7 +61,7 @@ export async function GET(request: Request) {
 
     return NextResponse.json(response);
   } catch (error: any) {
-    return NextResponse.json({ error: "Failed to fetch queue status" }, { status: 500 });
+    return NextResponse.json(sanitizeErrorResponse(error, "Failed to fetch queue status"), { status: 500 });
   }
 }
 
@@ -75,6 +76,8 @@ export async function POST(request: Request) {
   const rlKey = getRateLimitKey(request);
   const rl = checkRateLimit("AUTHENTICATED", rlKey);
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+  const contentTypeError = requireJsonContentType(request);
+  if (contentTypeError) return contentTypeError;
 
   try {
     const body = await request.json();
@@ -204,10 +207,7 @@ export async function POST(request: Request) {
       joined_at: entry.joinedAt.toISOString(),
     });
   } catch (error: any) {
-    if (error.message?.includes("already in active Rumble")) {
-      return NextResponse.json({ error: "Fighter is already in an active Rumble" }, { status: 409 });
-    }
-    return NextResponse.json({ error: "Failed to join queue" }, { status: 500 });
+    return NextResponse.json(sanitizeErrorResponse(error, "Failed to join queue"), { status: 500 });
   }
 }
 
@@ -222,6 +222,8 @@ export async function DELETE(request: Request) {
   const rlKey = getRateLimitKey(request);
   const rl = checkRateLimit("AUTHENTICATED", rlKey);
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+  const contentTypeError = requireJsonContentType(request);
+  if (contentTypeError) return contentTypeError;
 
   try {
     const body = await request.json();
@@ -262,6 +264,6 @@ export async function DELETE(request: Request) {
       fighter_id: fighterId,
     });
   } catch (error: any) {
-    return NextResponse.json({ error: "Failed to leave queue" }, { status: 500 });
+    return NextResponse.json(sanitizeErrorResponse(error, "Failed to leave queue"), { status: 500 });
   }
 }

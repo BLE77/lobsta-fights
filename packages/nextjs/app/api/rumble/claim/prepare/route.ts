@@ -8,6 +8,7 @@ import {
 } from "~~/lib/solana-programs";
 import { discoverOnchainClaimableRumbles } from "~~/lib/rumble-onchain-claims";
 import { getConnection } from "~~/lib/solana-connection";
+import { requireJsonContentType, sanitizeErrorResponse } from "~~/lib/api-middleware";
 
 export const dynamic = "force-dynamic";
 const SOLANA_LEGACY_TX_MAX_BYTES = 1232;
@@ -34,6 +35,8 @@ export async function POST(request: Request) {
   const rlKey = getRateLimitKey(request);
   const rl = checkRateLimit("PUBLIC_WRITE", rlKey);
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+  const contentTypeError = requireJsonContentType(request);
+  if (contentTypeError) return contentTypeError;
 
   try {
     if (!isAccrueClaimMode()) {
@@ -170,20 +173,22 @@ export async function POST(request: Request) {
           continue;
         }
         txBytes = Buffer.from(serialized);
-        break;
       } catch (err: any) {
-        const message = String(err?.message ?? err ?? "");
+        const errorText = summarizeSimulationError(err, null).toLowerCase();
         const sizeError =
-          message.toLowerCase().includes("too large") ||
-          message.toLowerCase().includes("encoding overruns") ||
-          message.toLowerCase().includes("rangeerror");
+          errorText.includes("too large") ||
+          errorText.includes("encoding overruns") ||
+          errorText.includes("rangeerror");
         if (sizeError && selectedTargets.length > 1) {
           selectedTargets = selectedTargets.slice(0, -1);
           continue;
         }
         throw err;
       }
+
+      break;
     }
+
     if (!tx || !txBytes) {
       return NextResponse.json(
         { error: "Unable to build claim transaction for the selected payouts." },
@@ -216,6 +221,6 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     console.error("[RumbleClaimPrepareAPI]", error);
-    return NextResponse.json({ error: "Failed to prepare claim transaction" }, { status: 500 });
+    return NextResponse.json(sanitizeErrorResponse(error, "Failed to prepare claim transaction"), { status: 500 });
   }
 }

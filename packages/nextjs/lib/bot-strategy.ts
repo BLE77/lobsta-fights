@@ -17,13 +17,13 @@ import { MoveType } from "./types";
 import { SPECIAL_METER_COST, generateSalt } from "./combat";
 
 /** Crypto-secure random float in [0, 1) — drop-in replacement for Math.random() */
-function secureRandom(): number {
+function cryptoRandom(): number {
   return randomBytes(4).readUInt32BE(0) / 0x100000000;
 }
 
 /** Crypto-secure random int in [0, max) */
 function secureRandomInt(max: number): number {
-  return Math.floor(secureRandom() * max);
+  return Math.floor(cryptoRandom() * max);
 }
 
 // Move weights for random selection (higher = more likely)
@@ -88,7 +88,7 @@ function weightedRandomMove(excludeSpecial = false): MoveType {
   const weights = moves.map((m) => MOVE_WEIGHTS[m]);
   const totalWeight = weights.reduce((sum, w) => sum + w, 0);
 
-  let random = secureRandom() * totalWeight;
+  let random = cryptoRandom() * totalWeight;
 
   for (let i = 0; i < moves.length; i++) {
     random -= weights[i];
@@ -120,19 +120,19 @@ export function selectMove(matchState: BotMatchState): BotMoveDecision {
   // Priority 1: Use SPECIAL if meter is full (high damage opportunity)
   if (your_meter >= SPECIAL_METER_COST) {
     // 80% chance to use special when available
-    if (secureRandom() < 0.8) {
+    if (cryptoRandom() < 0.8) {
       return { move: "SPECIAL", salt };
     }
   }
 
   // Priority 2: If low HP, be more defensive
   if (your_hp <= 20) {
-    // 40% chance to dodge when low HP
-    if (secureRandom() < 0.4) {
+    // 40% chance to dodge, 30% chance to guard when low HP (single weighted roll)
+    const defensiveRoll = cryptoRandom();
+    if (defensiveRoll < 0.4) {
       return { move: "DODGE", salt };
     }
-    // 30% chance to guard
-    if (secureRandom() < 0.3) {
+    if (defensiveRoll < 0.7) {
       const guards: MoveType[] = ["GUARD_HIGH", "GUARD_MID", "GUARD_LOW"];
       return { move: guards[secureRandomInt(guards.length)], salt };
     }
@@ -141,13 +141,13 @@ export function selectMove(matchState: BotMatchState): BotMoveDecision {
   // Priority 3: If opponent has full meter, consider DODGE (they might SPECIAL)
   if (opponent_meter >= SPECIAL_METER_COST) {
     // 35% chance to dodge when opponent has special ready
-    if (secureRandom() < 0.35) {
+    if (cryptoRandom() < 0.35) {
       return { move: "DODGE", salt };
     }
   }
 
   // Priority 4: Random dodge chance (20%)
-  if (secureRandom() < 0.2) {
+  if (cryptoRandom() < 0.2) {
     return { move: "DODGE", salt };
   }
 
@@ -187,11 +187,11 @@ export function shouldAcceptChallenge(
   if (pointRatio >= 10) {
     return true; // We have 10x the wager, always accept
   } else if (pointRatio >= 5) {
-    return secureRandom() < 0.9; // 90% accept
+    return cryptoRandom() < 0.9; // 90% accept
   } else if (pointRatio >= 3) {
-    return secureRandom() < 0.7; // 70% accept
+    return cryptoRandom() < 0.7; // 70% accept
   } else {
-    return secureRandom() < 0.5; // 50% accept if barely above threshold
+    return cryptoRandom() < 0.5; // 50% accept if barely above threshold
   }
 }
 
