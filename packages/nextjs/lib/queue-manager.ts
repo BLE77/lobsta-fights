@@ -28,7 +28,7 @@ export interface QueueEntry {
 }
 
 export interface QueueManager {
-  addToQueue(fighterId: string, autoRequeue?: boolean): QueueEntry;
+  addToQueue(fighterId: string, autoRequeue?: boolean, priority?: number): QueueEntry;
   removeFromQueue(fighterId: string): boolean;
   abortBettingSlot(slotIndex: number): string[];
   getQueuePosition(fighterId: string): number | null;
@@ -137,11 +137,16 @@ export class RumbleQueueManager implements QueueManager {
 
   // ---- Queue operations ---------------------------------------------------
 
-  addToQueue(fighterId: string, autoRequeue = false): QueueEntry {
+  addToQueue(fighterId: string, autoRequeue = false, priority = 0): QueueEntry {
     // Prevent duplicate entries
     if (this.fighterSet.has(fighterId)) {
       const existing = this.queue.find((e) => e.fighterId === fighterId);
-      if (existing) return existing;
+      if (existing) {
+        existing.autoRequeue = autoRequeue;
+        if (Number.isFinite(priority)) existing.priority = priority;
+        this.sortQueue();
+        return existing;
+      }
     }
 
     // Also prevent joining if already in an active slot
@@ -157,7 +162,7 @@ export class RumbleQueueManager implements QueueManager {
       fighterId,
       joinedAt: new Date(),
       autoRequeue,
-      priority: 0, // default priority; can be adjusted for stakers later
+      priority,
     };
 
     this.queue.push(entry);

@@ -1,11 +1,14 @@
 // @ts-nocheck
+import { createPublicKey, verify } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
+import { PublicKey } from "@solana/web3.js";
 import {
   generateFighterPortraitPrompt,
   UCF_NEGATIVE_PROMPT,
   buildReplicateRequest,
   type FighterDetails,
 } from "../../../../lib/art-style";
+import { isAuthorizedAdminToken, isAuthorizedAdminRequest } from "../../../../lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +23,49 @@ const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 const MAX_GENERATIONS_PER_WINDOW = 8;
 const generationRateLimit = new Map<string, { count: number; resetAt: number }>();
+const GENERATE_IMAGE_NONCE = "UCF Generate Image";
+
+function normalizeTimestamp(value: unknown): number | null {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
+async function verifyWalletSignature(
+  walletAddress: string,
+  signature: string,
+  timestamp: string,
+): Promise<boolean> {
+  let walletPubkey: PublicKey;
+  try {
+    walletPubkey = new PublicKey(walletAddress);
+  } catch {
+    return false;
+  }
+
+  const normalizedTimestamp = normalizeTimestamp(timestamp);
+  if (!normalizedTimestamp) return false;
+  if (Math.abs(Date.now() - normalizedTimestamp) > 10 * 60 * 1000) return false;
+
+  const message = `${GENERATE_IMAGE_NONCE}:${timestamp}`;
+  const pubKeyObj = createPublicKey({
+    key: Buffer.concat([
+      Buffer.from("302a300506032b6570032100", "hex"),
+      Buffer.from(walletPubkey.toBytes()),
+    ]),
+    format: "der",
+    type: "spki",
+  });
+  const signatureBytes = Buffer.from(signature, "base64");
+  const messageBytes = Buffer.from(message);
+
+  try {
+    return verify(null, messageBytes, pubKeyObj, signatureBytes);
+  } catch {
+    return false;
+  }
+}
 
 function getRateLimitKey(req: NextRequest): string {
   const forwardedFor = req.headers.get("x-forwarded-for");
@@ -66,6 +112,46 @@ function consumeGenerationQuota(req: NextRequest): { allowed: boolean; retryAfte
 }
 
 export async function POST(req: NextRequest) {
+  let body: any = {};
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const {
+    adminToken,
+    signature,
+    walletAddress,
+    wallet_address,
+    timestamp,
+  } = body as {
+    adminToken?: unknown;
+    signature?: unknown;
+    walletAddress?: unknown;
+    wallet_address?: unknown;
+    timestamp?: unknown;
+    [key: string]: any;
+  };
+  const signerWallet = typeof walletAddress === "string"
+    ? walletAddress
+    : typeof wallet_address === "string"
+      ? wallet_address
+      : "";
+
+  const adminAuthorized = isAuthorizedAdminToken(
+    typeof adminToken === "string" ? adminToken : req.headers.get("x-admin-secret") ?? req.headers.get("x-admin-key"),
+  );
+  const adminRequestAuthorized = isAuthorizedAdminRequest(req.headers);
+  const hasWalletAuth = typeof signature === "string"
+    && typeof signerWallet === "string"
+    && typeof timestamp === "string"
+    && timestamp.length > 0
+    && await verifyWalletSignature(signerWallet, signature, timestamp);
+  if (!adminAuthorized && !adminRequestAuthorized && !hasWalletAuth) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const quota = consumeGenerationQuota(req);
     if (!quota.allowed) {
@@ -85,7 +171,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const body = await req.json();
     const {
       robotName,
       appearance,

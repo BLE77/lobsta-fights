@@ -20,6 +20,13 @@ function accountToBase58(value: any): string | null {
   return null;
 }
 
+function signerToBase58(signer: any): string | null {
+  if (!signer) return null;
+  if (typeof signer === "string") return signer;
+  if (typeof signer?.toBase58 === "function") return signer.toBase58();
+  return accountToBase58(signer?.pubkey);
+}
+
 export async function POST(request: Request) {
   const rlKey = getRateLimitKey(request);
   const rl = checkRateLimit("PUBLIC_WRITE", rlKey);
@@ -76,9 +83,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Transaction failed on-chain." }, { status: 400 });
     }
 
-    const signerMatch = tx.transaction.message.accountKeys.some(
-      (k: any) => k.signer && k.pubkey.toBase58() === wallet.toBase58(),
-    );
+    const walletAddressBase58 = wallet.toBase58();
+    const signerMatch = tx.transaction.message.accountKeys.some((k: any) => {
+      if (!k?.signer) return false;
+      return signerToBase58(k.pubkey) === walletAddressBase58;
+    });
     if (!signerMatch) {
       return NextResponse.json(
         { error: "Claim transaction signer does not match wallet_address." },

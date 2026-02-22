@@ -353,6 +353,8 @@ const ONCHAIN_ADMIN_HEALTH_CHECK_MS = readIntervalMs(
   2_000,
   120_000,
 );
+const MAX_MAP_SIZE = 500;
+const TRACKING_MAP_CLEANUP_INTERVAL_MS = 60_000;
 // Turn authority mode:
 // - true  => full on-chain turn loop (requires deployed program with
 //            open_turn/resolve_turn/advance_turn + combat_state account)
@@ -610,6 +612,7 @@ export class RumbleOrchestrator {
   };
   private tickInFlight: Promise<void> | null = null;
   private inflightCleanup: Set<Promise<unknown>> = new Set();
+  private lastTrackerCleanupAt = 0;
 
   constructor(queueManager: RumbleQueueManager) {
     this.queueManager = queueManager;
@@ -798,11 +801,17 @@ export class RumbleOrchestrator {
   private async tickInternal(): Promise<void> {
     // Track when this tick started for serverless budget management.
     // Combat loop uses this to stop before the function is killed.
-    this.tickStartedAt = Date.now();
+    const now = Date.now();
+    this.tickStartedAt = now;
+
+    if (now - this.lastTrackerCleanupAt > TRACKING_MAP_CLEANUP_INTERVAL_MS) {
+      this.lastTrackerCleanupAt = now;
+      this.trimTrackingMaps();
+    }
 
     // Sync pause state from DB every 10s so admin page toggles take effect
-    if (Date.now() - this.lastPauseSyncAt > 10_000) {
-      this.lastPauseSyncAt = Date.now();
+    if (now - this.lastPauseSyncAt > 10_000) {
+      this.lastPauseSyncAt = now;
       try {
         const dbPaused = await persist.getAdminConfig("house_bots_paused");
         const paused = dbPaused === true;
@@ -908,6 +917,32 @@ export class RumbleOrchestrator {
     return slot ? slot.slotIndex : null;
   }
 
+  private trimMap<K, V>(map: Map<K, V>): void {
+    if (map.size <= MAX_MAP_SIZE) return;
+    for (const key of map.keys()) {
+      if (map.size <= MAX_MAP_SIZE) break;
+      map.delete(key);
+    }
+  }
+
+  private trimSet(set: Set<string>): void {
+    if (set.size <= MAX_MAP_SIZE) return;
+    for (const key of set) {
+      if (set.size <= MAX_MAP_SIZE) break;
+      set.delete(key);
+    }
+  }
+
+  private trimTrackingMaps(): void {
+    this.trimMap(this.settledRumbleIds);
+    this.trimSet(this.settlingRumbleIds);
+    this.trimMap(this.pendingFinalizations);
+    this.trimMap(this.onchainRumbleCreateRetryAt);
+    this.trimMap(this.onchainRumbleCreateStartedAt);
+    this.trimMap(this.onchainRumbleCreateLastError);
+    this.trimSet(this.payoutProcessed);
+  }
+
   private recordOnchainCreateFailure(
     rumbleId: string,
     reason: string,
@@ -928,6 +963,7 @@ export class RumbleOrchestrator {
       reason,
       nextRetryAt,
     });
+    this.trimTrackingMaps();
   }
 
   private clearOnchainCreateFailure(rumbleId: string): void {
@@ -1182,6 +1218,7 @@ export class RumbleOrchestrator {
       attempts: 0,
       completeDone: false,
     });
+    this.trimTrackingMaps();
   }
 
   private async processPendingRumbleFinalizations(): Promise<void> {
@@ -1327,6 +1364,7 @@ export class RumbleOrchestrator {
 
     if (!this.onchainRumbleCreateStartedAt.has(rumbleId)) {
       this.onchainRumbleCreateStartedAt.set(rumbleId, now);
+      this.trimTrackingMaps();
     }
 
     const slotWalletsValid = await this.ensureSlotFighterWalletsValid(slot);
@@ -1369,6 +1407,7 @@ export class RumbleOrchestrator {
       await this.armBettingWindowIfReady(slot);
     } else {
       this.onchainRumbleCreateRetryAt.set(rumbleId, now + ONCHAIN_CREATE_RETRY_MS);
+      this.trimTrackingMaps();
       const startedAt = this.onchainRumbleCreateStartedAt.get(rumbleId) ?? now;
       if (ABORT_STALLED_BETTING && now - startedAt >= ONCHAIN_CREATE_STALL_TIMEOUT_MS) {
         await this.abortStalledBettingSlot(slot, "on-chain rumble creation timed out");
@@ -3407,6 +3446,7 @@ export class RumbleOrchestrator {
       return;
     }
     this.settlingRumbleIds.add(rumbleId);
+    this.trimTrackingMaps();
 
     let settlementSucceeded = false;
     let ichorSuccess = false;
@@ -3609,6 +3649,7 @@ export class RumbleOrchestrator {
       this.settlingRumbleIds.delete(rumbleId);
       if (settlementSucceeded) {
         this.settledRumbleIds.set(rumbleId, Date.now());
+        this.trimTrackingMaps();
       }
     }
   }
@@ -3623,12 +3664,18 @@ export class RumbleOrchestrator {
 
     // Only process payout once per rumble
     if (this.payoutProcessed.has(slot.id)) return;
-    this.payoutProcessed.add(slot.id);
 
+    let payoutSucceeded = false;
     try {
       await this.runPayoutPhase(idx);
+      payoutSucceeded = true;
     } catch (err) {
       console.error(`[Orchestrator] Payout error for slot ${idx}:`, err);
+    } finally {
+      if (payoutSucceeded) {
+        this.payoutProcessed.add(slot.id);
+        this.trimTrackingMaps();
+      }
     }
   }
 
@@ -3729,15 +3776,23 @@ export class RumbleOrchestrator {
 
     // Persist: atomically increment ichor shower pool
     if (showerPoolIncrement > 0) {
-      persist.updateIchorShowerPool(showerPoolIncrement);
+      try {
+        await persist.updateIchorShowerPool(showerPoolIncrement);
+      } catch (err) {
+        console.error(`[Orchestrator] Failed to persist ICHOR shower pool for ${slot.id}:`, err);
+      }
     }
 
     // Persist: increment aggregate stats
-    persist.incrementStats(
-      payoutPool.totalDeployed,
-      payoutResult.ichorDistribution.totalMined,
-      payoutResult.totalBurned,
-    );
+    try {
+      await persist.incrementStats(
+        payoutPool.totalDeployed,
+        payoutResult.ichorDistribution.totalMined,
+        payoutResult.totalBurned,
+      );
+    } catch (err) {
+      console.error(`[Orchestrator] Failed to increment stats for ${slot.id}:`, err);
+    }
 
     // Store payout result for status API
     this.payoutResults.set(slotIndex, payoutResult);
@@ -3759,7 +3814,6 @@ export class RumbleOrchestrator {
       await persist.savePayoutResult(slot.id, transformedPayout);
     } catch (err) {
       console.error(`[Orchestrator] Failed to persist payout result for ${slot.id}:`, err);
-      this.payoutProcessed.delete(slot.id);
       return;
     }
 
@@ -3857,15 +3911,7 @@ export class RumbleOrchestrator {
       this.clearOnchainCreateFailure(previousRumbleId);
       this.combatStates.delete(slotIndex);
       this.payoutResults.delete(slotIndex);
-
-      // Prune settled rumble IDs older than 1 hour to prevent unbounded growth
-      const ONE_HOUR_MS = 60 * 60 * 1000;
-      const cutoff = Date.now() - ONE_HOUR_MS;
-      for (const [id, ts] of this.settledRumbleIds) {
-        if (ts < cutoff) {
-          this.settledRumbleIds.delete(id);
-        }
-      }
+      this.trimTrackingMaps();
 
       this.emit("slot_recycled", {
         slotIndex,

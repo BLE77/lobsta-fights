@@ -9,9 +9,11 @@ export async function GET(request: Request) {
   const limit = Math.min(Math.max(1, parseInt(searchParams.get("limit") || "50") || 50), 100);
   const offset = Math.max(0, parseInt(searchParams.get("offset") || "0") || 0);
 
-  const { data, error } = await supabase
+  const { data, count, error } = await supabase
     .from("ucf_leaderboard")
-    .select("*")
+    .select("*", { count: "exact" })
+    .order("wins", { ascending: false })
+    .order("id", { ascending: true })
     .range(offset, offset + limit - 1);
 
   if (error) {
@@ -20,6 +22,6 @@ export async function GET(request: Request) {
 
   return NextResponse.json({
     fighters: data as UCFLeaderboardEntry[],
-    count: data?.length || 0,
+    count: count ?? 0,
   });
 }

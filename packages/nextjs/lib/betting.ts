@@ -84,19 +84,22 @@ export interface IchorDistribution {
   showerPoolAccumulation: number;
 }
 
+const LAMPORTS_PER_SOL = 1_000_000_000n;
+const BASIS_POINTS = 10_000n;
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-export const ADMIN_FEE_RATE = 0.01; // 1% off the top
-export const SPONSORSHIP_RATE = 0.05; // 5% to fighter owner
-const TREASURY_RATE = 0.10; // 10% of losers' pot
-const WINNERS_SHARE_RATE = 0.90; // 90% of losers' pot to bettors
+const ADMIN_FEE_RATE_BPS = 100n; // 1%
+const SPONSORSHIP_RATE_BPS = 500n; // 5%
+const TREASURY_RATE_BPS = 1_000n; // 10% of losers' pot
+const WINNERS_SHARE_RATE_BPS = 9_000n; // 90% of losers' pot to bettors
+const PLACE_SHARE_BPS = 0n; // 0% to second place
+const SHOW_SHARE_BPS = 0n; // 0% to third place
 
-// Winner-takes-all: 100% of losers' pot goes to 1st place bettors
-const WIN_SHARE = 1.0; // 1st place bettors get everything
-const PLACE_SHARE = 0; // 2nd place bettors get nothing
-const SHOW_SHARE = 0; // 3rd place bettors get nothing
+export const ADMIN_FEE_RATE = Number(ADMIN_FEE_RATE_BPS) / 10_000; // 0.01
+export const SPONSORSHIP_RATE = Number(SPONSORSHIP_RATE_BPS) / 10_000; // 0.05
 
 // --- Seasons ---
 // ICHOR reward per Rumble is season-based (admin-configurable), not auto-halving.
@@ -121,6 +124,19 @@ const ICHOR_SHOWER_BURN_SHARE = 0.10; // 10% burned
 
 // Additional Ichor Shower pool accumulation per Rumble (beyond the 10% block reward share)
 const ICHOR_SHOWER_EXTRA_MINT = 0.2;
+
+function solToLamports(solAmount: number): bigint {
+  if (!Number.isFinite(solAmount) || solAmount <= 0) return 0n;
+  return BigInt(Math.max(0, Math.round(solAmount * Number(LAMPORTS_PER_SOL))));
+}
+
+function lamportsToSol(lamports: bigint): number {
+  return Number(lamports) / Number(LAMPORTS_PER_SOL);
+}
+
+function splitShare(totalLamports: bigint, shareBps: bigint, baseBps = BASIS_POINTS): bigint {
+  return (totalLamports * shareBps) / baseBps;
+}
 
 // ---------------------------------------------------------------------------
 // Core Functions
@@ -156,16 +172,26 @@ export function placeBet(
     throw new Error("SOL amount must be positive");
   }
 
-  // Deduct fees from the gross amount
-  const adminFee = solAmount * ADMIN_FEE_RATE;
-  const sponsorship = solAmount * SPONSORSHIP_RATE;
-  const netAmount = solAmount - adminFee - sponsorship;
+  const grossAmountLamports = solToLamports(solAmount);
+  if (grossAmountLamports <= 0n) {
+    throw new Error("SOL amount must be positive");
+  }
+
+  // Deduct fees from the gross amount in integer lamports
+  const adminFeeLamports = splitShare(grossAmountLamports, ADMIN_FEE_RATE_BPS);
+  const sponsorshipLamports = splitShare(grossAmountLamports, SPONSORSHIP_RATE_BPS);
+  const netAmountLamports = grossAmountLamports - adminFeeLamports - sponsorshipLamports;
+
+  const grossAmount = lamportsToSol(grossAmountLamports);
+  const netAmount = lamportsToSol(netAmountLamports);
+  const adminFee = lamportsToSol(adminFeeLamports);
+  const sponsorship = lamportsToSol(sponsorshipLamports);
 
   // Record the bet with both gross and net amounts
   const bet: Bet = {
     bettorId,
     fighterId,
-    grossAmount: solAmount,
+    grossAmount,
     solAmount: netAmount,
     timestamp: new Date(),
   };
@@ -187,33 +213,38 @@ export function placeBet(
  * Returns an array sorted by SOL deployed (most popular first).
  */
 export function calculateOdds(pool: BettingPool): FighterOdds[] {
-  if (pool.netPool === 0) return [];
+  const netPoolLamports = solToLamports(pool.netPool);
+  if (netPoolLamports === 0n) return [];
 
   // Aggregate net SOL per fighter
-  const fighterSol = new Map<string, number>();
+  const fighterSol = new Map<string, bigint>();
   const fighterBetCount = new Map<string, number>();
 
   for (const bet of pool.bets) {
-    fighterSol.set(bet.fighterId, (fighterSol.get(bet.fighterId) ?? 0) + bet.solAmount);
+    const solLamports = solToLamports(bet.solAmount);
+    fighterSol.set(bet.fighterId, (fighterSol.get(bet.fighterId) ?? 0n) + solLamports);
     fighterBetCount.set(bet.fighterId, (fighterBetCount.get(bet.fighterId) ?? 0) + 1);
   }
 
   const odds: FighterOdds[] = [];
 
-  for (const [fighterId, sol] of fighterSol) {
-    const impliedProbability = sol / pool.netPool;
+  for (const [fighterId, solLamports] of fighterSol) {
+    const impliedProbability = Number(solLamports) / Number(netPoolLamports);
     // If this fighter wins 1st: the bettor pool on losers is the pot.
     // Losers' SOL = netPool - sol on this fighter.
     // Winners get 90% of pot * 70% (1st place share) + their stake back.
     // Potential return = (stake back + profit) / stake
-    const losersPot = pool.netPool - sol;
-    const winnersShare = losersPot * WINNERS_SHARE_RATE * WIN_SHARE;
+    const losersPotLamports = netPoolLamports - solLamports;
+    const winnersShareLamports = splitShare(losersPotLamports, WINNERS_SHARE_RATE_BPS);
     // Return per 1 SOL net deployed on this fighter
-    const potentialReturn = sol > 0 ? (sol + winnersShare) / sol : 0;
+    const solDeployed = lamportsToSol(solLamports);
+    const potentialReturn = solDeployed > 0
+      ? lamportsToSol(solLamports + winnersShareLamports) / solDeployed
+      : 0;
 
     odds.push({
       fighterId,
-      solDeployed: sol,
+      solDeployed,
       betCount: fighterBetCount.get(fighterId) ?? 0,
       impliedProbability,
       potentialReturn,
@@ -250,31 +281,32 @@ export function calculatePayouts(
 
   // Group bets by fighter, and aggregate net SOL per fighter
   const betsByFighter = new Map<string, Bet[]>();
-  const solByFighter = new Map<string, number>();
+  const solByFighter = new Map<string, bigint>();
 
   for (const bet of pool.bets) {
     const list = betsByFighter.get(bet.fighterId) ?? [];
     list.push(bet);
     betsByFighter.set(bet.fighterId, list);
-    solByFighter.set(bet.fighterId, (solByFighter.get(bet.fighterId) ?? 0) + bet.solAmount);
+    const solLamports = solToLamports(bet.solAmount);
+    solByFighter.set(bet.fighterId, (solByFighter.get(bet.fighterId) ?? 0n) + solLamports);
   }
 
   // Winner-takes-all: pot = ALL non-winner fighters' SOL
-  let pot = 0;
-  for (const [fighterId, sol] of solByFighter) {
+  let potLamports = 0n;
+  for (const [fighterId, solLamports] of solByFighter) {
     if (fighterId !== winnerId) {
-      pot += sol;
+      potLamports += solLamports;
     }
   }
 
   // Treasury takes 10% of the pot
-  const treasuryVault = pot * TREASURY_RATE;
+  const treasuryVaultLamports = splitShare(potLamports, TREASURY_RATE_BPS);
 
   // Remaining 90% split among top-3 bettors
-  const distributablePot = pot * WINNERS_SHARE_RATE;
-  const winPot = distributablePot * WIN_SHARE; // 70% of 90%
-  const placePot = distributablePot * PLACE_SHARE; // 20% of 90%
-  const showPot = distributablePot * SHOW_SHARE; // 10% of 90%
+  const distributablePotLamports = potLamports - treasuryVaultLamports;
+  const placePotLamports = splitShare(distributablePotLamports, PLACE_SHARE_BPS);
+  const showPotLamports = splitShare(distributablePotLamports, SHOW_SHARE_BPS);
+  const winPotLamports = distributablePotLamports - placePotLamports - showPotLamports;
 
   // ICHOR distribution
   const ichorDistribution = calculateIchorDistribution(
@@ -289,29 +321,38 @@ export function calculatePayouts(
   // Helper: build payout array for bettors on a specific fighter
   function buildPayouts(
     fighterId: string,
-    potShare: number,
+    potShare: bigint,
     ichorMap: Map<string, number>,
   ): BettorPayout[] {
     const bets = betsByFighter.get(fighterId) ?? [];
-    const totalSolOnFighter = solByFighter.get(fighterId) ?? 0;
-    if (totalSolOnFighter === 0) return [];
+    const totalSolOnFighter = solByFighter.get(fighterId) ?? 0n;
+    if (totalSolOnFighter === 0n) return [];
 
-    return bets.map((bet) => {
-      const proportion = bet.solAmount / totalSolOnFighter;
-      const profit = potShare * proportion;
+    let allocatedProfitLamports = 0n;
+    const payouts: BettorPayout[] = bets.map((bet) => {
+      const betSolLamports = solToLamports(bet.solAmount);
+      const solProfitLamports = (potShare * betSolLamports) / totalSolOnFighter;
+      allocatedProfitLamports += solProfitLamports;
       return {
         bettorId: bet.bettorId,
         solDeployed: bet.solAmount,
         solReturned: bet.solAmount, // top-3 bettors get their stake back
-        solProfit: profit,
+        solProfit: lamportsToSol(solProfitLamports),
         ichorMined: ichorMap.get(bet.bettorId) ?? 0,
       };
     });
+
+    const remainderLamports = potShare - allocatedProfitLamports;
+    if (remainderLamports !== 0n && payouts.length > 0) {
+      payouts[0].solProfit += lamportsToSol(remainderLamports);
+    }
+
+    return payouts;
   }
 
-  const winnerBettors = buildPayouts(firstId, winPot, ichorDistribution.winningBettors);
-  const placeBettors = buildPayouts(secondId, placePot, ichorDistribution.secondPlaceBettors);
-  const showBettors = buildPayouts(thirdId, showPot, ichorDistribution.thirdPlaceBettors);
+  const winnerBettors = buildPayouts(firstId, winPotLamports, ichorDistribution.winningBettors);
+  const placeBettors = buildPayouts(secondId, placePotLamports, ichorDistribution.secondPlaceBettors);
+  const showBettors = buildPayouts(thirdId, showPotLamports, ichorDistribution.thirdPlaceBettors);
 
   // Losing bettors: everyone who didn't bet on the winner — no return, no profit, no ICHOR
   const losingBettors: BettorPayout[] = [];
@@ -348,7 +389,7 @@ export function calculatePayouts(
     placeBettors,
     showBettors,
     losingBettors,
-    treasuryVault,
+    treasuryVault: lamportsToSol(treasuryVaultLamports),
     totalBurned,
     sponsorships: new Map(pool.sponsorshipPaid),
     ichorDistribution,
@@ -469,16 +510,19 @@ export function selectIchorShowerWinner(
     throw new Error("No winning bettors to select from");
   }
 
-  const totalSol = winningBettors.reduce((sum, b) => sum + b.solDeployed, 0);
-  if (totalSol === 0) {
+  const totalSol = winningBettors.reduce(
+    (sum, b) => sum + solToLamports(b.solDeployed),
+    0n,
+  );
+  if (totalSol === 0n) {
     throw new Error("Total SOL deployed is zero");
   }
 
-  const roll = (rngValue ?? secureRandom()) * totalSol;
-  let cumulative = 0;
+  const roll = BigInt(Math.floor((rngValue ?? secureRandom()) * Number(totalSol)));
+  let cumulative = 0n;
 
   for (const bettor of winningBettors) {
-    cumulative += bettor.solDeployed;
+    cumulative += solToLamports(bettor.solDeployed);
     if (roll < cumulative) {
       return bettor.bettorId;
     }
@@ -516,26 +560,31 @@ export function getBlockReward(_totalRumblesCompleted: number): number {
  */
 export function getGrossDeployedOnFighter(pool: BettingPool, fighterId: string): number {
   // Each bet's solAmount is NET (after 6% fees). Reverse: gross = net / 0.94
-  let netOnFighter = 0;
+  let netOnFighter = 0n;
   for (const bet of pool.bets) {
     if (bet.fighterId === fighterId) {
-      netOnFighter += bet.solAmount;
+      netOnFighter += solToLamports(bet.solAmount);
     }
   }
-  return netOnFighter / (1 - ADMIN_FEE_RATE - SPONSORSHIP_RATE);
+  const grossDenominator = BASIS_POINTS - ADMIN_FEE_RATE_BPS - SPONSORSHIP_RATE_BPS;
+  if (grossDenominator <= 0n || netOnFighter === 0n) {
+    return 0;
+  }
+  const grossLamports = (netOnFighter * BASIS_POINTS) / grossDenominator;
+  return lamportsToSol(grossLamports);
 }
 
 /**
  * Get total effective (net) SOL deployed on a fighter in the pool.
  */
 export function getNetDeployedOnFighter(pool: BettingPool, fighterId: string): number {
-  let total = 0;
+  let total = 0n;
   for (const bet of pool.bets) {
     if (bet.fighterId === fighterId) {
-      total += bet.solAmount;
+      total += solToLamports(bet.solAmount);
     }
   }
-  return total;
+  return lamportsToSol(total);
 }
 
 /**

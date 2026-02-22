@@ -69,7 +69,7 @@ export async function GET(request: Request) {
  * POST /api/rumble/queue
  *
  * Fighter joins the Rumble queue.
- * Body: { fighter_id, api_key?, auto_requeue? }
+ * Body: { fighter_id, api_key?, auto_requeue?, priority? }
  * Auth: x-api-key header or api_key in body
  */
 export async function POST(request: Request) {
@@ -83,6 +83,12 @@ export async function POST(request: Request) {
     const body = await request.json();
     const fighterId = body.fighter_id || body.fighterId;
     const autoRequeue = body.auto_requeue ?? body.autoRequeue ?? false;
+    const requestedPriority = body.priority ?? body.queuePriority;
+    const parsedPriority =
+      typeof requestedPriority === "number"
+        ? Math.trunc(requestedPriority)
+        : Number.parseInt(String(requestedPriority), 10);
+    const priority = Number.isFinite(parsedPriority) ? parsedPriority : 0;
     const apiKey = body.api_key || body.apiKey || getApiKeyFromHeaders(request.headers);
 
     if (!fighterId || typeof fighterId !== "string") {
@@ -180,7 +186,7 @@ export async function POST(request: Request) {
     const qm = getQueueManager();
     const orchestrator = getOrchestrator();
 
-    const entry = qm.addToQueue(fighterId, autoRequeue);
+    const entry = qm.addToQueue(fighterId, autoRequeue, priority);
 
     // Track auto-requeue preference in the orchestrator for active slots
     if (autoRequeue) {
@@ -199,12 +205,13 @@ export async function POST(request: Request) {
     const estimatedWait = qm.getEstimatedWait(fighterId);
 
     return NextResponse.json({
-      status: "queued",
-      fighter_id: fighterId,
-      position,
-      auto_requeue: entry.autoRequeue,
-      estimated_wait_ms: estimatedWait,
-      joined_at: entry.joinedAt.toISOString(),
+        status: "queued",
+        fighter_id: fighterId,
+        position,
+        auto_requeue: entry.autoRequeue,
+        priority: entry.priority,
+        estimated_wait_ms: estimatedWait,
+        joined_at: entry.joinedAt.toISOString(),
     });
   } catch (error: any) {
     return NextResponse.json(sanitizeErrorResponse(error, "Failed to join queue"), { status: 500 });
