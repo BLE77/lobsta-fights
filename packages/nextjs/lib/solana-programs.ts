@@ -327,6 +327,33 @@ export async function readRumbleAccountState(
 }
 
 /**
+ * Read the raw betting_pools[16] (u64 lamport values) from the on-chain
+ * rumble account. Returns null if the account doesn't exist.
+ */
+export async function readRumbleBettingPools(
+  rumbleId: bigint | number,
+  connection?: Connection,
+): Promise<bigint[] | null> {
+  const conn = connection ?? getConnection();
+  const [rumblePda] = deriveRumblePda(rumbleId);
+  const info = await conn.getAccountInfo(rumblePda, "confirmed");
+  if (!info || info.data.length < 17) return null;
+
+  const data = info.data;
+  const fightersOffset = 8 + 8 + 1; // discriminator + rumble_id + state
+  const fighterCountOffset = fightersOffset + 32 * 16;
+  const bettingPoolsOffset = fighterCountOffset + 1;
+
+  if (data.length < bettingPoolsOffset + 8 * 16) return null;
+
+  const pools: bigint[] = [];
+  for (let i = 0; i < 16; i++) {
+    pools.push(readU64LE(data, bettingPoolsOffset + i * 8));
+  }
+  return pools;
+}
+
+/**
  * Read the combat state PDA for a rumble directly from chain.
  */
 export async function readRumbleCombatState(

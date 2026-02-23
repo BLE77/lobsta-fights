@@ -88,6 +88,7 @@ import {
   invalidateReadCache,
   closeMoveCommitmentOnChain,
   readRumbleFighters,
+  readRumbleBettingPools,
   postTurnResultOnChain,
   readMoveCommitmentData,
 } from "./solana-programs";
@@ -3760,25 +3761,7 @@ export class RumbleOrchestrator {
     const slot = this.queueManager.getSlot(slotIndex);
     if (!slot) return;
 
-    let pool = this.bettingPools.get(slotIndex);
     const combatState = this.combatStates.get(slotIndex);
-
-    // If in-memory pool is empty (e.g. bets registered on Vercel, not Railway),
-    // rebuild from Supabase so payout calculations reflect actual bets.
-    if (!pool || pool.bets.length === 0) {
-      try {
-        const rebuilt = await this.rebuildBettingPoolFromDb(slot.id);
-        if (rebuilt && rebuilt.bets.length > 0) {
-          pool = rebuilt;
-          this.bettingPools.set(slotIndex, rebuilt);
-          console.log(
-            `[Orchestrator] Rebuilt betting pool from DB for slot ${slotIndex} (${rebuilt.bets.length} bets, ${rebuilt.netPool.toFixed(4)} SOL net)`,
-          );
-        }
-      } catch (err) {
-        console.warn(`[Orchestrator] Failed to rebuild betting pool from DB:`, err);
-      }
-    }
 
     // Build placements from the rumble result or combat state
     let placements: Array<{ id: string; placement: number }> = [];
@@ -3830,15 +3813,78 @@ export class RumbleOrchestrator {
       );
     }
 
-    // Read block reward from on-chain arena config (season_reward > base_reward fallback).
+    // ---- On-chain payout calculation (source of truth) ----
+    // Read betting pools and winner directly from the on-chain rumble account.
+    // This mirrors the exact math in the claim_payout instruction, ensuring
+    // the display numbers match what bettors can actually claim.
+    const LAMPORTS = 1_000_000_000;
+    const TREASURY_CUT_BPS = 1_000; // 10% — matches on-chain constant
+
+    const rumbleIdNum = parseOnchainRumbleIdNumber(slot.id);
+    let onchainTotalPool = 0;
+    let onchainWinnerBettorsPayout = 0;
+    let onchainTreasuryVault = 0;
+
+    if (rumbleIdNum !== null) {
+      try {
+        const rumbleAccount = await readRumbleAccountState(rumbleIdNum);
+        if (rumbleAccount && rumbleAccount.winnerIndex !== null) {
+          const winnerIdx = rumbleAccount.winnerIndex;
+          const fighterCount = rumbleAccount.fighterCount;
+
+          // Sum betting pools per fighter from on-chain state
+          // RumbleAccountState has placements[16] — read betting_pools from raw account
+          const onchainPools = await readRumbleBettingPools(rumbleIdNum);
+
+          if (onchainPools) {
+            let losersPool = 0n;
+            let firstPool = 0n;
+
+            for (let i = 0; i < fighterCount; i++) {
+              const pool = onchainPools[i] ?? 0n;
+              const p = rumbleAccount.placements[i] ?? 0;
+              if (p === 1) {
+                firstPool += pool;
+              } else {
+                losersPool += pool;
+              }
+            }
+
+            const totalPoolLamports = firstPool + losersPool;
+            const treasuryCut = (losersPool * BigInt(TREASURY_CUT_BPS)) / 10_000n;
+            const distributable = losersPool - treasuryCut;
+
+            // Winner-takes-all: all distributable goes to 1st place bettors
+            // Total payout for winners = firstPool (stake returned) + distributable
+            const winnerPayoutLamports = firstPool + distributable;
+
+            onchainTotalPool = Number(totalPoolLamports) / LAMPORTS;
+            onchainWinnerBettorsPayout = Number(winnerPayoutLamports) / LAMPORTS;
+            onchainTreasuryVault = Number(treasuryCut) / LAMPORTS;
+
+            console.log(
+              `[Orchestrator] On-chain payout for ${slot.id}: totalPool=${onchainTotalPool.toFixed(4)} SOL, winnerPayout=${onchainWinnerBettorsPayout.toFixed(4)} SOL, treasury=${onchainTreasuryVault.toFixed(4)} SOL`,
+            );
+          }
+        }
+      } catch (err) {
+        console.warn(`[Orchestrator] Failed to read on-chain payout data for ${slot.id}:`, err);
+      }
+    }
+
+    // Read block reward from on-chain arena config for ICHOR distribution
     const arenaConfig = await readArenaConfig().catch(() => null);
     const rewardLamports = arenaConfig?.effectiveReward ?? 2_500n * 1_000_000_000n;
     const blockReward = Number(rewardLamports) / 1_000_000_000;
 
+    // ICHOR distribution still uses the off-chain calculatePayouts for now,
+    // since ICHOR is minted separately from SOL payouts. Feed it a minimal pool.
     const placementIds = placements.map((p) => p.id);
-    const payoutPool = pool ?? createBettingPool(slot.id);
+    const minimalPool = createBettingPool(slot.id);
+    minimalPool.totalDeployed = onchainTotalPool;
+    minimalPool.netPool = onchainTotalPool; // close enough for ICHOR calc
     const payoutResult = calculatePayouts(
-      payoutPool,
+      minimalPool,
       placementIds,
       blockReward,
       this.ichorShowerPool,
@@ -3866,9 +3912,9 @@ export class RumbleOrchestrator {
     // Persist: increment aggregate stats
     try {
       await persist.incrementStats(
-        payoutPool.totalDeployed,
+        onchainTotalPool,
         payoutResult.ichorDistribution.totalMined,
-        payoutResult.totalBurned,
+        0,
       );
     } catch (err) {
       console.error(`[Orchestrator] Failed to increment stats for ${slot.id}:`, err);
@@ -3877,18 +3923,16 @@ export class RumbleOrchestrator {
     // Store payout result for status API
     this.payoutResults.set(slotIndex, payoutResult);
 
-    // Persist transformed payout result to Supabase so Vercel can read it
-    const sumReturned = (arr: Array<{ solReturned: number; solProfit: number }>) =>
-      arr.reduce((s, b) => s + b.solReturned + b.solProfit, 0);
+    // Build payout info from on-chain data (the source of truth for SOL amounts)
     const transformedPayout = {
-      winnerBettorsPayout: sumReturned(payoutResult.winnerBettors),
-      placeBettorsPayout: sumReturned(payoutResult.placeBettors),
-      showBettorsPayout: sumReturned(payoutResult.showBettors),
-      treasuryVault: payoutResult.treasuryVault,
-      totalPool: payoutPool.totalDeployed,
+      winnerBettorsPayout: onchainWinnerBettorsPayout,
+      placeBettorsPayout: 0,
+      showBettorsPayout: 0,
+      treasuryVault: onchainTreasuryVault,
+      totalPool: onchainTotalPool,
       ichorMined: payoutResult.ichorDistribution.totalMined,
-      ichorShowerTriggered: payoutResult.ichorShowerTriggered,
-      ichorShowerAmount: payoutResult.ichorShowerAmount ?? 0,
+      ichorShowerTriggered: false,
+      ichorShowerAmount: 0,
     };
     try {
       await persist.savePayoutResult(slot.id, transformedPayout);
@@ -3897,9 +3941,12 @@ export class RumbleOrchestrator {
       return;
     }
 
-    // Log payout summary
-    const summary = summarizePayouts(payoutResult);
-    console.log(`[Orchestrator] Payout for ${slot.id}:`, summary);
+    console.log(`[Orchestrator] Payout for ${slot.id}:`, {
+      totalPool: onchainTotalPool.toFixed(4),
+      winnerBettorsPayout: onchainWinnerBettorsPayout.toFixed(4),
+      treasuryVault: onchainTreasuryVault.toFixed(4),
+      ichorMined: payoutResult.ichorDistribution.totalMined.toFixed(2),
+    });
 
     this.emit("payout_complete", {
       slotIndex,
@@ -3954,173 +4001,6 @@ export class RumbleOrchestrator {
   }
 
   // ---- Rebuild betting pool from DB or on-chain ----------------------------
-
-  /**
-   * Reconstruct a BettingPool from Supabase, falling back to on-chain bettor
-   * PDAs when Supabase has no bets. This handles both:
-   *  - Bets registered on Vercel but not in Railway memory (Supabase path)
-   *  - Bets that went on-chain but never reached Supabase at all (on-chain path)
-   */
-  private async rebuildBettingPoolFromDb(rumbleId: string): Promise<BettingPool | null> {
-    // Try Supabase first
-    const rows = await persist.loadBetsForRumble(rumbleId);
-    if (rows && rows.length > 0) {
-      const pool = createBettingPool(rumbleId);
-      for (const row of rows) {
-        const grossAmount = Number(row.gross_amount ?? 0);
-        const netAmount = Number(row.net_amount ?? 0);
-        if (grossAmount <= 0) continue;
-
-        const adminFee = grossAmount * ADMIN_FEE_RATE;
-        const sponsorship = grossAmount * SPONSORSHIP_RATE;
-
-        pool.bets.push({
-          bettorId: String(row.wallet_address),
-          fighterId: String(row.fighter_id),
-          grossAmount,
-          solAmount: netAmount > 0 ? netAmount : grossAmount - adminFee - sponsorship,
-          timestamp: new Date(),
-        });
-
-        pool.totalDeployed += grossAmount;
-        pool.adminFeeCollected += adminFee;
-        pool.netPool += netAmount > 0 ? netAmount : grossAmount - adminFee - sponsorship;
-
-        const currentSponsorship = pool.sponsorshipPaid.get(String(row.fighter_id)) ?? 0;
-        pool.sponsorshipPaid.set(String(row.fighter_id), currentSponsorship + sponsorship);
-      }
-      return pool;
-    }
-
-    // Fallback: read on-chain bettor PDAs for this rumble
-    return this.rebuildBettingPoolFromOnchain(rumbleId);
-  }
-
-  /**
-   * Scan all on-chain BettorAccount PDAs for a rumble and reconstruct a
-   * BettingPool. This is the ultimate source of truth — if SOL went to the
-   * vault, the bettor PDA exists regardless of Supabase state.
-   */
-  private async rebuildBettingPoolFromOnchain(rumbleId: string): Promise<BettingPool | null> {
-    const rumbleIdNum = parseOnchainRumbleIdNumber(rumbleId);
-    if (rumbleIdNum === null) return null;
-
-    const conn = getConnection();
-    const rumbleIdBuf = Buffer.alloc(8);
-    rumbleIdBuf.writeBigUInt64LE(BigInt(rumbleIdNum));
-
-    // BettorAccount layout: [8 discriminator][32 authority][8 rumble_id]...
-    // Filter by discriminator + rumble_id at offset 40.
-    const { createHash } = await import("node:crypto");
-    const discriminator = createHash("sha256")
-      .update("account:BettorAccount")
-      .digest()
-      .subarray(0, 8);
-
-    // Encode bytes to base58 using anchor utils (already a project dependency)
-    const { utils: anchorUtils } = await import("@coral-xyz/anchor");
-    const bs58encode = (buf: Buffer | Uint8Array) => anchorUtils.bytes.bs58.encode(buf);
-
-    let accounts;
-    try {
-      accounts = await conn.getProgramAccounts(RUMBLE_ENGINE_ID, {
-        commitment: "confirmed",
-        filters: [
-          { memcmp: { offset: 0, bytes: bs58encode(discriminator) } },
-          { memcmp: { offset: 40, bytes: bs58encode(rumbleIdBuf) } },
-        ],
-      });
-    } catch (err) {
-      console.warn(`[Orchestrator] getProgramAccounts for bettor PDAs failed:`, err);
-      return null;
-    }
-
-    if (!accounts || accounts.length === 0) return null;
-
-    // Get fighter list for this rumble to map fighter index → fighter ID
-    const slot = this.queueManager.getSlots().find(s => s.id === rumbleId);
-    const fighterIds = slot?.fighters ?? [];
-
-    const pool = createBettingPool(rumbleId);
-    const LAMPORTS_PER_SOL_NUM = 1_000_000_000;
-    const grossMultiplier = 1 - ADMIN_FEE_RATE - SPONSORSHIP_RATE;
-
-    for (const acct of accounts) {
-      const data = acct.account.data as Buffer;
-      if (data.length < 59) continue;
-
-      // Parse authority (wallet) at offset 8
-      const authority = new PublicKey(data.subarray(8, 40));
-      const walletStr = authority.toBase58();
-
-      // Parse fighter_deployments_lamports if available (after bump at offset ~59)
-      // Full layout: [8 disc][32 auth][8 rumble_id][1 fighter_idx][8 sol_deployed][8 claimable][8 total_claimed][8 last_claim_ts][1 claimed][1 bump][128 fighter_deployments]
-      let offset = 8 + 32 + 8 + 1 + 8; // = 57 (after sol_deployed)
-      const solDeployedLamports = data.readBigUInt64LE(49);
-
-      // Try reading fighter_deployments (16 x u64 at end of account)
-      const deploymentsStart = data.length >= 59 + 8 + 8 + 8 + 1 + 1 + 128
-        ? 59 + 8 + 8 + 8 + 1 + 1  // new layout
-        : -1;
-
-      if (deploymentsStart > 0 && data.length >= deploymentsStart + 128) {
-        for (let i = 0; i < 16; i++) {
-          const lamports = data.readBigUInt64LE(deploymentsStart + i * 8);
-          if (lamports <= 0n) continue;
-          const fighterId = fighterIds[i] ?? `fighter-idx-${i}`;
-          // On-chain stores net amount (after fees). Reverse to get gross.
-          const netSol = Number(lamports) / LAMPORTS_PER_SOL_NUM;
-          const grossSol = grossMultiplier > 0 ? netSol / grossMultiplier : netSol;
-          const adminFee = grossSol * ADMIN_FEE_RATE;
-          const sponsorship = grossSol * SPONSORSHIP_RATE;
-
-          pool.bets.push({
-            bettorId: walletStr,
-            fighterId,
-            grossAmount: grossSol,
-            solAmount: netSol,
-            timestamp: new Date(),
-          });
-          pool.totalDeployed += grossSol;
-          pool.adminFeeCollected += adminFee;
-          pool.netPool += netSol;
-
-          const cur = pool.sponsorshipPaid.get(fighterId) ?? 0;
-          pool.sponsorshipPaid.set(fighterId, cur + sponsorship);
-        }
-      } else if (solDeployedLamports > 0n) {
-        // Legacy layout: single fighter_index
-        const fighterIndex = data[48] ?? 0;
-        const fighterId = fighterIds[fighterIndex] ?? `fighter-idx-${fighterIndex}`;
-        const netSol = Number(solDeployedLamports) / LAMPORTS_PER_SOL_NUM;
-        const grossSol = grossMultiplier > 0 ? netSol / grossMultiplier : netSol;
-        const adminFee = grossSol * ADMIN_FEE_RATE;
-        const sponsorship = grossSol * SPONSORSHIP_RATE;
-
-        pool.bets.push({
-          bettorId: walletStr,
-          fighterId,
-          grossAmount: grossSol,
-          solAmount: netSol,
-          timestamp: new Date(),
-        });
-        pool.totalDeployed += grossSol;
-        pool.adminFeeCollected += adminFee;
-        pool.netPool += netSol;
-
-        const cur = pool.sponsorshipPaid.get(fighterId) ?? 0;
-        pool.sponsorshipPaid.set(fighterId, cur + sponsorship);
-      }
-    }
-
-    if (pool.bets.length > 0) {
-      console.log(
-        `[Orchestrator] Rebuilt betting pool from ON-CHAIN for ${rumbleId} (${pool.bets.length} bets, ${accounts.length} bettor PDAs, ${pool.netPool.toFixed(4)} SOL net)`,
-      );
-    }
-
-    return pool.bets.length > 0 ? pool : null;
-  }
 
   // ---- Cleanup -------------------------------------------------------------
 
