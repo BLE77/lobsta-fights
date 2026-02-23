@@ -6,15 +6,23 @@ import {
   discoverOnchainWalletPayoutSnapshot,
   type OnchainClaimableRumble,
 } from "~~/lib/rumble-onchain-claims";
-import { getConnection } from "~~/lib/solana-connection";
+import { getConnection, getRpcEndpoint } from "~~/lib/solana-connection";
 import { buildClaimPayoutTx } from "~~/lib/solana-programs";
 
 export const dynamic = "force-dynamic";
 const MAX_EXECUTABLE_CHECKS = 80;
 
+interface SimDebugEntry {
+  rumbleId: string;
+  error?: string;
+  simErr?: unknown;
+  logs?: string[];
+}
+
 async function filterExecutableClaims(
   wallet: PublicKey,
   rows: OnchainClaimableRumble[],
+  debugLog?: SimDebugEntry[],
 ): Promise<OnchainClaimableRumble[]> {
   if (rows.length === 0) return [];
 
@@ -29,9 +37,13 @@ async function filterExecutableClaims(
         replaceRecentBlockhash: true,
         commitment: "processed",
       });
-      if (!sim.value.err) executable.push(row);
-    } catch {
-      // Non-executable candidates are intentionally omitted from claimable totals.
+      if (!sim.value.err) {
+        executable.push(row);
+      } else {
+        debugLog?.push({ rumbleId: row.rumbleId, simErr: sim.value.err, logs: sim.value.logs?.slice(-5) });
+      }
+    } catch (e: any) {
+      debugLog?.push({ rumbleId: row.rumbleId, error: e?.message ?? String(e) });
     }
   }
 
@@ -61,9 +73,11 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "Invalid wallet address" }, { status: 400 });
     }
 
+    const debug = searchParams.get("debug") === "1";
     const payoutMode = getRumblePayoutMode();
     const snapshot = await discoverOnchainWalletPayoutSnapshot(walletPk, 80);
-    const executableClaims = await filterExecutableClaims(walletPk, snapshot.claimableRumbles);
+    const simDebug: SimDebugEntry[] = [];
+    const executableClaims = await filterExecutableClaims(walletPk, snapshot.claimableRumbles, debug ? simDebug : undefined);
     const pendingRumbles = executableClaims.map((row) => ({
       rumble_id: row.rumbleId,
       claimable_sol: row.onchainClaimableSol > 0 ? row.onchainClaimableSol : row.inferredClaimableSol,
@@ -98,6 +112,20 @@ export async function GET(request: Request) {
       onchain_claim_ready: onchainClaimReady,
       pending_rumbles: pendingRumbles,
       timestamp: new Date().toISOString(),
+      ...(debug ? {
+        _debug: {
+          rpc_endpoint: getRpcEndpoint().replace(/api[_-]key=[^&]+/, "api-key=REDACTED"),
+          snapshot_claimable_count: snapshot.claimableRumbles.length,
+          snapshot_claimable_rumbles: snapshot.claimableRumbles.map(r => ({
+            id: r.rumbleId,
+            state: r.onchainState,
+            claimable: r.onchainClaimableSol,
+            inferred: r.inferredClaimableSol,
+          })),
+          executable_count: executableClaims.length,
+          sim_failures: simDebug,
+        },
+      } : {}),
     });
   } catch (error) {
     console.error("[RumbleBalanceAPI]", error);
