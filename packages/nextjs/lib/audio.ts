@@ -64,8 +64,9 @@ class UCFAudioManager {
       );
 
       this.loaded = true;
-    } catch {
-      // AudioContext not supported
+      console.log(`[Audio] Loaded ${this.buffers.size}/${entries.length} sound buffers`);
+    } catch (e) {
+      console.warn("[Audio] Init failed:", e);
     } finally {
       this.loading = false;
     }
@@ -75,17 +76,24 @@ class UCFAudioManager {
     if (!this.context || !this.gainNode || this._muted) return;
 
     const buffer = this.buffers.get(sound);
-    if (!buffer) return;
+    if (!buffer) {
+      console.warn(`[Audio] No buffer for "${sound}" — loaded: ${this.loaded}, buffers: ${this.buffers.size}`);
+      return;
+    }
+
+    const playNow = () => {
+      const source = this.context!.createBufferSource();
+      source.buffer = buffer;
+      source.connect(this.gainNode!);
+      source.start(0);
+    };
 
     // Resume context if suspended (browser autoplay policy)
     if (this.context.state === "suspended") {
-      this.context.resume();
+      this.context.resume().then(playNow);
+    } else {
+      playNow();
     }
-
-    const source = this.context.createBufferSource();
-    source.buffer = buffer;
-    source.connect(this.gainNode);
-    source.start(0);
   }
 
   startAmbient(): void {
@@ -95,21 +103,25 @@ class UCFAudioManager {
     const buffer = this.buffers.get("ambient_arena");
     if (!buffer) return;
 
+    const startLoop = () => {
+      this.ambientSource = this.context!.createBufferSource();
+      this.ambientSource.buffer = buffer;
+      this.ambientSource.loop = true;
+
+      // Lower volume for ambient
+      const ambientGain = this.context!.createGain();
+      ambientGain.gain.value = 0.15;
+      this.ambientSource.connect(ambientGain);
+      ambientGain.connect(this.gainNode!);
+
+      this.ambientSource.start(0);
+    };
+
     if (this.context.state === "suspended") {
-      this.context.resume();
+      this.context.resume().then(startLoop);
+    } else {
+      startLoop();
     }
-
-    this.ambientSource = this.context.createBufferSource();
-    this.ambientSource.buffer = buffer;
-    this.ambientSource.loop = true;
-
-    // Lower volume for ambient
-    const ambientGain = this.context.createGain();
-    ambientGain.gain.value = 0.15;
-    this.ambientSource.connect(ambientGain);
-    ambientGain.connect(this.gainNode);
-
-    this.ambientSource.start(0);
   }
 
   stopAmbient(): void {
