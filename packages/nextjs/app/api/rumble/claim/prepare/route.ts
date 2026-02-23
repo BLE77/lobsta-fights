@@ -15,8 +15,10 @@ export const dynamic = "force-dynamic";
 const SOLANA_LEGACY_TX_MAX_BYTES = 1232;
 
 // Minimum vault balance (in lamports) required above the payout estimate.
-// Covers rent-exempt minimum + tx fee headroom.
-const VAULT_HEADROOM_LAMPORTS = 10_000;
+// Covers rent-exempt minimum (~890_880) + tx fee headroom.
+// The actual payout is computed lazily on-chain and may exceed our estimate,
+// so we use a generous headroom to avoid false rejections.
+const VAULT_HEADROOM_LAMPORTS = 900_000;
 
 function summarizeBuildError(err: unknown): string {
   if (err instanceof Error) return err.message;

@@ -1059,45 +1059,74 @@ export default function RumblePage() {
     setClaimPending(true);
     setClaimError(null);
 
+    let totalClaimed = 0;
+    let batchNum = 0;
+    const MAX_BATCHES = 5;
+
     try {
-      const prepareRes = await fetch("/api/rumble/claim/prepare", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ wallet_address: publicKey.toBase58() }),
-      });
-      const prepared = await prepareRes.json();
-      if (!prepareRes.ok) {
-        throw new Error(prepared?.error ?? "Failed to prepare claim transaction");
-      }
+      // Loop to claim all batches — Solana tx size limits mean we may need multiple txs
+      while (batchNum < MAX_BATCHES) {
+        batchNum++;
 
-      const tx = decodeBase64Tx(prepared.transaction_base64);
-      tx.feePayer = publicKey;
+        const prepareRes = await fetch("/api/rumble/claim/prepare", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ wallet_address: publicKey.toBase58() }),
+        });
+        const prepared = await prepareRes.json();
+        if (!prepareRes.ok) {
+          // If nothing left to claim after first batch, that's success
+          if (batchNum > 1 && (prepared?.reason === "none_ready" || prepared?.reason === "vaults_underfunded" || prepareRes.status === 404)) {
+            break;
+          }
+          throw new Error(prepared?.error ?? "Failed to prepare claim transaction");
+        }
 
-      const signed = await phantomProvider.signTransaction(tx);
-      const rawTx = signed.serialize();
-      const txSig = await connection.sendRawTransaction(rawTx, {
-        skipPreflight: false,
-        preflightCommitment: "processed",
-      });
+        const claimCount = prepared.claim_count ?? 1;
+        const skippedEligible = prepared.skipped_eligible_claims ?? 0;
 
-      // Don't block on confirmTransaction — devnet hangs for 30s+.
-      // The confirm endpoint verifies the tx on-chain with retries.
+        const tx = decodeBase64Tx(prepared.transaction_base64);
+        tx.feePayer = publicKey;
 
-      const confirmRes = await fetch("/api/rumble/claim/confirm", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          wallet_address: publicKey.toBase58(),
-          rumble_id: prepared.rumble_id,
-          rumble_ids: Array.isArray(prepared.rumble_ids)
-            ? prepared.rumble_ids
-            : [prepared.rumble_id].filter(Boolean),
-          tx_signature: txSig,
-        }),
-      });
-      const confirmData = await confirmRes.json();
-      if (!confirmRes.ok) {
-        throw new Error(confirmData?.error ?? "Failed to confirm claim");
+        const signed = await phantomProvider.signTransaction(tx);
+        const rawTx = signed.serialize();
+        const txSig = await connection.sendRawTransaction(rawTx, {
+          skipPreflight: false,
+          preflightCommitment: "processed",
+        });
+
+        // Don't block on confirmTransaction — devnet hangs for 30s+.
+        // The confirm endpoint verifies the tx on-chain with retries.
+
+        const confirmRes = await fetch("/api/rumble/claim/confirm", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            wallet_address: publicKey.toBase58(),
+            rumble_id: prepared.rumble_id,
+            rumble_ids: Array.isArray(prepared.rumble_ids)
+              ? prepared.rumble_ids
+              : [prepared.rumble_id].filter(Boolean),
+            tx_signature: txSig,
+          }),
+        });
+        const confirmData = await confirmRes.json();
+        if (!confirmRes.ok) {
+          // If confirm fails but we already claimed some, report partial success
+          if (totalClaimed > 0) {
+            setClaimError(`Claimed ${totalClaimed} rumble(s). Remaining batch failed: ${confirmData?.error ?? "confirm error"}`);
+            break;
+          }
+          throw new Error(confirmData?.error ?? "Failed to confirm claim");
+        }
+
+        totalClaimed += claimCount;
+
+        // If no more skipped claims waiting, we're done
+        if (skippedEligible <= 0) break;
+
+        // Brief pause between batches to let on-chain state settle
+        await new Promise(r => setTimeout(r, 2000));
       }
 
       await Promise.all([fetchClaimBalance(), fetchStatus()]);
@@ -1105,9 +1134,13 @@ export default function RumblePage() {
       setSolBalance(newBalance / LAMPORTS_PER_SOL);
     } catch (e: any) {
       if (e?.message?.includes("User rejected")) {
-        setClaimError("Claim canceled in wallet.");
+        setClaimError(totalClaimed > 0
+          ? `Claimed ${totalClaimed} rumble(s). Remaining canceled in wallet.`
+          : "Claim canceled in wallet.");
       } else {
-        setClaimError(e?.message ?? "Claim failed");
+        setClaimError(totalClaimed > 0
+          ? `Claimed ${totalClaimed} rumble(s). Error on next batch: ${e?.message ?? "unknown"}`
+          : (e?.message ?? "Claim failed"));
       }
     } finally {
       setClaimPending(false);

@@ -218,7 +218,7 @@ export async function discoverOnchainWalletPayoutSnapshot(
     try {
       const [vaultPda] = deriveVaultPda(bettor.rumbleIdNum);
       const vaultBalance = await connection.getBalance(vaultPda, "confirmed");
-      if (vaultBalance < Number(estimatedPayoutLamports) + 10_000) continue;
+      if (vaultBalance < Number(estimatedPayoutLamports) + 900_000) continue;
     } catch {
       // If we can't check vault balance, skip conservatively
       continue;

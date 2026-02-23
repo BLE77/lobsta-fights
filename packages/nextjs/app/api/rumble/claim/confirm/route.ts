@@ -100,11 +100,25 @@ export async function POST(request: Request) {
       );
     }
     if (tx.meta?.err) {
-      return NextResponse.json({ error: "Transaction failed on-chain." }, { status: 400 });
+      const errDetail = typeof tx.meta.err === "object" ? JSON.stringify(tx.meta.err) : String(tx.meta.err);
+      return NextResponse.json(
+        { error: `Transaction failed on-chain: ${errDetail}`, onchain_error: tx.meta.err },
+        { status: 400 },
+      );
     }
 
+    const walletBase58 = walletPk.toBase58();
+    const engineBase58 = RUMBLE_ENGINE_ID.toBase58();
+
+    // getParsedTransaction may return pubkey as PublicKey object or string
+    const toBase58Safe = (val: any): string | null => {
+      if (typeof val?.toBase58 === "function") return val.toBase58();
+      if (typeof val === "string" && val.length > 0) return val;
+      return null;
+    };
+
     const signerMatch = tx.transaction.message.accountKeys.some(
-      (k: any) => k.signer && k.pubkey.toBase58() === walletPk.toBase58(),
+      (k: any) => k.signer && toBase58Safe(k.pubkey) === walletBase58,
     );
     if (!signerMatch) {
       return NextResponse.json(
@@ -116,19 +130,14 @@ export async function POST(request: Request) {
     const claimedRumblePdas = new Set<string>();
     const hasClaimInstruction = tx.transaction.message.instructions.some((ix: any) => {
       try {
-        if (ix.programId?.toBase58?.() !== RUMBLE_ENGINE_ID.toBase58()) return false;
+        if (toBase58Safe(ix.programId) !== engineBase58) return false;
         if (typeof ix.data !== "string") return false;
         const raw = anchorUtils.bytes.bs58.decode(ix.data);
         if (raw.length < 8) return false;
         const isClaim = Buffer.from(raw.subarray(0, 8)).equals(CLAIM_PAYOUT_DISCRIMINATOR);
         if (!isClaim) return false;
         const rumbleAccount = Array.isArray(ix.accounts) ? ix.accounts[1] : null;
-        const rumblePda =
-          typeof rumbleAccount?.toBase58 === "function"
-            ? rumbleAccount.toBase58()
-            : typeof rumbleAccount === "string"
-              ? rumbleAccount
-              : null;
+        const rumblePda = toBase58Safe(rumbleAccount);
         if (rumblePda) {
           claimedRumblePdas.add(rumblePda);
         }
