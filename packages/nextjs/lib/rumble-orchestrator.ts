@@ -3818,6 +3818,8 @@ export class RumbleOrchestrator {
     // Read betting pools and winner directly from the on-chain rumble account.
     // This mirrors the exact math in the claim_payout instruction, ensuring
     // the display numbers match what bettors can actually claim.
+    // If the on-chain read fails, we throw so handlePayoutPhase does NOT mark
+    // this rumble as processed — it will retry on the next tick.
     const LAMPORTS = 1_000_000_000;
     const TREASURY_CUT_BPS = 1_000; // 10% — matches on-chain constant
 
@@ -3827,50 +3829,47 @@ export class RumbleOrchestrator {
     let onchainTreasuryVault = 0;
 
     if (rumbleIdNum !== null) {
-      try {
-        const rumbleAccount = await readRumbleAccountState(rumbleIdNum);
-        if (rumbleAccount && rumbleAccount.winnerIndex !== null) {
-          const winnerIdx = rumbleAccount.winnerIndex;
-          const fighterCount = rumbleAccount.fighterCount;
+      const rumbleAccount = await readRumbleAccountState(rumbleIdNum);
+      if (rumbleAccount && rumbleAccount.winnerIndex !== null) {
+        const fighterCount = rumbleAccount.fighterCount;
 
-          // Sum betting pools per fighter from on-chain state
-          // RumbleAccountState has placements[16] — read betting_pools from raw account
-          const onchainPools = await readRumbleBettingPools(rumbleIdNum);
+        const onchainPools = await readRumbleBettingPools(rumbleIdNum);
 
-          if (onchainPools) {
-            let losersPool = 0n;
-            let firstPool = 0n;
+        if (onchainPools) {
+          let losersPool = 0n;
+          let firstPool = 0n;
 
-            for (let i = 0; i < fighterCount; i++) {
-              const pool = onchainPools[i] ?? 0n;
-              const p = rumbleAccount.placements[i] ?? 0;
-              if (p === 1) {
-                firstPool += pool;
-              } else {
-                losersPool += pool;
-              }
+          for (let i = 0; i < fighterCount; i++) {
+            const pool = onchainPools[i] ?? 0n;
+            const p = rumbleAccount.placements[i] ?? 0;
+            if (p === 1) {
+              firstPool += pool;
+            } else {
+              losersPool += pool;
             }
-
-            const totalPoolLamports = firstPool + losersPool;
-            const treasuryCut = (losersPool * BigInt(TREASURY_CUT_BPS)) / 10_000n;
-            const distributable = losersPool - treasuryCut;
-
-            // Winner-takes-all: all distributable goes to 1st place bettors
-            // Total payout for winners = firstPool (stake returned) + distributable
-            const winnerPayoutLamports = firstPool + distributable;
-
-            onchainTotalPool = Number(totalPoolLamports) / LAMPORTS;
-            onchainWinnerBettorsPayout = Number(winnerPayoutLamports) / LAMPORTS;
-            onchainTreasuryVault = Number(treasuryCut) / LAMPORTS;
-
-            console.log(
-              `[Orchestrator] On-chain payout for ${slot.id}: totalPool=${onchainTotalPool.toFixed(4)} SOL, winnerPayout=${onchainWinnerBettorsPayout.toFixed(4)} SOL, treasury=${onchainTreasuryVault.toFixed(4)} SOL`,
-            );
           }
+
+          const totalPoolLamports = firstPool + losersPool;
+          const treasuryCut = (losersPool * BigInt(TREASURY_CUT_BPS)) / 10_000n;
+          const distributable = losersPool - treasuryCut;
+
+          // Winner-takes-all: all distributable goes to 1st place bettors
+          // Total payout for winners = firstPool (stake returned) + distributable
+          const winnerPayoutLamports = firstPool + distributable;
+
+          onchainTotalPool = Number(totalPoolLamports) / LAMPORTS;
+          onchainWinnerBettorsPayout = Number(winnerPayoutLamports) / LAMPORTS;
+          onchainTreasuryVault = Number(treasuryCut) / LAMPORTS;
+
+          console.log(
+            `[Orchestrator] On-chain payout for ${slot.id}: totalPool=${onchainTotalPool.toFixed(4)} SOL, winnerPayout=${onchainWinnerBettorsPayout.toFixed(4)} SOL, treasury=${onchainTreasuryVault.toFixed(4)} SOL`,
+          );
+        } else {
+          console.warn(`[Orchestrator] readRumbleBettingPools returned null for ${slot.id} — will retry`);
+          throw new Error(`On-chain betting pools unavailable for ${slot.id}`);
         }
-      } catch (err) {
-        console.warn(`[Orchestrator] Failed to read on-chain payout data for ${slot.id}:`, err);
       }
+      // If rumbleAccount is null or winnerIndex is null, pools stay at 0 (no bets placed)
     }
 
     // Read block reward from on-chain arena config for ICHOR distribution
@@ -3960,8 +3959,10 @@ export class RumbleOrchestrator {
     try {
       await persist.savePayoutResult(slot.id, transformedPayout);
     } catch (err) {
-      console.error(`[Orchestrator] Failed to persist payout result for ${slot.id}:`, err);
-      return;
+      // Clean up in-memory state and throw so handlePayoutPhase retries
+      this.transformedPayouts.delete(slotIndex);
+      console.error(`[Orchestrator] Failed to persist payout result for ${slot.id} — will retry:`, err);
+      throw err;
     }
 
     console.log(`[Orchestrator] Payout for ${slot.id}:`, {
@@ -4046,15 +4047,16 @@ export class RumbleOrchestrator {
     previousRumbleId: string,
   ): void {
     const cleanup = (async () => {
-      // Mark rumble as "complete" in DB now that payout display window is over
+      // Mark rumble as "complete" in DB now that payout display window is over.
+      // Even if DB write fails, continue cleaning up in-memory state to prevent
+      // stale maps from blocking future slots.
       try {
         await persist.updateRumbleStatus(previousRumbleId, "complete");
       } catch (err) {
         console.error(
-          `[Orchestrator] Failed to persist payout-complete status for ${previousRumbleId}:`,
+          `[Orchestrator] Failed to persist payout-complete status for ${previousRumbleId} (continuing cleanup):`,
           err,
         );
-        return;
       }
 
       this.payoutProcessed.delete(previousRumbleId);
