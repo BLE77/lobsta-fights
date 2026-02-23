@@ -14,6 +14,7 @@ export const dynamic = "force-dynamic";
 const SOLANA_LEGACY_TX_MAX_BYTES = 1232;
 
 function summarizeBuildError(err: unknown): string {
+  if (err instanceof Error) return err.message;
   try {
     return JSON.stringify(err);
   } catch {
