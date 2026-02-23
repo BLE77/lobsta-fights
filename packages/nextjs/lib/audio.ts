@@ -31,7 +31,7 @@ class UCFAudioManager {
 
   constructor() {
     this._muted = typeof window !== "undefined"
-      ? localStorage.getItem("ucf_muted") !== "false" // Default muted
+      ? localStorage.getItem("ucf_muted") === "true"
       : true;
   }
 
@@ -134,7 +134,7 @@ class UCFAudioManager {
   toggleMute(): boolean {
     this._muted = !this._muted;
     if (typeof window !== "undefined") {
-      localStorage.setItem("ucf_muted", String(!this._muted));
+      localStorage.setItem("ucf_muted", String(this._muted));
     }
 
     if (this.gainNode) {
