@@ -3760,8 +3760,25 @@ export class RumbleOrchestrator {
     const slot = this.queueManager.getSlot(slotIndex);
     if (!slot) return;
 
-    const pool = this.bettingPools.get(slotIndex);
+    let pool = this.bettingPools.get(slotIndex);
     const combatState = this.combatStates.get(slotIndex);
+
+    // If in-memory pool is empty (e.g. bets registered on Vercel, not Railway),
+    // rebuild from Supabase so payout calculations reflect actual bets.
+    if (!pool || pool.bets.length === 0) {
+      try {
+        const rebuilt = await this.rebuildBettingPoolFromDb(slot.id);
+        if (rebuilt && rebuilt.bets.length > 0) {
+          pool = rebuilt;
+          this.bettingPools.set(slotIndex, rebuilt);
+          console.log(
+            `[Orchestrator] Rebuilt betting pool from DB for slot ${slotIndex} (${rebuilt.bets.length} bets, ${rebuilt.netPool.toFixed(4)} SOL net)`,
+          );
+        }
+      } catch (err) {
+        console.warn(`[Orchestrator] Failed to rebuild betting pool from DB:`, err);
+      }
+    }
 
     // Build placements from the rumble result or combat state
     let placements: Array<{ id: string; placement: number }> = [];
@@ -3934,6 +3951,44 @@ export class RumbleOrchestrator {
     // after PAYOUT_DURATION_MS, giving Vercel status API time to read payout data.
 
     this.cleanupSlot(slotIndex, slot.id);
+  }
+
+  // ---- Rebuild betting pool from DB ----------------------------------------
+
+  /**
+   * Reconstruct a BettingPool from Supabase when in-memory state is empty.
+   * This happens when bets are placed on Vercel but payouts run on Railway.
+   */
+  private async rebuildBettingPoolFromDb(rumbleId: string): Promise<BettingPool | null> {
+    const rows = await persist.loadBetsForRumble(rumbleId);
+    if (!rows || rows.length === 0) return null;
+
+    const pool = createBettingPool(rumbleId);
+    for (const row of rows) {
+      const grossAmount = Number(row.gross_amount ?? 0);
+      const netAmount = Number(row.net_amount ?? 0);
+      if (grossAmount <= 0) continue;
+
+      const adminFee = grossAmount * ADMIN_FEE_RATE;
+      const sponsorship = grossAmount * SPONSORSHIP_RATE;
+
+      pool.bets.push({
+        bettorId: String(row.wallet_address),
+        fighterId: String(row.fighter_id),
+        grossAmount,
+        solAmount: netAmount > 0 ? netAmount : grossAmount - adminFee - sponsorship,
+        timestamp: new Date(),
+      });
+
+      pool.totalDeployed += grossAmount;
+      pool.adminFeeCollected += adminFee;
+      pool.netPool += netAmount > 0 ? netAmount : grossAmount - adminFee - sponsorship;
+
+      const currentSponsorship = pool.sponsorshipPaid.get(String(row.fighter_id)) ?? 0;
+      pool.sponsorshipPaid.set(String(row.fighter_id), currentSponsorship + sponsorship);
+    }
+
+    return pool;
   }
 
   // ---- Cleanup -------------------------------------------------------------
