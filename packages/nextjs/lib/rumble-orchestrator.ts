@@ -3722,6 +3722,7 @@ export class RumbleOrchestrator {
 
   private payoutProcessed: Set<string> = new Set(); // track rumble IDs already paid out
   private payoutResults: Map<number, PayoutResult> = new Map(); // store payout results for status API
+  private transformedPayouts: Map<number, { winnerBettorsPayout: number; placeBettorsPayout: number; showBettorsPayout: number; treasuryVault: number; totalPool: number; ichorMined: number; ichorShowerTriggered: boolean; ichorShowerAmount: number }> = new Map();
 
   private async handlePayoutPhase(slot: RumbleSlot): Promise<void> {
     const idx = slot.slotIndex;
@@ -3878,11 +3879,31 @@ export class RumbleOrchestrator {
     const blockReward = Number(rewardLamports) / 1_000_000_000;
 
     // ICHOR distribution still uses the off-chain calculatePayouts for now,
-    // since ICHOR is minted separately from SOL payouts. Feed it a minimal pool.
+    // since ICHOR is minted separately from SOL payouts. Populate bets from
+    // Supabase so bettor ICHOR shares are calculated correctly.
     const placementIds = placements.map((p) => p.id);
     const minimalPool = createBettingPool(slot.id);
     minimalPool.totalDeployed = onchainTotalPool;
     minimalPool.netPool = onchainTotalPool; // close enough for ICHOR calc
+
+    // Load bets from Supabase for bettor ICHOR distribution
+    try {
+      const dbBets = await persist.loadBetsForRumble(slot.id);
+      for (const row of dbBets) {
+        const grossAmount = Number(row.gross_amount ?? 0);
+        const netAmount = Number(row.net_amount ?? 0);
+        if (grossAmount <= 0) continue;
+        minimalPool.bets.push({
+          bettorId: String(row.wallet_address),
+          fighterId: String(row.fighter_id),
+          grossAmount,
+          solAmount: netAmount > 0 ? netAmount : grossAmount * (1 - ADMIN_FEE_RATE - SPONSORSHIP_RATE),
+          timestamp: new Date(),
+        });
+      }
+    } catch (err) {
+      console.warn(`[Orchestrator] Failed to load bets from DB for ICHOR calc:`, err);
+    }
     const payoutResult = calculatePayouts(
       minimalPool,
       placementIds,
@@ -3923,7 +3944,8 @@ export class RumbleOrchestrator {
     // Store payout result for status API
     this.payoutResults.set(slotIndex, payoutResult);
 
-    // Build payout info from on-chain data (the source of truth for SOL amounts)
+    // Build payout info from on-chain data (the source of truth for SOL amounts).
+    // Stored both in-memory (for Railway status API) and persisted to Supabase (for Vercel).
     const transformedPayout = {
       winnerBettorsPayout: onchainWinnerBettorsPayout,
       placeBettorsPayout: 0,
@@ -3934,6 +3956,7 @@ export class RumbleOrchestrator {
       ichorShowerTriggered: false,
       ichorShowerAmount: 0,
     };
+    this.transformedPayouts.set(slotIndex, transformedPayout);
     try {
       await persist.savePayoutResult(slot.id, transformedPayout);
     } catch (err) {
@@ -4040,6 +4063,7 @@ export class RumbleOrchestrator {
       this.clearOnchainCreateFailure(previousRumbleId);
       this.combatStates.delete(slotIndex);
       this.payoutResults.delete(slotIndex);
+      this.transformedPayouts.delete(slotIndex);
       this.trimTrackingMaps();
 
       this.emit("slot_recycled", {
@@ -4238,6 +4262,14 @@ export class RumbleOrchestrator {
    */
   getPayoutResult(slotIndex: number): PayoutResult | null {
     return this.payoutResults.get(slotIndex) ?? null;
+  }
+
+  /**
+   * Get the transformed payout (on-chain SOL amounts) for a slot.
+   * Used by the status API to display correct payout numbers.
+   */
+  getTransformedPayout(slotIndex: number): { winnerBettorsPayout: number; placeBettorsPayout: number; showBettorsPayout: number; treasuryVault: number; totalPool: number; ichorMined: number; ichorShowerTriggered: boolean; ichorShowerAmount: number } | null {
+    return this.transformedPayouts.get(slotIndex) ?? null;
   }
 
 }

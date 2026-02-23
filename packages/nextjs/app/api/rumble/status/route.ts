@@ -435,22 +435,12 @@ export async function GET(request: Request) {
         bye: t.bye,
       }));
 
-      // Build payout data — try in-memory first, fallback to Supabase
-      const payoutResult = orchestrator.getPayoutResult(slotInfo.slotIndex);
+      // Build payout data — try in-memory transformed payout first (on-chain
+      // SOL values computed by Railway worker), then Supabase fallback (Vercel).
+      const transformed = orchestrator.getTransformedPayout(slotInfo.slotIndex);
       let payout = null;
-      if (payoutResult) {
-        const sumReturned = (arr: Array<{ solReturned: number; solProfit: number }>) =>
-          arr.reduce((s, b) => s + b.solReturned + b.solProfit, 0);
-        payout = {
-          winnerBettorsPayout: sumReturned(payoutResult.winnerBettors),
-          placeBettorsPayout: sumReturned(payoutResult.placeBettors),
-          showBettorsPayout: sumReturned(payoutResult.showBettors),
-          treasuryVault: payoutResult.treasuryVault,
-          totalPool,
-          ichorMined: payoutResult.ichorDistribution.totalMined,
-          ichorShowerTriggered: payoutResult.ichorShowerTriggered,
-          ichorShowerAmount: payoutResult.ichorShowerAmount,
-        };
+      if (transformed) {
+        payout = transformed;
       } else if (slotInfo.rumbleId && (slotInfo.state === "payout" || slotInfo.state === "combat")) {
         // Fallback: load pre-transformed payout from Supabase (persisted by Railway worker)
         const dbPayout = await loadPayoutResult(slotInfo.rumbleId).catch(() => null);
