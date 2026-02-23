@@ -1035,7 +1035,7 @@ export default function RumblePage() {
       }
 
       // Rumble complete / payout
-      if ((prev.state === "combat" || prev.state === "betting") && (slot.state === "payout" || slot.state === "complete")) {
+      if ((prev.state === "combat" || prev.state === "betting") && slot.state === "payout") {
         audioManager.stopAmbient();
         audioManager.play("crowd_cheer");
       }
