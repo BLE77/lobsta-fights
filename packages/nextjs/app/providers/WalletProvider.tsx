@@ -5,7 +5,8 @@
  * all installed Solana wallets (Phantom, Solflare, Backpack, etc.).
  *
  * Empty wallets array is intentional: wallet-standard handles discovery.
- * autoConnect is OFF so users explicitly choose which wallet to connect.
+ * autoConnect is ON so selecting a wallet in the modal triggers connect(),
+ * and page reloads reconnect to the previously chosen wallet.
  */
 
 import { useMemo, useCallback } from "react";
@@ -45,7 +46,7 @@ export default function WalletProvider({
 
   return (
     <ConnectionProvider endpoint={endpoint}>
-      <SolanaWalletProvider wallets={wallets} autoConnect={false} onError={onError}>
+      <SolanaWalletProvider wallets={wallets} autoConnect onError={onError}>
         <WalletModalProvider>{children}</WalletModalProvider>
       </SolanaWalletProvider>
     </ConnectionProvider>
