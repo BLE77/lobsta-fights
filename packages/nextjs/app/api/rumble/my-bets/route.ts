@@ -33,7 +33,8 @@ export async function GET(request: Request) {
     const slotFighters = new Map<number, string[]>();
     for (const r of activeRumbles) {
       slotMap.set(r.slot_index, r.id);
-      const fighters = Array.isArray(r.fighters) ? (r.fighters as string[]) : [];
+      const fighterRows = Array.isArray(r.fighters) ? (r.fighters as Array<{ id?: string }>) : [];
+      const fighters = fighterRows.map((row) => String(row?.id ?? "").trim()).filter(Boolean);
       slotFighters.set(r.slot_index, fighters);
     }
     const rumbleIds = [...slotMap.values()];
