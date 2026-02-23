@@ -6,28 +6,351 @@ export type SoundEffect =
   | "ko_explosion" | "round_start" | "crowd_cheer"
   | "ambient_arena" | "radio_static";
 
-const SOUND_FILES: Record<SoundEffect, string> = {
-  hit_light: "/sounds/hit-light.wav",
-  hit_heavy: "/sounds/hit-heavy.wav",
-  hit_special: "/sounds/hit-special.wav",
-  block: "/sounds/block.wav",
-  dodge: "/sounds/dodge.wav",
-  catch: "/sounds/catch.wav",
-  ko_explosion: "/sounds/ko-explosion.wav",
-  round_start: "/sounds/round-start.wav",
-  crowd_cheer: "/sounds/crowd-cheer.wav",
-  ambient_arena: "/sounds/ambient-arena.wav",
-  radio_static: "/sounds/radio-static.wav",
+// ---- Synthesized sound generators ----
+// Each function takes an AudioContext and a destination GainNode
+// and plays a short procedural sound effect.
+
+type SynthFn = (ctx: AudioContext, dest: GainNode) => void;
+
+function synthHitLight(ctx: AudioContext, dest: GainNode) {
+  const t = ctx.currentTime;
+  // Quick noise burst — punchy snap
+  const bufferSize = ctx.sampleRate * 0.08;
+  const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+  const data = noiseBuffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) {
+    data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufferSize, 3);
+  }
+  const noise = ctx.createBufferSource();
+  noise.buffer = noiseBuffer;
+
+  const filter = ctx.createBiquadFilter();
+  filter.type = "bandpass";
+  filter.frequency.value = 2000;
+  filter.Q.value = 1.5;
+
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.6, t);
+  gain.gain.exponentialRampToValueAtTime(0.01, t + 0.08);
+
+  noise.connect(filter).connect(gain).connect(dest);
+  noise.start(t);
+  noise.stop(t + 0.08);
+}
+
+function synthHitHeavy(ctx: AudioContext, dest: GainNode) {
+  const t = ctx.currentTime;
+  // Deep thump + noise
+  const osc = ctx.createOscillator();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(150, t);
+  osc.frequency.exponentialRampToValueAtTime(40, t + 0.15);
+
+  const oscGain = ctx.createGain();
+  oscGain.gain.setValueAtTime(0.8, t);
+  oscGain.gain.exponentialRampToValueAtTime(0.01, t + 0.2);
+
+  osc.connect(oscGain).connect(dest);
+  osc.start(t);
+  osc.stop(t + 0.2);
+
+  // Noise crunch on top
+  const bufferSize = ctx.sampleRate * 0.12;
+  const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+  const data = noiseBuffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) {
+    data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufferSize, 2);
+  }
+  const noise = ctx.createBufferSource();
+  noise.buffer = noiseBuffer;
+  const noiseGain = ctx.createGain();
+  noiseGain.gain.setValueAtTime(0.5, t);
+  noiseGain.gain.exponentialRampToValueAtTime(0.01, t + 0.12);
+  noise.connect(noiseGain).connect(dest);
+  noise.start(t);
+  noise.stop(t + 0.12);
+}
+
+function synthHitSpecial(ctx: AudioContext, dest: GainNode) {
+  const t = ctx.currentTime;
+  // Rising sweep into impact
+  const sweep = ctx.createOscillator();
+  sweep.type = "sawtooth";
+  sweep.frequency.setValueAtTime(200, t);
+  sweep.frequency.exponentialRampToValueAtTime(800, t + 0.1);
+  sweep.frequency.exponentialRampToValueAtTime(100, t + 0.25);
+
+  const sweepGain = ctx.createGain();
+  sweepGain.gain.setValueAtTime(0.5, t);
+  sweepGain.gain.setValueAtTime(0.7, t + 0.1);
+  sweepGain.gain.exponentialRampToValueAtTime(0.01, t + 0.3);
+
+  const dist = ctx.createWaveShaper();
+  const curve = new Float32Array(256);
+  for (let i = 0; i < 256; i++) {
+    const x = (i * 2) / 256 - 1;
+    curve[i] = Math.tanh(x * 3);
+  }
+  dist.curve = curve;
+
+  sweep.connect(dist).connect(sweepGain).connect(dest);
+  sweep.start(t);
+  sweep.stop(t + 0.3);
+
+  // Impact noise
+  synthHitHeavy(ctx, dest);
+}
+
+function synthBlock(ctx: AudioContext, dest: GainNode) {
+  const t = ctx.currentTime;
+  // Metallic clang
+  const osc1 = ctx.createOscillator();
+  osc1.type = "square";
+  osc1.frequency.setValueAtTime(800, t);
+  osc1.frequency.exponentialRampToValueAtTime(400, t + 0.1);
+
+  const osc2 = ctx.createOscillator();
+  osc2.type = "square";
+  osc2.frequency.setValueAtTime(1200, t);
+  osc2.frequency.exponentialRampToValueAtTime(600, t + 0.08);
+
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.3, t);
+  gain.gain.exponentialRampToValueAtTime(0.01, t + 0.12);
+
+  osc1.connect(gain).connect(dest);
+  osc2.connect(gain);
+  osc1.start(t);
+  osc2.start(t);
+  osc1.stop(t + 0.12);
+  osc2.stop(t + 0.12);
+}
+
+function synthDodge(ctx: AudioContext, dest: GainNode) {
+  const t = ctx.currentTime;
+  // Quick whoosh — filtered noise sweep
+  const bufferSize = ctx.sampleRate * 0.2;
+  const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+  const data = noiseBuffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) {
+    const env = Math.sin((i / bufferSize) * Math.PI);
+    data[i] = (Math.random() * 2 - 1) * env;
+  }
+  const noise = ctx.createBufferSource();
+  noise.buffer = noiseBuffer;
+
+  const filter = ctx.createBiquadFilter();
+  filter.type = "bandpass";
+  filter.frequency.setValueAtTime(500, t);
+  filter.frequency.exponentialRampToValueAtTime(3000, t + 0.15);
+  filter.Q.value = 2;
+
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.4, t);
+  gain.gain.exponentialRampToValueAtTime(0.01, t + 0.2);
+
+  noise.connect(filter).connect(gain).connect(dest);
+  noise.start(t);
+  noise.stop(t + 0.2);
+}
+
+function synthCatch(ctx: AudioContext, dest: GainNode) {
+  const t = ctx.currentTime;
+  // Grab sound — low thud + squeeze
+  const osc = ctx.createOscillator();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(300, t);
+  osc.frequency.exponentialRampToValueAtTime(80, t + 0.15);
+
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.7, t);
+  gain.gain.exponentialRampToValueAtTime(0.01, t + 0.2);
+
+  osc.connect(gain).connect(dest);
+  osc.start(t);
+  osc.stop(t + 0.2);
+
+  // Crunch
+  const osc2 = ctx.createOscillator();
+  osc2.type = "sawtooth";
+  osc2.frequency.setValueAtTime(600, t + 0.05);
+  osc2.frequency.exponentialRampToValueAtTime(200, t + 0.15);
+
+  const gain2 = ctx.createGain();
+  gain2.gain.setValueAtTime(0, t);
+  gain2.gain.setValueAtTime(0.3, t + 0.05);
+  gain2.gain.exponentialRampToValueAtTime(0.01, t + 0.15);
+
+  osc2.connect(gain2).connect(dest);
+  osc2.start(t);
+  osc2.stop(t + 0.15);
+}
+
+function synthKoExplosion(ctx: AudioContext, dest: GainNode) {
+  const t = ctx.currentTime;
+  // Deep explosion — low rumble + noise burst
+  const osc = ctx.createOscillator();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(80, t);
+  osc.frequency.exponentialRampToValueAtTime(20, t + 0.5);
+
+  const oscGain = ctx.createGain();
+  oscGain.gain.setValueAtTime(0.8, t);
+  oscGain.gain.exponentialRampToValueAtTime(0.01, t + 0.5);
+
+  osc.connect(oscGain).connect(dest);
+  osc.start(t);
+  osc.stop(t + 0.5);
+
+  // Explosion noise
+  const bufferSize = ctx.sampleRate * 0.4;
+  const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+  const data = noiseBuffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) {
+    data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufferSize, 1.5);
+  }
+  const noise = ctx.createBufferSource();
+  noise.buffer = noiseBuffer;
+
+  const filter = ctx.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.frequency.setValueAtTime(3000, t);
+  filter.frequency.exponentialRampToValueAtTime(200, t + 0.4);
+
+  const noiseGain = ctx.createGain();
+  noiseGain.gain.setValueAtTime(0.6, t);
+  noiseGain.gain.exponentialRampToValueAtTime(0.01, t + 0.4);
+
+  noise.connect(filter).connect(noiseGain).connect(dest);
+  noise.start(t);
+  noise.stop(t + 0.4);
+}
+
+function synthRoundStart(ctx: AudioContext, dest: GainNode) {
+  const t = ctx.currentTime;
+  // Boxing bell — two quick dings
+  for (let i = 0; i < 2; i++) {
+    const offset = i * 0.15;
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(1200, t + offset);
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.5, t + offset);
+    gain.gain.exponentialRampToValueAtTime(0.01, t + offset + 0.3);
+
+    osc.connect(gain).connect(dest);
+    osc.start(t + offset);
+    osc.stop(t + offset + 0.3);
+
+    // Harmonic
+    const osc2 = ctx.createOscillator();
+    osc2.type = "sine";
+    osc2.frequency.setValueAtTime(2400, t + offset);
+    const gain2 = ctx.createGain();
+    gain2.gain.setValueAtTime(0.2, t + offset);
+    gain2.gain.exponentialRampToValueAtTime(0.01, t + offset + 0.2);
+    osc2.connect(gain2).connect(dest);
+    osc2.start(t + offset);
+    osc2.stop(t + offset + 0.2);
+  }
+}
+
+function synthCrowdCheer(ctx: AudioContext, dest: GainNode) {
+  const t = ctx.currentTime;
+  // Crowd noise — shaped noise with rising energy
+  const duration = 1.2;
+  const bufferSize = ctx.sampleRate * duration;
+  const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+  const data = noiseBuffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) {
+    const progress = i / bufferSize;
+    const envelope = Math.sin(progress * Math.PI) * (0.5 + 0.5 * Math.sin(progress * 20));
+    data[i] = (Math.random() * 2 - 1) * envelope;
+  }
+  const noise = ctx.createBufferSource();
+  noise.buffer = noiseBuffer;
+
+  const filter = ctx.createBiquadFilter();
+  filter.type = "bandpass";
+  filter.frequency.setValueAtTime(1000, t);
+  filter.frequency.linearRampToValueAtTime(2000, t + 0.3);
+  filter.frequency.linearRampToValueAtTime(1500, t + duration);
+  filter.Q.value = 0.5;
+
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.01, t);
+  gain.gain.linearRampToValueAtTime(0.5, t + 0.2);
+  gain.gain.setValueAtTime(0.5, t + duration - 0.3);
+  gain.gain.exponentialRampToValueAtTime(0.01, t + duration);
+
+  noise.connect(filter).connect(gain).connect(dest);
+  noise.start(t);
+  noise.stop(t + duration);
+
+  // Victory fanfare on top
+  const notes = [523, 659, 784, 1047]; // C5, E5, G5, C6
+  notes.forEach((freq, i) => {
+    const osc = ctx.createOscillator();
+    osc.type = "square";
+    osc.frequency.value = freq;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, t + i * 0.12);
+    g.gain.linearRampToValueAtTime(0.15, t + i * 0.12 + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.01, t + i * 0.12 + 0.25);
+    osc.connect(g).connect(dest);
+    osc.start(t + i * 0.12);
+    osc.stop(t + i * 0.12 + 0.25);
+  });
+}
+
+function synthRadioStatic(ctx: AudioContext, dest: GainNode) {
+  const t = ctx.currentTime;
+  const duration = 0.3;
+  const bufferSize = ctx.sampleRate * duration;
+  const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+  const data = noiseBuffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) {
+    data[i] = (Math.random() * 2 - 1) * 0.3;
+  }
+  const noise = ctx.createBufferSource();
+  noise.buffer = noiseBuffer;
+
+  const filter = ctx.createBiquadFilter();
+  filter.type = "highpass";
+  filter.frequency.value = 3000;
+
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.3, t);
+  gain.gain.exponentialRampToValueAtTime(0.01, t + duration);
+
+  noise.connect(filter).connect(gain).connect(dest);
+  noise.start(t);
+  noise.stop(t + duration);
+}
+
+// Map sound effects to their synth functions
+const SYNTH_MAP: Record<SoundEffect, SynthFn> = {
+  hit_light: synthHitLight,
+  hit_heavy: synthHitHeavy,
+  hit_special: synthHitSpecial,
+  block: synthBlock,
+  dodge: synthDodge,
+  catch: synthCatch,
+  ko_explosion: synthKoExplosion,
+  round_start: synthRoundStart,
+  crowd_cheer: synthCrowdCheer,
+  ambient_arena: () => {}, // handled separately via looping noise
+  radio_static: synthRadioStatic,
 };
 
 class UCFAudioManager {
   private context: AudioContext | null = null;
-  private buffers: Map<SoundEffect, AudioBuffer> = new Map();
-  private ambientSource: AudioBufferSourceNode | null = null;
   private gainNode: GainNode | null = null;
+  private ambientSource: AudioBufferSourceNode | null = null;
+  private ambientGainNode: GainNode | null = null;
   private _muted: boolean;
-  private loaded: boolean = false;
-  private initPromise: Promise<void> | null = null;
+  private _initialized: boolean = false;
 
   constructor() {
     this._muted = typeof window !== "undefined"
@@ -35,72 +358,48 @@ class UCFAudioManager {
       : true;
   }
 
-  init(): Promise<void> {
-    if (this.loaded) return Promise.resolve();
-    if (this.initPromise) return this.initPromise;
-    if (typeof window === "undefined") return Promise.resolve();
+  async init(): Promise<void> {
+    if (this._initialized) return;
+    if (typeof window === "undefined") return;
 
-    this.initPromise = this._doInit();
-    return this.initPromise;
-  }
-
-  private async _doInit(): Promise<void> {
     try {
       this.context = new AudioContext();
       this.gainNode = this.context.createGain();
       this.gainNode.connect(this.context.destination);
       this.gainNode.gain.value = this._muted ? 0 : 0.5;
-
-      // Load all sounds in parallel
-      const entries = Object.entries(SOUND_FILES) as [SoundEffect, string][];
-      await Promise.allSettled(
-        entries.map(async ([name, url]) => {
-          try {
-            const response = await fetch(url);
-            if (!response.ok) return;
-            const arrayBuffer = await response.arrayBuffer();
-            const audioBuffer = await this.context!.decodeAudioData(arrayBuffer);
-            this.buffers.set(name, audioBuffer);
-          } catch {
-            // Silently skip missing sounds
-          }
-        })
-      );
-
-      this.loaded = true;
-      console.log(`[Audio] Loaded ${this.buffers.size}/${entries.length} sound buffers`);
+      this._initialized = true;
+      console.log("[Audio] Synth engine initialized");
     } catch (e) {
       console.warn("[Audio] Init failed:", e);
-      this.initPromise = null;
     }
   }
 
   play(sound: SoundEffect): void {
     if (this._muted) return;
+    if (sound === "ambient_arena") return; // use startAmbient() instead
 
-    // If not yet loaded, wait for init then play
     if (!this.context || !this.gainNode) {
-      this.init().then(() => this._playImmediate(sound));
+      this.init().then(() => this._playSynth(sound));
       return;
     }
 
-    this._playImmediate(sound);
+    this._playSynth(sound);
   }
 
-  private _playImmediate(sound: SoundEffect): void {
+  private _playSynth(sound: SoundEffect): void {
     if (!this.context || !this.gainNode || this._muted) return;
 
-    const buffer = this.buffers.get(sound);
-    if (!buffer) return;
+    const synthFn = SYNTH_MAP[sound];
+    if (!synthFn) return;
 
     const playNow = () => {
-      const source = this.context!.createBufferSource();
-      source.buffer = buffer;
-      source.connect(this.gainNode!);
-      source.start(0);
+      try {
+        synthFn(this.context!, this.gainNode!);
+      } catch (e) {
+        console.warn("[Audio] Synth error:", e);
+      }
     };
 
-    // Resume context if suspended (browser autoplay policy)
     if (this.context.state === "suspended") {
       this.context.resume().then(playNow);
     } else {
@@ -112,31 +411,47 @@ class UCFAudioManager {
     if (this._muted) return;
 
     if (!this.context || !this.gainNode) {
-      this.init().then(() => this._startAmbientImmediate());
+      this.init().then(() => this._startAmbientLoop());
       return;
     }
 
-    this._startAmbientImmediate();
+    this._startAmbientLoop();
   }
 
-  private _startAmbientImmediate(): void {
+  private _startAmbientLoop(): void {
     if (!this.context || !this.gainNode || this._muted) return;
     this.stopAmbient();
 
-    const buffer = this.buffers.get("ambient_arena");
-    if (!buffer) return;
-
     const startLoop = () => {
+      // Create a looping low rumble + crowd murmur
+      const duration = 4; // 4 second loop
+      const sampleRate = this.context!.sampleRate;
+      const bufferSize = sampleRate * duration;
+      const buffer = this.context!.createBuffer(1, bufferSize, sampleRate);
+      const data = buffer.getChannelData(0);
+
+      for (let i = 0; i < bufferSize; i++) {
+        const t = i / sampleRate;
+        // Low rumble
+        const rumble = Math.sin(t * 2 * Math.PI * 40) * 0.1;
+        // Crowd murmur (filtered noise with slow modulation)
+        const noise = (Math.random() * 2 - 1) * 0.08;
+        const mod = 0.5 + 0.5 * Math.sin(t * 2 * Math.PI * 0.3);
+        data[i] = rumble + noise * mod;
+      }
+
       this.ambientSource = this.context!.createBufferSource();
       this.ambientSource.buffer = buffer;
       this.ambientSource.loop = true;
 
-      // Lower volume for ambient
-      const ambientGain = this.context!.createGain();
-      ambientGain.gain.value = 0.15;
-      this.ambientSource.connect(ambientGain);
-      ambientGain.connect(this.gainNode!);
+      this.ambientGainNode = this.context!.createGain();
+      this.ambientGainNode.gain.value = 0.15;
 
+      const filter = this.context!.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.value = 800;
+
+      this.ambientSource.connect(filter).connect(this.ambientGainNode).connect(this.gainNode!);
       this.ambientSource.start(0);
     };
 
@@ -152,6 +467,7 @@ class UCFAudioManager {
       try { this.ambientSource.stop(); } catch { /* already stopped */ }
       this.ambientSource = null;
     }
+    this.ambientGainNode = null;
   }
 
   toggleMute(): boolean {
@@ -219,7 +535,7 @@ export function soundForPairing(p: {
   // Heavy hit (>=18 damage to someone)
   if (p.damageToA >= 18 || p.damageToB >= 18) return "hit_heavy";
 
-  // Any damage at all → light hit
+  // Any damage at all -> light hit
   if (totalDmg > 0) return "hit_light";
 
   return "hit_light";
