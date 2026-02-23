@@ -305,6 +305,7 @@ export async function savePayoutResult(
     log("Saved payout result", rumbleId);
   } catch (err) {
     logError("savePayoutResult failed", err);
+    throw err; // Propagate so callers can retry
   }
 }
 

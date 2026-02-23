@@ -3830,46 +3830,51 @@ export class RumbleOrchestrator {
 
     if (rumbleIdNum !== null) {
       const rumbleAccount = await readRumbleAccountState(rumbleIdNum);
-      if (rumbleAccount && rumbleAccount.winnerIndex !== null) {
+      if (!rumbleAccount) {
+        // Rumble must exist on-chain during payout — null means RPC issue
+        console.warn(`[Orchestrator] readRumbleAccountState returned null for ${slot.id} — will retry`);
+        throw new Error(`On-chain rumble account unavailable for ${slot.id}`);
+      }
+
+      if (rumbleAccount.winnerIndex !== null) {
         const fighterCount = rumbleAccount.fighterCount;
 
         const onchainPools = await readRumbleBettingPools(rumbleIdNum);
-
-        if (onchainPools) {
-          let losersPool = 0n;
-          let firstPool = 0n;
-
-          for (let i = 0; i < fighterCount; i++) {
-            const pool = onchainPools[i] ?? 0n;
-            const p = rumbleAccount.placements[i] ?? 0;
-            if (p === 1) {
-              firstPool += pool;
-            } else {
-              losersPool += pool;
-            }
-          }
-
-          const totalPoolLamports = firstPool + losersPool;
-          const treasuryCut = (losersPool * BigInt(TREASURY_CUT_BPS)) / 10_000n;
-          const distributable = losersPool - treasuryCut;
-
-          // Winner-takes-all: all distributable goes to 1st place bettors
-          // Total payout for winners = firstPool (stake returned) + distributable
-          const winnerPayoutLamports = firstPool + distributable;
-
-          onchainTotalPool = Number(totalPoolLamports) / LAMPORTS;
-          onchainWinnerBettorsPayout = Number(winnerPayoutLamports) / LAMPORTS;
-          onchainTreasuryVault = Number(treasuryCut) / LAMPORTS;
-
-          console.log(
-            `[Orchestrator] On-chain payout for ${slot.id}: totalPool=${onchainTotalPool.toFixed(4)} SOL, winnerPayout=${onchainWinnerBettorsPayout.toFixed(4)} SOL, treasury=${onchainTreasuryVault.toFixed(4)} SOL`,
-          );
-        } else {
+        if (!onchainPools) {
           console.warn(`[Orchestrator] readRumbleBettingPools returned null for ${slot.id} — will retry`);
           throw new Error(`On-chain betting pools unavailable for ${slot.id}`);
         }
+
+        let losersPool = 0n;
+        let firstPool = 0n;
+
+        for (let i = 0; i < fighterCount; i++) {
+          const pool = onchainPools[i] ?? 0n;
+          const p = rumbleAccount.placements[i] ?? 0;
+          if (p === 1) {
+            firstPool += pool;
+          } else {
+            losersPool += pool;
+          }
+        }
+
+        const totalPoolLamports = firstPool + losersPool;
+        const treasuryCut = (losersPool * BigInt(TREASURY_CUT_BPS)) / 10_000n;
+        const distributable = losersPool - treasuryCut;
+
+        // Winner-takes-all: all distributable goes to 1st place bettors
+        // Total payout for winners = firstPool (stake returned) + distributable
+        const winnerPayoutLamports = firstPool + distributable;
+
+        onchainTotalPool = Number(totalPoolLamports) / LAMPORTS;
+        onchainWinnerBettorsPayout = Number(winnerPayoutLamports) / LAMPORTS;
+        onchainTreasuryVault = Number(treasuryCut) / LAMPORTS;
+
+        console.log(
+          `[Orchestrator] On-chain payout for ${slot.id}: totalPool=${onchainTotalPool.toFixed(4)} SOL, winnerPayout=${onchainWinnerBettorsPayout.toFixed(4)} SOL, treasury=${onchainTreasuryVault.toFixed(4)} SOL`,
+        );
       }
-      // If rumbleAccount is null or winnerIndex is null, pools stay at 0 (no bets placed)
+      // If winnerIndex is null, no winner yet — pools stay at 0
     }
 
     // Read block reward from on-chain arena config for ICHOR distribution
@@ -3961,6 +3966,7 @@ export class RumbleOrchestrator {
     } catch (err) {
       // Clean up in-memory state and throw so handlePayoutPhase retries
       this.transformedPayouts.delete(slotIndex);
+      this.payoutResults.delete(slotIndex);
       console.error(`[Orchestrator] Failed to persist payout result for ${slot.id} — will retry:`, err);
       throw err;
     }
