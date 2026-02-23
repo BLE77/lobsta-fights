@@ -178,8 +178,10 @@ export async function POST(request: Request) {
         signature = await completeRumble(rumbleId);
         break;
       case "sweep_treasury":
-        signature = await sweepTreasury(rumbleId);
-        break;
+        return jsonResponse(
+          { error: "sweep_treasury is disabled — vault SOL must remain for winners to claim" },
+          403,
+        );
       default:
         return jsonResponse({ error: "Unsupported action" }, 400);
     }

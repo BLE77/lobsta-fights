@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { LAMPORTS_PER_SOL, PublicKey, type Connection } from "@solana/web3.js";
 import { utils as anchorUtils } from "@coral-xyz/anchor";
 import { getConnection } from "./solana-connection";
-import { RUMBLE_ENGINE_ID, readRumbleAccountState } from "./solana-programs";
+import { RUMBLE_ENGINE_ID, readRumbleAccountState, deriveVaultPda } from "./solana-programs";
 import { freshSupabase } from "./supabase";
 import { getRumbleSessionMinTimestampMs } from "./rumble-session";
 import { parseOnchainRumbleIdNumber } from "./rumble-id";
@@ -210,6 +210,19 @@ export async function discoverOnchainWalletPayoutSnapshot(
     const winnerDeploymentLamports = bettor.fighterDeploymentsLamports[winnerIndex] ?? 0n;
     const onchainClaimableLamports = bettor.claimableLamports;
     if (winnerDeploymentLamports <= 0n && onchainClaimableLamports <= 0n) continue;
+
+    // Check vault has enough SOL to actually pay out (skip swept vaults)
+    const estimatedPayoutLamports = onchainClaimableLamports > 0n
+      ? onchainClaimableLamports
+      : winnerDeploymentLamports;
+    try {
+      const [vaultPda] = deriveVaultPda(bettor.rumbleIdNum);
+      const vaultBalance = await connection.getBalance(vaultPda, "confirmed");
+      if (vaultBalance < Number(estimatedPayoutLamports) + 10_000) continue;
+    } catch {
+      // If we can't check vault balance, skip conservatively
+      continue;
+    }
 
     const onchainClaimableSol = Number(onchainClaimableLamports) / LAMPORTS_PER_SOL;
     const inferredFromWinnerStakeSol = Number(winnerDeploymentLamports) / LAMPORTS_PER_SOL;
