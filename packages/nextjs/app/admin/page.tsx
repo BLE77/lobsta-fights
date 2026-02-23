@@ -50,6 +50,20 @@ interface Rumble {
   tx_signatures?: TxSignatures | null;
 }
 
+interface FighterRobotMeta {
+  robot_type?: string;
+  chassis_description?: string;
+  fists_description?: string;
+  fighting_style?: string;
+  personality?: string;
+  signature_move?: string;
+  victory_line?: string;
+  defeat_line?: string;
+  taunt_lines?: string[];
+  color_scheme?: string;
+  distinguishing_features?: string;
+}
+
 interface Fighter {
   id: string;
   name: string;
@@ -61,6 +75,10 @@ interface Fighter {
   points: number;
   verified: boolean;
   is_active: boolean;
+  description: string | null;
+  special_move: string | null;
+  image_url: string | null;
+  robot_metadata: FighterRobotMeta | null;
 }
 
 interface DashboardData {
@@ -1313,69 +1331,199 @@ function RumblesTab({ rumbles }: { rumbles: Rumble[] }) {
 // Fighters Tab
 // ---------------------------------------------------------------------------
 
+function buildVoiceLinePrompts(f: Fighter): Array<{ label: string; text: string; chars: number; color: string }> {
+  const m = f.robot_metadata;
+  const name = f.name;
+
+  const intro = m
+    ? [
+        `Introducing ${name}.`,
+        m.robot_type ? `A ${m.robot_type}.` : null,
+        m.chassis_description ? `Chassis: ${m.chassis_description.slice(0, 120)}.` : null,
+        m.fighting_style ? `Style: ${m.fighting_style}.` : null,
+        m.signature_move ? `Signature move: ${m.signature_move}.` : null,
+        m.personality ? `Personality: ${m.personality}.` : null,
+        m.distinguishing_features ? `Notable: ${m.distinguishing_features.slice(0, 100)}.` : null,
+      ].filter(Boolean).join(" ")
+    : `Introducing ${name}. A challenger steps into the cage!`;
+
+  const hitLanded = m?.signature_move
+    ? `${name} connects with a devastating ${m.signature_move}! That's gonna leave a dent in the chassis!`
+    : `${name} connects with a devastating blow! That's gonna leave a mark!`;
+
+  const hitTaken = m?.chassis_description
+    ? `${name} takes a crushing shot! How much more can that ${m.chassis_description.slice(0, 40)} take?`
+    : `${name} takes a crushing blow! How much more punishment can they absorb?`;
+
+  const elimKiller = m?.signature_move
+    ? `${name} sends another bot to the scrapheap! ${m.signature_move} strikes again!`
+    : `${name} sends another bot to the scrapheap! Absolutely dismantled!`;
+
+  const elimVictim = m?.defeat_line
+    ? `${name} goes down! ${m.defeat_line}`
+    : `${name} goes down! Scraped off the arena floor!`;
+
+  const victory = m?.victory_line
+    ? `${name} stands alone, last bot standing! ${m.victory_line}`
+    : `${name} stands alone, last bot standing! The cage belongs to them tonight!`;
+
+  return [
+    { label: "INTRO", text: intro, chars: intro.length, color: "text-amber-400" },
+    { label: "HIT LANDED", text: hitLanded, chars: hitLanded.length, color: "text-orange-400" },
+    { label: "HIT TAKEN", text: hitTaken, chars: hitTaken.length, color: "text-red-400" },
+    { label: "ELIM (KILLER)", text: elimKiller, chars: elimKiller.length, color: "text-green-400" },
+    { label: "ELIM (VICTIM)", text: elimVictim, chars: elimVictim.length, color: "text-red-500" },
+    { label: "VICTORY", text: victory, chars: victory.length, color: "text-yellow-400" },
+  ];
+}
+
 function FightersTab({ fighters }: { fighters: Fighter[] }) {
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const totalChars = fighters.reduce((sum, f) => {
+    return sum + buildVoiceLinePrompts(f).reduce((s, p) => s + p.chars, 0);
+  }, 0);
+
   return (
     <Section title={`Fighters (${fighters.length})`}>
       {fighters.length === 0 ? (
         <p className="font-mono text-sm text-stone-600">No fighters found</p>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full font-mono text-xs">
-            <thead>
-              <tr className="text-stone-500 border-b border-stone-800">
-                <th className="text-left py-2 px-2">Name</th>
-                <th className="text-left py-2 px-2">Wallet</th>
-                <th className="text-right py-2 px-2">W</th>
-                <th className="text-right py-2 px-2">L</th>
-                <th className="text-right py-2 px-2">D</th>
-                <th className="text-right py-2 px-2">Played</th>
-                <th className="text-right py-2 px-2">Points</th>
-                <th className="text-left py-2 px-2">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {fighters.map((f) => (
-                <tr
-                  key={f.id}
-                  className="border-b border-stone-800/50 hover:bg-stone-900/40"
+        <div className="space-y-1">
+          {/* Summary */}
+          <div className="flex items-center justify-between mb-3 px-2">
+            <span className="font-mono text-[10px] text-stone-500">
+              Click a fighter to see profile + voice line prompts
+            </span>
+            <span className="font-mono text-[10px] text-stone-500">
+              Total voice chars: <span className="text-amber-400">{totalChars.toLocaleString()}</span>
+              {" "}(~${(totalChars * 0.00002).toFixed(2)} ElevenLabs est.)
+            </span>
+          </div>
+
+          {fighters.map((f) => {
+            const expanded = expandedId === f.id;
+            const prompts = expanded ? buildVoiceLinePrompts(f) : [];
+            const m = f.robot_metadata;
+
+            return (
+              <div key={f.id} className="border border-stone-800/50 rounded-sm overflow-hidden">
+                {/* Collapsed row */}
+                <button
+                  onClick={() => setExpandedId(expanded ? null : f.id)}
+                  className="w-full flex items-center gap-3 px-3 py-2 hover:bg-stone-900/40 transition-colors text-left"
                 >
-                  <td className="py-2 px-2 text-amber-400">{f.name}</td>
-                  <td className="py-2 px-2 text-stone-500">
-                    {f.wallet_address ? truncate(f.wallet_address) : "-"}
-                  </td>
-                  <td className="py-2 px-2 text-right text-green-400">
-                    {f.wins}
-                  </td>
-                  <td className="py-2 px-2 text-right text-red-400">
-                    {f.losses}
-                  </td>
-                  <td className="py-2 px-2 text-right text-stone-400">
-                    {f.draws}
-                  </td>
-                  <td className="py-2 px-2 text-right">{f.matches_played}</td>
-                  <td className="py-2 px-2 text-right">{f.points}</td>
-                  <td className="py-2 px-2">
-                    <div className="flex items-center gap-1">
-                      {f.verified && (
-                        <span className="text-green-500 text-[10px]">
-                          VERIFIED
-                        </span>
-                      )}
-                      {f.is_active ? (
-                        <span className="text-green-600 text-[10px]">
-                          ACTIVE
-                        </span>
-                      ) : (
-                        <span className="text-stone-600 text-[10px]">
-                          INACTIVE
-                        </span>
-                      )}
+                  {/* Image */}
+                  {f.image_url ? (
+                    <img src={f.image_url} alt={f.name} className="w-8 h-8 rounded-sm object-cover flex-shrink-0" />
+                  ) : (
+                    <div className="w-8 h-8 rounded-sm bg-stone-800 flex items-center justify-center flex-shrink-0">
+                      <span className="text-stone-600 text-[10px]">?</span>
                     </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  )}
+
+                  {/* Name */}
+                  <span className="font-mono text-xs text-amber-400 w-40 truncate flex-shrink-0">{f.name}</span>
+
+                  {/* Stats */}
+                  <span className="font-mono text-[10px] text-stone-500 flex-shrink-0">
+                    <span className="text-green-400">{f.wins}W</span>{" "}
+                    <span className="text-red-400">{f.losses}L</span>{" "}
+                    <span className="text-stone-400">{f.draws}D</span>
+                  </span>
+
+                  {/* Style badge */}
+                  {m?.fighting_style && (
+                    <span className="font-mono text-[10px] px-1.5 py-0.5 bg-stone-800 border border-stone-700 rounded-sm text-stone-400 flex-shrink-0">
+                      {m.fighting_style}
+                    </span>
+                  )}
+
+                  {/* Wallet */}
+                  <span className="font-mono text-[10px] text-stone-600 flex-shrink-0 hidden sm:block">
+                    {f.wallet_address ? truncate(f.wallet_address) : "-"}
+                  </span>
+
+                  {/* Has metadata indicator */}
+                  {m ? (
+                    <span className="font-mono text-[10px] text-green-600 flex-shrink-0">META</span>
+                  ) : (
+                    <span className="font-mono text-[10px] text-stone-700 flex-shrink-0">NO META</span>
+                  )}
+
+                  {/* Spacer + chevron */}
+                  <span className="flex-1" />
+                  <span className="font-mono text-stone-600 text-xs flex-shrink-0">
+                    {expanded ? "[-]" : "[+]"}
+                  </span>
+                </button>
+
+                {/* Expanded panel */}
+                {expanded && (
+                  <div className="px-4 pb-4 pt-2 border-t border-stone-800/50 bg-stone-950/40 space-y-4">
+                    {/* Profile section */}
+                    <div className="flex gap-4">
+                      {f.image_url && (
+                        <img src={f.image_url} alt={f.name} className="w-20 h-20 rounded-sm object-cover flex-shrink-0" />
+                      )}
+                      <div className="space-y-1 flex-1 min-w-0">
+                        {f.description && (
+                          <p className="font-mono text-xs text-stone-400">{f.description}</p>
+                        )}
+                        <div className="grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-[11px]">
+                          {m?.robot_type && (
+                            <div><span className="text-stone-600">Type:</span> <span className="text-stone-300">{m.robot_type}</span></div>
+                          )}
+                          {m?.fighting_style && (
+                            <div><span className="text-stone-600">Style:</span> <span className="text-stone-300">{m.fighting_style}</span></div>
+                          )}
+                          {m?.signature_move && (
+                            <div><span className="text-stone-600">Sig Move:</span> <span className="text-amber-400">{m.signature_move}</span></div>
+                          )}
+                          {(f.special_move || m?.signature_move) && f.special_move !== m?.signature_move && f.special_move && (
+                            <div><span className="text-stone-600">Special:</span> <span className="text-stone-300">{f.special_move}</span></div>
+                          )}
+                          {m?.chassis_description && (
+                            <div className="col-span-2"><span className="text-stone-600">Chassis:</span> <span className="text-stone-300">{m.chassis_description}</span></div>
+                          )}
+                          {m?.personality && (
+                            <div className="col-span-2"><span className="text-stone-600">Personality:</span> <span className="text-stone-300">{m.personality}</span></div>
+                          )}
+                          {m?.victory_line && (
+                            <div className="col-span-2"><span className="text-stone-600">Victory:</span> <span className="text-green-400">"{m.victory_line}"</span></div>
+                          )}
+                          {m?.defeat_line && (
+                            <div className="col-span-2"><span className="text-stone-600">Defeat:</span> <span className="text-red-400">"{m.defeat_line}"</span></div>
+                          )}
+                          {m?.distinguishing_features && (
+                            <div className="col-span-2"><span className="text-stone-600">Features:</span> <span className="text-stone-300">{m.distinguishing_features}</span></div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Voice Line Prompts */}
+                    <div>
+                      <h4 className="font-mono text-[10px] text-stone-500 uppercase mb-2 tracking-wider">
+                        Voice Line Prompts ({prompts.reduce((s, p) => s + p.chars, 0)} chars)
+                      </h4>
+                      <div className="space-y-2">
+                        {prompts.map((p) => (
+                          <div key={p.label} className="bg-stone-900/60 border border-stone-800/50 rounded-sm p-2">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className={`font-mono text-[10px] font-bold ${p.color}`}>{p.label}</span>
+                              <span className="font-mono text-[10px] text-stone-600">{p.chars} chars</span>
+                            </div>
+                            <p className="font-mono text-xs text-stone-300 leading-relaxed">{p.text}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </Section>

@@ -60,7 +60,7 @@ export async function GET(request: Request) {
         sb
           .from("ucf_fighters")
           .select(
-            "id, name, wallet_address, wins, losses, draws, matches_played, points, verified, is_active",
+            "id, name, wallet_address, wins, losses, draws, matches_played, points, verified, is_active, description, special_move, image_url, robot_metadata",
           )
           .order("name", { ascending: true })
           .then(({ data }) => data ?? []),
