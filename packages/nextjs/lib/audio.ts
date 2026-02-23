@@ -27,7 +27,7 @@ class UCFAudioManager {
   private gainNode: GainNode | null = null;
   private _muted: boolean;
   private loaded: boolean = false;
-  private loading: boolean = false;
+  private initPromise: Promise<void> | null = null;
 
   constructor() {
     this._muted = typeof window !== "undefined"
@@ -35,12 +35,16 @@ class UCFAudioManager {
       : true;
   }
 
-  async init(): Promise<void> {
-    if (this.loaded || this.loading) return;
-    if (typeof window === "undefined") return;
+  init(): Promise<void> {
+    if (this.loaded) return Promise.resolve();
+    if (this.initPromise) return this.initPromise;
+    if (typeof window === "undefined") return Promise.resolve();
 
-    this.loading = true;
+    this.initPromise = this._doInit();
+    return this.initPromise;
+  }
 
+  private async _doInit(): Promise<void> {
     try {
       this.context = new AudioContext();
       this.gainNode = this.context.createGain();
@@ -67,19 +71,27 @@ class UCFAudioManager {
       console.log(`[Audio] Loaded ${this.buffers.size}/${entries.length} sound buffers`);
     } catch (e) {
       console.warn("[Audio] Init failed:", e);
-    } finally {
-      this.loading = false;
+      this.initPromise = null;
     }
   }
 
   play(sound: SoundEffect): void {
+    if (this._muted) return;
+
+    // If not yet loaded, wait for init then play
+    if (!this.context || !this.gainNode) {
+      this.init().then(() => this._playImmediate(sound));
+      return;
+    }
+
+    this._playImmediate(sound);
+  }
+
+  private _playImmediate(sound: SoundEffect): void {
     if (!this.context || !this.gainNode || this._muted) return;
 
     const buffer = this.buffers.get(sound);
-    if (!buffer) {
-      console.warn(`[Audio] No buffer for "${sound}" — loaded: ${this.loaded}, buffers: ${this.buffers.size}`);
-      return;
-    }
+    if (!buffer) return;
 
     const playNow = () => {
       const source = this.context!.createBufferSource();
@@ -97,6 +109,17 @@ class UCFAudioManager {
   }
 
   startAmbient(): void {
+    if (this._muted) return;
+
+    if (!this.context || !this.gainNode) {
+      this.init().then(() => this._startAmbientImmediate());
+      return;
+    }
+
+    this._startAmbientImmediate();
+  }
+
+  private _startAmbientImmediate(): void {
     if (!this.context || !this.gainNode || this._muted) return;
     this.stopAmbient();
 
