@@ -16,6 +16,7 @@ const SPONSORSHIP_SEED: &[u8] = b"sponsorship";
 const MOVE_COMMIT_SEED: &[u8] = b"move_commit";
 const MOVE_COMMIT_DOMAIN: &[u8] = b"rumble:v1";
 const COMBAT_STATE_SEED: &[u8] = b"combat_state";
+const PENDING_ADMIN_SEED: &[u8] = b"pending_admin_re";
 const FIGHTER_REGISTRY_PROGRAM_ID: Pubkey = pubkey!("2hA6Jvj1yjP2Uj3qrJcsBeYA2R9xPM95mDKw1ncKVExa");
 const FIGHTER_ACCOUNT_DISCRIMINATOR: [u8; 8] = [24, 221, 27, 113, 60, 210, 101, 211];
 
@@ -1067,6 +1068,14 @@ pub mod rumble_engine {
             combat.meter[bye_idx] = next_meter.min(SPECIAL_METER_COST);
         }
 
+        // Deterministic elimination ordering: sort by damage dealt descending,
+        // then by fighter index ascending as tiebreaker.
+        eliminated_this_turn.sort_by(|a, b| {
+            combat.total_damage_dealt[*b]
+                .cmp(&combat.total_damage_dealt[*a])
+                .then_with(|| a.cmp(b))
+        });
+
         for idx in eliminated_this_turn {
             if combat.elimination_rank[idx] > 0 {
                 continue;
@@ -1110,7 +1119,7 @@ pub mod rumble_engine {
     /// This is the "Option D hybrid" path — combat math runs off-chain,
     /// but on-chain program validates correctness.
     pub fn post_turn_result(
-        ctx: Context<CombatAction>,
+        ctx: Context<AdminCombatAction>,
         duel_results: Vec<DuelResult>,
         bye_fighter_idx: Option<u8>,
     ) -> Result<()> {
@@ -1252,6 +1261,14 @@ pub mod rumble_engine {
             let next_meter = combat.meter[bye].saturating_add(METER_PER_TURN);
             combat.meter[bye] = next_meter.min(SPECIAL_METER_COST);
         }
+
+        // Deterministic elimination ordering: sort by damage dealt descending,
+        // then by fighter index ascending as tiebreaker.
+        eliminated_this_turn.sort_by(|a, b| {
+            combat.total_damage_dealt[*b]
+                .cmp(&combat.total_damage_dealt[*a])
+                .then_with(|| a.cmp(b))
+        });
 
         // Handle eliminations (same logic as resolve_turn)
         for idx in eliminated_this_turn {
@@ -1796,16 +1813,89 @@ pub mod rumble_engine {
         Ok(())
     }
 
-    /// Update the admin and/or treasury pubkeys.
-    /// Only the current admin can call this.
-    pub fn update_admin(ctx: Context<UpdateAdmin>, new_admin: Option<Pubkey>, new_treasury: Option<Pubkey>) -> Result<()> {
+    /// Propose a new admin (two-step transfer).
+    /// Creates/overwrites PendingAdminRE PDA. New admin must call accept_admin.
+    pub fn transfer_admin(ctx: Context<TransferAdmin>, new_admin: Pubkey) -> Result<()> {
+        require!(new_admin != Pubkey::default(), RumbleError::InvalidNewAdmin);
+        require!(
+            new_admin != ctx.accounts.config.admin,
+            RumbleError::InvalidNewAdmin
+        );
+
+        let pending = &mut ctx.accounts.pending_admin;
+        pending.proposed_admin = new_admin;
+        pending.proposed_at = Clock::get()?.slot;
+        pending.bump = ctx.bumps.pending_admin;
+
+        msg!(
+            "Admin transfer proposed: {} -> {}",
+            ctx.accounts.config.admin,
+            new_admin
+        );
+        Ok(())
+    }
+
+    /// Accept a pending admin transfer. Must be signed by the proposed admin.
+    pub fn accept_admin(ctx: Context<AcceptAdmin>) -> Result<()> {
         let config = &mut ctx.accounts.config;
-        if let Some(admin) = new_admin {
-            config.admin = admin;
-        }
-        if let Some(treasury) = new_treasury {
-            config.treasury = treasury;
-        }
+        let pending = &ctx.accounts.pending_admin;
+        let new_admin = ctx.accounts.new_admin.key();
+
+        require!(
+            new_admin == pending.proposed_admin,
+            RumbleError::Unauthorized
+        );
+
+        let old_admin = config.admin;
+        config.admin = new_admin;
+
+        msg!("Admin transferred: {} -> {}", old_admin, new_admin);
+        Ok(())
+    }
+
+    /// Update the treasury address. Admin-only, immediate (lower risk than admin transfer).
+    pub fn update_treasury(ctx: Context<UpdateTreasury>, new_treasury: Pubkey) -> Result<()> {
+        ctx.accounts.config.treasury = new_treasury;
+        msg!("Treasury updated to {}", new_treasury);
+        Ok(())
+    }
+
+    /// Close a completed Rumble PDA to reclaim rent. Admin-only.
+    /// Requires Complete state and claim window expired.
+    pub fn close_rumble(ctx: Context<CloseRumble>) -> Result<()> {
+        let rumble = &ctx.accounts.rumble;
+        require!(
+            rumble.state == RumbleState::Complete,
+            RumbleError::InvalidStateTransition
+        );
+
+        let clock = Clock::get()?;
+        let claim_window_end = rumble
+            .completed_at
+            .checked_add(PAYOUT_CLAIM_WINDOW_SECONDS)
+            .ok_or(RumbleError::MathOverflow)?;
+        require!(
+            clock.unix_timestamp >= claim_window_end,
+            RumbleError::ClaimWindowActive
+        );
+
+        msg!("Rumble {} account closed, rent reclaimed", rumble.id);
+        Ok(())
+    }
+
+    /// Close a RumbleCombatState PDA to reclaim rent. Admin-only.
+    /// Requires the associated rumble is Complete.
+    pub fn close_combat_state(ctx: Context<CloseCombatState>) -> Result<()> {
+        let rumble = &ctx.accounts.rumble;
+        require!(
+            rumble.state == RumbleState::Complete,
+            RumbleError::InvalidStateTransition
+        );
+
+        msg!(
+            "Combat state for rumble {} closed, rent reclaimed",
+            rumble.id
+        );
         Ok(())
     }
 }
@@ -1966,8 +2056,33 @@ pub struct StartCombat<'info> {
     pub system_program: Program<'info, System>,
 }
 
+/// Permissionless combat action — open_turn, resolve_turn, advance_turn.
+/// Anyone can call these; correctness is enforced by on-chain state machine.
 #[derive(Accounts)]
 pub struct CombatAction<'info> {
+    #[account(mut)]
+    pub keeper: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [RUMBLE_SEED, rumble.id.to_le_bytes().as_ref()],
+        bump = rumble.bump,
+    )]
+    pub rumble: Account<'info, Rumble>,
+
+    #[account(
+        mut,
+        seeds = [COMBAT_STATE_SEED, rumble.id.to_le_bytes().as_ref()],
+        bump = combat_state.bump,
+        constraint = combat_state.rumble_id == rumble.id @ RumbleError::InvalidRumble,
+    )]
+    pub combat_state: Account<'info, RumbleCombatState>,
+}
+
+/// Admin-gated combat action — post_turn_result (hybrid mode).
+/// Admin posts move results; damage is validated on-chain.
+#[derive(Accounts)]
+pub struct AdminCombatAction<'info> {
     #[account(mut)]
     pub keeper: Signer<'info>,
 
@@ -1994,17 +2109,12 @@ pub struct CombatAction<'info> {
     pub combat_state: Account<'info, RumbleCombatState>,
 }
 
+/// Permissionless finalization — anyone can finalize when state machine allows it.
+/// Correctness is enforced by on-chain combat state (winner, placements, timeouts).
 #[derive(Accounts)]
 pub struct FinalizeRumble<'info> {
     #[account(mut)]
     pub keeper: Signer<'info>,
-
-    #[account(
-        seeds = [CONFIG_SEED],
-        bump = config.bump,
-        constraint = keeper.key() == config.admin @ RumbleError::Unauthorized,
-    )]
-    pub config: Account<'info, RumbleConfig>,
 
     #[account(
         mut,
@@ -2235,7 +2345,54 @@ pub struct CloseMoveCommitment<'info> {
 }
 
 #[derive(Accounts)]
-pub struct UpdateAdmin<'info> {
+pub struct TransferAdmin<'info> {
+    #[account(
+        mut,
+        constraint = admin.key() == config.admin @ RumbleError::Unauthorized,
+    )]
+    pub admin: Signer<'info>,
+
+    #[account(
+        seeds = [CONFIG_SEED],
+        bump = config.bump,
+    )]
+    pub config: Account<'info, RumbleConfig>,
+
+    #[account(
+        init_if_needed,
+        payer = admin,
+        space = 8 + PendingAdminRE::INIT_SPACE,
+        seeds = [PENDING_ADMIN_SEED],
+        bump
+    )]
+    pub pending_admin: Account<'info, PendingAdminRE>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct AcceptAdmin<'info> {
+    /// The proposed new admin must sign this transaction.
+    #[account(mut)]
+    pub new_admin: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [CONFIG_SEED],
+        bump = config.bump,
+    )]
+    pub config: Account<'info, RumbleConfig>,
+
+    #[account(
+        seeds = [PENDING_ADMIN_SEED],
+        bump = pending_admin.bump,
+        constraint = pending_admin.proposed_admin == new_admin.key() @ RumbleError::Unauthorized,
+    )]
+    pub pending_admin: Account<'info, PendingAdminRE>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateTreasury<'info> {
     pub admin: Signer<'info>,
 
     #[account(
@@ -2245,6 +2402,59 @@ pub struct UpdateAdmin<'info> {
         constraint = admin.key() == config.admin @ RumbleError::Unauthorized,
     )]
     pub config: Account<'info, RumbleConfig>,
+}
+
+#[derive(Accounts)]
+pub struct CloseRumble<'info> {
+    #[account(
+        mut,
+        constraint = admin.key() == config.admin @ RumbleError::Unauthorized,
+    )]
+    pub admin: Signer<'info>,
+
+    #[account(
+        seeds = [CONFIG_SEED],
+        bump = config.bump,
+    )]
+    pub config: Account<'info, RumbleConfig>,
+
+    #[account(
+        mut,
+        close = admin,
+        seeds = [RUMBLE_SEED, rumble.id.to_le_bytes().as_ref()],
+        bump = rumble.bump,
+    )]
+    pub rumble: Account<'info, Rumble>,
+}
+
+#[derive(Accounts)]
+pub struct CloseCombatState<'info> {
+    #[account(
+        mut,
+        constraint = admin.key() == config.admin @ RumbleError::Unauthorized,
+    )]
+    pub admin: Signer<'info>,
+
+    #[account(
+        seeds = [CONFIG_SEED],
+        bump = config.bump,
+    )]
+    pub config: Account<'info, RumbleConfig>,
+
+    #[account(
+        seeds = [RUMBLE_SEED, rumble.id.to_le_bytes().as_ref()],
+        bump = rumble.bump,
+    )]
+    pub rumble: Account<'info, Rumble>,
+
+    #[account(
+        mut,
+        close = admin,
+        seeds = [COMBAT_STATE_SEED, rumble.id.to_le_bytes().as_ref()],
+        bump = combat_state.bump,
+        constraint = combat_state.rumble_id == rumble.id @ RumbleError::InvalidRumble,
+    )]
+    pub combat_state: Account<'info, RumbleCombatState>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2306,6 +2516,14 @@ pub struct MoveCommitment {
     pub committed_slot: u64, // 8
     pub revealed_slot: u64,  // 8
     pub bump: u8,            // 1
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct PendingAdminRE {
+    pub proposed_admin: Pubkey, // 32
+    pub proposed_at: u64,       // 8
+    pub bump: u8,               // 1
 }
 
 #[account]
@@ -2565,4 +2783,7 @@ pub enum RumbleError {
 
     #[msg("Posted damage does not match resolve_duel computation")]
     DamageMismatch,
+
+    #[msg("Invalid new admin address")]
+    InvalidNewAdmin,
 }
