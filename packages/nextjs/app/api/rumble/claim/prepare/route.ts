@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
-import { PublicKey } from "@solana/web3.js";
+import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 import { isAccrueClaimMode } from "~~/lib/rumble-payout-mode";
 import {
   buildClaimPayoutTx,
   buildClaimPayoutBatchTx,
+  deriveVaultPda,
 } from "~~/lib/solana-programs";
 import { discoverOnchainClaimableRumbles } from "~~/lib/rumble-onchain-claims";
 import { getConnection } from "~~/lib/solana-connection";
@@ -12,6 +13,10 @@ import { requireJsonContentType, sanitizeErrorResponse } from "~~/lib/api-middle
 
 export const dynamic = "force-dynamic";
 const SOLANA_LEGACY_TX_MAX_BYTES = 1232;
+
+// Minimum vault balance (in lamports) required above the payout estimate.
+// Covers rent-exempt minimum + tx fee headroom.
+const VAULT_HEADROOM_LAMPORTS = 10_000;
 
 function summarizeBuildError(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -85,9 +90,41 @@ export async function POST(request: Request) {
       );
     }
 
-    // On-chain snapshot already validates: payout ready, not claimed, winner
-    // deployment > 0. No preflight simulation needed — claim tx is built fresh below.
+    // Check vault balances to skip underfunded vaults that would cause
+    // InsufficientVaultFunds on-chain. This replaces the broken simulateTransaction.
     const connection = getConnection();
+    const fundedTargets: typeof selectedTargets = [];
+    const skippedCount = { underfunded: 0 };
+
+    for (const target of selectedTargets) {
+      try {
+        const [vaultPda] = deriveVaultPda(target.rumbleIdNum);
+        const vaultBalance = await connection.getBalance(vaultPda, "confirmed");
+        const estimatedPayoutLamports = Math.round(
+          (target.onchainClaimableSol > 0 ? target.onchainClaimableSol : target.inferredClaimableSol) * LAMPORTS_PER_SOL,
+        );
+        if (vaultBalance >= estimatedPayoutLamports + VAULT_HEADROOM_LAMPORTS) {
+          fundedTargets.push(target);
+        } else {
+          skippedCount.underfunded++;
+        }
+      } catch {
+        // Skip on RPC error — conservative approach
+        skippedCount.underfunded++;
+      }
+    }
+
+    selectedTargets = fundedTargets;
+    if (selectedTargets.length === 0) {
+      return NextResponse.json(
+        {
+          error: "All claimable rumble vaults are currently underfunded.",
+          reason: "vaults_underfunded",
+          underfunded_count: skippedCount.underfunded,
+        },
+        { status: 409 },
+      );
+    }
 
     let tx = null as Awaited<ReturnType<typeof buildClaimPayoutTx>> | null;
     let txBytes: Buffer | null = null;
@@ -153,7 +190,7 @@ export async function POST(request: Request) {
       claimable_sol: Number(totalClaimableSol.toFixed(9)),
       onchain_claimable_sol: Number(totalClaimableSol.toFixed(9)),
       skipped_eligible_claims: skippedEligible,
-      skipped_by_simulation: 0,
+      skipped_underfunded: skippedCount.underfunded,
       tx_kind: selectedTargets.length > 1 ? "rumble_claim_payout_batch" : "rumble_claim_payout",
       transaction_base64: txBase64,
       timestamp: new Date().toISOString(),
