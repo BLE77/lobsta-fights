@@ -1,12 +1,11 @@
 "use client";
 
 /**
- * Minimal wrapper — the rumble page manages Phantom directly via
- * window.phantom.solana so we don't need the wallet adapter's autoConnect
- * (which was picking up MetaMask and crashing).
+ * Wallet adapter provider — uses wallet-standard protocol to auto-detect
+ * all installed Solana wallets (Phantom, Solflare, Backpack, etc.).
  *
- * We keep ConnectionProvider for any legacy components that might use
- * useConnection(), but disable autoConnect and pass no wallet adapters.
+ * Empty wallets array is intentional: wallet-standard handles discovery.
+ * autoConnect is OFF so users explicitly choose which wallet to connect.
  */
 
 import { useMemo, useCallback } from "react";
@@ -37,7 +36,7 @@ export default function WalletProvider({
 }) {
   const endpoint = useMemo(() => getRpcEndpoint(), []);
 
-  // Empty adapters array + autoConnect OFF = no MetaMask interference
+  // Empty array — wallet-standard auto-detects all installed Solana wallets
   const wallets = useMemo(() => [], []);
 
   const onError = useCallback((error: WalletError) => {
@@ -46,7 +45,7 @@ export default function WalletProvider({
 
   return (
     <ConnectionProvider endpoint={endpoint}>
-      <SolanaWalletProvider wallets={wallets} onError={onError}>
+      <SolanaWalletProvider wallets={wallets} autoConnect={false} onError={onError}>
         <WalletModalProvider>{children}</WalletModalProvider>
       </SolanaWalletProvider>
     </ConnectionProvider>

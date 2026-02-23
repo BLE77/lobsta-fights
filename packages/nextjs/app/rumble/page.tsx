@@ -8,6 +8,8 @@ import {
   LAMPORTS_PER_SOL,
   Connection,
 } from "@solana/web3.js";
+import { useWallet } from "@solana/wallet-adapter-react";
+import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import RumbleSlot, { SlotData } from "./components/RumbleSlot";
 import PayoutDisplay from "./components/PayoutDisplay";
 import QueueSidebar from "./components/QueueSidebar";
@@ -386,11 +388,10 @@ export default function RumblePage() {
   // Track previous slot states for sound effect detection (works with both SSE and polling)
   const prevSlotAudioState = useRef<Map<number, { state: string; turnCount: number; fighterCount: number }>>(new Map());
 
-  // ---- Direct Phantom wallet management (no wallet adapter) ----
-  const [phantomProvider, setPhantomProvider] = useState<any>(null);
-  const [publicKey, setPublicKey] = useState<PublicKey | null>(null);
-  const walletConnected = !!publicKey;
-  const phantomListenerCleanupRef = useRef<(() => void) | null>(null);
+  // ---- Wallet adapter hooks ----
+  const { publicKey, signTransaction, connected, disconnect: walletDisconnect, wallet } = useWallet();
+  const { setVisible: setWalletModalVisible } = useWalletModal();
+  const walletConnected = connected && !!publicKey;
 
   // RPC connection — use Helius if available, otherwise public RPC
   const network = process.env.NEXT_PUBLIC_SOLANA_NETWORK ?? "devnet";
@@ -403,75 +404,12 @@ export default function RumblePage() {
   const connectionRef = useRef(new Connection(rpcEndpoint, "confirmed"));
   const connection = connectionRef.current;
 
-  // Detect Phantom on mount
-  useEffect(() => {
-    const checkPhantom = () => {
-      const provider = (window as any).phantom?.solana;
-      if (provider?.isPhantom) {
-        if (phantomListenerCleanupRef.current) {
-          phantomListenerCleanupRef.current();
-          phantomListenerCleanupRef.current = null;
-        }
-
-        setPhantomProvider(provider);
-        // Check if already connected (eager connect)
-        if (provider.isConnected && provider.publicKey) {
-          setPublicKey(new PublicKey(provider.publicKey.toString()));
-        }
-        // Listen for account changes
-        const handleAccountChanged = (pk: any) => {
-          if (pk) {
-            setPublicKey(new PublicKey(pk.toString()));
-          } else {
-            setPublicKey(null);
-          }
-        };
-        const handleDisconnect = () => setPublicKey(null);
-        provider.on("accountChanged", handleAccountChanged);
-        provider.on("disconnect", handleDisconnect);
-
-        phantomListenerCleanupRef.current = () => {
-          provider.off("accountChanged", handleAccountChanged);
-          provider.off("disconnect", handleDisconnect);
-        };
-      }
-    };
-    // Phantom injects after page load, so check with a small delay too
-    checkPhantom();
-    const timer = setTimeout(checkPhantom, 500);
-    return () => {
-      clearTimeout(timer);
-      if (phantomListenerCleanupRef.current) {
-        phantomListenerCleanupRef.current();
-        phantomListenerCleanupRef.current = null;
-      }
-    };
-  }, []);
-
-  const connectPhantom = useCallback(async () => {
-    const provider = phantomProvider || (window as any).phantom?.solana;
-    if (!provider?.isPhantom) {
-      window.open("https://phantom.app/", "_blank");
-      return;
-    }
-    try {
-      const resp = await provider.connect();
-      setPublicKey(new PublicKey(resp.publicKey.toString()));
-      setPhantomProvider(provider);
-    } catch (e: any) {
-      console.error("Phantom connect failed:", e);
-    }
-  }, [phantomProvider]);
-
   const disconnectWallet = useCallback(async () => {
-    if (phantomProvider) {
-      await phantomProvider.disconnect();
-    }
-    setPublicKey(null);
+    await walletDisconnect();
     setSolBalance(null);
     setClaimBalance(null);
     setClaimError(null);
-  }, [phantomProvider]);
+  }, [walletDisconnect]);
 
   // Fetch SOL balance when wallet connects
   useEffect(() => {
@@ -1078,8 +1016,8 @@ export default function RumblePage() {
   };
 
   const handleClaimWinnings = useCallback(async () => {
-    if (!publicKey || !phantomProvider || !walletConnected) {
-      setClaimError("Connect your Phantom wallet first.");
+    if (!publicKey || !signTransaction || !walletConnected) {
+      setClaimError("Connect your wallet first.");
       return;
     }
     if (!claimBalance?.onchain_claim_ready || (claimBalance.onchain_claimable_sol_total ?? 0) <= 0) {
@@ -1119,7 +1057,7 @@ export default function RumblePage() {
         const tx = decodeBase64Tx(prepared.transaction_base64);
         tx.feePayer = publicKey;
 
-        const signed = await phantomProvider.signTransaction(tx);
+        const signed = await signTransaction(tx);
         const rawTx = signed.serialize();
         const txSig = await connection.sendRawTransaction(rawTx, {
           skipPreflight: false,
@@ -1181,7 +1119,7 @@ export default function RumblePage() {
     claimBalance,
     fetchClaimBalance,
     fetchStatus,
-    phantomProvider,
+    signTransaction,
     publicKey,
     walletConnected,
   ]);
@@ -1191,8 +1129,8 @@ export default function RumblePage() {
     slotIndex: number,
     bets: Array<{ fighterId: string; amount: number }>,
   ) => {
-    if (!publicKey || !phantomProvider || !walletConnected) {
-      setBetError("Connect your Phantom wallet first to place bets.");
+    if (!publicKey || !signTransaction || !walletConnected) {
+      setBetError("Connect your wallet first to place bets.");
       setTimeout(() => setBetError(null), 5000);
       throw new Error("Wallet not connected");
     }
@@ -1274,8 +1212,8 @@ export default function RumblePage() {
       // Re-check immediately before signing and sending to reduce prepare->send race.
       await assertWindowStillOpen();
 
-      // 2) Sign with Phantom
-      const signed = await phantomProvider.signTransaction(tx);
+      // 2) Sign with wallet
+      const signed = await signTransaction(tx);
 
       await assertWindowStillOpen();
 
@@ -1369,7 +1307,7 @@ export default function RumblePage() {
     fetchClaimBalance,
     fetchMyBets,
     fetchStatus,
-    phantomProvider,
+    signTransaction,
     publicKey,
     status?.slots,
     walletConnected,
@@ -1458,6 +1396,14 @@ export default function RumblePage() {
               {/* Wallet */}
               {walletConnected && publicKey ? (
                 <div className="flex items-center gap-2 bg-stone-900/80 border border-stone-700 rounded-sm px-2 py-1">
+                  {wallet?.adapter?.icon && (
+                    <img
+                      src={wallet.adapter.icon}
+                      alt={wallet.adapter.name}
+                      title={wallet.adapter.name}
+                      className="w-4 h-4"
+                    />
+                  )}
                   <span className="font-mono text-[10px] text-stone-400">
                     {solBalance !== null ? `${solBalance.toFixed(3)} SOL` : "..."}
                   </span>
@@ -1473,10 +1419,10 @@ export default function RumblePage() {
                 </div>
               ) : (
                 <button
-                  onClick={connectPhantom}
+                  onClick={() => setWalletModalVisible(true)}
                   className="px-3 py-1 bg-amber-600 hover:bg-amber-500 text-stone-950 font-mono text-xs font-bold rounded-sm transition-all active:scale-95"
                 >
-                  {phantomProvider ? "Connect Phantom" : "Install Phantom"}
+                  Connect Wallet
                 </button>
               )}
             </div>

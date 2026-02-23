@@ -329,28 +329,34 @@ function synthRadioStatic(ctx: AudioContext, dest: GainNode) {
   noise.stop(t + duration);
 }
 
-// Map sound effects to their synth functions
-const SYNTH_MAP: Record<SoundEffect, SynthFn> = {
+// Synth-only sounds (game-like combat effects)
+const SYNTH_MAP: Partial<Record<SoundEffect, SynthFn>> = {
   hit_light: synthHitLight,
   hit_heavy: synthHitHeavy,
   hit_special: synthHitSpecial,
   block: synthBlock,
   dodge: synthDodge,
   catch: synthCatch,
-  ko_explosion: synthKoExplosion,
-  round_start: synthRoundStart,
-  crowd_cheer: synthCrowdCheer,
-  ambient_arena: () => {}, // handled separately via looping noise
   radio_static: synthRadioStatic,
+};
+
+// File-based sounds (real audio files for atmospheric effects)
+const FILE_SOUNDS: Partial<Record<SoundEffect, string>> = {
+  ko_explosion: "/sounds/ko-explosion.mp3",
+  round_start: "/sounds/round-start.mp3",
+  crowd_cheer: "/sounds/crowd-cheer.mp3",
+  ambient_arena: "/sounds/ambient-arena.mp3",
 };
 
 class UCFAudioManager {
   private context: AudioContext | null = null;
   private gainNode: GainNode | null = null;
+  private buffers: Map<SoundEffect, AudioBuffer> = new Map();
   private ambientSource: AudioBufferSourceNode | null = null;
   private ambientGainNode: GainNode | null = null;
   private _muted: boolean;
   private _initialized: boolean = false;
+  private _filesLoaded: boolean = false;
 
   constructor() {
     this._muted = typeof window !== "undefined"
@@ -369,9 +375,33 @@ class UCFAudioManager {
       this.gainNode.gain.value = this._muted ? 0 : 0.5;
       this._initialized = true;
       console.log("[Audio] Synth engine initialized");
+
+      // Load file-based sounds in background (don't block init)
+      this._loadFiles();
     } catch (e) {
       console.warn("[Audio] Init failed:", e);
     }
+  }
+
+  private async _loadFiles(): Promise<void> {
+    if (this._filesLoaded || !this.context) return;
+    this._filesLoaded = true;
+
+    const entries = Object.entries(FILE_SOUNDS) as [SoundEffect, string][];
+    await Promise.allSettled(
+      entries.map(async ([name, url]) => {
+        try {
+          const response = await fetch(url);
+          if (!response.ok) return;
+          const arrayBuffer = await response.arrayBuffer();
+          const audioBuffer = await this.context!.decodeAudioData(arrayBuffer);
+          this.buffers.set(name, audioBuffer);
+        } catch {
+          // Fall back to synth for this sound
+        }
+      })
+    );
+    console.log(`[Audio] Loaded ${this.buffers.size}/${entries.length} sound files`);
   }
 
   play(sound: SoundEffect): void {
@@ -389,14 +419,25 @@ class UCFAudioManager {
   private _playSynth(sound: SoundEffect): void {
     if (!this.context || !this.gainNode || this._muted) return;
 
-    const synthFn = SYNTH_MAP[sound];
-    if (!synthFn) return;
-
     const playNow = () => {
-      try {
-        synthFn(this.context!, this.gainNode!);
-      } catch (e) {
-        console.warn("[Audio] Synth error:", e);
+      // Try file-based buffer first
+      const buffer = this.buffers.get(sound);
+      if (buffer) {
+        const source = this.context!.createBufferSource();
+        source.buffer = buffer;
+        source.connect(this.gainNode!);
+        source.start(0);
+        return;
+      }
+
+      // Fall back to synth
+      const synthFn = SYNTH_MAP[sound];
+      if (synthFn) {
+        try {
+          synthFn(this.context!, this.gainNode!);
+        } catch (e) {
+          console.warn("[Audio] Synth error:", e);
+        }
       }
     };
 
@@ -423,35 +464,17 @@ class UCFAudioManager {
     this.stopAmbient();
 
     const startLoop = () => {
-      // Create a looping low rumble + crowd murmur
-      const duration = 4; // 4 second loop
-      const sampleRate = this.context!.sampleRate;
-      const bufferSize = sampleRate * duration;
-      const buffer = this.context!.createBuffer(1, bufferSize, sampleRate);
-      const data = buffer.getChannelData(0);
-
-      for (let i = 0; i < bufferSize; i++) {
-        const t = i / sampleRate;
-        // Low rumble
-        const rumble = Math.sin(t * 2 * Math.PI * 40) * 0.1;
-        // Crowd murmur (filtered noise with slow modulation)
-        const noise = (Math.random() * 2 - 1) * 0.08;
-        const mod = 0.5 + 0.5 * Math.sin(t * 2 * Math.PI * 0.3);
-        data[i] = rumble + noise * mod;
-      }
+      const buffer = this.buffers.get("ambient_arena");
+      if (!buffer) return;
 
       this.ambientSource = this.context!.createBufferSource();
       this.ambientSource.buffer = buffer;
       this.ambientSource.loop = true;
 
       this.ambientGainNode = this.context!.createGain();
-      this.ambientGainNode.gain.value = 0.15;
+      this.ambientGainNode.gain.value = 0.25;
 
-      const filter = this.context!.createBiquadFilter();
-      filter.type = "lowpass";
-      filter.frequency.value = 800;
-
-      this.ambientSource.connect(filter).connect(this.ambientGainNode).connect(this.gainNode!);
+      this.ambientSource.connect(this.ambientGainNode).connect(this.gainNode!);
       this.ambientSource.start(0);
     };
 
@@ -467,7 +490,10 @@ class UCFAudioManager {
       try { this.ambientSource.stop(); } catch { /* already stopped */ }
       this.ambientSource = null;
     }
-    this.ambientGainNode = null;
+    if (this.ambientGainNode) {
+      try { this.ambientGainNode.disconnect(); } catch { /* ok */ }
+      this.ambientGainNode = null;
+    }
   }
 
   toggleMute(): boolean {

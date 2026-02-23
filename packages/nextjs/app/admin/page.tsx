@@ -129,7 +129,7 @@ interface OnChainData {
   timestamp: string;
 }
 
-type Tab = "overview" | "rumbles" | "fighters" | "onchain";
+type Tab = "overview" | "rumbles" | "fighters" | "onchain" | "soundboard";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -739,6 +739,7 @@ export default function AdminPage() {
     { id: "rumbles", label: "Rumbles" },
     { id: "fighters", label: "Fighters" },
     { id: "onchain", label: "On-Chain" },
+    { id: "soundboard", label: "Soundboard" },
   ];
 
   return (
@@ -1086,6 +1087,7 @@ export default function AdminPage() {
         {tab === "rumbles" && <RumblesTab rumbles={allRumbles} />}
         {tab === "fighters" && <FightersTab fighters={fighters} />}
         {tab === "onchain" && <OnChainTab data={onChain} />}
+        {tab === "soundboard" && <SoundboardTab />}
       </div>
     </main>
   );
@@ -1633,6 +1635,112 @@ function OnChainField({
           <span className="text-[10px] text-stone-500 ml-1">{unit}</span>
         )}
       </p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Soundboard Tab
+// ---------------------------------------------------------------------------
+
+const SOUNDBOARD_SOUNDS: Array<{
+  id: string;
+  label: string;
+  description: string;
+  color: string;
+}> = [
+  { id: "hit_light", label: "HIT LIGHT", description: "Quick noise burst snap", color: "bg-yellow-600 hover:bg-yellow-500" },
+  { id: "hit_heavy", label: "HIT HEAVY", description: "Deep thump + crunch", color: "bg-orange-600 hover:bg-orange-500" },
+  { id: "hit_special", label: "HIT SPECIAL", description: "Rising sweep into impact", color: "bg-red-600 hover:bg-red-500" },
+  { id: "block", label: "BLOCK", description: "Metallic clang", color: "bg-blue-600 hover:bg-blue-500" },
+  { id: "dodge", label: "DODGE", description: "Whoosh sweep", color: "bg-cyan-600 hover:bg-cyan-500" },
+  { id: "catch", label: "CATCH", description: "Grab thud + crunch", color: "bg-purple-600 hover:bg-purple-500" },
+  { id: "ko_explosion", label: "KO EXPLOSION", description: "Deep rumble + explosion", color: "bg-red-800 hover:bg-red-700" },
+  { id: "round_start", label: "ROUND START", description: "Boxing bell dings", color: "bg-amber-600 hover:bg-amber-500" },
+  { id: "crowd_cheer", label: "CROWD CHEER", description: "Crowd noise + fanfare", color: "bg-green-600 hover:bg-green-500" },
+  { id: "radio_static", label: "RADIO STATIC", description: "Static burst", color: "bg-stone-600 hover:bg-stone-500" },
+  { id: "ambient_arena", label: "AMBIENT (toggle)", description: "Looping rumble + murmur", color: "bg-stone-700 hover:bg-stone-600" },
+];
+
+function SoundboardTab() {
+  const [manager, setManager] = useState<any>(null);
+  const [ambientPlaying, setAmbientPlaying] = useState(false);
+
+  useEffect(() => {
+    import("~~/lib/audio").then((mod) => {
+      if (mod.audioManager) {
+        setManager(mod.audioManager);
+      }
+    });
+  }, []);
+
+  const handlePlay = async (soundId: string) => {
+    if (!manager) return;
+    await manager.init();
+    // Force unmute for soundboard testing
+    if (manager.isMuted) {
+      manager.toggleMute();
+    }
+
+    if (soundId === "ambient_arena") {
+      if (ambientPlaying) {
+        manager.stopAmbient();
+        setAmbientPlaying(false);
+      } else {
+        manager.startAmbient();
+        setAmbientPlaying(true);
+      }
+      return;
+    }
+
+    manager.play(soundId);
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="font-mono text-lg text-amber-400">Sound Effects Testbed</h2>
+        <span className="font-mono text-xs text-stone-500">
+          {manager ? "Web Audio ready" : "Loading..."}
+        </span>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+        {SOUNDBOARD_SOUNDS.map((sound) => (
+          <button
+            key={sound.id}
+            onClick={() => handlePlay(sound.id)}
+            className={`${sound.color} rounded-lg p-4 text-left transition-all active:scale-95 border border-white/10`}
+          >
+            <p className="font-mono text-sm font-bold text-white">
+              {sound.label}
+              {sound.id === "ambient_arena" && ambientPlaying && (
+                <span className="ml-2 text-xs animate-pulse">PLAYING</span>
+              )}
+            </p>
+            <p className="font-mono text-[10px] text-white/60 mt-1">
+              {sound.description}
+            </p>
+          </button>
+        ))}
+      </div>
+
+      <div className="bg-stone-900/40 border border-stone-800/50 rounded p-4">
+        <h3 className="font-mono text-xs text-stone-400 mb-2">WHEN SOUNDS TRIGGER IN COMBAT</h3>
+        <div className="font-mono text-[11px] text-stone-500 space-y-1">
+          <p><span className="text-yellow-500">hit_light</span> — any damage dealt (&lt;18)</p>
+          <p><span className="text-orange-500">hit_heavy</span> — heavy hit (18+ damage to one fighter)</p>
+          <p><span className="text-red-500">hit_special</span> — SPECIAL move lands</p>
+          <p><span className="text-blue-500">block</span> — guard blocks a strike (total dmg &le;5)</p>
+          <p><span className="text-cyan-500">dodge</span> — dodge with zero damage</p>
+          <p><span className="text-purple-500">catch</span> — CATCH move used</p>
+          <p><span className="text-red-700">ko_explosion</span> — fighter eliminated</p>
+          <p><span className="text-amber-500">round_start</span> — combat begins</p>
+          <p><span className="text-green-500">crowd_cheer</span> — rumble complete</p>
+          <p><span className="text-stone-400">radio_static</span> — commentator activates</p>
+          <p><span className="text-stone-400">ambient_arena</span> — loops during combat</p>
+        </div>
+      </div>
     </div>
   );
 }
