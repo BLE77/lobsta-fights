@@ -383,6 +383,9 @@ export default function RumblePage() {
   const claimBalanceRef = useRef<ClaimBalanceStatus | null>(null);
   const pollSeqRef = useRef(0);
 
+  // Track previous slot states for sound effect detection (works with both SSE and polling)
+  const prevSlotAudioState = useRef<Map<number, { state: string; turnCount: number; fighterCount: number }>>(new Map());
+
   // ---- Direct Phantom wallet management (no wallet adapter) ----
   const [phantomProvider, setPhantomProvider] = useState<any>(null);
   const [publicKey, setPublicKey] = useState<PublicKey | null>(null);
@@ -806,53 +809,8 @@ export default function RumblePage() {
     const eventType = LEGACY_EVENT_MAP[rawEvent.type] ?? rawEvent.type;
     const event: SSEEvent = { ...rawEvent, type: eventType };
 
-    // ---- Sound effects (lazy-init on first audible event) ----
-    if (audioManager && !audioManager.isMuted) {
-      audioManager.init(); // no-op if already loaded
-      switch (event.type) {
-        case "combat_started":
-          audioManager.play("round_start");
-          audioManager.startAmbient();
-          break;
-
-        case "turn":
-        case "turn_resolved": {
-          const turnData = event.data?.turn ?? event.data;
-          const pairings = Array.isArray(turnData?.pairings) ? turnData.pairings : [];
-          if (pairings.length > 0) {
-            // Pick the most dramatic pairing to play
-            let best = pairings[0];
-            let bestDmg = (best.damageToA ?? 0) + (best.damageToB ?? 0);
-            for (let i = 1; i < pairings.length; i++) {
-              const dmg = (pairings[i].damageToA ?? 0) + (pairings[i].damageToB ?? 0);
-              if (dmg > bestDmg) { best = pairings[i]; bestDmg = dmg; }
-            }
-            audioManager.play(soundForPairing(best));
-          }
-          // Play KO for any eliminations this turn
-          const elims = turnData?.eliminations;
-          if (Array.isArray(elims) && elims.length > 0) {
-            setTimeout(() => audioManager.play("ko_explosion"), 150);
-          }
-          break;
-        }
-
-        case "elimination":
-        case "fighter_eliminated":
-          audioManager.play("ko_explosion");
-          break;
-
-        case "rumble_complete":
-        case "payout_complete":
-          audioManager.stopAmbient();
-          audioManager.play("crowd_cheer");
-          break;
-
-        case "slot_recycled":
-          audioManager.stopAmbient();
-          break;
-      }
-    }
+    // Sound effects are now driven by the status useEffect (works with both
+    // SSE patches and polling). No need for SSE-only sound triggers here.
 
     if (event.type === "betting_open") {
       setLastCompletedBySlot((prev) => {
@@ -1022,6 +980,79 @@ export default function RumblePage() {
     const pollInterval = setInterval(fetchStatus, intervalMs);
     return () => clearInterval(pollInterval);
   }, [fetchStatus, sseConnected]);
+
+  // ---- Sound effects driven by state changes (works with polling + SSE) ----
+  useEffect(() => {
+    if (!status || !audioManager || audioManager.isMuted) return;
+
+    for (const slot of status.slots) {
+      const prev = prevSlotAudioState.current.get(slot.slotIndex);
+      const currTurnCount = slot.turns?.length ?? 0;
+      const currFighterCount = slot.fighters?.filter((f: any) => f.hp > 0).length ?? 0;
+
+      if (!prev) {
+        // First time seeing this slot — just record state, no sounds
+        prevSlotAudioState.current.set(slot.slotIndex, {
+          state: slot.state,
+          turnCount: currTurnCount,
+          fighterCount: currFighterCount,
+        });
+        continue;
+      }
+
+      // Combat just started
+      if (prev.state !== "combat" && slot.state === "combat") {
+        audioManager.init();
+        audioManager.play("round_start");
+        audioManager.startAmbient();
+      }
+
+      // New turn(s) resolved — play hit sounds for the latest turn
+      if (slot.state === "combat" && currTurnCount > prev.turnCount && slot.turns?.length > 0) {
+        audioManager.init();
+        const latestTurn = slot.turns[slot.turns.length - 1];
+        const pairings = Array.isArray(latestTurn?.pairings) ? latestTurn.pairings : [];
+        if (pairings.length > 0) {
+          let best = pairings[0];
+          let bestDmg = (best.damageToA ?? 0) + (best.damageToB ?? 0);
+          for (let i = 1; i < pairings.length; i++) {
+            const dmg = (pairings[i].damageToA ?? 0) + (pairings[i].damageToB ?? 0);
+            if (dmg > bestDmg) { best = pairings[i]; bestDmg = dmg; }
+          }
+          audioManager.play(soundForPairing(best));
+        }
+
+        // KO sound for eliminations
+        const elims = latestTurn?.eliminations;
+        if (Array.isArray(elims) && elims.length > 0) {
+          setTimeout(() => audioManager.play("ko_explosion"), 150);
+        }
+      }
+
+      // Fighter count dropped (elimination detected even without turn data)
+      if (slot.state === "combat" && currFighterCount < prev.fighterCount && currTurnCount === prev.turnCount) {
+        audioManager.play("ko_explosion");
+      }
+
+      // Rumble complete / payout
+      if ((prev.state === "combat" || prev.state === "betting") && (slot.state === "payout" || slot.state === "complete")) {
+        audioManager.stopAmbient();
+        audioManager.play("crowd_cheer");
+      }
+
+      // Slot recycled back to idle
+      if (prev.state !== "idle" && slot.state === "idle") {
+        audioManager.stopAmbient();
+      }
+
+      // Update tracked state
+      prevSlotAudioState.current.set(slot.slotIndex, {
+        state: slot.state,
+        turnCount: currTurnCount,
+        fighterCount: currFighterCount,
+      });
+    }
+  }, [status]);
 
   // Wallet payout/claimable balance polling
   useEffect(() => {
