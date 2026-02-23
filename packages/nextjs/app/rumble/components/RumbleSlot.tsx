@@ -464,6 +464,7 @@ export default function RumbleSlot({
             <div className="relative">
               <div className="space-y-4">
                 {(() => {
+                  const oddsMap = new Map(slot.odds.map(o => [o.fighterId, o.solDeployed]));
                   const currentTurnData = slot.turns.find(t => t.turnNumber === slot.currentTurn) || slot.turns[slot.turns.length - 1];
                   const hasPairings = currentTurnData && Array.isArray(currentTurnData.pairings) && currentTurnData.pairings.length > 0;
 
@@ -483,6 +484,7 @@ export default function RumbleSlot({
                               imageUrl={f.imageUrl}
                               isEliminated={f.eliminatedOnTurn != null}
                               damageDealt={f.totalDamageDealt}
+                              solDeployed={oddsMap.get(f.id)}
                               isMyBet={myBetFighterIds?.has(f.id)}
                             />
                           ))}
@@ -557,6 +559,7 @@ export default function RumbleSlot({
                                   imageUrl={fA.imageUrl}
                                   isEliminated={fA.eliminatedOnTurn != null}
                                   damageDealt={fA.totalDamageDealt}
+                                  solDeployed={oddsMap.get(fA.id)}
                                   isMyBet={myBetFighterIds?.has(fA.id)}
                                   layout="vertical"
                                 />
@@ -576,6 +579,7 @@ export default function RumbleSlot({
                                   imageUrl={fB.imageUrl}
                                   isEliminated={fB.eliminatedOnTurn != null}
                                   damageDealt={fB.totalDamageDealt}
+                                  solDeployed={oddsMap.get(fB.id)}
                                   isMyBet={myBetFighterIds?.has(fB.id)}
                                   layout="vertical"
                                 />
@@ -607,6 +611,7 @@ export default function RumbleSlot({
                                   imageUrl={f.imageUrl}
                                   isEliminated={f.eliminatedOnTurn != null}
                                   damageDealt={f.totalDamageDealt}
+                                  solDeployed={oddsMap.get(f.id)}
                                   isMyBet={myBetFighterIds?.has(f.id)}
                                 />
                               ))}

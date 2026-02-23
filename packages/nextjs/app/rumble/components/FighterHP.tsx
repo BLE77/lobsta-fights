@@ -10,6 +10,7 @@ interface FighterHPProps {
   isEliminated?: boolean;
   placement?: number;
   damageDealt?: number;
+  solDeployed?: number;
   isMyBet?: boolean;
   size?: "normal" | "large";
 }
@@ -27,6 +28,7 @@ export default function FighterHP({
   isEliminated = false,
   placement,
   damageDealt,
+  solDeployed,
   isMyBet,
   size = "normal",
   layout = "horizontal",
@@ -216,10 +218,19 @@ export default function FighterHP({
           />
         </div>
 
-        {damageDealt !== undefined && (
-          <span className={`font-mono text-[9px] text-stone-600 mt-0.5 block ${layout === "vertical" ? "text-center pt-0.5" : ""}`}>
-            DMG: {damageDealt}
-          </span>
+        {(damageDealt !== undefined || (solDeployed !== undefined && solDeployed > 0)) && (
+          <div className={`flex items-center gap-2 mt-0.5 ${layout === "vertical" ? "justify-center pt-0.5" : ""}`}>
+            {damageDealt !== undefined && (
+              <span className="font-mono text-[9px] text-stone-600">
+                DMG: {damageDealt}
+              </span>
+            )}
+            {solDeployed !== undefined && solDeployed > 0 && (
+              <span className="font-mono text-[9px] text-amber-600">
+                {solDeployed.toFixed(2)} SOL
+              </span>
+            )}
+          </div>
         )}
       </div>
     </div>
