@@ -37,26 +37,21 @@ const AMBIENT_DUCK_GAIN = 0.08;
 const SFX_GAIN = 0.5;
 const VOICE_GAIN = 1.0;
 
-/** SFX map: eventType (+ optional threshold) → wav file */
+/** SFX map: eventType (+ optional threshold) → mp3 file */
 const SFX_MAP: Record<string, string> = {
-  betting_open: "/sounds/round-start.wav",
-  combat_start: "/sounds/round-start.wav",
-  elimination: "/sounds/ko-explosion.wav",
-  big_hit_heavy: "/sounds/hit-heavy.wav",
-  big_hit_light: "/sounds/hit-light.wav",
-  payout: "/sounds/crowd-cheer.wav",
-  ichor_shower: "/sounds/crowd-cheer.wav",
-  fighter_intro: "/sounds/round-start.wav",
+  betting_open: "/sounds/round-start.mp3",
+  combat_start: "/sounds/round-start.mp3",
+  elimination: "/sounds/ko-explosion.mp3",
+  payout: "/sounds/crowd-cheer.mp3",
+  ichor_shower: "/sounds/crowd-cheer.mp3",
+  fighter_intro: "/sounds/round-start.mp3",
 };
 
 const ALL_SOUND_URLS = [
-  "/sounds/ambient-arena.wav",
-  "/sounds/round-start.wav",
-  "/sounds/ko-explosion.wav",
-  "/sounds/hit-heavy.wav",
-  "/sounds/hit-light.wav",
-  "/sounds/crowd-cheer.wav",
-  "/sounds/radio-static.wav",
+  "/sounds/ambient-arena.mp3",
+  "/sounds/round-start.mp3",
+  "/sounds/ko-explosion.mp3",
+  "/sounds/crowd-cheer.mp3",
 ];
 
 // Priority events that jump ahead in queue
@@ -243,17 +238,7 @@ class RadioMixer {
     noiseSource.start();
     noiseSource.stop(this.ctx.currentTime + duration);
 
-    // Also try playing the radio-static.wav file
-    const staticBuf = await this.loadBuffer("/sounds/radio-static.wav");
-    if (staticBuf && this.ctx && this.masterGain) {
-      const staticSource = this.ctx.createBufferSource();
-      staticSource.buffer = staticBuf;
-      const staticGain = this.ctx.createGain();
-      staticGain.gain.value = 0.25;
-      staticSource.connect(staticGain);
-      staticGain.connect(this.masterGain);
-      staticSource.start();
-    }
+    // Radio static is synth-only (no file needed)
   }
 
   // --- Ambient Loop ---
@@ -261,7 +246,7 @@ class RadioMixer {
   async startAmbient() {
     if (!this.ctx || !this.ambientGain || this.ambientSource) return;
 
-    const buffer = await this.loadBuffer("/sounds/ambient-arena.wav");
+    const buffer = await this.loadBuffer("/sounds/ambient-arena.mp3");
     if (!buffer || !this.ctx || !this.ambientGain) return;
 
     const source = this.ctx.createBufferSource();
