@@ -160,7 +160,10 @@ export async function discoverOnchainWalletPayoutSnapshot(
     const rows = await Promise.all(
       chunk.map(async (rumbleIdNum) => ({
         rumbleIdNum,
-        state: await readRumbleAccountState(rumbleIdNum, connection).catch(() => null),
+        state: await readRumbleAccountState(rumbleIdNum, connection).catch((err) => {
+          console.error(`[claims] readRumbleAccountState failed for rumble ${rumbleIdNum}:`, err?.message ?? err);
+          return null;
+        }),
       })),
     );
     for (const row of rows) {

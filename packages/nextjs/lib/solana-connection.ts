@@ -7,7 +7,8 @@
  * Environment variables:
  *   SOLANA_RPC_URL - explicit RPC endpoint (server-side preferred)
  *   NEXT_PUBLIC_SOLANA_RPC_URL - explicit RPC endpoint fallback
- *   HELIUS_API_KEY - optional Helius API key fallback (server-side)
+ *   HELIUS_API_KEY - Helius API key (server-side preferred)
+ *   NEXT_PUBLIC_HELIUS_API_KEY - Helius API key fallback (also checked server-side)
  *   NEXT_PUBLIC_SOLANA_NETWORK - "devnet" | "mainnet-beta" (default: "devnet")
  *
  * Dependencies needed (not yet installed):
@@ -32,6 +33,8 @@ import {
 function getHeliusApiKey(): string | null {
   const serverKey = process.env.HELIUS_API_KEY?.trim();
   if (serverKey) return serverKey;
+  const publicKey = process.env.NEXT_PUBLIC_HELIUS_API_KEY?.trim();
+  if (publicKey) return publicKey;
   return null;
 }
 
