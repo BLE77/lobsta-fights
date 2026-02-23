@@ -12,18 +12,8 @@ import { requireJsonContentType, sanitizeErrorResponse } from "~~/lib/api-middle
 
 export const dynamic = "force-dynamic";
 const SOLANA_LEGACY_TX_MAX_BYTES = 1232;
-const MAX_SIMULATION_CANDIDATES = 24;
 
-function summarizeSimulationError(
-  err: unknown,
-  logs: string[] | null | undefined,
-): string {
-  if (Array.isArray(logs)) {
-    const anchorLog = logs.find((line) => line.includes("Error Code:"));
-    if (anchorLog) return anchorLog;
-    const programLog = logs.find((line) => line.toLowerCase().includes("program log:"));
-    if (programLog) return programLog;
-  }
+function summarizeBuildError(err: unknown): string {
   try {
     return JSON.stringify(err);
   } catch {
@@ -94,61 +84,9 @@ export async function POST(request: Request) {
       );
     }
 
-    // Vet candidates with preflight simulation so stale/not-ready claims do not
-    // poison a batched claim tx.
+    // On-chain snapshot already validates: payout ready, not claimed, winner
+    // deployment > 0. No preflight simulation needed — claim tx is built fresh below.
     const connection = getConnection();
-    const vettedTargets: typeof selectedTargets = [];
-    const skippedBySimulation: Array<{ rumble_id: string; reason: string }> = [];
-    for (const target of selectedTargets.slice(0, MAX_SIMULATION_CANDIDATES)) {
-      try {
-        const simTx = await buildClaimPayoutTx(wallet, target.rumbleIdNum, connection);
-        const sim = await (connection as any).simulateTransaction(simTx, {
-          sigVerify: false,
-          replaceRecentBlockhash: true,
-          commitment: "processed",
-        });
-        if (sim.value.err) {
-          skippedBySimulation.push({
-            rumble_id: target.rumbleId,
-            reason: summarizeSimulationError(sim.value.err, sim.value.logs),
-          });
-          continue;
-        }
-        vettedTargets.push(target);
-      } catch (err) {
-        skippedBySimulation.push({
-          rumble_id: target.rumbleId,
-          reason: summarizeSimulationError(err, null),
-        });
-      }
-    }
-
-    if (requestedTarget) {
-      selectedTargets = vettedTargets.filter((row) => row.rumbleId === requestedTarget.rumbleId);
-      if (selectedTargets.length === 0) {
-        const reason = skippedBySimulation.find((row) => row.rumble_id === requestedTarget.rumbleId)?.reason;
-        return NextResponse.json(
-          {
-            error: "Requested rumble is not claimable right now.",
-            reason: reason ?? "claim_not_ready_or_unavailable",
-          },
-          { status: 409 },
-        );
-      }
-    } else {
-      selectedTargets = vettedTargets;
-    }
-
-    if (selectedTargets.length === 0) {
-      return NextResponse.json(
-        {
-          error: "No on-chain claimable payout is currently executable.",
-          reason: "simulation_filtered_all",
-          skipped_by_simulation: skippedBySimulation.slice(0, 5),
-        },
-        { status: 409 },
-      );
-    }
 
     let tx = null as Awaited<ReturnType<typeof buildClaimPayoutTx>> | null;
     let txBytes: Buffer | null = null;
@@ -174,7 +112,7 @@ export async function POST(request: Request) {
         }
         txBytes = Buffer.from(serialized);
       } catch (err: any) {
-        const errorText = summarizeSimulationError(err, null).toLowerCase();
+        const errorText = summarizeBuildError(err).toLowerCase();
         const sizeError =
           errorText.includes("too large") ||
           errorText.includes("encoding overruns") ||
@@ -214,7 +152,7 @@ export async function POST(request: Request) {
       claimable_sol: Number(totalClaimableSol.toFixed(9)),
       onchain_claimable_sol: Number(totalClaimableSol.toFixed(9)),
       skipped_eligible_claims: skippedEligible,
-      skipped_by_simulation: skippedBySimulation.length,
+      skipped_by_simulation: 0,
       tx_kind: selectedTargets.length > 1 ? "rumble_claim_payout_batch" : "rumble_claim_payout",
       transaction_base64: txBase64,
       timestamp: new Date().toISOString(),
