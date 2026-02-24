@@ -32,8 +32,8 @@ const BETTING_HYPE_INTERVAL_MS = 20_000;
 const BETTING_HYPE_CHECK_MS = 3_000;
 const PLAYBACK_RATE = 1.12;
 
-const AMBIENT_GAIN = 0.15;
-const AMBIENT_DUCK_GAIN = 0.08;
+const AMBIENT_GAIN = 0.10;
+const AMBIENT_DUCK_GAIN = 0.04;
 const SFX_GAIN = 0.5;
 const VOICE_GAIN = 1.0;
 
@@ -48,7 +48,7 @@ const SFX_MAP: Record<string, string> = {
 };
 
 const ALL_SOUND_URLS = [
-  "/sounds/ambient-arena.mp3",
+  "/sounds/chrome-knuckles.mp3",
   "/sounds/round-start.mp3",
   "/sounds/ko-explosion.mp3",
   "/sounds/crowd-cheer.mp3",
@@ -249,7 +249,16 @@ class RadioMixer {
   // --- Ambient Loop ---
 
   async startAmbient() {
-    // Background ambient disabled
+    if (!this.ctx || !this.ambientGain || this.ambientSource) return;
+    const buffer = await this.loadBuffer("/sounds/chrome-knuckles.mp3");
+    if (!buffer || !this.ctx || !this.ambientGain) return;
+    const source = this.ctx.createBufferSource();
+    source.buffer = buffer;
+    source.loop = true;
+    source.connect(this.ambientGain);
+    this.ambientGain.gain.value = AMBIENT_GAIN;
+    source.start();
+    this.ambientSource = source;
   }
 
   stopAmbient() {
