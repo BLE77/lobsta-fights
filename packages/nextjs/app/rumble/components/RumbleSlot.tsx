@@ -332,9 +332,17 @@ export default function RumbleSlot({
     );
     if (newTurns.length === 0) return;
 
+    const isInitialMount = seenTurnsRef.current === 0;
+
     seenTurnsRef.current = Math.max(
       ...slot.turns.map((t) => t.turnNumber)
     );
+
+    // If this is the first time observing turns and there's already history,
+    // skip replaying old eliminations to prevent them getting stuck on screen
+    if (isInitialMount && slot.turns.length > 1) {
+      return;
+    }
 
     const fighterMap = new Map(slot.fighters.map((f) => [f.id, f]));
     const newEliminations: ActiveElimination[] = [];
@@ -625,7 +633,7 @@ export default function RumbleSlot({
 
               {/* Elimination popups (overlay) */}
               {activeEliminations.length > 0 && (
-                <div className="absolute inset-x-0 top-0 z-20 pointer-events-none space-y-2">
+                <div className="absolute top-4 right-4 z-50 pointer-events-none space-y-2 w-64">
                   {activeEliminations.map((elim) => (
                     <EliminationPopup
                       key={elim.key}

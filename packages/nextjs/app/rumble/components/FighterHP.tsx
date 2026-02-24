@@ -95,12 +95,12 @@ export default function FighterHP({
 
   // Determine container classes based on layout
   const containerClasses = layout === "vertical"
-    ? `relative flex flex-col items-center justify-center gap-2 p-2 rounded-sm transition-all duration-700`
+    ? `relative flex flex-col items-center justify-center gap-1 sm:gap-2 p-1 sm:p-2 rounded-sm transition-all duration-700`
     : `relative flex items-center gap-3 p-2 rounded-sm transition-all duration-700`;
 
   // Determine avatar block settings based on layout
   const avatarSizeClasses = layout === "vertical"
-    ? "w-20 h-20"
+    ? "w-14 h-14 sm:w-20 sm:h-20"
     : size === "large" ? "w-12 h-12" : "w-8 h-8";
 
   return (
@@ -178,7 +178,7 @@ export default function FighterHP({
         <div className={`flex items-center mb-0.5 ${layout === "vertical" ? "justify-center flex-col gap-0.5" : "justify-between"}`}>
           <span className={`flex items-center gap-1 truncate ${layout === "vertical" ? "justify-center w-full" : ""}`}>
             <span
-              className={`font-mono ${layout === "vertical" ? "text-sm" : size === "large" ? "text-sm" : "text-xs"} font-bold truncate ${isEliminated ? "text-stone-600 line-through decoration-red-500/50" : "text-stone-200"
+              className={`font-mono ${layout === "vertical" ? "text-[10px] sm:text-sm" : size === "large" ? "text-sm" : "text-xs"} font-bold truncate ${isEliminated ? "text-stone-600 line-through decoration-red-500/50" : "text-stone-200"
                 }`}
             >
               {name}
@@ -190,7 +190,7 @@ export default function FighterHP({
             )}
           </span>
           <span
-            className={`font-mono ${layout === "vertical" ? "text-[10px]" : size === "large" ? "text-xs" : "text-[10px]"} ${layout === "vertical" ? "" : "ml-2"} flex-shrink-0 ${isEliminated ? "text-stone-600" : "text-stone-400"
+            className={`font-mono ${layout === "vertical" ? "text-[8px] sm:text-[10px]" : size === "large" ? "text-xs" : "text-[10px]"} ${layout === "vertical" ? "" : "ml-2"} flex-shrink-0 ${isEliminated ? "text-stone-600" : "text-stone-400"
               }`}
           >
             {hp}/{maxHp}
@@ -198,7 +198,7 @@ export default function FighterHP({
         </div>
 
         {/* HP Bar Container */}
-        <div className={`relative w-full h-2 bg-stone-800 rounded-sm overflow-hidden border border-stone-900 ${layout === "vertical" ? "mt-1" : ""}`}>
+        <div className={`relative w-full h-3 sm:h-4 bg-stone-800 rounded-sm overflow-hidden border border-stone-900 ${layout === "vertical" ? "mt-1" : ""}`}>
           {/* Background Catch-up Red Bar */}
           <div
             className="absolute top-0 left-0 h-full bg-red-500/80 rounded-r-sm shadow-[0_0_8px_rgba(239,68,68,0.5)]"
@@ -216,22 +216,20 @@ export default function FighterHP({
               transition: 'width 150ms ease-out, background-color 300ms ease-in-out', // Very fast snap
             }}
           />
-        </div>
-
-        {(damageDealt !== undefined || (solDeployed !== undefined && solDeployed > 0)) && (
-          <div className={`flex items-center gap-2 mt-0.5 ${layout === "vertical" ? "justify-center pt-0.5" : ""}`}>
-            {damageDealt !== undefined && (
-              <span className="font-mono text-[9px] text-stone-600">
-                DMG: {damageDealt}
+          {/* Internal Text Overlay */}
+          <div className="absolute inset-0 flex items-center justify-between px-1 sm:px-1.5 pointer-events-none z-10">
+            {damageDealt !== undefined ? (
+              <span className="font-mono text-[7px] sm:text-[9px] text-stone-100 drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] font-bold">
+                DMG {damageDealt}
               </span>
-            )}
+            ) : <span />}
             {solDeployed !== undefined && solDeployed > 0 && (
-              <span className="font-mono text-[9px] text-amber-600">
+              <span className="font-mono text-[7px] sm:text-[9px] text-amber-300 drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] font-bold">
                 {solDeployed.toFixed(2)} SOL
               </span>
             )}
           </div>
-        )}
+        </div>
       </div>
     </div>
   );

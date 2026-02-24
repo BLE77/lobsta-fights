@@ -556,6 +556,7 @@ export default function CommentaryPlayer({
   const prevSeq = useRef(-1);
   const announcedBettingRumblesRef = useRef<Set<string>>(new Set());
   const announcedCombatRumblesRef = useRef<Set<string>>(new Set());
+  const announcedPayoutRumblesRef = useRef<Set<string>>(new Set());
   const enqueuedIntrosRef = useRef<Set<string>>(new Set());
   const lastBettingHypeAtByRumbleRef = useRef<Map<string, number>>(new Map());
   const lastTurnSeenByRumbleRef = useRef<Map<string, number>>(new Map());
@@ -712,6 +713,9 @@ export default function CommentaryPlayer({
             if (slotAny.state === "combat" || slotAny.state === "payout") {
               announcedCombatRumblesRef.current.add(rumbleId);
             }
+            if (slotAny.state === "payout") {
+              announcedPayoutRumblesRef.current.add(rumbleId);
+            }
             // Mark current turn as seen so we don't replay old turn narration
             const turnCount = typeof (slotAny as any).currentTurn === "number" ? (slotAny as any).currentTurn : 0;
             if (turnCount > 0) {
@@ -858,8 +862,75 @@ export default function CommentaryPlayer({
         enqueueCandidate(candidate);
         announcedCombatRumblesRef.current.add(rumbleId);
       }
+
+      if (slotAny.state === "payout" && !announcedPayoutRumblesRef.current.has(rumbleId)) {
+        const candidate = evaluateEvent({ type: "rumble_complete", slotIndex: slotAny.slotIndex, data: {} }, slotAny);
+        enqueueCandidate(candidate);
+        announcedPayoutRumblesRef.current.add(rumbleId);
+      }
     }
   }, [enabled, slots, enqueueCandidate, getVoiceId]);
+
+  // Poll-based combat narration: detect new turns from polled slot data.
+  // This is the PRIMARY path for combat commentary — SSE events only arrive
+  // when the worker runs in the same process (Railway), not on Vercel or local dev.
+  useEffect(() => {
+    if (!enabled || !slots?.length) return;
+
+    for (const slot of slots) {
+      const slotAny = slot as CommentarySlotData & {
+        rumbleId?: string;
+        turns?: Array<{
+          turnNumber: number;
+          pairings: Array<{
+            fighterA: string;
+            fighterB: string;
+            fighterAName?: string;
+            fighterBName?: string;
+            moveA: string;
+            moveB: string;
+            damageToA: number;
+            damageToB: number;
+          }>;
+          eliminations: string[];
+          bye?: string;
+        }>;
+      };
+      if (slotAny.state !== "combat" && slotAny.state !== "payout") continue;
+      const rumbleId = typeof slotAny.rumbleId === "string" ? slotAny.rumbleId : "";
+      if (!rumbleId) continue;
+
+      const currentTurn = typeof slotAny.currentTurn === "number" ? slotAny.currentTurn : 0;
+      const prevTurn = lastTurnSeenByRumbleRef.current.get(rumbleId) ?? 0;
+      if (currentTurn <= prevTurn) continue;
+
+      // New turn(s) detected — narrate the latest one
+      lastTurnSeenByRumbleRef.current.set(rumbleId, currentTurn);
+
+      const turns = Array.isArray(slotAny.turns) ? slotAny.turns : [];
+      const latestTurn = turns.find((t) => t.turnNumber === currentTurn) ?? turns[turns.length - 1];
+      if (!latestTurn || !latestTurn.pairings?.length) continue;
+
+      // Build a synthetic turn_resolved event from polled turn data
+      const remaining = slotAny.fighters.filter((f) => !f.eliminatedOnTurn).length;
+      const candidate = evaluateEvent(
+        {
+          type: "turn_resolved",
+          slotIndex: slotAny.slotIndex,
+          data: {
+            turn: {
+              turnNumber: latestTurn.turnNumber,
+              pairings: latestTurn.pairings,
+              eliminations: latestTurn.eliminations ?? [],
+            },
+            remainingFighters: remaining,
+          },
+        },
+        slotAny,
+      );
+      enqueueCandidate(candidate);
+    }
+  }, [enabled, slots, enqueueCandidate]);
 
   // Continuous hype while betting is open
   useEffect(() => {
