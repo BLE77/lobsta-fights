@@ -570,6 +570,52 @@ export default function CommentaryPlayer({
   const lastBettingHypeAtByRumbleRef = useRef<Map<string, number>>(new Map());
   const lastTurnSeenByRumbleRef = useRef<Map<string, number>>(new Map());
   const playedSharedClipsRef = useRef<Set<string>>(new Set());
+  const initialSeedDoneRef = useRef(false);
+
+  // Pre-seed tracking refs on first slot arrival so we don't replay
+  // intros/announcements for fights already in progress after a page refresh.
+  useEffect(() => {
+    if (initialSeedDoneRef.current || !slots?.length) return;
+    initialSeedDoneRef.current = true;
+
+    for (const slot of slots) {
+      const slotAny = slot as CommentarySlotData & {
+        rumbleId?: string;
+        turns?: Array<{ turnNumber: number }>;
+        commentary?: Array<{ clipKey: string; audioUrl: string | null }>;
+      };
+      const rumbleId = typeof slotAny.rumbleId === "string" ? slotAny.rumbleId : "";
+      if (!rumbleId) continue;
+
+      // Mark state-transition announcements as done
+      if (slotAny.state === "betting" || slotAny.state === "combat" || slotAny.state === "payout") {
+        announcedBettingRumblesRef.current.add(rumbleId);
+        enqueuedIntrosRef.current.add(rumbleId);
+      }
+      if (slotAny.state === "combat" || slotAny.state === "payout") {
+        announcedCombatRumblesRef.current.add(rumbleId);
+      }
+      if (slotAny.state === "payout") {
+        announcedPayoutRumblesRef.current.add(rumbleId);
+      }
+
+      // Mark current turn as seen
+      const turnCount = typeof slotAny.currentTurn === "number" ? slotAny.currentTurn : 0;
+      if (turnCount > 0) {
+        lastTurnSeenByRumbleRef.current.set(rumbleId, turnCount);
+      }
+
+      // Mark shared clips as played
+      const commentary = slotAny.commentary;
+      if (Array.isArray(commentary)) {
+        for (const clip of commentary) {
+          if (clip.audioUrl && clip.clipKey) {
+            playedSharedClipsRef.current.add(`${rumbleId}:${clip.clipKey}`);
+          }
+        }
+      }
+    }
+  }, [slots]);
 
   // Init mixer
   useEffect(() => {
