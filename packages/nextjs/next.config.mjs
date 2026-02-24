@@ -39,6 +39,7 @@ const nextConfig = {
               "img-src 'self' data: blob: https:",
               "font-src 'self' data:",
               "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://*.helius-rpc.com https://api.devnet.solana.com https://api.mainnet-beta.solana.com",
+              "media-src 'self' blob: https://*.supabase.co",
               "object-src 'none'",
               "base-uri 'self'",
               "form-action 'self'",

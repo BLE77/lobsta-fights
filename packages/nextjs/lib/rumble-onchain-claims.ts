@@ -212,12 +212,13 @@ export async function discoverOnchainWalletPayoutSnapshot(
     if (winnerDeploymentLamports <= 0n && onchainClaimableLamports <= 0n) continue;
 
     // Check vault has enough SOL to actually pay out (skip swept vaults)
-    const estimatedPayoutLamports = onchainClaimableLamports > 0n
-      ? onchainClaimableLamports
-      : winnerDeploymentLamports;
+    let vaultBalance = 0;
     try {
       const [vaultPda] = deriveVaultPda(bettor.rumbleIdNum);
-      const vaultBalance = await connection.getBalance(vaultPda, "confirmed");
+      vaultBalance = await connection.getBalance(vaultPda, "confirmed");
+      const estimatedPayoutLamports = onchainClaimableLamports > 0n
+        ? onchainClaimableLamports
+        : winnerDeploymentLamports;
       if (vaultBalance < Number(estimatedPayoutLamports) + 900_000) continue;
     } catch {
       // If we can't check vault balance, skip conservatively
@@ -225,9 +226,27 @@ export async function discoverOnchainWalletPayoutSnapshot(
     }
 
     const onchainClaimableSol = Number(onchainClaimableLamports) / LAMPORTS_PER_SOL;
-    const inferredFromWinnerStakeSol = Number(winnerDeploymentLamports) / LAMPORTS_PER_SOL;
-    const inferredClaimableSol =
-      onchainClaimableSol > 0 ? onchainClaimableSol : inferredFromWinnerStakeSol;
+
+    // Compute actual proportional payout when claimableLamports is 0
+    let inferredClaimableSol: number;
+    if (onchainClaimableSol > 0) {
+      inferredClaimableSol = onchainClaimableSol;
+    } else {
+      // Proportional payout: (bettor_winner_stake / total_winner_pool) * net_prize_pool
+      const totalWinnerPool = rumbleState.bettingPools?.[winnerIndex] ?? 0n;
+      const netPrizePool = rumbleState.totalDeployedLamports
+        - rumbleState.adminFeeCollectedLamports
+        - rumbleState.sponsorshipPaidLamports;
+
+      if (totalWinnerPool > 0n && netPrizePool > 0n) {
+        // Use bigint arithmetic to avoid floating point precision issues
+        const payoutLamports = (winnerDeploymentLamports * netPrizePool) / totalWinnerPool;
+        inferredClaimableSol = Number(payoutLamports) / LAMPORTS_PER_SOL;
+      } else {
+        // Fallback: use vault balance proportional share if pool data unavailable
+        inferredClaimableSol = Number(winnerDeploymentLamports) / LAMPORTS_PER_SOL;
+      }
+    }
 
     claimableRumbles.push({
       rumbleId: bettor.rumbleId.toString(),

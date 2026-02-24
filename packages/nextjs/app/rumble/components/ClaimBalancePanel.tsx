@@ -59,30 +59,22 @@ export default function ClaimBalancePanel({
           ? "INSTANT MODE"
           : onchainPendingNotReady > 0
             ? "FIGHT IN PROGRESS"
-            : "NO CLAIMABLE WINS";
+            : "NO REWARDS";
+
+  const claimedSol = balance?.claimed_sol ?? 0;
 
   return (
     <div className="bg-stone-950/60 border border-stone-800 rounded-sm p-3 space-y-2 backdrop-blur-md">
-      <div className="flex items-center justify-between">
-        <p className="font-mono text-[10px] text-stone-500 uppercase">Payout Wallet</p>
-        <span
-          className={`font-mono text-[10px] px-1.5 py-0.5 rounded-sm border ${payoutMode === "accrue_claim"
-              ? "text-green-400 border-green-700/40 bg-green-900/20"
-              : "text-stone-400 border-stone-700 bg-stone-800/40"
-            }`}
-        >
-          {payoutMode === "accrue_claim" ? "CLAIM MODE" : "INSTANT"}
-        </span>
-      </div>
+      <p className="font-mono text-[10px] text-stone-500 uppercase">Rewards</p>
 
       <div className="grid grid-cols-2 gap-2 text-xs font-mono">
         <div className="border border-stone-800 rounded-sm p-2 bg-stone-950/50">
-          <p className="text-stone-500 text-[10px]">Claimable (On-Chain)</p>
+          <p className="text-stone-500 text-[10px]">Unclaimed</p>
           <p className="text-green-400 font-bold">{onchainClaimable.toFixed(4)} SOL</p>
         </div>
         <div className="border border-stone-800 rounded-sm p-2 bg-stone-950/50">
           <p className="text-stone-500 text-[10px]">Claimed</p>
-          <p className="text-amber-400 font-bold">{(balance?.claimed_sol ?? 0).toFixed(4)} SOL</p>
+          <p className="text-amber-400 font-bold">{claimedSol.toFixed(4)} SOL</p>
         </div>
       </div>
 

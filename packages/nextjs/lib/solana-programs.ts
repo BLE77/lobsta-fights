@@ -237,6 +237,10 @@ export interface RumbleAccountState {
   fighterCount: number;
   placements: number[];
   winnerIndex: number | null;
+  bettingPools: bigint[];
+  totalDeployedLamports: bigint;
+  adminFeeCollectedLamports: bigint;
+  sponsorshipPaidLamports: bigint;
   bettingCloseSlot: bigint;
   // Legacy compatibility field: this account offset previously represented
   // unix timestamp and is now used as on-chain slot close.
@@ -301,6 +305,17 @@ export async function readRumbleAccountState(
     const winnerIndexRaw = data.length > winnerIndexOffset ? data[winnerIndexOffset] : undefined;
     const winnerIndex =
       typeof winnerIndexRaw === "number" && winnerIndexRaw < 16 ? winnerIndexRaw : null;
+
+    const bettingPools: bigint[] = [];
+    if (data.length >= bettingPoolsOffset + 8 * 16) {
+      for (let i = 0; i < 16; i++) {
+        bettingPools.push(readU64LE(data, bettingPoolsOffset + i * 8));
+      }
+    }
+    const totalDeployedLamports = data.length >= totalDeployedOffset + 8 ? readU64LE(data, totalDeployedOffset) : 0n;
+    const adminFeeCollectedLamports = data.length >= adminFeeCollectedOffset + 8 ? readU64LE(data, adminFeeCollectedOffset) : 0n;
+    const sponsorshipPaidLamports = data.length >= sponsorshipPaidOffset + 8 ? readU64LE(data, sponsorshipPaidOffset) : 0n;
+
     const placements: number[] = [];
     for (let i = 0; i < 16; i++) {
       const offset = placementsOffset + i;
@@ -318,6 +333,10 @@ export async function readRumbleAccountState(
       fighterCount,
       placements,
       winnerIndex,
+      bettingPools,
+      totalDeployedLamports,
+      adminFeeCollectedLamports,
+      sponsorshipPaidLamports,
       bettingCloseSlot,
       bettingDeadlineTs: bettingDeadlineRaw,
       combatStartedAtTs,

@@ -3,6 +3,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
+import { buildVoiceLinePrompts as _buildVoiceLinePrompts, type VoiceLine } from "../../lib/voice-line-prompts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -50,6 +51,12 @@ interface Rumble {
   tx_signatures?: TxSignatures | null;
 }
 
+interface VoiceClipMeta {
+  text: string;
+  audio_url: string;
+  generated_at: string;
+}
+
 interface FighterRobotMeta {
   robot_type?: string;
   chassis_description?: string;
@@ -62,6 +69,7 @@ interface FighterRobotMeta {
   taunt_lines?: string[];
   color_scheme?: string;
   distinguishing_features?: string;
+  voice_clips?: Record<string, VoiceClipMeta>;
 }
 
 interface Fighter {
@@ -1331,54 +1339,44 @@ function RumblesTab({ rumbles }: { rumbles: Rumble[] }) {
 // Fighters Tab
 // ---------------------------------------------------------------------------
 
-function buildVoiceLinePrompts(f: Fighter): Array<{ label: string; text: string; chars: number; color: string }> {
-  const m = f.robot_metadata;
-  const name = f.name;
-
-  const intro = m
-    ? [
-        `Introducing ${name}.`,
-        m.robot_type ? `A ${m.robot_type}.` : null,
-        m.chassis_description ? `Chassis: ${m.chassis_description.slice(0, 120)}.` : null,
-        m.fighting_style ? `Style: ${m.fighting_style}.` : null,
-        m.signature_move ? `Signature move: ${m.signature_move}.` : null,
-        m.personality ? `Personality: ${m.personality}.` : null,
-        m.distinguishing_features ? `Notable: ${m.distinguishing_features.slice(0, 100)}.` : null,
-      ].filter(Boolean).join(" ")
-    : `Introducing ${name}. A challenger steps into the cage!`;
-
-  const hitLanded = m?.signature_move
-    ? `${name} connects with a devastating ${m.signature_move}! That's gonna leave a dent in the chassis!`
-    : `${name} connects with a devastating blow! That's gonna leave a mark!`;
-
-  const hitTaken = m?.chassis_description
-    ? `${name} takes a crushing shot! How much more can that ${m.chassis_description.slice(0, 40)} take?`
-    : `${name} takes a crushing blow! How much more punishment can they absorb?`;
-
-  const elimKiller = m?.signature_move
-    ? `${name} sends another bot to the scrapheap! ${m.signature_move} strikes again!`
-    : `${name} sends another bot to the scrapheap! Absolutely dismantled!`;
-
-  const elimVictim = m?.defeat_line
-    ? `${name} goes down! ${m.defeat_line}`
-    : `${name} goes down! Scraped off the arena floor!`;
-
-  const victory = m?.victory_line
-    ? `${name} stands alone, last bot standing! ${m.victory_line}`
-    : `${name} stands alone, last bot standing! The cage belongs to them tonight!`;
-
-  return [
-    { label: "INTRO", text: intro, chars: intro.length, color: "text-amber-400" },
-    { label: "HIT LANDED", text: hitLanded, chars: hitLanded.length, color: "text-orange-400" },
-    { label: "HIT TAKEN", text: hitTaken, chars: hitTaken.length, color: "text-red-400" },
-    { label: "ELIM (KILLER)", text: elimKiller, chars: elimKiller.length, color: "text-green-400" },
-    { label: "ELIM (VICTIM)", text: elimVictim, chars: elimVictim.length, color: "text-red-500" },
-    { label: "VICTORY", text: victory, chars: victory.length, color: "text-yellow-400" },
-  ];
+function buildVoiceLinePrompts(f: Fighter): Array<{ key: string; label: string; text: string; chars: number; color: string }> {
+  return _buildVoiceLinePrompts(f).map(v => ({ key: v.key, label: v.label, text: v.text, chars: v.text.length, color: v.color }));
 }
 
 function FightersTab({ fighters }: { fighters: Fighter[] }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [playingClip, setPlayingClip] = useState<string | null>(null); // "fighterId:clipKey"
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const playClip = useCallback(async (url: string, clipId: string) => {
+    // Stop current
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    // If clicking same clip, just stop
+    if (playingClip === clipId) {
+      setPlayingClip(null);
+      return;
+    }
+    try {
+      setPlayingClip(clipId);
+      // Fetch as blob to avoid cross-origin audio loading issues
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Fetch failed: ${res.status}`);
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const audio = new Audio(objectUrl);
+      audio.playbackRate = 1.12;
+      audio.onended = () => { URL.revokeObjectURL(objectUrl); setPlayingClip(null); };
+      audio.onerror = () => { URL.revokeObjectURL(objectUrl); setPlayingClip(null); };
+      await audio.play();
+      audioRef.current = audio;
+    } catch (err) {
+      console.error("Play failed:", err);
+      setPlayingClip(null);
+    }
+  }, [playingClip]);
 
   const totalChars = fighters.reduce((sum, f) => {
     return sum + buildVoiceLinePrompts(f).reduce((s, p) => s + p.chars, 0);
@@ -1504,19 +1502,60 @@ function FightersTab({ fighters }: { fighters: Fighter[] }) {
 
                     {/* Voice Line Prompts */}
                     <div>
-                      <h4 className="font-mono text-[10px] text-stone-500 uppercase mb-2 tracking-wider">
-                        Voice Line Prompts ({prompts.reduce((s, p) => s + p.chars, 0)} chars)
-                      </h4>
+                      {(() => {
+                        const clips = m?.voice_clips ?? {};
+                        const generatedCount = prompts.filter(p => clips[p.key]?.audio_url).length;
+                        return (
+                          <h4 className="font-mono text-[10px] text-stone-500 uppercase mb-2 tracking-wider">
+                            Voice Line Prompts ({prompts.reduce((s, p) => s + p.chars, 0)} chars)
+                            {generatedCount > 0 && (
+                              <span className="text-green-500 ml-2">
+                                {generatedCount}/{prompts.length} clips generated
+                              </span>
+                            )}
+                          </h4>
+                        );
+                      })()}
                       <div className="space-y-2">
-                        {prompts.map((p) => (
-                          <div key={p.label} className="bg-stone-900/60 border border-stone-800/50 rounded-sm p-2">
-                            <div className="flex items-center justify-between mb-1">
-                              <span className={`font-mono text-[10px] font-bold ${p.color}`}>{p.label}</span>
-                              <span className="font-mono text-[10px] text-stone-600">{p.chars} chars</span>
+                        {prompts.map((p) => {
+                          const clip = (m?.voice_clips ?? {})[p.key];
+                          const clipId = `${f.id}:${p.key}`;
+                          const isPlaying = playingClip === clipId;
+                          const hasClip = !!clip?.audio_url;
+                          const isStale = hasClip && clip.text !== p.text;
+
+                          return (
+                            <div key={p.key} className="bg-stone-900/60 border border-stone-800/50 rounded-sm p-2">
+                              <div className="flex items-center justify-between mb-1">
+                                <div className="flex items-center gap-2">
+                                  <span className={`font-mono text-[10px] font-bold ${p.color}`}>{p.label}</span>
+                                  {hasClip && (
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); playClip(clip.audio_url, clipId); }}
+                                      className={`font-mono text-[10px] px-1.5 py-0.5 rounded-sm border transition-colors ${
+                                        isPlaying
+                                          ? "bg-amber-500/20 border-amber-500/50 text-amber-400"
+                                          : "bg-stone-800/60 border-stone-700/50 text-stone-400 hover:text-amber-400 hover:border-amber-500/30"
+                                      }`}
+                                    >
+                                      {isPlaying ? "[] STOP" : "> PLAY"}
+                                    </button>
+                                  )}
+                                  {isStale && (
+                                    <span className="font-mono text-[10px] text-yellow-500" title="Text changed since clip was generated">
+                                      STALE
+                                    </span>
+                                  )}
+                                  {!hasClip && (
+                                    <span className="font-mono text-[10px] text-stone-700">NO CLIP</span>
+                                  )}
+                                </div>
+                                <span className="font-mono text-[10px] text-stone-600">{p.chars} chars</span>
+                              </div>
+                              <p className="font-mono text-xs text-stone-300 leading-relaxed">{p.text}</p>
                             </div>
-                            <p className="font-mono text-xs text-stone-300 leading-relaxed">{p.text}</p>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   </div>

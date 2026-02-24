@@ -311,114 +311,166 @@ export function evaluateEvent(
       const turn = event.data?.turn ?? event.data;
       const pairings: any[] = turn?.pairings ?? [];
       const eliminations: string[] = turn?.eliminations ?? [];
+      const turnNumber = Number(turn?.turnNumber ?? slot.currentTurn);
+      const remaining =
+        typeof event.data?.remainingFighters === "number"
+          ? Math.max(0, Math.floor(event.data.remainingFighters))
+          : slot.fighters.filter((f) => !f.eliminatedOnTurn).length;
 
-      // Check for eliminations first (highest priority)
-      if (eliminations.length > 0) {
-        const turnNumber = Number(turn?.turnNumber ?? slot.currentTurn);
-        const eliminated = eliminations
-          .map((id: string) => {
-            return resolveFighterName(slot, id) ?? "a fighter";
-          })
-          .join(", ");
+      // ── Collect events by priority ─────────────────────────────────────
+      // Priority 1: SPECIAL moves that landed (signature move reference ONLY here)
+      // Priority 2: Eliminations (pick best one, batch the rest)
+      // Priority 3: Big hits (regular, no signature move refs)
+      // Max 2 events spoken per turn.
 
-        // Find who dealt the killing blow
-        const killerInfo = pairings
-          .filter((p) => {
-            return (
-              (eliminations.includes(p.fighterA) && p.damageToA > 0) ||
-              (eliminations.includes(p.fighterB) && p.damageToB > 0)
-            );
-          })
+      const events: string[] = [];
+
+      // --- SPECIAL moves ---
+      const specialHits = pairings.filter(
+        (p) => p.moveA === "SPECIAL" || p.moveB === "SPECIAL",
+      );
+      for (const p of specialHits) {
+        if (events.length >= 2) break;
+        const aName = resolveFighterName(slot, p.fighterA, p.fighterAName) ?? "a fighter";
+        const bName = resolveFighterName(slot, p.fighterB, p.fighterBName) ?? "a fighter";
+        if (p.moveA === "SPECIAL" && Number(p.damageToB ?? 0) > 0) {
+          const meta = slot.fighters.find((f) => f.id === p.fighterA)?.robotMeta;
+          const sigName = meta?.signature_move ?? "SPECIAL";
+          events.push(`${aName} lands the ${sigName} on ${bName} for ${p.damageToB} damage!`);
+        }
+        if (p.moveB === "SPECIAL" && Number(p.damageToA ?? 0) > 0) {
+          if (events.length >= 2) break;
+          const meta = slot.fighters.find((f) => f.id === p.fighterB)?.robotMeta;
+          const sigName = meta?.signature_move ?? "SPECIAL";
+          events.push(`${bName} lands the ${sigName} on ${aName} for ${p.damageToA} damage!`);
+        }
+      }
+
+      // --- Eliminations (batch if multiple) ---
+      if (eliminations.length > 0 && events.length < 2) {
+        // Find the most dramatic elimination (highest damage kill, prefer SPECIAL kills)
+        const killPairings = pairings.filter(
+          (p) => eliminations.includes(p.fighterA) || eliminations.includes(p.fighterB),
+        );
+
+        // Sort: SPECIAL kills first, then by damage
+        const ranked = killPairings
           .map((p) => {
-            const fighterAName = resolveFighterName(slot, p.fighterA, p.fighterAName) ?? "a fighter";
-            const fighterBName = resolveFighterName(slot, p.fighterB, p.fighterBName) ?? "a fighter";
-            if (eliminations.includes(p.fighterB)) {
-              const killerMeta = slot.fighters.find((f) => f.id === p.fighterA)?.robotMeta;
-              const victimMeta = slot.fighters.find((f) => f.id === p.fighterB)?.robotMeta;
-              const sigNote = killerMeta?.signature_move ? ` (sig: ${killerMeta.signature_move})` : "";
-              const defeatNote = victimMeta?.defeat_line ? ` "${victimMeta.defeat_line}"` : "";
-              return `${fighterAName}${sigNote} eliminated ${fighterBName} with ${p.moveA} for ${p.damageToB} damage.${defeatNote}`;
-            }
-            const killerMeta = slot.fighters.find((f) => f.id === p.fighterB)?.robotMeta;
-            const victimMeta = slot.fighters.find((f) => f.id === p.fighterA)?.robotMeta;
-            const sigNote = killerMeta?.signature_move ? ` (sig: ${killerMeta.signature_move})` : "";
-            const defeatNote = victimMeta?.defeat_line ? ` "${victimMeta.defeat_line}"` : "";
-            return `${fighterBName}${sigNote} eliminated ${fighterAName} with ${p.moveB} for ${p.damageToA} damage.${defeatNote}`;
+            const bDead = eliminations.includes(p.fighterB);
+            const killerId = bDead ? p.fighterA : p.fighterB;
+            const victimId = bDead ? p.fighterB : p.fighterA;
+            const move = bDead ? p.moveA : p.moveB;
+            const damage = bDead ? Number(p.damageToB ?? 0) : Number(p.damageToA ?? 0);
+            return { killerId, victimId, move, damage };
+          })
+          .sort((a, b) => {
+            // SPECIAL kills rank higher
+            const aSpec = a.move === "SPECIAL" ? 1 : 0;
+            const bSpec = b.move === "SPECIAL" ? 1 : 0;
+            if (aSpec !== bSpec) return bSpec - aSpec;
+            return b.damage - a.damage;
           });
 
-        const remaining =
-          typeof event.data?.remainingFighters === "number"
-            ? Math.max(0, Math.floor(event.data.remainingFighters))
-            : slot.fighters.filter((f) => !f.eliminatedOnTurn).length;
-        const context =
-          killerInfo.length > 0
-            ? `${killerInfo.join(" ")} ${remaining} fighters remain in slot ${slot.slotIndex + 1}.`
-            : `${eliminated} eliminated! ${remaining} fighters remain.`;
+        if (ranked.length > 0) {
+          const best = ranked[0];
+          const killerName = resolveFighterName(slot, best.killerId) ?? "a fighter";
+          const victimName = resolveFighterName(slot, best.victimId) ?? "a fighter";
+          const victimMeta = slot.fighters.find((f) => f.id === best.victimId)?.robotMeta;
+          const defeatNote = victimMeta?.defeat_line ? ` ${victimMeta.defeat_line}` : "";
 
-        return {
-          eventType: "elimination",
-          context,
-          allowedNames,
-          clipKey: clipKeyFor(slot, "turn-elimination", turnNumber),
-        };
+          // Only add sig note if the killing blow was actually SPECIAL
+          let sigNote = "";
+          if (best.move === "SPECIAL") {
+            const killerMeta = slot.fighters.find((f) => f.id === best.killerId)?.robotMeta;
+            sigNote = killerMeta?.signature_move ? ` with the ${killerMeta.signature_move}` : "";
+          }
+
+          // Check if this elimination was already covered by a SPECIAL event above
+          const alreadyCovered = events.some(
+            (e) => e.includes(killerName) && e.includes("SPECIAL"),
+          );
+
+          if (!alreadyCovered) {
+            events.push(
+              `${killerName}${sigNote} eliminates ${victimName} for ${best.damage} damage!${defeatNote}`,
+            );
+          }
+
+          // Batch remaining eliminations
+          if (eliminations.length > 1) {
+            const othersCount = eliminations.length - 1;
+            if (events.length < 2) {
+              events.push(
+                othersCount === 1
+                  ? `Another bot goes down! ${remaining} fighters remain.`
+                  : `${othersCount} more bots go down! Several fighters eliminated this turn! ${remaining} remain.`,
+              );
+            }
+          }
+        } else {
+          // No pairing data for eliminations — generic
+          const names = eliminations.map((id) => resolveFighterName(slot, id) ?? "a fighter");
+          if (eliminations.length === 1) {
+            events.push(`${names[0]} has been eliminated! ${remaining} fighters remain.`);
+          } else {
+            events.push(`${names[0]} and ${eliminations.length - 1} more bots go down! ${remaining} fighters remain.`);
+          }
+        }
       }
 
-      // Check for big hits
-      const bigHits = pairings.filter(
-        (p) => p.damageToA >= BIG_HIT_THRESHOLD || p.damageToB >= BIG_HIT_THRESHOLD,
-      );
-      if (bigHits.length > 0) {
-        const turnNumber = Number(turn?.turnNumber ?? slot.currentTurn);
-        const descriptions = bigHits.map((p) => {
-          const fighterAName = resolveFighterName(slot, p.fighterA, p.fighterAName) ?? "a fighter";
-          const fighterBName = resolveFighterName(slot, p.fighterB, p.fighterBName) ?? "a fighter";
-          if (p.damageToB >= BIG_HIT_THRESHOLD && p.damageToA >= BIG_HIT_THRESHOLD) {
-            return `${fighterAName} hit ${fighterBName} for ${p.damageToB} with ${p.moveA}, and ${fighterBName} hit back for ${p.damageToA} with ${p.moveB}`;
-          }
+      // --- Big hits (regular, NO signature move references) ---
+      if (events.length < 2) {
+        const bigHits = pairings
+          .filter(
+            (p) =>
+              (p.damageToA >= BIG_HIT_THRESHOLD || p.damageToB >= BIG_HIT_THRESHOLD) &&
+              p.moveA !== "SPECIAL" &&
+              p.moveB !== "SPECIAL",
+          )
+          .sort((a, b) => {
+            const aMax = Math.max(Number(a.damageToA ?? 0), Number(a.damageToB ?? 0));
+            const bMax = Math.max(Number(b.damageToA ?? 0), Number(b.damageToB ?? 0));
+            return bMax - aMax;
+          });
+        for (const p of bigHits) {
+          if (events.length >= 2) break;
+          const aName = resolveFighterName(slot, p.fighterA, p.fighterAName) ?? "a fighter";
+          const bName = resolveFighterName(slot, p.fighterB, p.fighterBName) ?? "a fighter";
           if (p.damageToB >= BIG_HIT_THRESHOLD) {
-            return `${fighterAName} hit ${fighterBName} for ${p.damageToB} damage with ${p.moveA}`;
+            events.push(`${aName} hits ${bName} for ${p.damageToB} damage with ${p.moveA}!`);
+          } else {
+            events.push(`${bName} hits ${aName} for ${p.damageToA} damage with ${p.moveB}!`);
           }
-          return `${fighterBName} hit ${fighterAName} for ${p.damageToA} damage with ${p.moveB}`;
-        });
-        return {
-          eventType: "big_hit",
-          context: `Turn ${turn?.turnNumber ?? slot.currentTurn}: ${descriptions.join(". ")}.`,
-          allowedNames,
-          clipKey: clipKeyFor(slot, "turn-big-hit", turnNumber),
-        };
+        }
       }
 
-      // Keep commentary alive every combat turn, even without eliminations/big-hit threshold.
-      if (pairings.length > 0) {
-        const turnNumber = Number(turn?.turnNumber ?? slot.currentTurn);
+      // --- Fallback: top exchange ---
+      if (events.length === 0 && pairings.length > 0) {
         const topExchange = [...pairings].sort((a, b) => {
           const aTotal = Number(a.damageToA ?? 0) + Number(a.damageToB ?? 0);
           const bTotal = Number(b.damageToA ?? 0) + Number(b.damageToB ?? 0);
           return bTotal - aTotal;
         })[0];
-        const fighterAName =
-          resolveFighterName(slot, topExchange.fighterA, topExchange.fighterAName) ?? "a fighter";
-        const fighterBName =
-          resolveFighterName(slot, topExchange.fighterB, topExchange.fighterBName) ?? "a fighter";
-        const remaining =
-          typeof event.data?.remainingFighters === "number"
-            ? Math.max(0, Math.floor(event.data.remainingFighters))
-            : slot.fighters.filter((f) => !f.eliminatedOnTurn).length;
-        const context = `Turn ${turn?.turnNumber ?? slot.currentTurn}: ${fighterAName} hit ${fighterBName} for ${Number(topExchange.damageToB ?? 0)} and ${fighterBName} answered for ${Number(topExchange.damageToA ?? 0)}. ${remaining} fighters remain.`;
-        return {
-          eventType: "big_hit",
-          context,
-          allowedNames,
-          clipKey: clipKeyFor(slot, "turn-exchange", turnNumber),
-        };
+        const aName = resolveFighterName(slot, topExchange.fighterA, topExchange.fighterAName) ?? "a fighter";
+        const bName = resolveFighterName(slot, topExchange.fighterB, topExchange.fighterBName) ?? "a fighter";
+        events.push(
+          `${aName} hit ${bName} for ${Number(topExchange.damageToB ?? 0)} and ${bName} answered for ${Number(topExchange.damageToA ?? 0)}.`,
+        );
       }
 
-      const turnNumber = Number(turn?.turnNumber ?? slot.currentTurn);
+      // --- Build final context (max 2 events) ---
+      const eventType = eliminations.length > 0 ? "elimination" : "big_hit";
+      const clipType = eliminations.length > 0 ? "turn-elimination" : specialHits.length > 0 ? "turn-special" : "turn-exchange";
+      const context =
+        events.length > 0
+          ? `Turn ${turnNumber}: ${events.slice(0, 2).join(" ")} ${remaining} fighters remain.`
+          : `Turn ${turnNumber} resolved. ${remaining} fighters remain.`;
+
       return {
-        eventType: "big_hit",
-        context: `Turn ${turn?.turnNumber ?? slot.currentTurn} resolved. ${slot.fighters.filter((f) => !f.eliminatedOnTurn).length} fighters remain.`,
+        eventType,
+        context,
         allowedNames,
-        clipKey: clipKeyFor(slot, "turn-resolved", turnNumber),
+        clipKey: clipKeyFor(slot, clipType, turnNumber),
       };
     }
 
