@@ -122,6 +122,11 @@ class RadioMixer {
     return this.ambientSource !== null;
   }
 
+  /** Drop all pending voice items without stopping current playback */
+  clearQueue() {
+    this.voiceQueue = [];
+  }
+
   // --- Init & Teardown ---
 
   async init() {
@@ -686,13 +691,49 @@ export default function CommentaryPlayer({
       const next = !prev;
       if (next) {
         setServiceError(null);
+        // Pre-seed tracking refs with current active rumbles so we don't
+        // replay intros/announcements for fights already in progress.
+        if (slots?.length) {
+          for (const slot of slots) {
+            const slotAny = slot as CommentarySlotData & { rumbleId?: string };
+            const rumbleId = typeof slotAny.rumbleId === "string" ? slotAny.rumbleId : "";
+            if (!rumbleId) continue;
+            if (slotAny.state === "betting" || slotAny.state === "combat" || slotAny.state === "payout") {
+              announcedBettingRumblesRef.current.add(rumbleId);
+              enqueuedIntrosRef.current.add(rumbleId);
+            }
+            if (slotAny.state === "combat" || slotAny.state === "payout") {
+              announcedCombatRumblesRef.current.add(rumbleId);
+            }
+            // Mark current turn as seen so we don't replay old turn narration
+            const turnCount = typeof (slotAny as any).currentTurn === "number" ? (slotAny as any).currentTurn : 0;
+            if (turnCount > 0) {
+              lastTurnSeenByRumbleRef.current.set(rumbleId, turnCount);
+            }
+          }
+        }
+        // Also mark all existing shared commentary clips as played
+        if (slots?.length) {
+          for (const slot of slots) {
+            const slotAny = slot as CommentarySlotData & { rumbleId?: string; commentary?: Array<{ clipKey: string; audioUrl: string | null }> };
+            const commentary = slotAny.commentary;
+            if (!Array.isArray(commentary)) continue;
+            for (const clip of commentary) {
+              if (clip.audioUrl && clip.clipKey) {
+                playedSharedClipsRef.current.add(`${slotAny.rumbleId ?? ""}:${clip.clipKey}`);
+              }
+            }
+          }
+        }
+        // Clear any stale queue items from a previous session
+        mixerRef.current?.clearQueue();
       }
       try {
         localStorage.setItem(STORAGE_KEY, String(next));
       } catch {}
       return next;
     });
-  }, []);
+  }, [slots]);
 
   // Shared commentary stream: pick up pre-generated clips from status API
   // These take priority over client-side generation — all viewers hear the same audio.

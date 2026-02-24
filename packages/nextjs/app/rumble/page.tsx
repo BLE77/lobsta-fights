@@ -21,6 +21,7 @@ import { useBetConfirmation } from "./hooks/useBetConfirmation";
 import type { CommentarySSEEvent } from "~~/lib/commentary";
 import { audioManager, soundForPairing } from "~~/lib/audio";
 import { BoltIcon, ChatBubbleLeftRightIcon, ListBulletIcon } from "@heroicons/react/24/outline";
+import AudioToggle from "~~/components/AudioToggle";
 
 // ---------------------------------------------------------------------------
 // Types for the status API response
@@ -1395,37 +1396,40 @@ export default function RumblePage() {
               </div>
 
               {/* Wallet */}
-              {walletConnected && publicKey ? (
-                <div className="flex items-center gap-2 bg-stone-900/80 border border-stone-700 rounded-sm px-2 py-1">
-                  {wallet?.adapter?.icon && (
-                    <img
-                      src={wallet.adapter.icon}
-                      alt={wallet.adapter.name}
-                      title={wallet.adapter.name}
-                      className="w-4 h-4"
-                    />
-                  )}
-                  <span className="font-mono text-[10px] text-stone-400">
-                    {solBalance !== null ? `${solBalance.toFixed(3)} SOL` : "..."}
-                  </span>
-                  <span className="font-mono text-[10px] text-amber-400 max-w-[80px] sm:max-w-none truncate">
-                    {publicKey.toBase58().slice(0, 4)}...{publicKey.toBase58().slice(-4)}
-                  </span>
+              <div className="flex items-center gap-2">
+                <AudioToggle />
+                {walletConnected && publicKey ? (
+                  <div className="flex items-center gap-2 bg-stone-900/80 border border-stone-700 rounded-sm px-2 py-1">
+                    {wallet?.adapter?.icon && (
+                      <img
+                        src={wallet.adapter.icon}
+                        alt={wallet.adapter.name}
+                        title={wallet.adapter.name}
+                        className="w-4 h-4"
+                      />
+                    )}
+                    <span className="font-mono text-[10px] text-stone-400">
+                      {solBalance !== null ? `${solBalance.toFixed(3)} SOL` : "..."}
+                    </span>
+                    <span className="font-mono text-[10px] text-amber-400 max-w-[80px] sm:max-w-none truncate">
+                      {publicKey.toBase58().slice(0, 4)}...{publicKey.toBase58().slice(-4)}
+                    </span>
+                    <button
+                      onClick={disconnectWallet}
+                      className="font-mono text-[10px] text-stone-600 hover:text-red-400 ml-1"
+                    >
+                      [X]
+                    </button>
+                  </div>
+                ) : (
                   <button
-                    onClick={disconnectWallet}
-                    className="font-mono text-[10px] text-stone-600 hover:text-red-400 ml-1"
+                    onClick={() => setWalletModalVisible(true)}
+                    className="px-3 py-1 bg-amber-600 hover:bg-amber-500 text-stone-950 font-mono text-xs font-bold rounded-sm transition-all active:scale-95 flex-shrink-0"
                   >
-                    [X]
+                    Connect Wallet
                   </button>
-                </div>
-              ) : (
-                <button
-                  onClick={() => setWalletModalVisible(true)}
-                  className="px-3 py-1 bg-amber-600 hover:bg-amber-500 text-stone-950 font-mono text-xs font-bold rounded-sm transition-all active:scale-95"
-                >
-                  Connect Wallet
-                </button>
-              )}
+                )}
+              </div>
             </div>
           </div>
         </header>
@@ -1641,7 +1645,7 @@ export default function RumblePage() {
         </div>
 
         {/* Footer */}
-        <footer className="border-t border-stone-800 bg-stone-950/80 backdrop-blur-sm">
+        <footer className="hidden lg:block border-t border-stone-800 bg-stone-950/80 backdrop-blur-sm">
           <div className="max-w-[1600px] mx-auto px-4 py-3 flex items-center justify-between">
             <p className="font-mono text-[10px] text-stone-600">
               // UNDERGROUND CLAW FIGHTS //

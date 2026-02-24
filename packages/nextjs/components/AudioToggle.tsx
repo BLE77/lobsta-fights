@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { SpeakerWaveIcon, SpeakerXMarkIcon } from "@heroicons/react/24/outline";
 
 export default function AudioToggle() {
   const [muted, setMuted] = useState(true);
@@ -28,10 +29,14 @@ export default function AudioToggle() {
           audioManager.play("round_start");
         }
       }}
-      className="fixed bottom-4 right-4 z-50 px-3 py-1.5 bg-stone-800/90 border border-stone-700 rounded-sm text-stone-400 hover:text-amber-500 hover:border-amber-700 transition-all font-mono text-xs backdrop-blur-sm"
+      className="p-1.5 bg-stone-800/90 border border-stone-700 rounded-sm text-stone-400 hover:text-amber-500 hover:border-amber-700 transition-all backdrop-blur-sm self-center"
       title={muted ? "Enable sound effects" : "Mute sound effects"}
     >
-      {muted ? "[SOUND OFF]" : "[SOUND ON]"}
+      {muted ? (
+        <SpeakerXMarkIcon className="w-4 h-4" />
+      ) : (
+        <SpeakerWaveIcon className="w-4 h-4" />
+      )}
     </button>
   );
 }

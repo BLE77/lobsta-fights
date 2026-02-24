@@ -549,7 +549,7 @@ export default function RumbleSlot({
                           const gridSpanClass = isLastOdd ? "xl:col-span-2 xl:w-[calc(50%-0.5rem)] xl:mx-auto" : "";
 
                           return (
-                            <div key={`pairing-${idx}`} className={`flex items-center justify-between bg-stone-900/40 p-4 rounded-sm border border-stone-800 relative z-10 w-full h-full ${gridSpanClass}`}>
+                            <div key={`pairing-${idx}`} className={`flex items-center justify-between bg-stone-900/40 p-2 sm:p-4 rounded-sm border border-stone-800 relative z-10 w-full h-full ${gridSpanClass}`}>
                               {/* Fighter A (Left aligned taking up 40%) */}
                               <div className={`flex flex-col items-center w-[40%] ${aClass}`}>
                                 <FighterHP
