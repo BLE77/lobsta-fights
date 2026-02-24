@@ -244,21 +244,7 @@ class RadioMixer {
   // --- Ambient Loop ---
 
   async startAmbient() {
-    if (!this.ctx || !this.ambientGain || this.ambientSource) return;
-
-    const buffer = await this.loadBuffer("/sounds/ambient-arena.mp3");
-    if (!buffer || !this.ctx || !this.ambientGain) return;
-
-    const source = this.ctx.createBufferSource();
-    source.buffer = buffer;
-    source.loop = true;
-    source.connect(this.ambientGain);
-    source.start();
-    this.ambientSource = source;
-
-    // Fade in over 800ms
-    this.ambientGain.gain.setValueAtTime(0, this.ctx.currentTime);
-    this.ambientGain.gain.linearRampToValueAtTime(AMBIENT_GAIN, this.ctx.currentTime + 0.8);
+    // Background ambient disabled
   }
 
   stopAmbient() {

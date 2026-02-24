@@ -449,40 +449,11 @@ class UCFAudioManager {
   }
 
   startAmbient(): void {
-    if (this._muted) return;
-
-    if (!this.context || !this.gainNode) {
-      this.init().then(() => this._startAmbientLoop());
-      return;
-    }
-
-    this._startAmbientLoop();
+    // Background ambient disabled
   }
 
   private _startAmbientLoop(): void {
-    if (!this.context || !this.gainNode || this._muted) return;
-    this.stopAmbient();
-
-    const startLoop = () => {
-      const buffer = this.buffers.get("ambient_arena");
-      if (!buffer) return;
-
-      this.ambientSource = this.context!.createBufferSource();
-      this.ambientSource.buffer = buffer;
-      this.ambientSource.loop = true;
-
-      this.ambientGainNode = this.context!.createGain();
-      this.ambientGainNode.gain.value = 0.25;
-
-      this.ambientSource.connect(this.ambientGainNode).connect(this.gainNode!);
-      this.ambientSource.start(0);
-    };
-
-    if (this.context.state === "suspended") {
-      this.context.resume().then(startLoop);
-    } else {
-      startLoop();
-    }
+    // Background ambient disabled
   }
 
   stopAmbient(): void {

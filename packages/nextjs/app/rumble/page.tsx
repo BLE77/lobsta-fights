@@ -20,6 +20,7 @@ import CommentaryPlayer from "./components/CommentaryPlayer";
 import { useBetConfirmation } from "./hooks/useBetConfirmation";
 import type { CommentarySSEEvent } from "~~/lib/commentary";
 import { audioManager, soundForPairing } from "~~/lib/audio";
+import { BoltIcon, ChatBubbleLeftRightIcon, ListBulletIcon } from "@heroicons/react/24/outline";
 
 // ---------------------------------------------------------------------------
 // Types for the status API response
@@ -349,6 +350,7 @@ export default function RumblePage() {
   const slotRumbleIdRef = useRef<Map<number, string>>(new Map());
   const [lastSseEvent, setLastSseEvent] = useState<CommentarySSEEvent | null>(null);
   const [sseEventSeq, setSseEventSeq] = useState(0);
+  const [mobileTab, setMobileTab] = useState<"arena" | "chat" | "queue">("arena");
   const LAST_RESULT_STORAGE_KEY = "ucf_last_result";
   const [lastCompletedBySlot, setLastCompletedBySlot] = useState<Map<number, LastCompletedSlotResult>>(() => {
     try {
@@ -942,7 +944,6 @@ export default function RumblePage() {
       if (prev.state !== "combat" && slot.state === "combat") {
         audioManager.init();
         audioManager.play("round_start");
-        audioManager.startAmbient();
       }
 
       // New turn(s) resolved — play hit sounds for the latest turn
@@ -1430,7 +1431,7 @@ export default function RumblePage() {
         </header>
 
         {/* Main Layout */}
-        <div className="max-w-[1600px] mx-auto px-4 py-6">
+        <div className="max-w-[1600px] mx-auto px-4 py-6 pb-24 lg:pb-6">
           {loading ? (
             <div className="flex gap-6 justify-center">
               <div className="flex-1 max-w-4xl">
@@ -1470,8 +1471,8 @@ export default function RumblePage() {
               return (
                 <div className="flex gap-6 justify-center">
                   {/* Left Sidebar: Chat */}
-                  <div className="w-72 flex-shrink-0 hidden xl:block">
-                    <div className="animate-fade-in-up h-full sticky top-6">
+                  <div className={`flex-shrink-0 w-full xl:w-72 ${mobileTab === 'chat' ? 'block lg:hidden xl:block' : 'hidden xl:block'}`}>
+                    <div className="animate-fade-in-up h-full lg:sticky lg:top-6">
                       <ChatPanel walletAddress={publicKey?.toBase58() ?? null} />
                     </div>
                   </div>
@@ -1483,7 +1484,7 @@ export default function RumblePage() {
                   )}
 
                   {/* Main content: Single featured rumble */}
-                  <div className="flex-1 max-w-4xl">
+                  <div className={`flex-1 max-w-4xl w-full ${mobileTab === 'arena' ? 'block lg:block' : 'hidden lg:block'}`}>
                     {/* Slot selector pills (only if multiple active) */}
                     {slots.filter((s) => s.state !== "idle").length > 1 && (
                       <div className="flex items-center gap-2 mb-3">
@@ -1576,7 +1577,7 @@ export default function RumblePage() {
                   </div>
 
                   {/* Sidebar: Queue + Ichor Shower */}
-                  <div className="w-64 flex-shrink-0 space-y-4 hidden lg:block">
+                  <div className={`flex-shrink-0 space-y-4 w-full lg:w-64 ${mobileTab === 'queue' ? 'block lg:block' : 'hidden lg:block'}`}>
                     {walletConnected && (
                       <div className="animate-fade-in-up">
                         <ClaimBalancePanel
@@ -1609,44 +1610,50 @@ export default function RumblePage() {
           )}
         </div>
 
-        {/* Mobile sidebar (below slots) */}
-        <div className="lg:hidden max-w-[1600px] mx-auto px-4 pb-6 space-y-4">
-          {status && (
-            <>
-              {walletConnected && (
-                <ClaimBalancePanel
-                  balance={claimBalance}
-                  loading={claimLoading}
-                  pending={claimPending}
-                  error={claimError}
-                  onClaim={handleClaimWinnings}
-                />
-              )}
-              <QueueSidebar
-                queue={status.queue}
-                totalLength={status.queueLength}
-                nextRumbleIn={status.nextRumbleIn}
-              />
-              <IchorShowerPool
-                currentPool={ichorShower.currentPool}
-              />
-              <ChatPanel walletAddress={publicKey?.toBase58() ?? null} />
-            </>
-          )}
-        </div>
-
-        {/* Footer */}
-        <footer className="border-t border-stone-800 bg-stone-950/80 backdrop-blur-sm">
-          <div className="max-w-[1600px] mx-auto px-4 py-3 flex items-center justify-between">
-            <p className="font-mono text-[10px] text-stone-600">
-              // UNDERGROUND CLAW FIGHTS //
-            </p>
-            <p className="font-mono text-[10px] text-stone-600">
-              // RUMBLE: BATTLE ROYALE MODE //
-            </p>
-          </div>
-        </footer>
       </div>
-    </main>
+
+      {/* Mobile Bottom Navigation */}
+      <div className="lg:hidden fixed bottom-0 left-0 right-0 z-50 bg-stone-950/95 border-t border-stone-800 backdrop-blur-md pb-safe">
+        <div className="flex justify-around items-center h-16 px-2">
+          <button
+            onClick={() => setMobileTab("arena")}
+            className={`flex flex-col items-center justify-center w-full h-full space-y-1 transition-colors ${mobileTab === "arena" ? "text-amber-400" : "text-stone-500 hover:text-stone-300"
+              }`}
+          >
+            <BoltIcon className="w-6 h-6" />
+            <span className="font-mono text-[10px] tracking-widest">ARENA</span>
+          </button>
+          <button
+            onClick={() => setMobileTab("chat")}
+            className={`flex flex-col items-center justify-center w-full h-full space-y-1 transition-colors ${mobileTab === "chat" ? "text-amber-400" : "text-stone-500 hover:text-stone-300"
+              }`}
+          >
+            <ChatBubbleLeftRightIcon className="w-6 h-6" />
+            <span className="font-mono text-[10px] tracking-widest">CHAT</span>
+          </button>
+          <button
+            onClick={() => setMobileTab("queue")}
+            className={`flex flex-col items-center justify-center w-full h-full space-y-1 transition-colors ${mobileTab === "queue" ? "text-amber-400" : "text-stone-500 hover:text-stone-300"
+              }`}
+          >
+            <ListBulletIcon className="w-6 h-6" />
+            <span className="font-mono text-[10px] tracking-widest">QUEUE</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Footer */}
+      <footer className="border-t border-stone-800 bg-stone-950/80 backdrop-blur-sm">
+        <div className="max-w-[1600px] mx-auto px-4 py-3 flex items-center justify-between">
+          <p className="font-mono text-[10px] text-stone-600">
+              // UNDERGROUND CLAW FIGHTS //
+          </p>
+          <p className="font-mono text-[10px] text-stone-600">
+              // RUMBLE: BATTLE ROYALE MODE //
+          </p>
+        </div>
+      </footer>
+    </div>
+    </main >
   );
 }
