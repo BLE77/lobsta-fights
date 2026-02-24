@@ -1610,50 +1610,48 @@ export default function RumblePage() {
           )}
         </div>
 
-      </div>
-
-      {/* Mobile Bottom Navigation */}
-      <div className="lg:hidden fixed bottom-0 left-0 right-0 z-50 bg-stone-950/95 border-t border-stone-800 backdrop-blur-md pb-safe">
-        <div className="flex justify-around items-center h-16 px-2">
-          <button
-            onClick={() => setMobileTab("arena")}
-            className={`flex flex-col items-center justify-center w-full h-full space-y-1 transition-colors ${mobileTab === "arena" ? "text-amber-400" : "text-stone-500 hover:text-stone-300"
-              }`}
-          >
-            <BoltIcon className="w-6 h-6" />
-            <span className="font-mono text-[10px] tracking-widest">ARENA</span>
-          </button>
-          <button
-            onClick={() => setMobileTab("chat")}
-            className={`flex flex-col items-center justify-center w-full h-full space-y-1 transition-colors ${mobileTab === "chat" ? "text-amber-400" : "text-stone-500 hover:text-stone-300"
-              }`}
-          >
-            <ChatBubbleLeftRightIcon className="w-6 h-6" />
-            <span className="font-mono text-[10px] tracking-widest">CHAT</span>
-          </button>
-          <button
-            onClick={() => setMobileTab("queue")}
-            className={`flex flex-col items-center justify-center w-full h-full space-y-1 transition-colors ${mobileTab === "queue" ? "text-amber-400" : "text-stone-500 hover:text-stone-300"
-              }`}
-          >
-            <ListBulletIcon className="w-6 h-6" />
-            <span className="font-mono text-[10px] tracking-widest">QUEUE</span>
-          </button>
+        {/* Mobile Bottom Navigation */}
+        <div className="lg:hidden fixed bottom-0 left-0 right-0 z-50 bg-stone-950/95 border-t border-stone-800 backdrop-blur-md pb-safe">
+          <div className="flex justify-around items-center h-16 px-2">
+            <button
+              onClick={() => setMobileTab("arena")}
+              className={`flex flex-col items-center justify-center w-full h-full space-y-1 transition-colors ${mobileTab === "arena" ? "text-amber-400" : "text-stone-500 hover:text-stone-300"
+                }`}
+            >
+              <BoltIcon className="w-6 h-6" />
+              <span className="font-mono text-[10px] tracking-widest">ARENA</span>
+            </button>
+            <button
+              onClick={() => setMobileTab("chat")}
+              className={`flex flex-col items-center justify-center w-full h-full space-y-1 transition-colors ${mobileTab === "chat" ? "text-amber-400" : "text-stone-500 hover:text-stone-300"
+                }`}
+            >
+              <ChatBubbleLeftRightIcon className="w-6 h-6" />
+              <span className="font-mono text-[10px] tracking-widest">CHAT</span>
+            </button>
+            <button
+              onClick={() => setMobileTab("queue")}
+              className={`flex flex-col items-center justify-center w-full h-full space-y-1 transition-colors ${mobileTab === "queue" ? "text-amber-400" : "text-stone-500 hover:text-stone-300"
+                }`}
+            >
+              <ListBulletIcon className="w-6 h-6" />
+              <span className="font-mono text-[10px] tracking-widest">QUEUE</span>
+            </button>
+          </div>
         </div>
-      </div>
 
-      {/* Footer */}
-      <footer className="border-t border-stone-800 bg-stone-950/80 backdrop-blur-sm">
-        <div className="max-w-[1600px] mx-auto px-4 py-3 flex items-center justify-between">
-          <p className="font-mono text-[10px] text-stone-600">
+        {/* Footer */}
+        <footer className="border-t border-stone-800 bg-stone-950/80 backdrop-blur-sm">
+          <div className="max-w-[1600px] mx-auto px-4 py-3 flex items-center justify-between">
+            <p className="font-mono text-[10px] text-stone-600">
               // UNDERGROUND CLAW FIGHTS //
-          </p>
-          <p className="font-mono text-[10px] text-stone-600">
+            </p>
+            <p className="font-mono text-[10px] text-stone-600">
               // RUMBLE: BATTLE ROYALE MODE //
-          </p>
-        </div>
-      </footer>
-    </div>
-    </main >
+            </p>
+          </div>
+        </footer>
+      </div>
+    </main>
   );
 }
