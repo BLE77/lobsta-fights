@@ -216,7 +216,7 @@ export default function MatchView() {
         <div
           className="fixed inset-0 z-0"
           style={{
-            backgroundImage: "url('/arena-bg.png')",
+            backgroundImage: "url('/arena-bg.webp')",
             backgroundSize: "cover",
             backgroundPosition: "center",
             backgroundAttachment: "fixed",
@@ -237,7 +237,7 @@ export default function MatchView() {
         <div
           className="fixed inset-0 z-0"
           style={{
-            backgroundImage: "url('/arena-bg.png')",
+            backgroundImage: "url('/arena-bg.webp')",
             backgroundSize: "cover",
             backgroundPosition: "center",
             backgroundAttachment: "fixed",
@@ -264,7 +264,7 @@ export default function MatchView() {
       <div
         className="fixed inset-0 z-0"
         style={{
-          backgroundImage: "url('/arena-bg.png')",
+          backgroundImage: "url('/arena-bg.webp')",
           backgroundSize: "cover",
           backgroundPosition: "center",
           backgroundAttachment: "fixed",

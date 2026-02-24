@@ -1339,7 +1339,7 @@ export default function RumblePage() {
       <div
         className="fixed inset-0 z-0 animate-breathe"
         style={{
-          backgroundImage: "url('/rumble-arena.png')",
+          backgroundImage: "url('/rumble-arena.webp')",
           backgroundSize: "cover",
           backgroundPosition: "center",
           backgroundAttachment: "fixed",
@@ -1520,7 +1520,7 @@ export default function RumblePage() {
                       <div className="relative rounded-sm overflow-hidden border border-stone-800 bg-stone-950/60">
                         <div className="relative">
                           <img
-                            src="/rumble-arena.png"
+                            src="/rumble-arena.webp"
                             alt="UCF Rumble Arena"
                             className="w-full h-auto max-h-[520px] object-contain mx-auto opacity-70"
                           />

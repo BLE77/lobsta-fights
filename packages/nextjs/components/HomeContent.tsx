@@ -80,7 +80,7 @@ export default function HomeContent() {
       <div
         className="fixed inset-0 z-0"
         style={{
-          backgroundImage: "url('/arena-bg.png')",
+          backgroundImage: "url('/arena-bg.webp')",
           backgroundSize: "cover",
           backgroundPosition: "center",
           backgroundAttachment: "fixed",
@@ -96,7 +96,7 @@ export default function HomeContent() {
           <div className="absolute -top-4 left-1/2 -translate-x-1/2 w-64 h-1 bg-gradient-to-r from-transparent via-amber-600 to-transparent opacity-50"></div>
 
           <img
-            src="/hero-robots.png"
+            src="/hero-robots.webp"
             alt="UCF - Underground Claw Fights"
             className="max-w-lg mx-auto mb-6 drop-shadow-2xl"
           />
