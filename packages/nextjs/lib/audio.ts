@@ -4,6 +4,7 @@ export type SoundEffect =
   | "hit_light" | "hit_heavy" | "hit_special"
   | "block" | "dodge" | "catch"
   | "ko_explosion" | "round_start" | "crowd_cheer"
+  | "bet_placed"
   | "ambient_arena" | "radio_static";
 
 // ---- Synthesized sound generators ----
@@ -345,6 +346,7 @@ const FILE_SOUNDS: Partial<Record<SoundEffect, string>> = {
   ko_explosion: "/sounds/ko-explosion.mp3",
   round_start: "/sounds/round-start.mp3",
   crowd_cheer: "/sounds/crowd-cheer.mp3",
+  bet_placed: "/sounds/bet-placed.mp3",
   ambient_arena: "/sounds/ambient-arena.mp3",
 };
 

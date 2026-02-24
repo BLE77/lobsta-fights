@@ -189,12 +189,6 @@ export default function FighterHP({
               </span>
             )}
           </span>
-          <span
-            className={`font-mono ${layout === "vertical" ? "text-[8px] sm:text-[10px]" : size === "large" ? "text-xs" : "text-[10px]"} ${layout === "vertical" ? "" : "ml-2"} flex-shrink-0 ${isEliminated ? "text-stone-600" : "text-stone-400"
-              }`}
-          >
-            {hp}/{maxHp}
-          </span>
         </div>
 
         {/* HP Bar Container */}
@@ -217,19 +211,27 @@ export default function FighterHP({
             }}
           />
           {/* Internal Text Overlay */}
-          <div className="absolute inset-0 flex items-center justify-between px-1 sm:px-1.5 pointer-events-none z-10">
-            {damageDealt !== undefined ? (
-              <span className="font-mono text-[7px] sm:text-[9px] text-stone-100 drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] font-bold">
-                DMG {damageDealt}
+          <div className="absolute inset-0 flex items-center justify-center px-1 sm:px-1.5 pointer-events-none z-10">
+            <span className={`font-mono text-[9px] sm:text-[10px] drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] font-bold ${isEliminated ? "text-stone-400" : "text-stone-100"}`}>
+              {hp}/{maxHp} HP
+            </span>
+          </div>
+        </div>
+
+        {(damageDealt !== undefined || (solDeployed !== undefined && solDeployed > 0)) && (
+          <div className={`flex items-center gap-2 mt-0.5 ${layout === "vertical" ? "justify-center pt-0.5" : ""}`}>
+            {damageDealt !== undefined && (
+              <span className="font-mono text-[8px] sm:text-[9px] text-stone-600">
+                DMG: {damageDealt}
               </span>
-            ) : <span />}
+            )}
             {solDeployed !== undefined && solDeployed > 0 && (
-              <span className="font-mono text-[7px] sm:text-[9px] text-amber-300 drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)] font-bold">
+              <span className="font-mono text-[8px] sm:text-[9px] text-amber-600">
                 {solDeployed.toFixed(2)} SOL
               </span>
             )}
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

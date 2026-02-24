@@ -227,7 +227,7 @@ interface OnchainTurnDecision {
 // Constants
 // ---------------------------------------------------------------------------
 
-const NUM_SLOTS = 3;
+const NUM_SLOTS = 1;
 
 function readIntervalMs(
   envName: string,

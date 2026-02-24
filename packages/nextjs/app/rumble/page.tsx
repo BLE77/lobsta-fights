@@ -1259,6 +1259,9 @@ export default function RumblePage() {
         return;
       }
 
+      // Play bet confirmation sound
+      audioManager.play("bet_placed");
+
       // Optimistic local update for clear "your stake" UI.
       // Set grace period so polling/fetchMyBets won't overwrite with stale server data
       optimisticBetUntilRef.current = Date.now() + 45_000;

@@ -30,6 +30,7 @@ const STORAGE_KEY = "ucf_commentary";
 const COOLDOWN_MS = 600;
 const BETTING_HYPE_INTERVAL_MS = 20_000;
 const BETTING_HYPE_CHECK_MS = 3_000;
+const BETTING_HYPE_STALE_MS = 6_000;
 const PLAYBACK_RATE = 1.12;
 
 const AMBIENT_GAIN = 0.10;
@@ -47,8 +48,14 @@ const SFX_MAP: Record<string, string> = {
   fighter_intro: "/sounds/round-start.mp3",
 };
 
-const ALL_SOUND_URLS = [
+const AMBIENT_PLAYLIST = [
   "/sounds/chrome-knuckles.mp3",
+  "/sounds/ucf-1.mp3",
+  "/sounds/ucf-2.mp3",
+];
+
+const ALL_SOUND_URLS = [
+  ...AMBIENT_PLAYLIST,
   "/sounds/round-start.mp3",
   "/sounds/ko-explosion.mp3",
   "/sounds/crowd-cheer.mp3",
@@ -82,6 +89,7 @@ class RadioMixer {
 
   private bufferCache = new Map<string, AudioBuffer>();
   private preloaded = false;
+  private playlistIndex = 0;
 
   private voiceQueue: Array<{
     eventType: CommentaryEventType;
@@ -92,6 +100,7 @@ class RadioMixer {
     audioUrl?: string;
     retries: number;
     priority: boolean;
+    enqueuedAt: number;
   }> = [];
   private processingVoice = false;
   private currentClipKey: string | null = null;
@@ -273,13 +282,29 @@ class RadioMixer {
 
   async startAmbient() {
     if (!this.ctx || !this.ambientGain || this.ambientSource) return;
-    const buffer = await this.loadBuffer("/sounds/chrome-knuckles.mp3");
+    // Shuffle start position so it's not always the same first track
+    this.playlistIndex = Math.floor(Math.random() * AMBIENT_PLAYLIST.length);
+    await this.playNextAmbientTrack();
+  }
+
+  private async playNextAmbientTrack() {
+    if (!this.ctx || !this.ambientGain) return;
+    const url = AMBIENT_PLAYLIST[this.playlistIndex % AMBIENT_PLAYLIST.length];
+    const buffer = await this.loadBuffer(url);
     if (!buffer || !this.ctx || !this.ambientGain) return;
     const source = this.ctx.createBufferSource();
     source.buffer = buffer;
-    source.loop = true;
+    source.loop = false;
     source.connect(this.ambientGain);
     this.ambientGain.gain.value = AMBIENT_GAIN;
+    source.onended = () => {
+      // Advance to next track when current one finishes
+      if (this.ambientSource === source) {
+        this.ambientSource = null;
+        this.playlistIndex++;
+        this.playNextAmbientTrack();
+      }
+    };
     source.start();
     this.ambientSource = source;
   }
@@ -360,7 +385,17 @@ class RadioMixer {
     if (this.voiceQueue.length >= 5) return;
 
     const priority = HIGH_PRIORITY_EVENTS.has(eventType);
-    const item = { eventType, context, voiceId, allowedNames, clipKey, audioUrl, retries: 0, priority };
+    const item = {
+      eventType,
+      context,
+      voiceId,
+      allowedNames,
+      clipKey,
+      audioUrl,
+      retries: 0,
+      priority,
+      enqueuedAt: Date.now(),
+    };
 
     if (priority) {
       // Insert before non-priority items
@@ -411,6 +446,14 @@ class RadioMixer {
       this.currentClipKey = null;
       this.unduckAmbient();
       this._onStateChange();
+      return;
+    }
+
+    if (
+      item.eventType === "betting_open" &&
+      Date.now() - item.enqueuedAt > BETTING_HYPE_STALE_MS
+    ) {
+      this.processNextVoice();
       return;
     }
 
@@ -1041,10 +1084,7 @@ export default function CommentaryPlayer({
       if (now - lastAt < BETTING_HYPE_INTERVAL_MS) return;
 
       const deadlineMs = target.bettingDeadline ? new Date(target.bettingDeadline).getTime() : now;
-      const secondsLeft = Math.max(0, Math.ceil((deadlineMs - now) / 1000));
-
-      // Don't announce "betting is still open" once the deadline has passed
-      if (secondsLeft <= 0) return;
+      if (deadlineMs <= now) return;
 
       const pool = Number(target.totalPool ?? 0);
 
@@ -1069,13 +1109,13 @@ export default function CommentaryPlayer({
 
       // Vary the hype template while keeping the same betting-open phrasing.
       const templates = [
-        `Betting is still OPEN for ${rumbleLabel}. ${secondsLeft} seconds until lock in slot ${target.slotIndex + 1}. Pool stands at ${pool.toFixed(2)} SOL.${leaderText}${loreBite} Place your bets now!`,
-        `Betting is still OPEN for ${rumbleLabel}. The clock is ticking at ${secondsLeft}s left. Total pool: ${pool.toFixed(2)} SOL.${leaderText}${loreBite}`,
-        `Betting is still OPEN for ${rumbleLabel}. ${secondsLeft} seconds left in the window and ${pool.toFixed(2)} SOL on the line.${leaderText}${loreBite}`,
-        `Betting is still OPEN for ${rumbleLabel}. Last call incoming: ${secondsLeft}s to deploy in slot ${target.slotIndex + 1}. Pool at ${pool.toFixed(2)} SOL.${leaderText}${loreBite}`,
-        `Betting is still OPEN for ${rumbleLabel}. Combat is getting close at ${secondsLeft}s out. ${pool.toFixed(2)} SOL in the pool.${leaderText}${loreBite}`,
+        `Betting is still OPEN for ${rumbleLabel}. Slot ${target.slotIndex + 1} is live and the pool stands at ${pool.toFixed(2)} SOL.${leaderText}${loreBite} Place your bets now!`,
+        `Betting is still OPEN for ${rumbleLabel}. Window is active in slot ${target.slotIndex + 1}. Total pool: ${pool.toFixed(2)} SOL.${leaderText}${loreBite}`,
+        `Betting is still OPEN for ${rumbleLabel}. The pool is ${pool.toFixed(2)} SOL and fighters are ready.${leaderText}${loreBite}`,
+        `Betting is still OPEN for ${rumbleLabel}. Last call energy in slot ${target.slotIndex + 1}, pool at ${pool.toFixed(2)} SOL.${leaderText}${loreBite}`,
+        `Betting is still OPEN for ${rumbleLabel}. Combat is approaching and ${pool.toFixed(2)} SOL is on the line.${leaderText}${loreBite}`,
       ];
-      const templateIndex = Math.floor(secondsLeft / 20) % templates.length;
+      const templateIndex = Math.floor(now / BETTING_HYPE_INTERVAL_MS) % templates.length;
       const context = templates[templateIndex];
 
       const allowedNames = target.fighters
@@ -1086,7 +1126,7 @@ export default function CommentaryPlayer({
         eventType: "betting_open",
         context,
         allowedNames,
-        clipKey: `hype:${rumbleId}:${Math.floor(secondsLeft / 20)}`,
+        clipKey: `hype:${rumbleId}:${Math.floor(now / BETTING_HYPE_INTERVAL_MS)}`,
       });
       lastBettingHypeAtByRumbleRef.current.set(rumbleId, now);
     }, BETTING_HYPE_CHECK_MS);

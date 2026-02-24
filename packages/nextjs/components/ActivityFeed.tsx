@@ -115,9 +115,11 @@ function FeedItemCard({ item }: { item: FeedItem }) {
           className="w-7 h-7 rounded-sm object-cover border border-stone-700 shrink-0"
         />
       ) : (
-        <div className="w-7 h-7 rounded-sm bg-stone-800 flex items-center justify-center border border-stone-700 shrink-0">
-          <span className="text-stone-600 text-[8px] font-mono">UCF</span>
-        </div>
+        <img
+          src="/rumble-arena.webp"
+          alt="Arena"
+          className="w-7 h-7 rounded-sm object-cover border border-stone-700 shrink-0 opacity-70"
+        />
       )}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
