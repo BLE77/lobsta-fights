@@ -846,7 +846,14 @@ export default function CommentaryPlayer({
 
       if (slotAny.state === "combat" && !announcedCombatRumblesRef.current.has(rumbleId)) {
         // Flush stale betting lines — combat is starting, "betting still open" is irrelevant
-        mixerRef.current?.dropByEventType("betting_open");
+        const mixer = mixerRef.current;
+        if (mixer) {
+          if (typeof mixer.dropByEventType === "function") {
+            mixer.dropByEventType("betting_open");
+          } else {
+            mixer.clearQueue();
+          }
+        }
         const candidate = evaluateEvent({ type: "combat_started", slotIndex: slotAny.slotIndex, data: {} }, slotAny);
         enqueueCandidate(candidate);
         announcedCombatRumblesRef.current.add(rumbleId);
