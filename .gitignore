@@ -71,3 +71,7 @@ packages/solana/scripts/fighter-mappings.json
 
 .vercel
 .env*.local
+
+# Sensitive docs
+docs/CODEBASE_MAP.md
+docs/LAUNCH_CHECKLIST.md

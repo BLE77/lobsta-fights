@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { NextResponse } from "next/server";
 import { freshSupabase } from "../../../lib/supabase";
+import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -80,6 +81,10 @@ function computeTiming(match: any): MatchTiming {
 }
 
 export async function GET(request: Request) {
+  const rlKey = getRateLimitKey(request);
+  const rl = checkRateLimit("PUBLIC_READ", rlKey);
+  if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+
   const supabase = freshSupabase();
   const { searchParams } = new URL(request.url);
   const status = searchParams.get("status") || "all"; // active, finished, all

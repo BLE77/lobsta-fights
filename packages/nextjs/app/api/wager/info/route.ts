@@ -88,9 +88,10 @@ export async function GET(req: NextRequest) {
           },
     });
   } catch (err: any) {
+    console.error("[Wager Info] Error:", err);
     return NextResponse.json({
       enabled: true,
-      error: err.message,
+      error: "Failed to fetch wager info",
       chain: getChainInfo(),
       contract: getContractAddress(),
       fighter: {

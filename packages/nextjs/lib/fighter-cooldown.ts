@@ -1,4 +1,5 @@
 import { freshSupabase } from "./supabase";
+import { isValidUUID } from "./request-auth";
 
 /**
  * Fighter cooldown: 45 minutes between fights.
@@ -12,7 +13,12 @@ export async function checkFighterCooldown(fighterId: string): Promise<{
   on_cooldown: boolean;
   cooldown_ends?: string;
   minutes_remaining?: number;
+  reason?: string;
 }> {
+  if (!isValidUUID(fighterId)) {
+    return { on_cooldown: false, reason: "invalid_id" };
+  }
+
   const supabase = freshSupabase();
 
   const { data: lastMatch, error } = await supabase

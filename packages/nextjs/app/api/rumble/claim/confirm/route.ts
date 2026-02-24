@@ -50,6 +50,9 @@ export async function POST(request: Request) {
     if (requestedRumbleIds.length === 0) {
       return NextResponse.json({ error: "Missing rumble_id or rumble_ids" }, { status: 400 });
     }
+    if (requestedRumbleIds.length > 20) {
+      return NextResponse.json({ error: "Maximum 20 rumble claims per batch" }, { status: 400 });
+    }
     if (!txSignature || typeof txSignature !== "string") {
       return NextResponse.json({ error: "Missing tx_signature" }, { status: 400 });
     }

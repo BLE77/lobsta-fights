@@ -100,8 +100,9 @@ export async function POST(req: Request) {
       salt_hex: Buffer.from(salt32).toString("hex"),
     });
   } catch (err: any) {
+    console.error("[Reveal Prepare] Error:", err);
     return NextResponse.json(
-      { error: err?.message ?? "Failed to prepare reveal tx" },
+      { error: "Failed to prepare reveal transaction" },
       { status: 500 },
     );
   }

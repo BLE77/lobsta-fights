@@ -77,6 +77,10 @@ export async function POST(request: Request) {
     const walletAddress = body.wallet_address ?? body.walletAddress;
     const rawBatch = Array.isArray(body.bets) ? body.bets : null;
 
+    if (rawBatch && rawBatch.length > 16) {
+      return NextResponse.json({ error: "Maximum 16 bets per batch" }, { status: 400 });
+    }
+
     const parsedSlotIndex = parseInt(String(slotIndex), 10);
     if (isNaN(parsedSlotIndex) || parsedSlotIndex < 0 || parsedSlotIndex > 2) {
       return NextResponse.json({ error: "slot_index must be 0, 1, or 2" }, { status: 400 });

@@ -27,7 +27,10 @@ import * as path from "path";
 // Config
 // ---------------------------------------------------------------------------
 
-const RPC_URL = "https://devnet.helius-rpc.com/?api-key=REDACTED_KEY";
+if (!process.env.HELIUS_API_KEY) {
+  throw new Error("HELIUS_API_KEY environment variable is required");
+}
+const RPC_URL = `https://devnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`;
 const FIGHTER_REGISTRY_ID = new PublicKey("2hA6Jvj1yjP2Uj3qrJcsBeYA2R9xPM95mDKw1ncKVExa");
 
 const FIGHTERS = [

@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { NextResponse } from "next/server";
 import { freshSupabase } from "../../../lib/supabase";
+import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +12,11 @@ interface ActivityEvent {
   data: Record<string, any>;
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const rlKey = getRateLimitKey(request);
+  const rl = checkRateLimit("PUBLIC_READ", rlKey);
+  if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+
   const supabase = freshSupabase();
 
   const [matchesResult, fightersResult, lobbyResult] = await Promise.all([

@@ -486,6 +486,32 @@ export async function POST(request: Request) {
       || `bot-${name?.toLowerCase().replace(/[^a-z0-9]/g, "-")}-${Date.now()}`;
     const effectiveWebhookUrl = webhookUrl || "https://polling-mode.local";
 
+    // Validate fighter name format
+    if (name) {
+      if (name.length > 32) {
+        return NextResponse.json(
+          { error: "Fighter name must be 32 characters or fewer." },
+          { status: 400 },
+        );
+      }
+      if (!/^[A-Za-z0-9\-_ .]+$/.test(name)) {
+        return NextResponse.json(
+          { error: "Fighter name may only contain letters, numbers, hyphens, underscores, spaces, and periods." },
+          { status: 400 },
+        );
+      }
+    }
+
+    // Strip HTML tags from all text fields to prevent XSS
+    const stripHtml = (val: unknown): string | undefined =>
+      typeof val === "string" ? val.replace(/<[^>]*>/g, "") : undefined;
+    const sanitizedDescription = stripHtml(description);
+    const sanitizedChassisDescription = typeof chassisDescription === "string" ? chassisDescription.replace(/<[^>]*>/g, "") : chassisDescription;
+    const sanitizedFistsDescription = typeof fistsDescription === "string" ? fistsDescription.replace(/<[^>]*>/g, "") : fistsDescription;
+    const sanitizedColorScheme = stripHtml(colorScheme);
+    const sanitizedDistinguishingFeatures = stripHtml(distinguishingFeatures);
+    const sanitizedName = typeof name === "string" ? name.replace(/<[^>]*>/g, "") : name;
+
     // Validate webhook URL to prevent SSRF (block private/internal addresses)
     if (webhookUrl) {
       const webhookValidationError = await validateWebhookUrl(webhookUrl);
@@ -497,7 +523,7 @@ export async function POST(request: Request) {
       }
     }
 
-    // Validate required fields
+    // Validate fighter name
     if (!name) {
       return NextResponse.json(
         {
@@ -674,16 +700,16 @@ export async function POST(request: Request) {
     // Build robot metadata object (BARE KNUCKLE - no weapons!)
     const robotMetadata = {
       robot_type: robotType,
-      chassis_description: chassisDescription,
-      fists_description: fistsDescription,
+      chassis_description: sanitizedChassisDescription,
+      fists_description: sanitizedFistsDescription,
       fighting_style: fightingStyle || "balanced",
       personality: personality || null,
       signature_move: signatureMove || "ULTIMATE ATTACK",
       victory_line: victoryLine || "Another victory for the machine!",
       defeat_line: defeatLine || "Systems... failing...",
       taunt_lines: tauntLines || [],
-      color_scheme: colorScheme || null,
-      distinguishing_features: distinguishingFeatures || null,
+      color_scheme: sanitizedColorScheme || null,
+      distinguishing_features: sanitizedDistinguishingFeatures || null,
     };
 
     // Check if fighter already exists
@@ -712,8 +738,8 @@ export async function POST(request: Request) {
       .from("ucf_fighters")
       .insert({
         wallet_address: effectiveWalletAddress,
-        name,
-        description,
+        name: sanitizedName,
+        description: sanitizedDescription,
         special_move: signatureMove,
         webhook_url: effectiveWebhookUrl,
         image_url: imageUrl,

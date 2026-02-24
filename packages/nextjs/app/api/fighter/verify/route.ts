@@ -2,6 +2,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 
 // Verify that a fighter endpoint is automated (not human)
 // Sends a challenge and expects response within 5 seconds
@@ -91,6 +92,10 @@ async function validateEndpointUrl(endpoint: string): Promise<string | null> {
 }
 
 export async function POST(req: NextRequest) {
+  const rlKey = getRateLimitKey(req);
+  const rl = checkRateLimit("PUBLIC_WRITE", rlKey);
+  if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+
   try {
     const { endpoint, walletAddress } = await req.json();
 

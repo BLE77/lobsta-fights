@@ -140,6 +140,10 @@ export async function POST(request: Request) {
     const txKind = body.tx_kind || body.txKind;
     const rawBatch = Array.isArray(body.bets) ? body.bets : null;
 
+    if (rawBatch && rawBatch.length > 16) {
+      return NextResponse.json({ error: "Maximum 16 bets per batch" }, { status: 400 });
+    }
+
     // Validate required fields
     if (slotIndex === undefined || slotIndex === null) {
       return NextResponse.json(

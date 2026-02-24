@@ -11,6 +11,7 @@ const scriptSrc = [
 ].join(" ");
 
 const nextConfig = {
+  productionBrowserSourceMaps: false,
   reactStrictMode: true,
   images: {
     unoptimized: true,

@@ -201,8 +201,9 @@ export async function POST(request: Request) {
       timestamp: new Date().toISOString(),
     });
   } catch (err: any) {
+    console.error("[Admin Onchain] Error:", err);
     return jsonResponse(
-      { error: err?.message ?? "Failed to run on-chain admin action" },
+      { error: "Failed to run on-chain admin action" },
       500,
     );
   }

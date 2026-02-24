@@ -1,10 +1,15 @@
 // @ts-nocheck
 import { NextResponse } from "next/server";
 import { supabase, UCFLeaderboardEntry } from "../../../lib/supabase";
+import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
+  const rlKey = getRateLimitKey(request);
+  const rl = checkRateLimit("PUBLIC_READ", rlKey);
+  if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+
   const { searchParams } = new URL(request.url);
   const limit = Math.min(Math.max(1, parseInt(searchParams.get("limit") || "50") || 50), 100);
   const offset = Math.max(0, parseInt(searchParams.get("offset") || "0") || 0);

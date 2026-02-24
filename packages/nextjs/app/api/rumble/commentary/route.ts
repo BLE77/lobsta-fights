@@ -234,9 +234,9 @@ const VALID_EVENT_TYPES = new Set<CommentaryEventType>([
 // ---------------------------------------------------------------------------
 
 export async function POST(request: Request) {
-  // Commentary can fire repeatedly during betting/combat; use higher tier.
+  // No auth on this endpoint — use PUBLIC_WRITE tier (10/min).
   const rlKey = getRateLimitKey(request);
-  const rl = checkRateLimit("AUTHENTICATED", rlKey);
+  const rl = checkRateLimit("PUBLIC_WRITE", rlKey);
   if (!rl.allowed) {
     return rateLimitResponse(rl.retryAfterMs);
   }
@@ -366,10 +366,10 @@ export async function POST(request: Request) {
     const clip = await task;
     return clipResponse(clip, "MISS");
   } catch (err: any) {
-    console.error("[commentary] Error:", err);
+    console.error("[Commentary] Error:", err);
     return NextResponse.json(
       {
-        error: err?.message ?? "Commentary provider unavailable.",
+        error: "Commentary generation failed",
         code: "COMMENTARY_PROVIDER_ERROR",
       },
       { status: 503 },
