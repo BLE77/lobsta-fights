@@ -99,6 +99,9 @@ class RadioMixer {
   private _onStateChange: () => void;
   private _onUnavailable: (msg: string) => void;
   private _onPlaybackBlocked: () => void;
+  private _globalMuteHandler: ((e: Event) => void) | null = null;
+  private _globalMuted = false;
+  private _savedVolume = 0.8;
 
   constructor(
     onStateChange: () => void,
@@ -108,6 +111,23 @@ class RadioMixer {
     this._onStateChange = onStateChange;
     this._onUnavailable = onUnavailable;
     this._onPlaybackBlocked = onPlaybackBlocked;
+
+    // Listen for global mute from AudioToggle
+    this._globalMuteHandler = (e: Event) => {
+      const muted = (e as CustomEvent).detail?.muted;
+      this._globalMuted = !!muted;
+      if (this.masterGain) {
+        if (muted) {
+          this._savedVolume = this.masterGain.gain.value;
+          this.masterGain.gain.value = 0;
+        } else {
+          this.masterGain.gain.value = this._savedVolume;
+        }
+      }
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("ucf-global-mute", this._globalMuteHandler);
+    }
   }
 
   get isPlaying() {
@@ -170,6 +190,9 @@ class RadioMixer {
   }
 
   destroy() {
+    if (this._globalMuteHandler && typeof window !== "undefined") {
+      window.removeEventListener("ucf-global-mute", this._globalMuteHandler);
+    }
     this.stopAmbient();
     this.voiceQueue = [];
     this.processingVoice = false;
@@ -367,7 +390,8 @@ class RadioMixer {
   }
 
   setVolume(vol: number) {
-    if (this.masterGain) {
+    this._savedVolume = vol;
+    if (this.masterGain && !this._globalMuted) {
       this.masterGain.gain.value = vol;
     }
   }
