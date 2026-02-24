@@ -27,7 +27,7 @@ interface CommentaryPlayerProps {
 // ---------------------------------------------------------------------------
 
 const STORAGE_KEY = "ucf_commentary";
-const COOLDOWN_MS = 2_000;
+const COOLDOWN_MS = 600;
 const BETTING_HYPE_INTERVAL_MS = 20_000;
 const BETTING_HYPE_CHECK_MS = 3_000;
 const PLAYBACK_RATE = 1.12;
@@ -302,6 +302,13 @@ class RadioMixer {
     this.voiceQueue = this.voiceQueue.filter(
       (item) => item.eventType !== "big_hit" && item.eventType !== "elimination",
     );
+    this._onStateChange();
+  }
+
+  /** Drop queued items matching any of the given event types */
+  dropByEventType(...types: CommentaryEventType[]) {
+    const typeSet = new Set(types);
+    this.voiceQueue = this.voiceQueue.filter((item) => !typeSet.has(item.eventType));
     this._onStateChange();
   }
 
@@ -775,21 +782,13 @@ export default function CommentaryPlayer({
     }
   }, [enabled, slots, getVoiceId]);
 
-  // Process incoming SSE events (fallback when no pre-generated audio available)
+  // Process incoming SSE events — generate client-side commentary for turns
   useEffect(() => {
     if (!enabled || !lastEvent || eventSeq === prevSeq.current) return;
     prevSeq.current = eventSeq;
 
     try {
       const slot = slots?.find((s) => s.slotIndex === lastEvent.slotIndex);
-
-      // Skip client-side generation if shared commentary already covers this event
-      const slotAnyCheck = slot as (CommentarySlotData & { commentary?: Array<{ clipKey: string; audioUrl: string | null }> }) | undefined;
-      if (slotAnyCheck?.commentary?.some((c) => c.audioUrl)) {
-        // Shared stream is active for this rumble — skip client-side generation
-        // (the shared commentary effect above handles playback)
-        return;
-      }
 
       if (lastEvent.type === "turn_resolved") {
         const slotAny = slot as (CommentarySlotData & { rumbleId?: string }) | undefined;
@@ -846,6 +845,8 @@ export default function CommentaryPlayer({
       }
 
       if (slotAny.state === "combat" && !announcedCombatRumblesRef.current.has(rumbleId)) {
+        // Flush stale betting lines — combat is starting, "betting still open" is irrelevant
+        mixerRef.current?.dropByEventType("betting_open");
         const candidate = evaluateEvent({ type: "combat_started", slotIndex: slotAny.slotIndex, data: {} }, slotAny);
         enqueueCandidate(candidate);
         announcedCombatRumblesRef.current.add(rumbleId);
