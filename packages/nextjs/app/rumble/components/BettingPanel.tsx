@@ -353,13 +353,6 @@ export default function BettingPanel({
                       step="0.01"
                       className="flex-1 min-w-0 bg-stone-950 border border-stone-800 rounded-sm px-2 py-1 text-stone-200 font-mono text-xs focus:outline-none focus:border-amber-600 transition-colors"
                     />
-                    <button
-                      onClick={() => handleDeploySingle(f.fighterId)}
-                      disabled={!canSubmitBets || !onPlaceBet || isDeploying}
-                      className="px-3 py-1 bg-amber-600 hover:bg-amber-500 disabled:bg-stone-800 disabled:text-stone-600 disabled:border-stone-700 text-stone-950 font-mono text-[10px] font-bold uppercase transition-all rounded-sm border border-amber-500"
-                    >
-                      {isDeploying ? "..." : "BET"}
-                    </button>
                   </div>
                 </div>
               </div>
@@ -369,7 +362,7 @@ export default function BettingPanel({
       </div>
 
       {/* Deploy All button when multiple selected */}
-      {deployableCount > 1 && (
+      {deployableCount >= 1 && (
         <button
           onClick={handleDeployAll}
           disabled={!canSubmitBets || (!onPlaceBet && !onPlaceBatchBet) || deploying.size > 0}
@@ -377,7 +370,9 @@ export default function BettingPanel({
         >
           {deploying.size > 0
             ? "DEPLOYING..."
-            : `DEPLOY ALL (${deployableCount} fighters · ${totalBetAmount.toFixed(2)} SOL)`}
+            : deployableCount === 1
+              ? `DEPLOY (${totalBetAmount.toFixed(2)} SOL)`
+              : `DEPLOY (${deployableCount} fighters · ${totalBetAmount.toFixed(2)} SOL)`}
         </button>
       )}
 
