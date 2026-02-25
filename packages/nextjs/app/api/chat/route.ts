@@ -4,6 +4,7 @@ import { PublicKey } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { getConnection } from "~~/lib/solana-connection";
 import { requireJsonContentType, sanitizeErrorResponse } from "~~/lib/api-middleware";
+import { isAuthorizedAdminRequest } from "~~/lib/request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -216,8 +217,7 @@ export async function DELETE(request: Request) {
 
     // Only admin wallets or the admin secret header can delete
     const isAdminWallet = CHAT_ADMIN_WALLETS.has(wallet_address);
-    const adminSecret = request.headers.get("x-admin-secret") ?? request.headers.get("x-admin-key");
-    const isAdminHeader = adminSecret && process.env.ADMIN_SECRET && adminSecret === process.env.ADMIN_SECRET;
+    const isAdminHeader = isAuthorizedAdminRequest(request.headers);
 
     if (!isAdminWallet && !isAdminHeader) {
       return NextResponse.json({ error: "Not authorized to delete messages" }, { status: 403 });
