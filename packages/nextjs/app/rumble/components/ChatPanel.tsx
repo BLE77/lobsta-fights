@@ -13,6 +13,7 @@ interface ChatMessage {
 
 interface ChatPanelProps {
   walletAddress: string | null;
+  isAdmin?: boolean;
 }
 
 function timeAgo(dateStr: string): string {
@@ -25,11 +26,12 @@ function timeAgo(dateStr: string): string {
   return `${hours}h`;
 }
 
-export default function ChatPanel({ walletAddress }: ChatPanelProps) {
+export default function ChatPanel({ walletAddress, isAdmin }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const shouldAutoScroll = useRef(true);
 
@@ -77,14 +79,22 @@ export default function ChatPanel({ walletAddress }: ChatPanelProps) {
         (payload) => {
           const newMsg = payload.new as ChatMessage;
           setMessages((prev) => {
-            // Deduplicate by id
             if (prev.some((m) => m.id === newMsg.id)) return prev;
-            // Keep last 50
             const updated = [...prev, newMsg];
             if (updated.length > 50) updated.shift();
             return updated;
           });
           setTimeout(scrollToBottom, 50);
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "DELETE", schema: "public", table: "chat_messages" },
+        (payload) => {
+          const deleted = payload.old as { id?: string };
+          if (deleted?.id) {
+            setMessages((prev) => prev.filter((m) => m.id !== deleted.id));
+          }
         },
       )
       .subscribe();
@@ -98,6 +108,25 @@ export default function ChatPanel({ walletAddress }: ChatPanelProps) {
   useEffect(() => {
     scrollToBottom();
   }, [messages, scrollToBottom]);
+
+  const deleteMessage = async (messageId: string) => {
+    if (!walletAddress || !isAdmin || deleting) return;
+    setDeleting(messageId);
+    try {
+      const res = await fetch("/api/chat", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message_id: messageId, wallet_address: walletAddress }),
+      });
+      if (res.ok) {
+        setMessages((prev) => prev.filter((m) => m.id !== messageId));
+      }
+    } catch {
+      // silent
+    } finally {
+      setDeleting(null);
+    }
+  };
 
   const sendMessage = async () => {
     if (!walletAddress || !input.trim() || sending) return;
@@ -149,9 +178,12 @@ export default function ChatPanel({ walletAddress }: ChatPanelProps) {
         <h3 className="font-mono text-sm text-amber-500 uppercase font-bold">
           Live Chat
         </h3>
-        <span className="font-mono text-[10px] text-stone-600">
-          {messages.length} msgs
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-[9px] text-stone-500 border border-stone-700 px-1.5 py-0.5 rounded-sm">SLOW</span>
+          <span className="font-mono text-[10px] text-stone-600">
+            {messages.length} msgs
+          </span>
+        </div>
       </div>
 
       {/* Messages */}
@@ -171,7 +203,7 @@ export default function ChatPanel({ walletAddress }: ChatPanelProps) {
           messages.map((msg) => {
             const isMe = walletAddress && msg.user_id === walletAddress;
             return (
-              <div key={msg.id} className="group">
+              <div key={msg.id} className="group relative">
                 <div className="flex items-baseline gap-1.5">
                   <span
                     className={`font-mono text-[11px] font-bold flex-shrink-0 ${isMe ? "text-amber-400" : "text-stone-400"
@@ -182,6 +214,15 @@ export default function ChatPanel({ walletAddress }: ChatPanelProps) {
                   <span className="font-mono text-[10px] text-stone-600 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
                     {timeAgo(msg.created_at)}
                   </span>
+                  {isAdmin && (
+                    <button
+                      onClick={() => deleteMessage(msg.id)}
+                      disabled={deleting === msg.id}
+                      className="font-mono text-[9px] text-red-500/60 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity ml-auto flex-shrink-0"
+                    >
+                      {deleting === msg.id ? "..." : "X"}
+                    </button>
+                  )}
                 </div>
                 <p className="font-mono text-xs text-stone-300 break-words leading-relaxed pl-0">
                   {msg.message}

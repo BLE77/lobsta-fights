@@ -1480,7 +1480,16 @@ export default function RumblePage() {
                   {/* Left Sidebar: Chat */}
                   <div className={`flex-shrink-0 w-full xl:w-72 ${mobileTab === 'chat' ? 'block lg:hidden xl:block' : 'hidden xl:block'}`}>
                     <div className="animate-fade-in-up h-full lg:sticky lg:top-6">
-                      <ChatPanel walletAddress={publicKey?.toBase58() ?? null} />
+                      <ChatPanel
+                        walletAddress={publicKey?.toBase58() ?? null}
+                        isAdmin={
+                          !!publicKey &&
+                          (process.env.NEXT_PUBLIC_CHAT_ADMIN_WALLETS ?? "")
+                            .split(",")
+                            .map((w) => w.trim())
+                            .includes(publicKey.toBase58())
+                        }
+                      />
                     </div>
                   </div>
 

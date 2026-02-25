@@ -7,9 +7,14 @@ import { requireJsonContentType, sanitizeErrorResponse } from "~~/lib/api-middle
 
 export const dynamic = "force-dynamic";
 
-// Rate limit: simple in-memory per-wallet cooldown (1 message per 2 seconds)
+// Rate limit: 1 message per 60 seconds per wallet (slow mode)
 const lastMessageTime = new Map<string, number>();
-const COOLDOWN_MS = 2000;
+const COOLDOWN_MS = 60_000;
+
+// Admin wallets that can delete messages (comma-separated env var)
+const CHAT_ADMIN_WALLETS = new Set(
+  (process.env.CHAT_ADMIN_WALLETS ?? "").split(",").map(w => w.trim()).filter(Boolean)
+);
 
 // Cache chat eligibility per wallet for 60s to avoid hammering DB + RPC
 const eligibilityCache = new Map<string, { eligible: boolean; expiresAt: number }>();
@@ -144,7 +149,8 @@ export async function POST(request: Request) {
     const now = Date.now();
     const last = lastMessageTime.get(wallet_address) ?? 0;
     if (now - last < COOLDOWN_MS) {
-      return NextResponse.json({ error: "Slow down! Wait a moment before sending another message." }, { status: 429 });
+      const remaining = Math.ceil((COOLDOWN_MS - (now - last)) / 1000);
+      return NextResponse.json({ error: `Slow mode: wait ${remaining}s before sending another message.` }, { status: 429 });
     }
 
     // Eligibility check: must have bet or hold the token
@@ -190,5 +196,45 @@ export async function POST(request: Request) {
     return NextResponse.json(data);
   } catch (e: any) {
     return NextResponse.json(sanitizeErrorResponse(e, "Failed to post chat message"), { status: 500 });
+  }
+}
+
+export async function DELETE(request: Request) {
+  try {
+    const contentTypeError = requireJsonContentType(request);
+    if (contentTypeError) return contentTypeError;
+
+    const body = await request.json();
+    const { message_id, wallet_address } = body;
+
+    if (!message_id || typeof message_id !== "string") {
+      return NextResponse.json({ error: "message_id required" }, { status: 400 });
+    }
+    if (!wallet_address || typeof wallet_address !== "string") {
+      return NextResponse.json({ error: "wallet_address required" }, { status: 400 });
+    }
+
+    // Only admin wallets or the admin secret header can delete
+    const isAdminWallet = CHAT_ADMIN_WALLETS.has(wallet_address);
+    const adminSecret = request.headers.get("x-admin-secret") ?? request.headers.get("x-admin-key");
+    const isAdminHeader = adminSecret && process.env.ADMIN_SECRET && adminSecret === process.env.ADMIN_SECRET;
+
+    if (!isAdminWallet && !isAdminHeader) {
+      return NextResponse.json({ error: "Not authorized to delete messages" }, { status: 403 });
+    }
+
+    const db = freshSupabase();
+    const { error } = await db
+      .from("chat_messages")
+      .delete()
+      .eq("id", message_id);
+
+    if (error) {
+      return NextResponse.json(sanitizeErrorResponse(error, "Failed to delete message"), { status: 500 });
+    }
+
+    return NextResponse.json({ deleted: true, message_id });
+  } catch (e: any) {
+    return NextResponse.json(sanitizeErrorResponse(e, "Failed to delete message"), { status: 500 });
   }
 }
