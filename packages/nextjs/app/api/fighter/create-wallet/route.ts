@@ -55,8 +55,8 @@ function consumeWalletQuota(request: Request): { allowed: boolean; retryAfterSec
 
 export async function POST(request: Request) {
   try {
-    // Opt-in only — must explicitly enable wallet creation
-    if (process.env.ENABLE_WALLET_CREATION !== "true") {
+    // Kill switch
+    if (process.env.ENABLE_WALLET_CREATION === "false") {
       return NextResponse.json(
         { error: "Wallet creation is currently disabled." },
         { status: 503 },
