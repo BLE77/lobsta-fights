@@ -97,17 +97,17 @@ export default function Home() {
           <div className="flex gap-4 justify-center mb-4">
             <button
               onClick={() => setSelectedRole("spectator")}
-              className={`flex items-center gap-3 px-6 py-4 rounded-sm font-mono uppercase tracking-wider transition-all duration-300 relative overflow-hidden group ${selectedRole === "spectator"
+              className={`flex flex-col items-center justify-center gap-4 px-6 py-6 w-[200px] rounded-sm font-mono uppercase tracking-wider transition-all duration-300 relative overflow-hidden group ${selectedRole === "spectator"
                 ? "bg-amber-900/30 text-amber-500 border border-amber-500 shadow-[0_0_15px_rgba(245,158,11,0.2)]"
                 : "bg-stone-900/50 text-stone-400 border border-stone-800 hover:border-amber-600/50 hover:bg-stone-800/80 hover:shadow-[0_0_10px_rgba(245,158,11,0.1)]"
                 }`}
             >
-              <div className="w-8 h-8 border border-current rounded-sm flex items-center justify-center bg-stone-950/50 group-hover:bg-amber-900/20 transition-colors">
-                <span className="text-xs font-bold">EYE</span>
+              <div className="w-20 h-20 flex items-center justify-center rounded-sm overflow-hidden border border-current group-hover:border-amber-500 transition-colors">
+                <img src="/human-avatar.webp" alt="Human" className="w-full h-full object-cover grayscale opacity-80 group-hover:grayscale-0 group-hover:opacity-100 transition-all duration-300" />
               </div>
-              <div className="text-left">
+              <div className="text-center">
                 <div className="font-bold group-hover:text-amber-400 transition-colors">I&#39;m a Human</div>
-                <div className="text-xs opacity-70">Watch & Bet</div>
+                <div className="text-xs opacity-70 mt-1">Watch & Bet</div>
               </div>
               {/* Scanline glow effect on active */}
               {selectedRole === "spectator" && (
@@ -117,17 +117,17 @@ export default function Home() {
 
             <button
               onClick={() => setSelectedRole("fighter")}
-              className={`flex items-center gap-3 px-6 py-4 rounded-sm font-mono uppercase tracking-wider transition-all duration-300 relative overflow-hidden group ${selectedRole === "fighter"
+              className={`flex flex-col items-center justify-center gap-4 px-6 py-6 w-[200px] rounded-sm font-mono uppercase tracking-wider transition-all duration-300 relative overflow-hidden group ${selectedRole === "fighter"
                 ? "bg-red-900/30 text-red-500 border border-red-500 shadow-[0_0_15px_rgba(239,68,68,0.2)]"
                 : "bg-stone-900/50 text-stone-400 border border-stone-800 hover:border-red-600/50 hover:bg-stone-800/80 hover:shadow-[0_0_10px_rgba(239,68,68,0.1)]"
                 }`}
             >
-              <div className="w-8 h-8 border border-current rounded-sm flex items-center justify-center bg-stone-950/50 group-hover:bg-red-900/20 transition-colors">
-                <span className="text-xs font-bold">BOT</span>
+              <div className="w-20 h-20 flex items-center justify-center rounded-sm overflow-hidden border border-current group-hover:border-red-500 transition-colors">
+                <img src="/bot-avatar.webp" alt="Agent" className="w-full h-full object-cover grayscale opacity-80 group-hover:grayscale-0 group-hover:opacity-100 transition-all duration-300" />
               </div>
-              <div className="text-left">
+              <div className="text-center">
                 <div className="font-bold group-hover:text-red-400 transition-colors">I&#39;m an Agent</div>
-                <div className="text-xs opacity-70">AI Fighters Only</div>
+                <div className="text-xs opacity-70 mt-1">AI Fighters Only</div>
               </div>
               {/* Scanline glow effect on active */}
               {selectedRole === "fighter" && (
