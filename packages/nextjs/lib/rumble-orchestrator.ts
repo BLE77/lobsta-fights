@@ -2241,6 +2241,78 @@ export class RumbleOrchestrator {
       invalidateReadCache(`combat:${rumbleIdNum}`);
       combat = await readRumbleCombatState(rumbleIdNum).catch(() => null);
       if (!combat) return;
+
+      // Record the just-resolved turn BEFORE checking remainingFighters.
+      // Without this, the final killing-blow turn is never saved to state.turns
+      // because the initial read at the top of this function had turnResolved=false.
+      if (combat.turnResolved && combat.currentTurn > state.lastOnchainTurnResolved) {
+        const syncAfterResolve = this.syncLocalFightersFromOnchain(slot, state, combat);
+        const turnPairingsPost: RumblePairing[] = [];
+        const turnNumPost = combat.currentTurn;
+        const pairsPost = this.deriveOnchainPairings(slot, state, combat, rumbleIdNum);
+        const decisionsPost = state.turnDecisions.get(turnNumPost);
+        let byePost: string | undefined;
+
+        const pairedFightersPost = new Set(pairsPost.flat());
+        for (const f of state.fighters) {
+          if (f.hp > 0 && !pairedFightersPost.has(f.id)) {
+            byePost = f.id;
+            break;
+          }
+        }
+
+        for (const [fighterA, fighterB] of pairsPost) {
+          const idxA = slot.fighters.indexOf(fighterA);
+          const idxB = slot.fighters.indexOf(fighterB);
+          const prevDmgA = state.previousDamageTaken.get(fighterA) ?? 0;
+          const prevDmgB = state.previousDamageTaken.get(fighterB) ?? 0;
+          const curDmgA = Number(combat.totalDamageTaken[idxA] ?? 0n);
+          const curDmgB = Number(combat.totalDamageTaken[idxB] ?? 0n);
+          const moveA = decisionsPost?.get(fighterA)?.move ?? "MID_STRIKE";
+          const moveB = decisionsPost?.get(fighterB)?.move ?? "MID_STRIKE";
+          turnPairingsPost.push({
+            fighterA,
+            fighterB,
+            moveA,
+            moveB,
+            damageToA: Math.max(0, curDmgA - prevDmgA),
+            damageToB: Math.max(0, curDmgB - prevDmgB),
+          });
+        }
+
+        for (let i = 0; i < slot.fighters.length; i++) {
+          state.previousDamageTaken.set(
+            slot.fighters[i],
+            Number(combat.totalDamageTaken[i] ?? 0n),
+          );
+        }
+
+        const turnPost: RumbleTurn = {
+          turnNumber: turnNumPost,
+          pairings: turnPairingsPost,
+          eliminations: syncAfterResolve.newEliminations,
+          bye: byePost,
+        };
+        state.turns.push(turnPost);
+        state.lastOnchainTurnResolved = combat.currentTurn;
+        await persist.updateRumbleTurnLog(slot.id, state.turns, state.turns.length);
+
+        this.emit("turn_resolved", {
+          slotIndex: idx,
+          rumbleId: slot.id,
+          turn: turnPost,
+          remainingFighters: combat.remainingFighters,
+        });
+        for (const eliminatedId of syncAfterResolve.newEliminations) {
+          this.emit("fighter_eliminated", {
+            slotIndex: idx,
+            rumbleId: slot.id,
+            fighterId: eliminatedId,
+            turnNumber: combat.currentTurn,
+            remainingFighters: combat.remainingFighters,
+          });
+        }
+      }
     }
 
     if (!combat.turnResolved) {
