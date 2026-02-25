@@ -31,6 +31,7 @@ const COOLDOWN_MS = 600;
 const BETTING_HYPE_INTERVAL_MS = 20_000;
 const BETTING_HYPE_CHECK_MS = 3_000;
 const BETTING_HYPE_STALE_MS = 6_000;
+const GENERAL_STALE_MS = 10_000;
 const PLAYBACK_RATE = 1.12;
 
 const AMBIENT_GAIN = 0.10;
@@ -64,14 +65,17 @@ const ALL_SOUND_URLS = [
 // Priority events that jump ahead in queue
 const HIGH_PRIORITY_EVENTS = new Set<CommentaryEventType>(["elimination", "ichor_shower"]);
 
-function deriveRumbleLabel(rumbleId: string | undefined, slotIndex: number): string {
+function deriveRumbleLabel(rumbleId: string | undefined, slotIndex: number, rumbleNumber?: number | null): string {
+  if (rumbleNumber != null && rumbleNumber > 0) {
+    return `Rumble #${rumbleNumber}`;
+  }
   const raw = typeof rumbleId === "string" ? rumbleId.trim() : "";
   if (!raw) return `Rumble ${slotIndex + 1}`;
   const parts = raw.split(/[_-]+/).filter(Boolean);
   const numericTail = [...parts].reverse().find((part) => /^\d+$/.test(part));
   if (!numericTail) return `Rumble ${slotIndex + 1}`;
-  if (numericTail.length <= 6) return `Rumble ${Number(numericTail)}`;
-  return `Rumble ${numericTail.slice(-4)}`;
+  if (numericTail.length <= 6) return `Rumble #${Number(numericTail)}`;
+  return `Rumble #${numericTail.slice(-4)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -356,8 +360,9 @@ class RadioMixer {
   // --- Voice Queue ---
 
   dropPendingCombatNarration() {
+    const combatTypes = new Set<CommentaryEventType>(["big_hit", "elimination", "combat_start"]);
     this.voiceQueue = this.voiceQueue.filter(
-      (item) => item.eventType !== "big_hit" && item.eventType !== "elimination",
+      (item) => !combatTypes.has(item.eventType),
     );
     this._onStateChange();
   }
@@ -449,10 +454,9 @@ class RadioMixer {
       return;
     }
 
-    if (
-      item.eventType === "betting_open" &&
-      Date.now() - item.enqueuedAt > BETTING_HYPE_STALE_MS
-    ) {
+    const age = Date.now() - item.enqueuedAt;
+    const staleLimit = item.eventType === "betting_open" ? BETTING_HYPE_STALE_MS : GENERAL_STALE_MS;
+    if (age > staleLimit) {
       this.processNextVoice();
       return;
     }
@@ -1079,22 +1083,20 @@ export default function CommentaryPlayer({
       })[0];
 
       const rumbleId = target.rumbleId!;
-      const rumbleLabel = deriveRumbleLabel(rumbleId, target.slotIndex);
+      const rumbleLabel = deriveRumbleLabel(rumbleId, target.slotIndex, (target as any).rumbleNumber);
       const lastAt = lastBettingHypeAtByRumbleRef.current.get(rumbleId) ?? 0;
       if (now - lastAt < BETTING_HYPE_INTERVAL_MS) return;
 
       const deadlineMs = target.bettingDeadline ? new Date(target.bettingDeadline).getTime() : now;
       if (deadlineMs <= now) return;
 
-      const pool = Number(target.totalPool ?? 0);
-
       const leaders = (target.odds ?? [])
         .filter((odd) => typeof odd.fighterName === "string" && odd.fighterName.trim().length > 0)
         .sort((a, b) => Number(b.solDeployed ?? 0) - Number(a.solDeployed ?? 0))
         .slice(0, 2)
-        .map((odd) => `${odd.fighterName} (${Number(odd.solDeployed ?? 0).toFixed(2)} SOL)`);
+        .map((odd) => odd.fighterName!);
 
-      const leaderText = leaders.length > 0 ? ` Current action leaders: ${leaders.join(", ")}.` : "";
+      const leaderText = leaders.length > 0 ? ` Eyes on ${leaders.join(" and ")}.` : "";
 
       const featured = target.fighters
         .map((fighter) => fighter.name?.trim())
@@ -1107,13 +1109,13 @@ export default function CommentaryPlayer({
             ? ` Eyes on ${featured[0]} right now.`
             : "";
 
-      // Vary the hype template while keeping the same betting-open phrasing.
+      // Vary the hype template
       const templates = [
-        `Betting is still OPEN for ${rumbleLabel}. Slot ${target.slotIndex + 1} is live and the pool stands at ${pool.toFixed(2)} SOL.${leaderText}${loreBite} Place your bets now!`,
-        `Betting is still OPEN for ${rumbleLabel}. Window is active in slot ${target.slotIndex + 1}. Total pool: ${pool.toFixed(2)} SOL.${leaderText}${loreBite}`,
-        `Betting is still OPEN for ${rumbleLabel}. The pool is ${pool.toFixed(2)} SOL and fighters are ready.${leaderText}${loreBite}`,
-        `Betting is still OPEN for ${rumbleLabel}. Last call energy in slot ${target.slotIndex + 1}, pool at ${pool.toFixed(2)} SOL.${leaderText}${loreBite}`,
-        `Betting is still OPEN for ${rumbleLabel}. Combat is approaching and ${pool.toFixed(2)} SOL is on the line.${leaderText}${loreBite}`,
+        `Betting is still OPEN for ${rumbleLabel}. Place your bets now!${leaderText}${loreBite}`,
+        `Betting window is active for ${rumbleLabel}. Fighters are ready.${leaderText}${loreBite}`,
+        `Bets are live for ${rumbleLabel}. Who are you backing?${leaderText}${loreBite}`,
+        `Last call for ${rumbleLabel}. Combat is approaching.${leaderText}${loreBite}`,
+        `Deploy your SOL for ${rumbleLabel}. The arena awaits.${leaderText}${loreBite}`,
       ];
       const templateIndex = Math.floor(now / BETTING_HYPE_INTERVAL_MS) % templates.length;
       const context = templates[templateIndex];

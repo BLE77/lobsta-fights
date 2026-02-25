@@ -39,6 +39,7 @@ export interface CommentaryRobotMeta {
 export interface CommentarySlotData {
   slotIndex: number;
   rumbleId?: string;
+  rumbleNumber?: number | null;
   state: "idle" | "betting" | "combat" | "payout";
   fighters: Array<{
     id: string;
@@ -222,6 +223,9 @@ function collectAllowedNames(slot: CommentarySlotData): string[] {
 }
 
 function deriveRumbleLabel(slot: CommentarySlotData): string {
+  if (slot.rumbleNumber != null && slot.rumbleNumber > 0) {
+    return `Rumble ${slot.rumbleNumber}`;
+  }
   const rumbleId = typeof slot.rumbleId === "string" ? slot.rumbleId.trim() : "";
   if (!rumbleId) return `Rumble ${slot.slotIndex + 1}`;
   const parts = rumbleId.split(/[_-]+/).filter(Boolean);
@@ -542,12 +546,11 @@ export function evaluateEvent(
       const winner =
         resolveFighterName(slot, typeof winnerId === "string" ? winnerId : undefined) ??
         "The winner";
-      const pool = safeNumber(slot.payout?.totalPool ?? event.data?.payout?.totalPool ?? 0, 0);
       const winnerFighter = typeof winnerId === "string" ? slot.fighters.find((f) => f.id === winnerId) : undefined;
       const victoryNote = winnerFighter?.robotMeta?.victory_line ? ` "${winnerFighter.robotMeta.victory_line}"` : "";
       return {
         eventType: "payout",
-        context: `${rumbleLabel} in slot ${slot.slotIndex + 1} is over! ${winner} wins.${victoryNote} Total SOL pool: ${pool.toFixed(2)} SOL.`,
+        context: `${rumbleLabel} in slot ${slot.slotIndex + 1} is over! ${winner} wins.${victoryNote}`,
         allowedNames,
         clipKey: clipKeyFor(slot, "payout"),
       };
@@ -592,11 +595,10 @@ export function evaluateEvent(
           .filter((f) => !f.eliminatedOnTurn)
           .sort((a, b) => a.placement - b.placement)[0];
         const winnerName = resolveFighterName(slot, winner?.id, winner?.name) ?? "The winner";
-      const pool = safeNumber(slot.payout?.totalPool ?? event.data?.payout?.totalPool ?? 0, 0);
         const victoryNote = winner?.robotMeta?.victory_line ? ` "${winner.robotMeta.victory_line}"` : "";
         return {
           eventType: "payout",
-          context: `${rumbleLabel} in slot ${slot.slotIndex + 1} is over! ${winnerName} takes the crown.${victoryNote} Total SOL pool: ${pool.toFixed(2)} SOL.`,
+          context: `${rumbleLabel} in slot ${slot.slotIndex + 1} is over! ${winnerName} takes the crown.${victoryNote}`,
           allowedNames,
           clipKey: clipKeyFor(slot, "payout"),
         };
