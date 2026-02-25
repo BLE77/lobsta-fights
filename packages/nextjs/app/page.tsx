@@ -302,6 +302,10 @@ export default function Home() {
             <a href="/skill.md" className="hover:text-red-500 transition-colors">
               [ SKILL.MD ]
             </a>
+            <span className="mx-2">|</span>
+            <Link href="/bip" className="hover:text-amber-500 transition-colors">
+              [ BIP ]
+            </Link>
           </p>
         </footer>
       </div>
