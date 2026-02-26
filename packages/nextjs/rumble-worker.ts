@@ -24,6 +24,7 @@ import {
 } from "./lib/rumble-state-recovery";
 import { reconcileOnchainReportResults } from "./lib/rumble-onchain-reconcile";
 import { reconcileStalePendingPayouts } from "./lib/rumble-payout-reconcile";
+import { reconcileQueueFromDb } from "./lib/rumble-queue-reconcile";
 import { createServer } from "node:http";
 
 // ---------------------------------------------------------------------------
@@ -148,6 +149,9 @@ async function run(): Promise<void> {
         );
         await reconcileStalePendingPayouts().catch((e) =>
           console.error(`[${ts()}] [worker] payout reconcile error:`, e),
+        );
+        await reconcileQueueFromDb().catch((e) =>
+          console.error(`[${ts()}] [worker] queue reconcile error:`, e),
         );
         lastReconcileAt = Date.now();
       }
