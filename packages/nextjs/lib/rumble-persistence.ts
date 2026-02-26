@@ -1124,15 +1124,18 @@ export async function getStats(): Promise<{
 
 export type TxStep =
   | "createRumble"
+  | "createRumble_mainnet"
   | "startCombat"
   | "openTurn"
   | "resolveTurn"
   | "advanceTurn"
   | "distributeReward"
   | "reportResult"
+  | "reportResult_mainnet"
   | "mintRumbleReward"
   | "checkIchorShower"
   | "completeRumble"
+  | "completeRumble_mainnet"
   | "sweepTreasury"
   | "postTurnResult"
   | `ichor-fighter-${string}`
@@ -1257,5 +1260,101 @@ export async function setAdminConfig(key: string, value: unknown): Promise<void>
     if (error) throw error;
   } catch (err) {
     logError(`setAdminConfig(${key}) failed`, err);
+  }
+}
+
+/* ── Pending moves (polling-based move submission) ────────── */
+
+/**
+ * Write a pending move request to Supabase for a fighter to poll.
+ * Returns true if the write succeeded.
+ */
+export async function writePendingMoveRequest(
+  rumbleId: string,
+  turn: number,
+  fighterId: string,
+  requestPayload: Record<string, unknown>,
+  ttlMs: number,
+): Promise<boolean> {
+  try {
+    const sb = freshServiceClient();
+    const expiresAt = new Date(Date.now() + ttlMs).toISOString();
+    const { error } = await sb
+      .from("pending_moves")
+      .upsert(
+        {
+          rumble_id: rumbleId,
+          turn,
+          fighter_id: fighterId,
+          request_payload: requestPayload,
+          status: "pending",
+          expires_at: expiresAt,
+          response_move: null,
+          responded_at: null,
+        },
+        { onConflict: "fighter_id,rumble_id,turn" },
+      );
+    if (error) {
+      // Table might not exist yet — don't crash combat
+      if (error.code === "PGRST205" || error.code === "42P01") return false;
+      throw error;
+    }
+    return true;
+  } catch (err) {
+    logError("writePendingMoveRequest failed", err);
+    return false;
+  }
+}
+
+/**
+ * Check if a fighter has submitted a move via the polling API.
+ * Returns the move string if found, or null.
+ */
+export async function readPendingMoveResponse(
+  rumbleId: string,
+  turn: number,
+  fighterId: string,
+): Promise<string | null> {
+  try {
+    const sb = freshServiceClient();
+    const { data, error } = await sb
+      .from("pending_moves")
+      .select("response_move")
+      .eq("fighter_id", fighterId)
+      .eq("rumble_id", rumbleId)
+      .eq("turn", turn)
+      .eq("status", "responded")
+      .maybeSingle();
+    if (error) {
+      if (error.code === "PGRST205" || error.code === "42P01") return null;
+      throw error;
+    }
+    return typeof data?.response_move === "string" ? data.response_move : null;
+  } catch (err) {
+    logError("readPendingMoveResponse failed", err);
+    return null;
+  }
+}
+
+/**
+ * Expire / clean up a pending move request after the orchestrator has
+ * consumed it or the turn window has passed.
+ */
+export async function expirePendingMoveRequest(
+  rumbleId: string,
+  turn: number,
+  fighterId: string,
+): Promise<void> {
+  try {
+    const sb = freshServiceClient();
+    await sb
+      .from("pending_moves")
+      .update({ status: "expired" })
+      .eq("fighter_id", fighterId)
+      .eq("rumble_id", rumbleId)
+      .eq("turn", turn)
+      .in("status", ["pending", "responded"]);
+  } catch (err) {
+    logError("expirePendingMoveRequest failed", err);
   }
 }

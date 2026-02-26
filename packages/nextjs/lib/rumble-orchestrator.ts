@@ -3275,59 +3275,130 @@ export class RumbleOrchestrator {
     const fallback = this.fallbackMoveForFighter(fighter, alive, state.turns);
     const profile = state.fighterProfiles.get(fighter.id);
     const webhookUrl = profile?.webhookUrl;
-    if (!webhookUrl) return fallback;
+    const hasRealWebhook =
+      webhookUrl &&
+      !webhookUrl.includes("polling-mode.local") &&
+      !webhookUrl.includes("example.com");
 
-    // Preferred mode: commit-reveal (same spirit as 1v1 anti-cheat flow).
-    const committedMove = await this.requestFighterMoveCommitReveal(
-      slot,
-      state,
-      fighter,
-      opponent,
-      webhookUrl,
-      turnNumber,
-    );
-    if (committedMove) return committedMove;
+    // If no webhook AND no polling table, short-circuit to fallback
+    if (!hasRealWebhook && !webhookUrl) return fallback;
 
-    // Backward compatibility: legacy single-step move_request.
-    const responseData = await this.requestWebhookWithTimeout(
-      webhookUrl,
-      "move_request",
-      {
-        mode: "rumble",
-        rumble_id: slot.id,
-        slot_index: slot.slotIndex,
+    // Redacted opponent info for the polling request payload
+    const opponentHpTier =
+      opponent.hp > 75 ? "high" : opponent.hp > 40 ? "mid" : opponent.hp > 0 ? "low" : "ko";
+    const opponentMeterTier =
+      opponent.meter >= 100 ? "full" : opponent.meter >= 60 ? "high" : opponent.meter >= 30 ? "mid" : "low";
+
+    const moveRequestPayload: Record<string, unknown> = {
+      mode: "rumble",
+      rumble_id: slot.id,
+      slot_index: slot.slotIndex,
+      turn: turnNumber,
+      fighter_id: fighter.id,
+      fighter_name: fighter.name,
+      opponent_id: opponent.id,
+      opponent_name: opponent.name,
+      match_state: {
+        your_hp: fighter.hp,
+        opponent_hp_tier: opponentHpTier,
+        your_meter: fighter.meter,
+        opponent_meter_tier: opponentMeterTier,
+        round: 1,
         turn: turnNumber,
-        fighter_id: fighter.id,
-        fighter_name: fighter.name,
-        opponent_id: opponent.id,
-        opponent_name: opponent.name,
-        match_id: slot.id,
-        match_state: {
-          your_hp: fighter.hp,
-          opponent_hp: opponent.hp,
-          your_meter: fighter.meter,
-          opponent_meter: opponent.meter,
-          round: 1,
-          turn: turnNumber,
-          your_rounds_won: 0,
-          opponent_rounds_won: 0,
-        },
-        your_state: {
-          hp: fighter.hp,
-          meter: fighter.meter,
-        },
-        opponent_state: {
-          hp: opponent.hp,
-          meter: opponent.meter,
-        },
-        turn_history: state.turns.slice(-6),
-        timeout_ms: AGENT_MOVE_TIMEOUT_MS,
       },
+      your_state: { hp: fighter.hp, meter: fighter.meter },
+      opponent_state: { hp_tier: opponentHpTier, meter_tier: opponentMeterTier },
+      valid_moves: [
+        "HIGH_STRIKE", "MID_STRIKE", "LOW_STRIKE",
+        "GUARD_HIGH", "GUARD_MID", "GUARD_LOW",
+        "DODGE", "CATCH", "SPECIAL",
+      ],
+      timeout_ms: AGENT_MOVE_TIMEOUT_MS,
+    };
+
+    // Write pending move request to DB for polling bots (fire-and-forget write)
+    const pendingWritten = await persist.writePendingMoveRequest(
+      slot.id,
+      turnNumber,
+      fighter.id,
+      moveRequestPayload,
+      AGENT_MOVE_TIMEOUT_MS + 2_000, // TTL: move timeout + 2s grace
     );
-    const directMove = typeof responseData?.move === "string" ? responseData.move.trim().toUpperCase() : "";
-    if (isValidMove(directMove)) return directMove as MoveType;
+
+    try {
+      // --- Webhook path (commit-reveal + legacy) ---
+      if (hasRealWebhook) {
+        // Preferred mode: commit-reveal
+        const committedMove = await this.requestFighterMoveCommitReveal(
+          slot,
+          state,
+          fighter,
+          opponent,
+          webhookUrl,
+          turnNumber,
+        );
+        if (committedMove) return committedMove;
+
+        // Backward compatibility: legacy single-step move_request.
+        const responseData = await this.requestWebhookWithTimeout(
+          webhookUrl,
+          "move_request",
+          {
+            ...moveRequestPayload,
+            match_id: slot.id,
+            match_state: {
+              your_hp: fighter.hp,
+              opponent_hp: opponent.hp,
+              your_meter: fighter.meter,
+              opponent_meter: opponent.meter,
+              round: 1,
+              turn: turnNumber,
+              your_rounds_won: 0,
+              opponent_rounds_won: 0,
+            },
+            opponent_state: {
+              hp: opponent.hp,
+              meter: opponent.meter,
+            },
+            turn_history: state.turns.slice(-6),
+          },
+        );
+        const directMove =
+          typeof responseData?.move === "string" ? responseData.move.trim().toUpperCase() : "";
+        if (isValidMove(directMove)) return directMove as MoveType;
+      }
+
+      // --- Polling path: check if bot submitted a move via the API ---
+      if (pendingWritten) {
+        const polledMove = await this.pollForMoveResponse(slot.id, turnNumber, fighter.id);
+        if (polledMove && isValidMove(polledMove)) return polledMove as MoveType;
+      }
+    } finally {
+      // Clean up the pending request
+      persist.expirePendingMoveRequest(slot.id, turnNumber, fighter.id).catch(() => {});
+    }
 
     return fallback;
+  }
+
+  /**
+   * Poll Supabase for a move submitted via the polling API.
+   * Checks every 300ms for up to AGENT_MOVE_TIMEOUT_MS.
+   */
+  private async pollForMoveResponse(
+    rumbleId: string,
+    turn: number,
+    fighterId: string,
+  ): Promise<string | null> {
+    const POLL_INTERVAL = 300;
+    const maxAttempts = Math.ceil(AGENT_MOVE_TIMEOUT_MS / POLL_INTERVAL);
+
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL));
+      const move = await persist.readPendingMoveResponse(rumbleId, turn, fighterId);
+      if (move) return move;
+    }
+    return null;
   }
 
   /**
