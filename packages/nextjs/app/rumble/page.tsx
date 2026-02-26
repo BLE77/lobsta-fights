@@ -499,7 +499,7 @@ export default function RumblePage() {
             // Keep completed result visible for 20s after slot recycles
             // so users can still see who won even when a new rumble starts
             const existing = next.get(slot.slotIndex);
-            if (existing && now - existing.capturedAt > 20_000) {
+            if (existing && now - existing.capturedAt > 60_000) {
               if (next.delete(slot.slotIndex)) {
                 changed = true;
               }
@@ -510,7 +510,7 @@ export default function RumblePage() {
           // Clear stale results when slot is idle with no fighters (full reset)
           if (slot.state === "idle" && slot.fighters.length === 0) {
             const existing = next.get(slot.slotIndex);
-            if (existing && now - existing.capturedAt > 20_000) {
+            if (existing && now - existing.capturedAt > 60_000) {
               if (next.delete(slot.slotIndex)) {
                 changed = true;
               }

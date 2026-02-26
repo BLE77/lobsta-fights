@@ -123,6 +123,28 @@ export async function removeQueueFighter(fighterId: string): Promise<void> {
   }
 }
 
+export async function loadAutoRequeueFlags(
+  fighterIds: string[],
+): Promise<Set<string>> {
+  const result = new Set<string>();
+  if (fighterIds.length === 0) return result;
+  try {
+    const sb = freshServiceClient();
+    const { data, error } = await sb
+      .from("ucf_rumble_queue")
+      .select("fighter_id, auto_requeue")
+      .in("fighter_id", fighterIds)
+      .eq("auto_requeue", true);
+    if (error) throw error;
+    for (const row of data ?? []) {
+      result.add(row.fighter_id);
+    }
+  } catch (err) {
+    logError("loadAutoRequeueFlags failed", err);
+  }
+  return result;
+}
+
 export async function loadQueueState(): Promise<
   Array<{ fighter_id: string; auto_requeue: boolean; status: string }>
 > {

@@ -4079,8 +4079,15 @@ export class RumbleOrchestrator {
 
     this.totalRumblesCompleted++;
 
-    // Requeue fighters with autoRequeue
-    const requeueSet = this.autoRequeueFighters.get(slotIndex);
+    // Requeue fighters with autoRequeue.
+    // Check both the in-memory map AND the DB flag — the in-memory map may
+    // be empty after a cold restart (recovery doesn't populate it).
+    let requeueSet = this.autoRequeueFighters.get(slotIndex);
+    if (!requeueSet || requeueSet.size === 0) {
+      // Fallback: check the DB for auto_requeue flags
+      const dbFlags = await persist.loadAutoRequeueFlags(slot.fighters);
+      if (dbFlags.size > 0) requeueSet = dbFlags;
+    }
     for (const fighterId of slot.fighters) {
       if (requeueSet?.has(fighterId)) {
         try {
