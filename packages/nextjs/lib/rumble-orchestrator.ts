@@ -91,6 +91,9 @@ import {
   readRumbleBettingPools,
   postTurnResultOnChain,
   readMoveCommitmentData,
+  createRumbleMainnet,
+  reportResultMainnet,
+  completeRumbleMainnet,
 } from "./solana-programs";
 import { Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
@@ -1275,6 +1278,18 @@ export class RumbleOrchestrator {
     // InsufficientVaultFunds errors.  Treasury cut is effectively collected
     // when there are no more claimants (admin can sweep manually if needed).
 
+    // 2b) Complete rumble on mainnet (fire-and-forget — don't block devnet finalization)
+    completeRumbleMainnet(entry.rumbleIdNum)
+      .then((mainnetSig) => {
+        if (mainnetSig) {
+          console.log(`[OnChain:Mainnet] completeRumble succeeded: ${mainnetSig}`);
+          persist.updateRumbleTxSignature(entry.rumbleId, "completeRumble_mainnet", mainnetSig);
+        }
+      })
+      .catch((err) => {
+        console.warn(`[OnChain:Mainnet] completeRumble error (non-blocking):`, err);
+      });
+
     // 3) Reclaim rent from MoveCommitment PDAs (~1.46 SOL per rumble, fire-and-forget)
     try {
       const [fighters, combat] = await Promise.all([
@@ -1285,11 +1300,12 @@ export class RumbleOrchestrator {
       if (fighters.length > 0 && totalTurns > 0) {
         for (let turn = 1; turn <= totalTurns; turn++) {
           for (const fighter of fighters) {
-            closeMoveCommitmentOnChain(entry.rumbleIdNum, fighter, turn).catch(() => {});
+            // Return rent to the fighter, not the admin
+            closeMoveCommitmentOnChain(entry.rumbleIdNum, fighter, turn, fighter).catch(() => {});
           }
         }
         console.log(
-          `[OnChain] queued ${fighters.length * totalTurns} MoveCommitment closures for rumble ${entry.rumbleId}`,
+          `[OnChain] queued ${fighters.length * totalTurns} MoveCommitment closures for rumble ${entry.rumbleId} (rent → fighters)`,
         );
       }
     } catch (e) {
@@ -1637,6 +1653,21 @@ export class RumbleOrchestrator {
         console.log(`[OnChain] createRumble succeeded: ${sig}`);
         persist.updateRumbleTxSignature(rumbleId, "createRumble", sig);
         this.clearOnchainCreateFailure(rumbleId);
+
+        // Also create on mainnet for betting (fire-and-forget — don't block devnet combat)
+        createRumbleMainnet(rumbleIdNum, fighterPubkeys, bettingDeadlineUnix)
+          .then((mainnetSig) => {
+            if (mainnetSig) {
+              console.log(`[OnChain:Mainnet] createRumble succeeded: ${mainnetSig}`);
+              persist.updateRumbleTxSignature(rumbleId, "createRumble_mainnet", mainnetSig);
+            } else {
+              console.warn(`[OnChain:Mainnet] createRumble returned null — mainnet betting unavailable for ${rumbleId}`);
+            }
+          })
+          .catch((err) => {
+            console.error(`[OnChain:Mainnet] createRumble error (non-blocking):`, err);
+          });
+
         return true;
       } else {
         console.warn(`[OnChain] createRumble returned null — continuing off-chain`);
@@ -2142,6 +2173,15 @@ export class RumbleOrchestrator {
         turn,
         remainingFighters: combat.remainingFighters,
       });
+
+      // Close MoveCommitment PDAs for the resolved turn (fire-and-forget).
+      // Returns rent to each fighter so wallets don't drain over many rumbles.
+      for (const fid of slot.fighters) {
+        const wallet = state.fighterWallets.get(fid);
+        if (!wallet) continue;
+        closeMoveCommitmentOnChain(rumbleIdNum, wallet, turnNum, wallet).catch(() => {});
+      }
+
       for (const eliminatedId of sync.newEliminations) {
         this.emit("fighter_eliminated", {
           slotIndex: idx,
@@ -2303,6 +2343,15 @@ export class RumbleOrchestrator {
           turn: turnPost,
           remainingFighters: combat.remainingFighters,
         });
+
+        // Close MoveCommitment PDAs for the resolved turn (fire-and-forget).
+        // Returns rent to each fighter so wallets don't drain over many rumbles.
+        for (const fid of slot.fighters) {
+          const wallet = state.fighterWallets.get(fid);
+          if (!wallet) continue;
+          closeMoveCommitmentOnChain(rumbleIdNum, wallet, turnNumPost, wallet).catch(() => {});
+        }
+
         for (const eliminatedId of syncAfterResolve.newEliminations) {
           this.emit("fighter_eliminated", {
             slotIndex: idx,
@@ -3612,6 +3661,29 @@ export class RumbleOrchestrator {
           `[OnChain] rumble ${rumbleId} not payout-ready yet (state=${onchainState?.state ?? "unknown"})`,
         );
         return;
+      }
+
+      // Post result to mainnet so bettors can claim real SOL payouts.
+      // Fire-and-forget — mainnet failure must NOT block devnet settlement.
+      const placementsArray = new Array(16).fill(0);
+      for (const p of placements) {
+        const idx = fighterOrder.indexOf(p.id);
+        if (idx >= 0 && idx < 16) placementsArray[idx] = p.placement;
+      }
+      const winnerIdx = fighterOrder.indexOf(winnerId);
+      if (winnerIdx >= 0) {
+        reportResultMainnet(rumbleIdNum, placementsArray, winnerIdx)
+          .then((mainnetSig) => {
+            if (mainnetSig) {
+              console.log(`[OnChain:Mainnet] reportResult succeeded: ${mainnetSig}`);
+              persist.updateRumbleTxSignature(rumbleId, "reportResult_mainnet", mainnetSig);
+            } else {
+              console.warn(`[OnChain:Mainnet] reportResult returned null for ${rumbleId}`);
+            }
+          })
+          .catch((err) => {
+            console.error(`[OnChain:Mainnet] reportResult error (non-blocking):`, err);
+          });
       }
     } catch (err) {
       console.error(`[OnChain] finalizeRumble error:`, err);

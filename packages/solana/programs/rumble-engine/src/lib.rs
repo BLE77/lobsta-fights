@@ -1,5 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
+#[cfg(feature = "combat")]
 use sha2::{Digest, Sha256};
 
 declare_id!("2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC");
@@ -13,8 +14,11 @@ const VAULT_SEED: &[u8] = b"vault";
 const BETTOR_SEED: &[u8] = b"bettor";
 const CONFIG_SEED: &[u8] = b"rumble_config";
 const SPONSORSHIP_SEED: &[u8] = b"sponsorship";
+#[cfg(feature = "combat")]
 const MOVE_COMMIT_SEED: &[u8] = b"move_commit";
+#[cfg(feature = "combat")]
 const MOVE_COMMIT_DOMAIN: &[u8] = b"rumble:v1";
+#[cfg(feature = "combat")]
 const COMBAT_STATE_SEED: &[u8] = b"combat_state";
 const PENDING_ADMIN_SEED: &[u8] = b"pending_admin_re";
 const FIGHTER_REGISTRY_PROGRAM_ID: Pubkey = pubkey!("2hA6Jvj1yjP2Uj3qrJcsBeYA2R9xPM95mDKw1ncKVExa");
@@ -36,29 +40,51 @@ const TREASURY_CUT_BPS: u64 = 1_000; // 10%
 const PAYOUT_CLAIM_WINDOW_SECONDS: i64 = 86_400;
 
 /// On-chain turn timing windows (slots).
+#[cfg(feature = "combat")]
 const COMMIT_WINDOW_SLOTS: u64 = 30;
+#[cfg(feature = "combat")]
 const REVEAL_WINDOW_SLOTS: u64 = 30;
+#[cfg(feature = "combat")]
 const MAX_ONCHAIN_COMBAT_TURNS: u32 = 120;
+#[cfg(feature = "combat")]
 const COMBAT_TIMEOUT_SLOTS: u64 = 5000; // ~33 minutes; prevents stuck rumbles
 
+#[cfg(feature = "combat")]
 const MOVE_HIGH_STRIKE: u8 = 0;
+#[cfg(feature = "combat")]
 const MOVE_MID_STRIKE: u8 = 1;
+#[cfg(feature = "combat")]
 const MOVE_LOW_STRIKE: u8 = 2;
+#[cfg(feature = "combat")]
 const MOVE_GUARD_HIGH: u8 = 3;
+#[cfg(feature = "combat")]
 const MOVE_GUARD_MID: u8 = 4;
+#[cfg(feature = "combat")]
 const MOVE_GUARD_LOW: u8 = 5;
+#[cfg(feature = "combat")]
 const MOVE_DODGE: u8 = 6;
+#[cfg(feature = "combat")]
 const MOVE_CATCH: u8 = 7;
+#[cfg(feature = "combat")]
 const MOVE_SPECIAL: u8 = 8;
 
+#[cfg(feature = "combat")]
 const STRIKE_DAMAGE_HIGH: u16 = 26;
+#[cfg(feature = "combat")]
 const STRIKE_DAMAGE_MID: u16 = 20;
+#[cfg(feature = "combat")]
 const STRIKE_DAMAGE_LOW: u16 = 15;
+#[cfg(feature = "combat")]
 const CATCH_DAMAGE: u16 = 30;
+#[cfg(feature = "combat")]
 const COUNTER_DAMAGE: u16 = 12;
+#[cfg(feature = "combat")]
 const SPECIAL_DAMAGE: u16 = 35;
+#[cfg(feature = "combat")]
 const METER_PER_TURN: u8 = 20;
+#[cfg(feature = "combat")]
 const SPECIAL_METER_COST: u8 = 100;
+#[cfg(feature = "combat")]
 const START_HP: u16 = 100;
 
 struct ParsedBettorAccount {
@@ -224,6 +250,7 @@ fn write_bettor_account_data(data: &mut [u8], bettor: &ParsedBettorAccount) -> R
     Ok(())
 }
 
+#[cfg(feature = "combat")]
 fn fighter_in_rumble(rumble: &Rumble, fighter: &Pubkey) -> Option<usize> {
     let fighter_count = rumble.fighter_count as usize;
     rumble.fighters[..fighter_count]
@@ -231,10 +258,12 @@ fn fighter_in_rumble(rumble: &Rumble, fighter: &Pubkey) -> Option<usize> {
         .position(|f| f == fighter)
 }
 
+#[cfg(feature = "combat")]
 fn is_valid_move_code(move_code: u8) -> bool {
     move_code <= 8
 }
 
+#[cfg(feature = "combat")]
 fn compute_move_commitment_hash(
     rumble_id: u64,
     turn: u32,
@@ -258,6 +287,7 @@ fn compute_move_commitment_hash(
     out
 }
 
+#[cfg(feature = "combat")]
 fn hash_u64(parts: &[&[u8]]) -> u64 {
     let mut hasher = Sha256::new();
     for p in parts {
@@ -269,14 +299,17 @@ fn hash_u64(parts: &[&[u8]]) -> u64 {
     u64::from_le_bytes(bytes)
 }
 
+#[cfg(feature = "combat")]
 fn is_strike(move_code: u8) -> bool {
     move_code == MOVE_HIGH_STRIKE || move_code == MOVE_MID_STRIKE || move_code == MOVE_LOW_STRIKE
 }
 
+#[cfg(feature = "combat")]
 fn is_guard(move_code: u8) -> bool {
     move_code == MOVE_GUARD_HIGH || move_code == MOVE_GUARD_MID || move_code == MOVE_GUARD_LOW
 }
 
+#[cfg(feature = "combat")]
 fn guard_for_strike(move_code: u8) -> Option<u8> {
     match move_code {
         MOVE_HIGH_STRIKE => Some(MOVE_GUARD_HIGH),
@@ -286,6 +319,7 @@ fn guard_for_strike(move_code: u8) -> Option<u8> {
     }
 }
 
+#[cfg(feature = "combat")]
 fn strike_damage(move_code: u8) -> u16 {
     match move_code {
         MOVE_HIGH_STRIKE => STRIKE_DAMAGE_HIGH,
@@ -295,6 +329,7 @@ fn strike_damage(move_code: u8) -> u16 {
     }
 }
 
+#[cfg(feature = "combat")]
 fn fallback_move_code(rumble_id: u64, turn: u32, fighter: &Pubkey, meter: u8) -> u8 {
     let rumble_id_bytes = rumble_id.to_le_bytes();
     let turn_bytes = turn.to_le_bytes();
@@ -340,6 +375,7 @@ fn fallback_move_code(rumble_id: u64, turn: u32, fighter: &Pubkey, meter: u8) ->
     }
 }
 
+#[cfg(feature = "combat")]
 fn resolve_duel(
     move_a: u8,
     move_b: u8,
@@ -412,6 +448,7 @@ fn resolve_duel(
     (damage_to_a, damage_to_b, meter_used_a, meter_used_b)
 }
 
+#[cfg(feature = "combat")]
 fn expected_move_commitment_pda(rumble_id: u64, fighter: &Pubkey, turn: u32) -> Pubkey {
     let rumble_id_bytes = rumble_id.to_le_bytes();
     let turn_bytes = turn.to_le_bytes();
@@ -427,6 +464,7 @@ fn expected_move_commitment_pda(rumble_id: u64, fighter: &Pubkey, turn: u32) -> 
     pda
 }
 
+#[cfg(feature = "combat")]
 fn read_revealed_move_from_remaining_accounts(
     remaining_accounts: &[AccountInfo<'_>],
     rumble_id: u64,
@@ -454,6 +492,7 @@ fn read_revealed_move_from_remaining_accounts(
     Some(parsed.revealed_move)
 }
 
+#[cfg(feature = "combat")]
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct DuelResult {
     pub fighter_a_idx: u8,
@@ -718,6 +757,7 @@ pub mod rumble_engine {
 
     /// Transition rumble from Betting to Combat and initialize on-chain combat state.
     /// Callable by admin after betting deadline.
+    #[cfg(feature = "combat")]
     pub fn start_combat(ctx: Context<StartCombat>) -> Result<()> {
         let rumble = &mut ctx.accounts.rumble;
 
@@ -776,6 +816,7 @@ pub mod rumble_engine {
 
     /// Fighter commits a move hash for the active rumble turn.
     /// Hash format: sha256("rumble:v1", rumble_id, turn, fighter_pubkey, move_code, salt)
+    #[cfg(feature = "combat")]
     pub fn commit_move(
         ctx: Context<CommitMove>,
         rumble_id: u64,
@@ -825,6 +866,7 @@ pub mod rumble_engine {
     }
 
     /// Fighter reveals move + salt for a previously committed move hash.
+    #[cfg(feature = "combat")]
     pub fn reveal_move(
         ctx: Context<RevealMove>,
         rumble_id: u64,
@@ -885,6 +927,7 @@ pub mod rumble_engine {
 
     /// Open the first turn window after combat starts.
     /// Permissionless keeper call; correctness is slot-gated on-chain.
+    #[cfg(feature = "combat")]
     pub fn open_turn(ctx: Context<CombatAction>) -> Result<()> {
         let clock = Clock::get()?;
         let rumble = &ctx.accounts.rumble;
@@ -923,6 +966,7 @@ pub mod rumble_engine {
 
     /// Resolve the active turn from revealed move commitments.
     /// If a fighter didn't reveal, deterministic fallback move is used.
+    #[cfg(feature = "combat")]
     pub fn resolve_turn(ctx: Context<CombatAction>) -> Result<()> {
         let clock = Clock::get()?;
         let rumble = &ctx.accounts.rumble;
@@ -1118,6 +1162,7 @@ pub mod rumble_engine {
     /// Validates damage by re-running resolve_duel internally.
     /// This is the "Option D hybrid" path — combat math runs off-chain,
     /// but on-chain program validates correctness.
+    #[cfg(feature = "combat")]
     pub fn post_turn_result(
         ctx: Context<AdminCombatAction>,
         duel_results: Vec<DuelResult>,
@@ -1312,6 +1357,7 @@ pub mod rumble_engine {
 
     /// Advance to next turn after a resolved turn.
     /// Permissionless keeper call.
+    #[cfg(feature = "combat")]
     pub fn advance_turn(ctx: Context<CombatAction>) -> Result<()> {
         let clock = Clock::get()?;
         let rumble = &ctx.accounts.rumble;
@@ -1360,6 +1406,7 @@ pub mod rumble_engine {
     }
 
     /// Permissionless deterministic finalization from on-chain combat state.
+    #[cfg(feature = "combat")]
     pub fn finalize_rumble(ctx: Context<FinalizeRumble>) -> Result<()> {
         let clock = Clock::get()?;
         let rumble = &mut ctx.accounts.rumble;
@@ -1468,12 +1515,59 @@ pub mod rumble_engine {
     }
 
     /// Deprecated: result is now finalized permissionlessly from on-chain combat state.
+    #[cfg(feature = "combat")]
     pub fn report_result(
         _ctx: Context<AdminAction>,
         _placements: Vec<u8>,
         _winner_index: u8,
     ) -> Result<()> {
         err!(RumbleError::DeprecatedInstruction)
+    }
+
+    /// Admin override to set rumble result directly.
+    /// Bypasses combat state machine for off-chain resolution (mainnet betting).
+    pub fn admin_set_result(
+        ctx: Context<AdminAction>,
+        placements: Vec<u8>,
+        winner_index: u8,
+    ) -> Result<()> {
+        let rumble = &mut ctx.accounts.rumble;
+
+        require!(
+            rumble.state == RumbleState::Betting || rumble.state == RumbleState::Combat,
+            RumbleError::InvalidStateTransition
+        );
+        require!(
+            placements.len() == rumble.fighter_count as usize,
+            RumbleError::InvalidPlacement
+        );
+        require!(
+            winner_index < rumble.fighter_count,
+            RumbleError::InvalidFighterIndex
+        );
+        require!(
+            placements[winner_index as usize] == 1,
+            RumbleError::InvalidPlacement
+        );
+
+        let mut placement_arr = [0u8; MAX_FIGHTERS];
+        for (i, &p) in placements.iter().enumerate() {
+            placement_arr[i] = p;
+        }
+
+        let clock = Clock::get()?;
+        rumble.placements = placement_arr;
+        rumble.winner_index = winner_index;
+        rumble.state = RumbleState::Payout;
+        rumble.completed_at = clock.unix_timestamp;
+
+        msg!(
+            "Admin set result for rumble {}: winner_index={}",
+            rumble.id,
+            winner_index
+        );
+
+        Ok(())
     }
 
     /// Bettor claims their payout if their fighter placed 1st (winner-takes-all).
@@ -1808,6 +1902,7 @@ pub mod rumble_engine {
 
     /// Close a MoveCommitment PDA and return rent to a destination.
     /// Admin-only. Only allowed when rumble is in Payout or Complete state.
+    #[cfg(feature = "combat")]
     pub fn close_move_commitment(_ctx: Context<CloseMoveCommitment>, _rumble_id: u64, _turn: u32) -> Result<()> {
         // Anchor's `close = destination` handles the lamport transfer
         Ok(())
@@ -1885,6 +1980,7 @@ pub mod rumble_engine {
 
     /// Close a RumbleCombatState PDA to reclaim rent. Admin-only.
     /// Requires the associated rumble is Complete.
+    #[cfg(feature = "combat")]
     pub fn close_combat_state(ctx: Context<CloseCombatState>) -> Result<()> {
         let rumble = &ctx.accounts.rumble;
         require!(
@@ -1951,6 +2047,7 @@ pub struct CreateRumble<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[cfg(feature = "combat")]
 #[derive(Accounts)]
 #[instruction(rumble_id: u64, turn: u32)]
 pub struct CommitMove<'info> {
@@ -1987,6 +2084,7 @@ pub struct CommitMove<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[cfg(feature = "combat")]
 #[derive(Accounts)]
 #[instruction(rumble_id: u64, turn: u32)]
 pub struct RevealMove<'info> {
@@ -2022,6 +2120,7 @@ pub struct RevealMove<'info> {
     pub move_commitment: Account<'info, MoveCommitment>,
 }
 
+#[cfg(feature = "combat")]
 #[derive(Accounts)]
 pub struct StartCombat<'info> {
     #[account(
@@ -2058,6 +2157,7 @@ pub struct StartCombat<'info> {
 
 /// Permissionless combat action — open_turn, resolve_turn, advance_turn.
 /// Anyone can call these; correctness is enforced by on-chain state machine.
+#[cfg(feature = "combat")]
 #[derive(Accounts)]
 pub struct CombatAction<'info> {
     #[account(mut)]
@@ -2081,6 +2181,7 @@ pub struct CombatAction<'info> {
 
 /// Admin-gated combat action — post_turn_result (hybrid mode).
 /// Admin posts move results; damage is validated on-chain.
+#[cfg(feature = "combat")]
 #[derive(Accounts)]
 pub struct AdminCombatAction<'info> {
     #[account(mut)]
@@ -2111,6 +2212,7 @@ pub struct AdminCombatAction<'info> {
 
 /// Permissionless finalization — anyone can finalize when state machine allows it.
 /// Correctness is enforced by on-chain combat state (winner, placements, timeouts).
+#[cfg(feature = "combat")]
 #[derive(Accounts)]
 pub struct FinalizeRumble<'info> {
     #[account(mut)]
@@ -2303,6 +2405,7 @@ pub struct SweepTreasury<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[cfg(feature = "combat")]
 #[derive(Accounts)]
 #[instruction(rumble_id: u64, turn: u32)]
 pub struct CloseMoveCommitment<'info> {
@@ -2319,7 +2422,7 @@ pub struct CloseMoveCommitment<'info> {
     #[account(
         seeds = [RUMBLE_SEED, rumble_id.to_le_bytes().as_ref()],
         bump = rumble.bump,
-        constraint = (rumble.state == RumbleState::Payout || rumble.state == RumbleState::Complete) @ RumbleError::InvalidState,
+        constraint = (rumble.state == RumbleState::Combat || rumble.state == RumbleState::Payout || rumble.state == RumbleState::Complete) @ RumbleError::InvalidState,
     )]
     pub rumble: Account<'info, Rumble>,
 
@@ -2427,6 +2530,7 @@ pub struct CloseRumble<'info> {
     pub rumble: Account<'info, Rumble>,
 }
 
+#[cfg(feature = "combat")]
 #[derive(Accounts)]
 pub struct CloseCombatState<'info> {
     #[account(
@@ -2504,6 +2608,7 @@ pub struct BettorAccount {
     pub fighter_deployments: [u64; MAX_FIGHTERS], // 128
 }
 
+#[cfg(feature = "combat")]
 #[account]
 #[derive(InitSpace)]
 pub struct MoveCommitment {
@@ -2526,6 +2631,7 @@ pub struct PendingAdminRE {
     pub bump: u8,               // 1
 }
 
+#[cfg(feature = "combat")]
 #[account]
 #[derive(InitSpace)]
 pub struct RumbleCombatState {
@@ -2577,12 +2683,14 @@ pub struct BetPlacedEvent {
     pub net_amount: u64,
 }
 
+#[cfg(feature = "combat")]
 #[event]
 pub struct CombatStartedEvent {
     pub rumble_id: u64,
     pub timestamp: i64,
 }
 
+#[cfg(feature = "combat")]
 #[event]
 pub struct ResultReportedEvent {
     pub rumble_id: u64,
@@ -2599,6 +2707,7 @@ pub struct PayoutClaimedEvent {
     pub amount: u64,
 }
 
+#[cfg(feature = "combat")]
 #[event]
 pub struct MoveCommittedEvent {
     pub rumble_id: u64,
@@ -2607,6 +2716,7 @@ pub struct MoveCommittedEvent {
     pub committed_slot: u64,
 }
 
+#[cfg(feature = "combat")]
 #[event]
 pub struct MoveRevealedEvent {
     pub rumble_id: u64,
@@ -2616,6 +2726,7 @@ pub struct MoveRevealedEvent {
     pub revealed_slot: u64,
 }
 
+#[cfg(feature = "combat")]
 #[event]
 pub struct TurnOpenedEvent {
     pub rumble_id: u64,
@@ -2625,6 +2736,7 @@ pub struct TurnOpenedEvent {
     pub reveal_close_slot: u64,
 }
 
+#[cfg(feature = "combat")]
 #[event]
 pub struct TurnPairResolvedEvent {
     pub rumble_id: u64,
@@ -2637,6 +2749,7 @@ pub struct TurnPairResolvedEvent {
     pub damage_to_b: u16,
 }
 
+#[cfg(feature = "combat")]
 #[event]
 pub struct TurnResolvedEvent {
     pub rumble_id: u64,
@@ -2644,6 +2757,7 @@ pub struct TurnResolvedEvent {
     pub remaining_fighters: u8,
 }
 
+#[cfg(feature = "combat")]
 #[event]
 pub struct OnchainResultFinalizedEvent {
     pub rumble_id: u64,
