@@ -80,14 +80,17 @@ function getHeliusMainnetApiKey(): string | null {
 
 /**
  * Get the mainnet RPC endpoint for betting operations.
- * Uses HELIUS_MAINNET_API_KEY or falls back to public mainnet RPC.
+ * Server-side prefers HELIUS_MAINNET_API_KEY (supports getProgramAccounts).
+ * Client-side falls back to NEXT_PUBLIC_BETTING_RPC_URL (public endpoint).
  */
 export function getBettingRpcEndpoint(): string {
-  const explicit = process.env.NEXT_PUBLIC_BETTING_RPC_URL?.trim();
-  if (explicit) return explicit;
-
+  // Server-side: use Helius for full RPC support (getProgramAccounts etc.)
   const key = getHeliusMainnetApiKey();
   if (key) return `https://mainnet.helius-rpc.com/?api-key=${key}`;
+
+  // Client-side / fallback: use explicit betting RPC or public endpoint
+  const explicit = process.env.NEXT_PUBLIC_BETTING_RPC_URL?.trim();
+  if (explicit) return explicit;
 
   return "https://api.mainnet-beta.solana.com";
 }
