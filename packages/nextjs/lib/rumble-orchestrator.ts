@@ -4005,12 +4005,14 @@ export class RumbleOrchestrator {
       if (winnerAta) {
         try {
           let showerRecipientAta = winnerAta;
+          let showerRecipientWallet = winnerId;
           const chosenBettorWallet = this.pickWeightedWinnerBettorWallet(payoutResult);
           if (chosenBettorWallet) {
             try {
               const bettorPk = new PublicKey(chosenBettorWallet);
               await ensureAtaOnChain(ichorMint, bettorPk);
               showerRecipientAta = getAssociatedTokenAddressSync(ichorMint, bettorPk);
+              showerRecipientWallet = chosenBettorWallet;
             } catch (err) {
               console.warn(`[OnChain] Failed to use bettor shower recipient "${chosenBettorWallet}":`, err);
             }
@@ -4025,6 +4027,11 @@ export class RumbleOrchestrator {
               showerRecipientAta = new PublicKey(pendingShower.recipientTokenAccount);
             } catch {}
           }
+
+          // Read on-chain shower pool BEFORE the call to detect trigger
+          invalidateReadCache("arena");
+          const arenaBeforeShower = await readArenaConfig().catch(() => null);
+          const poolBefore = arenaBeforeShower ? Number(arenaBeforeShower.ichorShowerPool) : 0;
 
           // Try MagicBlock VRF for provably-fair shower roll
           let showerHandled = false;
@@ -4047,6 +4054,63 @@ export class RumbleOrchestrator {
               persist.updateRumbleTxSignature(rumbleId, "checkIchorShower", showerSig);
             } else {
               console.warn(`[OnChain] checkIchorShower returned null — continuing off-chain`);
+            }
+          }
+
+          // Read on-chain shower pool AFTER to detect if shower triggered
+          if (poolBefore > 0) {
+            try {
+              // Brief delay to let tx confirmation propagate
+              await new Promise(r => setTimeout(r, 2000));
+              invalidateReadCache("arena");
+              const arenaAfterShower = await readArenaConfig().catch(() => null);
+              const poolAfter = arenaAfterShower ? Number(arenaAfterShower.ichorShowerPool) : poolBefore;
+
+              if (poolAfter === 0 && poolBefore > 0) {
+                // ICHOR SHOWER TRIGGERED!
+                const showerAmount = poolBefore / 1e9; // Convert lamports to ICHOR
+                const recipientAmount = showerAmount * 0.9; // 90% to recipient
+                console.log(
+                  `[ICHOR SHOWER] TRIGGERED! pool=${poolBefore} (${showerAmount} ICHOR), ` +
+                  `recipient=${showerRecipientWallet}, payout=${recipientAmount} ICHOR`,
+                );
+
+                // Update in-memory payout data
+                const slotIndex = this.findSlotIndexByRumbleId(rumbleId);
+                if (slotIndex !== null) {
+                  const existing = this.transformedPayouts.get(slotIndex);
+                  if (existing) {
+                    existing.ichorShowerTriggered = true;
+                    existing.ichorShowerAmount = recipientAmount;
+                    // Re-persist updated payout
+                    persist.savePayoutResult(rumbleId, existing).catch(err => {
+                      console.error(`[ICHOR SHOWER] Failed to persist updated payout:`, err);
+                    });
+                  }
+                }
+
+                // Reset in-memory shower pool (on-chain already reset)
+                this.ichorShowerPool = 0;
+
+                // Persist shower trigger to Supabase
+                persist.triggerIchorShower(rumbleId, showerRecipientWallet, recipientAmount).catch(err => {
+                  console.error(`[ICHOR SHOWER] Failed to persist to Supabase:`, err);
+                });
+
+                // Emit event for commentary system
+                this.emit("ichor_shower", {
+                  slotIndex: slotIndex ?? 0,
+                  rumbleId,
+                  winnerId: showerRecipientWallet,
+                  amount: recipientAmount,
+                });
+              } else {
+                console.log(
+                  `[ICHOR SHOWER] No trigger this time. poolBefore=${poolBefore}, poolAfter=${poolAfter}`,
+                );
+              }
+            } catch (err) {
+              console.warn(`[ICHOR SHOWER] Failed to read back shower result:`, err);
             }
           }
         } catch (err) {
@@ -4610,6 +4674,17 @@ export class RumbleOrchestrator {
    */
   getIchorShowerPool(): number {
     return this.ichorShowerPool;
+  }
+
+  /**
+   * Find the slot index for a given rumble ID.
+   */
+  private findSlotIndexByRumbleId(rumbleId: string): number | null {
+    const slots = this.queueManager.getSlots();
+    for (const slot of slots) {
+      if (slot.id === rumbleId) return slot.slotIndex;
+    }
+    return null;
   }
 
   /**
