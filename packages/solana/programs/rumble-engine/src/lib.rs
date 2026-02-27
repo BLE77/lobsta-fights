@@ -8,6 +8,14 @@ use ephemeral_rollups_sdk::anchor::{commit, delegate};
 use ephemeral_rollups_sdk::cpi::DelegateConfig;
 #[cfg(feature = "combat")]
 use ephemeral_rollups_sdk::ephem::{commit_accounts, commit_and_undelegate_accounts};
+#[cfg(feature = "combat")]
+use ephemeral_vrf_sdk::anchor::vrf;
+#[cfg(feature = "combat")]
+use ephemeral_vrf_sdk::consts::{DEFAULT_QUEUE, VRF_PROGRAM_IDENTITY};
+#[cfg(feature = "combat")]
+use ephemeral_vrf_sdk::instructions::create_request_randomness_ix;
+#[cfg(feature = "combat")]
+use ephemeral_vrf_sdk::types::SerializableAccountMeta;
 
 declare_id!("2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC");
 
@@ -801,6 +809,7 @@ pub mod rumble_engine {
         combat.elimination_rank = [0u8; MAX_FIGHTERS];
         combat.total_damage_dealt = [0u64; MAX_FIGHTERS];
         combat.total_damage_taken = [0u64; MAX_FIGHTERS];
+        combat.vrf_seed = [0u8; 32];
         for i in 0..rumble.fighter_count as usize {
             combat.hp[i] = START_HP;
         }
@@ -1011,19 +1020,40 @@ pub mod rumble_engine {
 
         let rumble_id_bytes = rumble.id.to_le_bytes();
         let turn_bytes = turn.to_le_bytes();
+        let vrf_seed_ref = &combat.vrf_seed;
         alive_indices.sort_by(|a, b| {
-            let key_a = hash_u64(&[
-                b"pair-order",
-                rumble_id_bytes.as_ref(),
-                turn_bytes.as_ref(),
-                rumble.fighters[*a].as_ref(),
-            ]);
-            let key_b = hash_u64(&[
-                b"pair-order",
-                rumble_id_bytes.as_ref(),
-                turn_bytes.as_ref(),
-                rumble.fighters[*b].as_ref(),
-            ]);
+            let key_a = if *vrf_seed_ref != [0u8; 32] {
+                hash_u64(&[
+                    b"pair-order",
+                    vrf_seed_ref.as_ref(),
+                    rumble_id_bytes.as_ref(),
+                    turn_bytes.as_ref(),
+                    rumble.fighters[*a].as_ref(),
+                ])
+            } else {
+                hash_u64(&[
+                    b"pair-order",
+                    rumble_id_bytes.as_ref(),
+                    turn_bytes.as_ref(),
+                    rumble.fighters[*a].as_ref(),
+                ])
+            };
+            let key_b = if *vrf_seed_ref != [0u8; 32] {
+                hash_u64(&[
+                    b"pair-order",
+                    vrf_seed_ref.as_ref(),
+                    rumble_id_bytes.as_ref(),
+                    turn_bytes.as_ref(),
+                    rumble.fighters[*b].as_ref(),
+                ])
+            } else {
+                hash_u64(&[
+                    b"pair-order",
+                    rumble_id_bytes.as_ref(),
+                    turn_bytes.as_ref(),
+                    rumble.fighters[*b].as_ref(),
+                ])
+            };
             key_a
                 .cmp(&key_b)
                 .then_with(|| rumble.fighters[*a].to_bytes().cmp(&rumble.fighters[*b].to_bytes()))
@@ -2054,6 +2084,80 @@ pub mod rumble_engine {
         msg!("Combat state undelegated back to L1");
         Ok(())
     }
+
+    /// Request provably-fair matchup seed via MagicBlock VRF.
+    ///
+    /// Admin calls this after combat starts to get a VRF-derived seed
+    /// for fair fighter pairing. The VRF oracle will automatically call
+    /// `callback_matchup_seed` with the randomness result.
+    #[cfg(feature = "combat")]
+    pub fn request_matchup_seed(
+        ctx: Context<RequestMatchupSeed>,
+        rumble_id: u64,
+        client_seed: u8,
+    ) -> Result<()> {
+        let config = &ctx.accounts.config;
+        require!(
+            ctx.accounts.payer.key() == config.admin,
+            RumbleError::Unauthorized
+        );
+
+        let combat = &ctx.accounts.combat_state;
+        require!(combat.rumble_id == rumble_id, RumbleError::InvalidRumble);
+        require!(combat.vrf_seed == [0u8; 32], RumbleError::VrfSeedAlreadySet);
+
+        // Capture keys before CPI
+        let payer_key = ctx.accounts.payer.key();
+        let oracle_queue_key = ctx.accounts.oracle_queue.key();
+        let combat_state_key = ctx.accounts.combat_state.key();
+
+        let ix = create_request_randomness_ix(
+            ephemeral_vrf_sdk::instructions::RequestRandomnessParams {
+                payer: payer_key,
+                oracle_queue: oracle_queue_key,
+                callback_program_id: crate::ID,
+                callback_discriminator: instruction::CallbackMatchupSeed::DISCRIMINATOR.to_vec(),
+                caller_seed: [client_seed; 32],
+                accounts_metas: Some(vec![
+                    SerializableAccountMeta {
+                        pubkey: combat_state_key,
+                        is_signer: false,
+                        is_writable: true,
+                    },
+                ]),
+                ..Default::default()
+            },
+        );
+        ctx.accounts
+            .invoke_signed_vrf(&ctx.accounts.payer.to_account_info(), &ix)?;
+
+        msg!(
+            "VRF matchup seed requested for rumble {}",
+            rumble_id
+        );
+        Ok(())
+    }
+
+    /// Callback from MagicBlock VRF oracle with matchup randomness.
+    ///
+    /// Only the VRF oracle (VRF_PROGRAM_IDENTITY signer) can call this.
+    /// Stores the randomness in RumbleCombatState.vrf_seed for fair pairing.
+    #[cfg(feature = "combat")]
+    pub fn callback_matchup_seed(
+        ctx: Context<CallbackMatchupSeed>,
+        randomness: [u8; 32],
+    ) -> Result<()> {
+        let combat = &mut ctx.accounts.combat_state;
+        require!(combat.vrf_seed == [0u8; 32], RumbleError::VrfSeedAlreadySet);
+
+        combat.vrf_seed = randomness;
+
+        msg!(
+            "VRF matchup seed stored for rumble {}",
+            combat.rumble_id
+        );
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2650,6 +2754,47 @@ pub struct CommitCombat<'info> {
     pub combat_state: Account<'info, RumbleCombatState>,
 }
 
+/// Accounts for requesting VRF-based matchup seed.
+/// The `#[vrf]` macro auto-injects: program_identity, vrf_program, slot_hashes, system_program.
+#[cfg(feature = "combat")]
+#[vrf]
+#[derive(Accounts)]
+#[instruction(rumble_id: u64)]
+pub struct RequestMatchupSeed<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    #[account(
+        seeds = [CONFIG_SEED],
+        bump = config.bump,
+    )]
+    pub config: Account<'info, RumbleConfig>,
+
+    #[account(
+        mut,
+        seeds = [COMBAT_STATE_SEED, rumble_id.to_le_bytes().as_ref()],
+        bump = combat_state.bump,
+        constraint = combat_state.rumble_id == rumble_id @ RumbleError::InvalidRumble,
+    )]
+    pub combat_state: Account<'info, RumbleCombatState>,
+
+    /// CHECK: The MagicBlock VRF oracle queue
+    #[account(mut, address = DEFAULT_QUEUE)]
+    pub oracle_queue: AccountInfo<'info>,
+}
+
+/// Accounts for the VRF callback (called by the MagicBlock oracle).
+#[cfg(feature = "combat")]
+#[derive(Accounts)]
+pub struct CallbackMatchupSeed<'info> {
+    /// The VRF program identity — only the oracle can call this
+    #[account(address = VRF_PROGRAM_IDENTITY)]
+    pub vrf_program_identity: Signer<'info>,
+
+    #[account(mut)]
+    pub combat_state: Account<'info, RumbleCombatState>,
+}
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -2738,6 +2883,7 @@ pub struct RumbleCombatState {
     pub elimination_rank: [u8; MAX_FIGHTERS],   // 16
     pub total_damage_dealt: [u64; MAX_FIGHTERS], // 128
     pub total_damage_taken: [u64; MAX_FIGHTERS], // 128
+    pub vrf_seed: [u8; 32],                     // 32
     pub bump: u8,                               // 1
 }
 
@@ -2989,4 +3135,7 @@ pub enum RumbleError {
 
     #[msg("Invalid new admin address")]
     InvalidNewAdmin,
+
+    #[msg("VRF matchup seed already set")]
+    VrfSeedAlreadySet,
 }

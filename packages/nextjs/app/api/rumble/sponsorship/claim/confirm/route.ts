@@ -3,8 +3,8 @@ import { PublicKey } from "@solana/web3.js";
 import { createHash } from "node:crypto";
 import { utils as anchorUtils } from "@coral-xyz/anchor";
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
-import { getConnection } from "~~/lib/solana-connection";
-import { RUMBLE_ENGINE_ID } from "~~/lib/solana-programs";
+import { getBettingConnection } from "~~/lib/solana-connection";
+import { RUMBLE_ENGINE_ID_MAINNET } from "~~/lib/solana-programs";
 
 export const dynamic = "force-dynamic";
 
@@ -57,7 +57,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Invalid wallet_address or fighter_pubkey" }, { status: 400 });
     }
 
-    const connection = getConnection();
+    const connection = getBettingConnection();
     // Retry a few times — client uses fire-and-forget so tx may not be confirmed yet.
     let tx = await connection.getParsedTransaction(txSignature, {
       maxSupportedTransactionVersion: 0,
@@ -99,7 +99,7 @@ export async function POST(request: Request) {
     for (const ix of tx.transaction.message.instructions) {
       try {
         const ixAny = ix as any;
-        if (ixAny.programId?.toBase58?.() !== RUMBLE_ENGINE_ID.toBase58()) continue;
+        if (ixAny.programId?.toBase58?.() !== RUMBLE_ENGINE_ID_MAINNET.toBase58()) continue;
         if (typeof ixAny.data !== "string") continue;
 
         const raw = anchorUtils.bytes.bs58.decode(ixAny.data);

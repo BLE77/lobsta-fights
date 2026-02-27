@@ -4,8 +4,8 @@ import { createHash } from "node:crypto";
 import { utils as anchorUtils } from "@coral-xyz/anchor";
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 import { isAccrueClaimMode } from "~~/lib/rumble-payout-mode";
-import { getConnection } from "~~/lib/solana-connection";
-import { RUMBLE_ENGINE_ID, deriveRumblePda } from "~~/lib/solana-programs";
+import { getBettingConnection } from "~~/lib/solana-connection";
+import { RUMBLE_ENGINE_ID_MAINNET, deriveRumblePdaMainnet } from "~~/lib/solana-programs";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 import { requireJsonContentType, sanitizeErrorResponse } from "~~/lib/api-middleware";
 
@@ -69,7 +69,7 @@ export async function POST(request: Request) {
       return {
         rumbleId: id,
         rumbleIdNum,
-        rumblePda: rumbleIdNum === null ? null : deriveRumblePda(rumbleIdNum)[0],
+        rumblePda: rumbleIdNum === null ? null : deriveRumblePdaMainnet(rumbleIdNum)[0],
       };
     });
     const invalidRumble = requestedRumbleMeta.find((entry) => entry.rumbleIdNum === null);
@@ -80,7 +80,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const connection = getConnection();
+    const connection = getBettingConnection();
     // Retry a few times — client uses fire-and-forget so tx may not be confirmed yet.
     let tx = await connection.getParsedTransaction(txSignature, {
       maxSupportedTransactionVersion: 0,
@@ -111,7 +111,7 @@ export async function POST(request: Request) {
     }
 
     const walletBase58 = walletPk.toBase58();
-    const engineBase58 = RUMBLE_ENGINE_ID.toBase58();
+    const engineBase58 = RUMBLE_ENGINE_ID_MAINNET.toBase58();
 
     // getParsedTransaction may return pubkey as PublicKey object or string
     const toBase58Safe = (val: any): string | null => {

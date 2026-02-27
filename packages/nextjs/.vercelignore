@@ -1,0 +1,8 @@
+.twa-build/
+*.apk
+*.idsig
+android-keystore*.jks
+keystore.properties
+node_modules/
+.next/
+

@@ -1,2 +1,13 @@
 .vercel
 .env*.local
+
+# Serwist service worker output (generated at build time)
+public/sw.js
+public/sw.js.map
+
+# Android/TWA build artifacts
+.twa-build/
+*.apk
+android-keystore.jks
+android-keystore-seeker.jks
+keystore.properties

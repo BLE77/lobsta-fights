@@ -6,7 +6,7 @@ import {
   discoverOnchainWalletPayoutSnapshot,
   type OnchainClaimableRumble,
 } from "~~/lib/rumble-onchain-claims";
-import { getRpcEndpoint } from "~~/lib/solana-connection";
+import { getBettingRpcEndpoint } from "~~/lib/solana-connection";
 
 export const dynamic = "force-dynamic";
 
@@ -75,7 +75,7 @@ export async function GET(request: Request) {
       timestamp: new Date().toISOString(),
       ...(debug ? {
         _debug: {
-          rpc_endpoint: getRpcEndpoint().replace(/api[_-]key=[^&]+/, "api-key=REDACTED"),
+          rpc_endpoint: getBettingRpcEndpoint().replace(/api[_-]key=[^&]+/, "api-key=REDACTED"),
           snapshot_claimable_count: snapshot.claimableRumbles.length,
         },
       } : {}),

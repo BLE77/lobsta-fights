@@ -8,10 +8,11 @@ export default function BIP() {
         { text: "Switch to real time video generation", completed: false },
         { text: "Create account for ring girl and post about her life working for the UCF, automate it", completed: false },
         { text: "Plan Title Fights", completed: false },
+        { text: "solana mobile intergration", completed: false },
     ];
 
     return (
-        <main className="relative flex flex-col items-center min-h-screen text-stone-200 p-8">
+        <main className="relative flex flex-col items-center min-h-screen text-stone-200 px-4 py-6 md:p-8 pt-safe overflow-x-hidden">
             {/* Background Video */}
             <div className="fixed inset-0 z-0 overflow-hidden">
                 <video
@@ -28,7 +29,7 @@ export default function BIP() {
                 <div className="scanlines-overlay pointer-events-none"></div>
             </div>
 
-            <div className="relative z-10 w-full max-w-3xl flex flex-col pt-8">
+            <div className="relative z-10 w-full max-w-3xl flex flex-col pt-6 md:pt-8">
                 <style dangerouslySetInnerHTML={{
                     __html: `
                     @import url('https://fonts.googleapis.com/css2?family=Special+Elite&display=swap');
@@ -40,14 +41,14 @@ export default function BIP() {
                     }
                 `}} />
 
-                <div className="relative flex items-center justify-center mb-12 animate-fade-in-up" style={{ animationDelay: '100ms', animationFillMode: 'both' }}>
+                <div className="relative flex flex-col md:flex-row md:items-center md:justify-center gap-3 md:gap-0 mb-8 md:mb-12 animate-fade-in-up" style={{ animationDelay: '100ms', animationFillMode: 'both' }}>
                     <Link
                         href="/"
-                        className="absolute left-0 text-stone-500 hover:text-amber-500 font-mono text-sm transition-colors flex items-center gap-2"
+                        className="md:absolute md:left-0 text-stone-500 hover:text-amber-500 font-mono text-sm transition-colors flex items-center gap-2"
                     >
                         ← BACK TO BASE
                     </Link>
-                    <h1 className="font-fight-glow-intense text-5xl md:text-6xl text-amber-400 tracking-wider text-center">
+                    <h1 className="font-fight-glow-intense text-4xl md:text-6xl text-amber-400 tracking-wider text-center">
                         BUILD IN PUBLIC
                     </h1>
                 </div>

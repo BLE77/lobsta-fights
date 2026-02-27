@@ -81,6 +81,10 @@ const DELEGATION_PROGRAM_ID = new PublicKey("DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaA
 const MAGIC_PROGRAM_ID = new PublicKey("Magic11111111111111111111111111111111111111");
 const MAGIC_CONTEXT_ID = new PublicKey("MagicContext1111111111111111111111111111111");
 
+// MagicBlock VRF Program
+const VRF_PROGRAM_ID = new PublicKey("Vrf1RNUjXmQGjmQrQLvJHs9SNkvDJEsRVFPkfSQUwGz");
+const VRF_DEFAULT_QUEUE = new PublicKey("Cuj97ggrhhidhbu39TijNVqE74xvKJ69gDervRUXAxGh");
+
 // ---------------------------------------------------------------------------
 // Time-based read cache — reduces RPC calls for hot on-chain reads
 // ---------------------------------------------------------------------------
@@ -3103,4 +3107,84 @@ export async function undelegateCombatFromEr(
 
   // Undelegate is called on the ER
   return await sendAdminTxFireAndForget(method, admin, getErConnection());
+}
+
+// ---------------------------------------------------------------------------
+// MagicBlock VRF — Matchup Seed & Ichor Shower
+// ---------------------------------------------------------------------------
+
+/**
+ * Request a VRF-derived matchup seed for fair fighter pairing.
+ * Called after combat starts. The VRF oracle callback stores the randomness
+ * in the on-chain RumbleCombatState.vrf_seed for turn-based pairing.
+ *
+ * Returns tx signature on success, null if admin keypair unavailable.
+ */
+export async function requestMatchupSeed(
+  rumbleId: number,
+  connection?: Connection,
+): Promise<string | null> {
+  const provider = getAdminProvider(connection);
+  if (!provider) {
+    console.warn("[solana-programs] No admin keypair, skipping requestMatchupSeed");
+    return null;
+  }
+  const program = getRumbleEngineProgram(provider);
+  const admin = getAdminKeypair()!;
+
+  const [rumbleConfigPda] = deriveRumbleConfigPda();
+  const [combatStatePda] = deriveCombatStatePda(rumbleId);
+  const clientSeed = randomBytes(1)[0];
+
+  const method = (program.methods as any)
+    .requestMatchupSeed(new anchor.BN(rumbleId), clientSeed)
+    .accountsPartial({
+      payer: admin.publicKey,
+      config: rumbleConfigPda,
+      combatState: combatStatePda,
+      oracleQueue: VRF_DEFAULT_QUEUE,
+    });
+
+  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+}
+
+/**
+ * Request a VRF-derived Ichor Shower roll via MagicBlock VRF.
+ * Replaces the slot-hash-based checkIchorShower with provably-fair randomness.
+ * The VRF oracle callback determines shower trigger and handles token transfers.
+ *
+ * Returns tx signature on success, null if admin keypair unavailable.
+ */
+export async function requestIchorShowerVrf(
+  recipientTokenAccount: PublicKey,
+  showerVault: PublicKey,
+  connection?: Connection,
+): Promise<string | null> {
+  const provider = getAdminProvider(connection);
+  if (!provider) {
+    console.warn("[solana-programs] No admin keypair, skipping requestIchorShowerVrf");
+    return null;
+  }
+  const program = getIchorTokenProgram(provider);
+  const admin = getAdminKeypair()!;
+
+  const [arenaConfigPda] = deriveArenaConfigPda();
+  const [showerRequestPda] = deriveShowerRequestPda();
+  const ichorMint = getIchorMint();
+  const clientSeed = randomBytes(1)[0];
+
+  const method = (program.methods as any)
+    .requestIchorShowerVrf(clientSeed)
+    .accountsPartial({
+      payer: admin.publicKey,
+      arenaConfig: arenaConfigPda,
+      showerRequest: showerRequestPda,
+      ichorMint,
+      recipientTokenAccount,
+      showerVault,
+      oracleQueue: VRF_DEFAULT_QUEUE,
+      tokenProgram: TOKEN_PROGRAM_ID,
+    });
+
+  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
 }

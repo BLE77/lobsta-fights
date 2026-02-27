@@ -16,14 +16,26 @@ import {
 } from "@solana/wallet-adapter-react";
 import { WalletModalProvider } from "@solana/wallet-adapter-react-ui";
 import { type WalletError } from "@solana/wallet-adapter-base";
+import {
+  SolanaMobileWalletAdapter,
+  createDefaultAddressSelector,
+  createDefaultAuthorizationResultCache,
+  createDefaultWalletNotFoundHandler,
+} from "@solana-mobile/wallet-adapter-mobile";
+import { useSolanaMobileContext } from "~~/lib/solana-mobile";
 
 import "@solana/wallet-adapter-react-ui/styles.css";
 
 function getRpcEndpoint(): string {
-  const network = process.env.NEXT_PUBLIC_SOLANA_NETWORK ?? "devnet";
+  // Betting is on mainnet — users sign bet/claim txs with real SOL.
+  // Use dedicated betting RPC if configured, otherwise fall back to network-based endpoint.
+  const bettingRpc = process.env.NEXT_PUBLIC_BETTING_RPC_URL?.trim();
+  if (bettingRpc) return bettingRpc;
+
   const explicit = process.env.NEXT_PUBLIC_SOLANA_RPC_URL?.trim();
   if (explicit) return explicit;
 
+  const network = process.env.NEXT_PUBLIC_SOLANA_NETWORK ?? "devnet";
   // Frontend defaults to public RPC to avoid exposing/rate-limiting a shared key.
   return network === "mainnet-beta"
     ? "https://api.mainnet-beta.solana.com"
@@ -36,9 +48,30 @@ export default function WalletProvider({
   children: React.ReactNode;
 }) {
   const endpoint = useMemo(() => getRpcEndpoint(), []);
+  const mobileContext = useSolanaMobileContext();
+  const network =
+    (process.env.NEXT_PUBLIC_SOLANA_NETWORK as "devnet" | "testnet" | "mainnet-beta" | undefined) ??
+    "devnet";
 
-  // Empty array — wallet-standard auto-detects all installed Solana wallets
-  const wallets = useMemo(() => [], []);
+  const wallets = useMemo(() => {
+    // Keep wallet-standard desktop behavior; prefer Solana Mobile adapter
+    // when running in Seeker/Solana mobile browser contexts.
+    if (!mobileContext.shouldPreferMobileWalletAdapter) return [];
+
+    return [
+      new SolanaMobileWalletAdapter({
+        chain: network,
+        addressSelector: createDefaultAddressSelector(),
+        authorizationResultCache: createDefaultAuthorizationResultCache(),
+        onWalletNotFound: createDefaultWalletNotFoundHandler(),
+        appIdentity: {
+          name: "Underground Claw Fights",
+          uri: "https://clawfights.xyz",
+          icon: "https://clawfights.xyz/favicon.svg",
+        },
+      }),
+    ];
+  }, [mobileContext.shouldPreferMobileWalletAdapter, network]);
 
   const onError = useCallback((error: WalletError) => {
     console.error("[WalletProvider] error:", error);

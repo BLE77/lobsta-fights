@@ -97,6 +97,8 @@ import {
   delegateCombatToEr,
   commitCombatFromEr,
   undelegateCombatFromEr,
+  requestMatchupSeed,
+  requestIchorShowerVrf,
 } from "./solana-programs";
 import { Keypair, PublicKey, Transaction, Connection } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
@@ -1979,6 +1981,14 @@ export class RumbleOrchestrator {
           // Not fatal — the on-chain tick loop self-heals by detecting betting state
         }
 
+        // Request VRF matchup seed (fire-and-forget for fairness audit trail)
+        const rumbleIdNumOffchain = parseOnchainRumbleIdNumber(slot.id);
+        if (rumbleIdNumOffchain !== null) {
+          requestMatchupSeed(rumbleIdNumOffchain).catch((err) => {
+            console.warn(`[VRF] requestMatchupSeed failed for rumble ${slot.id}:`, err);
+          });
+        }
+
         this.emit("combat_started", {
           slotIndex: idx,
           rumbleId: slot.id,
@@ -2103,6 +2113,18 @@ export class RumbleOrchestrator {
         } catch (err) {
           console.warn(`[ER] delegateCombat failed for rumble ${rumbleIdNum}, falling back to L1:`, err);
         }
+      }
+
+      // Request VRF matchup seed for provably-fair fighter pairing
+      try {
+        const vrfSig = await requestMatchupSeed(rumbleIdNum);
+        if (vrfSig) {
+          console.log(`[VRF] requestMatchupSeed succeeded for rumble ${rumbleIdNum}: ${vrfSig}`);
+        } else {
+          console.warn(`[VRF] requestMatchupSeed returned null for rumble ${rumbleIdNum} — continuing with slot-hash RNG`);
+        }
+      } catch (err) {
+        console.warn(`[VRF] requestMatchupSeed failed for rumble ${rumbleIdNum}, falling back to slot-hash RNG:`, err);
       }
 
       this.emit("combat_started", {
@@ -3934,7 +3956,7 @@ export class RumbleOrchestrator {
         }
       }
 
-      // 3. Check Ichor Shower (state machine: request first, then settle later)
+      // 3. Check Ichor Shower — try VRF first, fall back to slot-hash
       if (winnerAta) {
         try {
           let showerRecipientAta = winnerAta;
@@ -3959,12 +3981,28 @@ export class RumbleOrchestrator {
             } catch {}
           }
 
-          const showerSig = await checkIchorShowerOnChain(showerRecipientAta, showerVaultAta);
-          if (showerSig) {
-            console.log(`[OnChain] checkIchorShower succeeded: ${showerSig}`);
-            persist.updateRumbleTxSignature(rumbleId, "checkIchorShower", showerSig);
-          } else {
-            console.warn(`[OnChain] checkIchorShower returned null — continuing off-chain`);
+          // Try MagicBlock VRF for provably-fair shower roll
+          let showerHandled = false;
+          try {
+            const vrfSig = await requestIchorShowerVrf(showerRecipientAta, showerVaultAta);
+            if (vrfSig) {
+              console.log(`[VRF] requestIchorShowerVrf succeeded: ${vrfSig}`);
+              persist.updateRumbleTxSignature(rumbleId, "ichorShowerVrf", vrfSig);
+              showerHandled = true;
+            }
+          } catch (vrfErr) {
+            console.warn(`[VRF] requestIchorShowerVrf failed, falling back to checkIchorShower:`, vrfErr);
+          }
+
+          // Fallback to slot-hash based shower if VRF unavailable
+          if (!showerHandled) {
+            const showerSig = await checkIchorShowerOnChain(showerRecipientAta, showerVaultAta);
+            if (showerSig) {
+              console.log(`[OnChain] checkIchorShower succeeded: ${showerSig}`);
+              persist.updateRumbleTxSignature(rumbleId, "checkIchorShower", showerSig);
+            } else {
+              console.warn(`[OnChain] checkIchorShower returned null — continuing off-chain`);
+            }
           }
         } catch (err) {
           console.error(`[OnChain] checkIchorShower error:`, err);

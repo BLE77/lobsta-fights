@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { LAMPORTS_PER_SOL, PublicKey, type Connection } from "@solana/web3.js";
 import { utils as anchorUtils } from "@coral-xyz/anchor";
-import { getConnection } from "./solana-connection";
-import { RUMBLE_ENGINE_ID, readRumbleAccountState, deriveVaultPda } from "./solana-programs";
+import { getBettingConnection } from "./solana-connection";
+import { RUMBLE_ENGINE_ID_MAINNET, readRumbleAccountState, deriveVaultPdaMainnet } from "./solana-programs";
 import { freshSupabase } from "./supabase";
 import { getRumbleSessionMinTimestampMs } from "./rumble-session";
 import { parseOnchainRumbleIdNumber } from "./rumble-id";
@@ -107,7 +107,7 @@ async function listBettorAccountsForWallet(
   wallet: PublicKey,
   connection: Connection,
 ): Promise<BettorAccountDecoded[]> {
-  const accounts = await connection.getProgramAccounts(RUMBLE_ENGINE_ID, {
+  const accounts = await connection.getProgramAccounts(RUMBLE_ENGINE_ID_MAINNET, {
     commitment: "confirmed",
     filters: [
       {
@@ -141,7 +141,7 @@ export async function discoverOnchainWalletPayoutSnapshot(
   wallet: PublicKey,
   limit: number = 40,
 ): Promise<OnchainWalletPayoutSnapshot> {
-  const connection = getConnection();
+  const connection = getBettingConnection();
   const minTimestampMs = getRumbleSessionMinTimestampMs();
   const bettorRowsRaw = await listBettorAccountsForWallet(wallet, connection);
   const bettorRows =
@@ -160,7 +160,7 @@ export async function discoverOnchainWalletPayoutSnapshot(
     const rows = await Promise.all(
       chunk.map(async (rumbleIdNum) => ({
         rumbleIdNum,
-        state: await readRumbleAccountState(rumbleIdNum, connection).catch((err) => {
+        state: await readRumbleAccountState(rumbleIdNum, connection, RUMBLE_ENGINE_ID_MAINNET).catch((err) => {
           console.error(`[claims] readRumbleAccountState failed for rumble ${rumbleIdNum}:`, err?.message ?? err);
           return null;
         }),
@@ -214,7 +214,7 @@ export async function discoverOnchainWalletPayoutSnapshot(
     // Check vault has enough SOL to actually pay out (skip swept vaults)
     let vaultBalance = 0;
     try {
-      const [vaultPda] = deriveVaultPda(bettor.rumbleIdNum);
+      const [vaultPda] = deriveVaultPdaMainnet(bettor.rumbleIdNum);
       vaultBalance = await connection.getBalance(vaultPda, "confirmed");
       const estimatedPayoutLamports = onchainClaimableLamports > 0n
         ? onchainClaimableLamports

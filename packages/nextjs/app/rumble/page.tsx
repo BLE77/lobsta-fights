@@ -22,6 +22,7 @@ import type { CommentarySSEEvent } from "~~/lib/commentary";
 import { audioManager, soundForPairing } from "~~/lib/audio";
 import { BoltIcon, ChatBubbleLeftRightIcon, ListBulletIcon } from "@heroicons/react/24/outline";
 import AudioToggle from "~~/components/AudioToggle";
+import { useSolanaMobileContext } from "~~/lib/solana-mobile";
 
 // ---------------------------------------------------------------------------
 // Types for the status API response
@@ -392,9 +393,19 @@ export default function RumblePage() {
   const prevSlotAudioState = useRef<Map<number, { state: string; turnCount: number; fighterCount: number }>>(new Map());
 
   // ---- Wallet adapter hooks ----
-  const { publicKey, signTransaction, connected, disconnect: walletDisconnect, wallet } = useWallet();
+  const {
+    publicKey,
+    signTransaction,
+    connected,
+    disconnect: walletDisconnect,
+    wallet,
+    wallets,
+    select,
+  } = useWallet();
   const { setVisible: setWalletModalVisible } = useWalletModal();
   const walletConnected = connected && !!publicKey;
+  const mobileContext = useSolanaMobileContext();
+  const seekerOptimizedUi = mobileContext.shouldUseMobileOptimizations;
 
   // RPC connection — use Helius if available, otherwise public RPC
   const network = process.env.NEXT_PUBLIC_SOLANA_NETWORK ?? "devnet";
@@ -413,6 +424,18 @@ export default function RumblePage() {
     setClaimBalance(null);
     setClaimError(null);
   }, [walletDisconnect]);
+
+  const connectWallet = useCallback(() => {
+    if (mobileContext.shouldPreferMobileWalletAdapter) {
+      const mobileWallet = wallets.find((entry) =>
+        /mobile|seed vault|solana mobile/i.test(entry.adapter.name),
+      );
+      if (mobileWallet) {
+        select(mobileWallet.adapter.name);
+      }
+    }
+    setWalletModalVisible(true);
+  }, [mobileContext.shouldPreferMobileWalletAdapter, wallets, select, setWalletModalVisible]);
 
   // Fetch SOL balance when wallet connects
   useEffect(() => {
@@ -917,10 +940,16 @@ export default function RumblePage() {
   // - slower when SSE is healthy to reduce server/RPC load
   useEffect(() => {
     fetchStatus();
-    const intervalMs = sseConnected ? 10_000 : 4_000;
+    const intervalMs = seekerOptimizedUi
+      ? sseConnected
+        ? 12_000
+        : 6_000
+      : sseConnected
+        ? 10_000
+        : 4_000;
     const pollInterval = setInterval(fetchStatus, intervalMs);
     return () => clearInterval(pollInterval);
-  }, [fetchStatus, sseConnected]);
+  }, [fetchStatus, seekerOptimizedUi, sseConnected]);
 
   // ---- Sound effects driven by state changes (works with polling + SSE) ----
   useEffect(() => {
@@ -1004,12 +1033,13 @@ export default function RumblePage() {
     }
     fetchClaimBalance();
     fetchMyBets();
+    const intervalMs = seekerOptimizedUi ? 18_000 : 12_000;
     const interval = setInterval(() => {
       fetchClaimBalance();
       fetchMyBets();
-    }, 12_000);
+    }, intervalMs);
     return () => clearInterval(interval);
-  }, [publicKey, fetchClaimBalance, fetchMyBets]);
+  }, [publicKey, fetchClaimBalance, fetchMyBets, seekerOptimizedUi]);
 
   const decodeBase64Tx = (base64: string): Transaction => {
     const binary = atob(base64);
@@ -1339,15 +1369,15 @@ export default function RumblePage() {
   };
 
   return (
-    <main className="relative flex flex-col min-h-screen text-stone-200">
+    <main className="relative flex flex-col min-h-screen text-stone-200 pt-safe">
       {/* Background */}
       <div
-        className="fixed inset-0 z-0 animate-breathe"
+        className={`fixed inset-0 z-0 ${seekerOptimizedUi ? "" : "animate-breathe"}`}
         style={{
           backgroundImage: "url('/rumble-arena.webp')",
           backgroundSize: "cover",
           backgroundPosition: "center",
-          backgroundAttachment: "fixed",
+          backgroundAttachment: seekerOptimizedUi ? "scroll" : "fixed",
         }}
       >
         <div className="absolute inset-0 bg-stone-950/90"></div>
@@ -1396,6 +1426,11 @@ export default function RumblePage() {
                 <span className="font-mono text-[10px] text-stone-500">
                   {sseConnected ? "LIVE" : "POLLING"}
                 </span>
+                {mobileContext.isLikelySolanaMobile && (
+                  <span className="font-mono text-[10px] text-cyan-400">
+                    {mobileContext.isSeeker ? "SEEKER" : mobileContext.isSaga ? "SAGA" : "MOBILE"}
+                  </span>
+                )}
               </div>
 
               {/* Wallet */}
@@ -1426,10 +1461,14 @@ export default function RumblePage() {
                   </div>
                 ) : (
                   <button
-                    onClick={() => setWalletModalVisible(true)}
+                    onClick={connectWallet}
                     className="px-3 py-1 bg-amber-600 hover:bg-amber-500 text-stone-950 font-mono text-xs font-bold rounded-sm transition-all active:scale-95 flex-shrink-0"
                   >
-                    Connect Wallet
+                    {mobileContext.shouldPreferMobileWalletAdapter
+                      ? mobileContext.isSeeker
+                        ? "Connect Seeker Wallet"
+                        : "Connect Mobile Wallet"
+                      : "Connect Wallet"}
                   </button>
                 )}
               </div>

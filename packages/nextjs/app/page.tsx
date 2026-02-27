@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
+import { useSolanaMobileContext } from "~~/lib/solana-mobile";
 
 const ActivityFeed = dynamic(() => import("../components/ActivityFeed"), { ssr: false });
 type Role = "spectator" | "fighter" | null;
@@ -16,6 +17,7 @@ interface Stats {
 
 export default function Home() {
   const [selectedRole, setSelectedRole] = useState<Role>(null);
+  const mobileContext = useSolanaMobileContext();
 
   const [stats, setStats] = useState<Stats | null>(null);
   const [registrationResult, setRegistrationResult] = useState<{
@@ -45,33 +47,41 @@ export default function Home() {
   };
 
   return (
-    <main className="relative flex flex-col items-center min-h-screen text-stone-200 p-8">
+    <main className="relative flex flex-col items-center min-h-screen text-stone-200 px-4 py-6 md:p-8 pt-safe overflow-x-hidden">
       {/* Background Video */}
-      <div className="fixed inset-0 z-0 overflow-hidden">
-        <video
-          autoPlay
-          loop
-          muted
-          playsInline
-          className="absolute inset-0 w-full h-full object-cover opacity-60"
-        >
-          <source src="/hero-bg.mp4" type="video/mp4" />
-        </video>
+      <div className="fixed inset-0 z-0 overflow-hidden pointer-events-none" aria-hidden="true">
+        {mobileContext.shouldUseMobileOptimizations ? (
+          <img
+            src="/rumble-arena.webp"
+            alt=""
+            className="absolute inset-0 w-full h-full object-cover opacity-60"
+          />
+        ) : (
+          <video
+            autoPlay
+            loop
+            muted
+            playsInline
+            className="absolute inset-0 w-full h-full object-cover opacity-60"
+          >
+            <source src="/hero-bg.mp4" type="video/mp4" />
+          </video>
+        )}
         <div className="absolute inset-0 bg-stone-950/85"></div>
         {/* CRT Scanline Overlay */}
         <div className="scanlines-overlay"></div>
       </div>
 
       {/* Content */}
-      <div className="relative z-10 w-full flex flex-col items-center">
+      <div className="relative z-20 w-full flex flex-col items-center pointer-events-auto">
         {/* Hero Section */}
-        <div className="text-center mb-8 relative">
+        <div className="text-center mb-8 relative w-full max-w-5xl">
           <div className="absolute -top-4 left-1/2 -translate-x-1/2 w-64 h-1 bg-gradient-to-r from-transparent via-amber-600 to-transparent opacity-50"></div>
 
           <img
             src="/hero-robots.webp"
             alt="UCF - Underground Claw Fights"
-            className="max-w-lg mx-auto mb-6 drop-shadow-[0_0_30px_rgba(217,119,6,0.3)] animate-breathe animate-glitch-occasional"
+            className="w-full max-w-lg mx-auto mb-6 drop-shadow-[0_0_30px_rgba(217,119,6,0.3)] animate-breathe animate-glitch-occasional"
           />
 
           <h1 className="font-fight-glow-intense text-5xl md:text-6xl text-amber-400 tracking-wider animate-terminal-boot">
@@ -90,14 +100,14 @@ export default function Home() {
 
         {/* Role Selection */}
         <div
-          className="bg-stone-900/40 border border-stone-800 rounded-sm p-6 mb-8 max-w-2xl w-full backdrop-blur-md animate-fade-in-up shadow-[0_4px_30px_rgba(0,0,0,0.5)]"
+          className="bg-stone-900/40 border border-stone-800 rounded-sm p-4 md:p-6 mb-8 max-w-2xl w-full backdrop-blur-md animate-fade-in-up shadow-[0_4px_30px_rgba(0,0,0,0.5)]"
           style={{ animationDelay: '1000ms', animationFillMode: 'both' }}
         >
           {/* Role Toggle Buttons */}
-          <div className="flex gap-4 justify-center mb-4">
+          <div className="flex flex-col md:flex-row gap-3 md:gap-4 justify-center items-center mb-4">
             <button
               onClick={() => setSelectedRole("spectator")}
-              className={`flex flex-col items-center justify-center gap-4 px-6 py-6 w-[200px] rounded-sm font-mono uppercase tracking-wider transition-all duration-300 relative overflow-hidden group ${selectedRole === "spectator"
+              className={`flex flex-col items-center justify-center gap-4 px-4 md:px-6 py-6 w-full md:w-[200px] max-w-[280px] rounded-sm font-mono uppercase tracking-wider transition-all duration-300 relative overflow-hidden group ${selectedRole === "spectator"
                 ? "bg-amber-900/30 text-amber-500 border border-amber-500 shadow-[0_0_15px_rgba(245,158,11,0.2)]"
                 : "bg-stone-900/50 text-stone-400 border border-stone-800 hover:border-amber-600/50 hover:bg-stone-800/80 hover:shadow-[0_0_10px_rgba(245,158,11,0.1)]"
                 }`}
@@ -117,7 +127,7 @@ export default function Home() {
 
             <button
               onClick={() => setSelectedRole("fighter")}
-              className={`flex flex-col items-center justify-center gap-4 px-6 py-6 w-[200px] rounded-sm font-mono uppercase tracking-wider transition-all duration-300 relative overflow-hidden group ${selectedRole === "fighter"
+              className={`flex flex-col items-center justify-center gap-4 px-4 md:px-6 py-6 w-full md:w-[200px] max-w-[280px] rounded-sm font-mono uppercase tracking-wider transition-all duration-300 relative overflow-hidden group ${selectedRole === "fighter"
                 ? "bg-red-900/30 text-red-500 border border-red-500 shadow-[0_0_15px_rgba(239,68,68,0.2)]"
                 : "bg-stone-900/50 text-stone-400 border border-stone-800 hover:border-red-600/50 hover:bg-stone-800/80 hover:shadow-[0_0_10px_rgba(239,68,68,0.1)]"
                 }`}

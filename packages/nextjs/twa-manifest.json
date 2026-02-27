@@ -1,0 +1,35 @@
+{
+  "packageId": "xyz.clawfights.twa",
+  "host": "clawfights.xyz",
+  "name": "Underground Claw Fights",
+  "launcherName": "UCF",
+  "display": "standalone",
+  "themeColor": "#0c0a09",
+  "navigationColor": "#0c0a09",
+  "navigationColorDark": "#0c0a09",
+  "navigationDividerColor": "#0c0a09",
+  "navigationDividerColorDark": "#0c0a09",
+  "backgroundColor": "#0c0a09",
+  "enableNotifications": false,
+  "startUrl": "/",
+  "iconUrl": "https://clawfights.xyz/og-image.png",
+  "maskableIconUrl": "https://clawfights.xyz/og-image.png",
+  "shortcuts": [],
+  "signingKey": {
+    "path": "./android-keystore-seeker.jks",
+    "alias": "ucf-seeker"
+  },
+  "appVersionCode": 2,
+  "appVersionName": "1.1.0",
+  "splashScreenFadeOutDuration": 300,
+  "generatorApp": "bubblewrap-cli",
+  "webManifestUrl": "https://clawfights.xyz/manifest.json",
+  "fallbackType": "customtabs",
+  "features": {},
+  "alphaDependencies": {
+    "enabled": false
+  },
+  "enableSiteSettingsShortcut": true,
+  "isChromeOSOnly": false,
+  "orientation": "portrait"
+}

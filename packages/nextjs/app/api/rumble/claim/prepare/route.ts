@@ -5,10 +5,11 @@ import { isAccrueClaimMode } from "~~/lib/rumble-payout-mode";
 import {
   buildClaimPayoutTx,
   buildClaimPayoutBatchTx,
-  deriveVaultPda,
+  deriveVaultPdaMainnet,
+  RUMBLE_ENGINE_ID_MAINNET,
 } from "~~/lib/solana-programs";
 import { discoverOnchainClaimableRumbles } from "~~/lib/rumble-onchain-claims";
-import { getConnection } from "~~/lib/solana-connection";
+import { getBettingConnection } from "~~/lib/solana-connection";
 import { requireJsonContentType, sanitizeErrorResponse } from "~~/lib/api-middleware";
 
 export const dynamic = "force-dynamic";
@@ -94,13 +95,13 @@ export async function POST(request: Request) {
 
     // Check vault balances to skip underfunded vaults that would cause
     // InsufficientVaultFunds on-chain. This replaces the broken simulateTransaction.
-    const connection = getConnection();
+    const connection = getBettingConnection();
     const fundedTargets: typeof selectedTargets = [];
     const skippedCount = { underfunded: 0 };
 
     for (const target of selectedTargets) {
       try {
-        const [vaultPda] = deriveVaultPda(target.rumbleIdNum);
+        const [vaultPda] = deriveVaultPdaMainnet(target.rumbleIdNum);
         const vaultBalance = await connection.getBalance(vaultPda, "confirmed");
         const estimatedPayoutLamports = Math.round(
           (target.onchainClaimableSol > 0 ? target.onchainClaimableSol : target.inferredClaimableSol) * LAMPORTS_PER_SOL,
@@ -134,10 +135,12 @@ export async function POST(request: Request) {
       try {
         tx =
           selectedTargets.length === 1
-            ? await buildClaimPayoutTx(wallet, selectedTargets[0].rumbleIdNum)
+            ? await buildClaimPayoutTx(wallet, selectedTargets[0].rumbleIdNum, connection, RUMBLE_ENGINE_ID_MAINNET)
             : await buildClaimPayoutBatchTx(
                 wallet,
                 selectedTargets.map((target) => target.rumbleIdNum),
+                connection,
+                RUMBLE_ENGINE_ID_MAINNET,
               );
         const serialized = tx.serialize({
           requireAllSignatures: false,

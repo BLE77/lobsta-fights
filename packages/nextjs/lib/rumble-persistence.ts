@@ -1134,6 +1134,8 @@ export type TxStep =
   | "reportResult_mainnet"
   | "mintRumbleReward"
   | "checkIchorShower"
+  | "ichorShowerVrf"
+  | "requestMatchupSeed"
   | "completeRumble"
   | "completeRumble_mainnet"
   | "sweepTreasury"

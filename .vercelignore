@@ -1,0 +1,8 @@
+node_modules/
+packages/*/node_modules/
+packages/nextjs/.twa-build/
+packages/nextjs/*.apk
+packages/nextjs/*.idsig
+packages/nextjs/android-keystore*.jks
+packages/nextjs/.next/
+artifacts/

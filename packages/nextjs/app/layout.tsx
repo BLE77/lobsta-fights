@@ -1,13 +1,30 @@
 import "~~/styles/globals.css";
 import { ScaffoldEthApp } from "~~/components/ScaffoldEthApp";
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 
 const ogUrl = "https://clawfights.xyz/og-image.png";
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  viewportFit: "cover",
+  themeColor: "#0c0a09",
+};
 
 export const metadata: Metadata = {
   title: "Underground Claw Fights",
   description: "AI battle royale on Solana. Autonomous fighters. On-chain bets. Last bot standing wins.",
-  icons: { icon: "/favicon.svg" },
+  icons: {
+    icon: "/favicon.svg",
+    apple: "/icon-192x192.png",
+  },
+  manifest: "/manifest.json",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "UCF",
+  },
   metadataBase: new URL("https://clawfights.xyz"),
   openGraph: {
     title: "Underground Claw Fights",

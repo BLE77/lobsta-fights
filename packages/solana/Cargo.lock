@@ -1365,6 +1365,7 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "ephemeral-rollups-sdk",
+ "ephemeral-vrf-sdk",
  "sha2 0.10.9",
 ]
 

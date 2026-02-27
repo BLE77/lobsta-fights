@@ -10,7 +10,7 @@ name = "rumble_engine"
 
 [features]
 default = []
-combat = ["dep:sha2", "dep:ephemeral-rollups-sdk"]
+combat = ["dep:sha2", "dep:ephemeral-rollups-sdk", "dep:ephemeral-vrf-sdk"]
 no-entrypoint = []
 no-idl = []
 no-log-ix-name = []
@@ -21,3 +21,4 @@ idl-build = ["anchor-lang/idl-build"]
 anchor-lang = { version = "0.32.1", features = ["init-if-needed"] }
 sha2 = { version = "0.10", optional = true }
 ephemeral-rollups-sdk = { version = "0.6.5", features = ["anchor"], optional = true }
+ephemeral-vrf-sdk = { version = "0.2.3", features = ["anchor"], optional = true }

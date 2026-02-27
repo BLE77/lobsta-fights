@@ -1,3 +1,11 @@
+import withSerwistInit from "@serwist/next";
+
+const withSerwist = withSerwistInit({
+  swSrc: "app/sw.ts",
+  swDest: "public/sw.js",
+  disable: process.env.NODE_ENV === "development",
+});
+
 /** @type {import('next').NextConfig} */
 const ALLOW_LENIENT_BUILD = process.env.ALLOW_LENIENT_BUILD === "1";
 // Enforce strict TypeScript/ESLint checks in production even if ALLOW_LENIENT_BUILD is set.
@@ -41,6 +49,8 @@ const nextConfig = {
               "font-src 'self' data:",
               "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://*.helius-rpc.com https://api.devnet.solana.com https://api.mainnet-beta.solana.com",
               "media-src 'self' blob: https://*.supabase.co",
+              "worker-src 'self'",
+              "manifest-src 'self'",
               "object-src 'none'",
               "base-uri 'self'",
               "form-action 'self'",
@@ -71,5 +81,5 @@ const nextConfig = {
   },
 };
 
-export default nextConfig;
+export default withSerwist(nextConfig);
 // Build trigger Wed Feb  4 14:21:08 EST 2026
