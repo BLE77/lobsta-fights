@@ -8,9 +8,9 @@
 import { createHash } from "node:crypto";
 import { utils as anchorUtils } from "@coral-xyz/anchor";
 import { PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
-import { getConnection } from "./solana-connection";
+import { getBettingConnection } from "./solana-connection";
 import { getConfiguredTreasuryAddress } from "./treasury";
-import { RUMBLE_ENGINE_ID } from "./solana-programs";
+import { RUMBLE_ENGINE_ID_MAINNET } from "./solana-programs";
 
 /** Tolerance for SOL amount matching (accounts for rounding). */
 const AMOUNT_TOLERANCE_SOL = 0.000000001;
@@ -21,7 +21,7 @@ async function getParsedTxWithRetry(
   maxAttempts = 4,
   delayMs = 2000,
 ) {
-  const connection = getConnection();
+  const connection = getBettingConnection();
   for (let i = 0; i < maxAttempts; i++) {
     const tx = await connection.getParsedTransaction(txSignature, {
       maxSupportedTransactionVersion: 0,
@@ -304,7 +304,7 @@ function extractRumblePlaceBetInstructions(tx: any): ParsedPlaceBetInstruction[]
   const out: ParsedPlaceBetInstruction[] = [];
   for (const ix of tx.transaction.message.instructions) {
     try {
-      if (ix.programId.toBase58() !== RUMBLE_ENGINE_ID.toBase58()) continue;
+      if (ix.programId.toBase58() !== RUMBLE_ENGINE_ID_MAINNET.toBase58()) continue;
       if (!("data" in ix) || typeof ix.data !== "string") continue;
       const raw = anchorUtils.bytes.bs58.decode(ix.data);
       if (raw.length < 25) continue;

@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
 import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import { getOrchestrator } from "~~/lib/rumble-orchestrator";
-import { buildPlaceBetBatchTx, buildPlaceBetTx, readRumbleAccountState, RUMBLE_ENGINE_ID } from "~~/lib/solana-programs";
+import { buildPlaceBetBatchTx, buildPlaceBetTx, readRumbleAccountState, RUMBLE_ENGINE_ID_MAINNET } from "~~/lib/solana-programs";
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 import { MAX_BET_SOL, MIN_BET_SOL } from "~~/lib/tx-verify";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 import { hasRecovered, recoverOrchestratorState } from "~~/lib/rumble-state-recovery";
-import { getConnection } from "~~/lib/solana-connection";
+import { getBettingConnection } from "~~/lib/solana-connection";
 import { ensureRumblePublicHeartbeat } from "~~/lib/rumble-public-heartbeat";
 import { loadActiveRumbles } from "~~/lib/rumble-persistence";
 import { requireJsonContentType, sanitizeErrorResponse } from "~~/lib/api-middleware";
@@ -222,8 +222,8 @@ export async function POST(request: Request) {
     // Source of truth guard: do not return a signable tx unless this rumble is
     // still open on-chain. Prevents stale UI/off-chain state from producing a
     // tx that will immediately fail simulation with BettingClosed.
-    const bettingConn = getConnection();
-    let onchainRumble = await readRumbleAccountState(rumbleIdNum, bettingConn, RUMBLE_ENGINE_ID).catch(() => null);
+    const bettingConn = getBettingConnection();
+    let onchainRumble = await readRumbleAccountState(rumbleIdNum, bettingConn, RUMBLE_ENGINE_ID_MAINNET).catch(() => null);
     if (!onchainRumble) {
       // Self-heal: if this slot is betting but the on-chain account is missing,
       // trigger orchestrator recovery/create once and re-read before failing.
@@ -232,7 +232,7 @@ export async function POST(request: Request) {
         .catch(() => false);
       if (recovered) {
         await sleep(250);
-        onchainRumble = await readRumbleAccountState(rumbleIdNum, bettingConn, RUMBLE_ENGINE_ID).catch(() => null);
+        onchainRumble = await readRumbleAccountState(rumbleIdNum, bettingConn, RUMBLE_ENGINE_ID_MAINNET).catch(() => null);
       }
     }
     if (!onchainRumble) {
@@ -324,7 +324,7 @@ export async function POST(request: Request) {
               preparedBets[0].fighter_index,
               preparedBets[0].lamports,
               bettingConn,
-              RUMBLE_ENGINE_ID,
+              RUMBLE_ENGINE_ID_MAINNET,
             )
           : await buildPlaceBetBatchTx(
               wallet,
@@ -334,7 +334,7 @@ export async function POST(request: Request) {
                 lamports: b.lamports,
               })),
               bettingConn,
-              RUMBLE_ENGINE_ID,
+              RUMBLE_ENGINE_ID_MAINNET,
             );
       const txBytes = tx.serialize({
         requireAllSignatures: false,
