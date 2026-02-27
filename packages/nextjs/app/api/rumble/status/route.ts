@@ -22,6 +22,12 @@ import { MAX_TURNS } from "~~/lib/rumble-engine";
 export const dynamic = "force-dynamic";
 const SLOT_MS_ESTIMATE = Math.max(250, Number(process.env.RUMBLE_SLOT_MS_ESTIMATE ?? "400"));
 const ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD = 5_000_000n;
+// Fallback betting duration for Vercel cold-start when on-chain account isn't readable yet.
+// This gives users a visible "Betting Open" window while Railway creates the on-chain account.
+const BETTING_FALLBACK_DURATION_MS = Math.max(
+  30_000,
+  Math.min(10 * 60_000, Number(process.env.RUMBLE_BETTING_DURATION_MS ?? "120000")),
+);
 const STATUS_MUTATION_ENABLED = (() => {
   const env = process.env.RUMBLE_PUBLIC_STATUS_MUTATION_ENABLED;
   if (typeof env === "string" && env.length > 0) return env === "true";
@@ -880,16 +886,44 @@ export async function GET(request: Request) {
         // --- Betting state: restore countdown from on-chain close slot ---
         if (slot.state === "betting") {
           const onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
-          if (!onchain || onchain.state !== "betting") return slot;
+
+          // Case 1: On-chain doesn't exist yet (still being created on Railway).
+          // Use a fallback deadline so the user sees "Betting Open" immediately
+          // instead of "Initializing On-Chain..." forever.
+          if (!onchain) {
+            const persisted = latestPersistedBySlot.get(slot.slotIndex);
+            if (persisted) {
+              const createdAt = new Date(persisted.created_at).getTime();
+              const fallbackDeadline = Number.isFinite(createdAt)
+                ? new Date(createdAt + BETTING_FALLBACK_DURATION_MS).toISOString()
+                : new Date(Date.now() + BETTING_FALLBACK_DURATION_MS).toISOString();
+              return { ...slot, bettingDeadline: fallbackDeadline };
+            }
+            return { ...slot, bettingDeadline: new Date(Date.now() + BETTING_FALLBACK_DURATION_MS).toISOString() };
+          }
+
+          // Case 2: On-chain has already transitioned past betting (Railway
+          // called startCombat). Update state to match on-chain so the user
+          // sees combat/payout instead of a stuck "Initializing On-Chain..." banner.
+          if (onchain.state !== "betting") {
+            return { ...slot, state: onchain.state as any, bettingDeadline: null };
+          }
+
+          // Case 3: On-chain is in betting state with a valid close slot/timestamp.
           const closeRaw = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
-          if (!(closeRaw > 0n)) return slot;
+          if (!(closeRaw > 0n)) {
+            // On-chain betting but no deadline set — use fallback
+            return { ...slot, bettingDeadline: new Date(Date.now() + BETTING_FALLBACK_DURATION_MS).toISOString() };
+          }
           const looksLikeUnix =
             currentClusterSlotBig !== null
               ? closeRaw > currentClusterSlotBig + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD
               : closeRaw > 1_000_000_000n;
           const bettingDeadline = looksLikeUnix
             ? new Date(Number(closeRaw) * 1_000).toISOString()
-            : new Date(Date.now() + slotsToMs(closeRaw)).toISOString();
+            : getStableBettingDeadline(rumbleIdNum, () =>
+                new Date(Date.now() + slotsToMs(closeRaw)).toISOString(),
+              );
           return { ...slot, bettingDeadline };
         }
 
