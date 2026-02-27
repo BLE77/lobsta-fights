@@ -15,7 +15,7 @@ import {
 } from "~~/lib/rumble-persistence";
 import { readArenaConfig, readRumbleAccountState, readRumbleCombatState } from "~~/lib/solana-programs";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
-import { getConnection, getRpcEndpoint } from "~~/lib/solana-connection";
+import { getConnection } from "~~/lib/solana-connection";
 import { getCommentaryForRumble } from "~~/lib/commentary-hook";
 import { MAX_TURNS } from "~~/lib/rumble-engine";
 
@@ -1069,18 +1069,6 @@ export async function GET(request: Request) {
       }
     }
 
-    // Temporary debug: expose RPC endpoint (masked) to diagnose Vercel connection
-    const rpcUrl = getRpcEndpoint();
-    const rpcDebug = rpcUrl.includes("helius") ? "helius" : rpcUrl.includes("devnet.solana") ? "public-devnet" : rpcUrl.substring(0, 40);
-    // Quick direct test of the RPC
-    let rpcTestResult: string = "not-tested";
-    try {
-      const testConn = getConnection();
-      const testSlot = await testConn.getSlot("processed");
-      rpcTestResult = `ok:${testSlot}`;
-    } catch (e: any) {
-      rpcTestResult = `error:${e?.message?.substring(0, 100) ?? "unknown"}`;
-    }
 
     return NextResponse.json({
       slots,
@@ -1096,18 +1084,6 @@ export async function GET(request: Request) {
       },
       runtimeHealth,
       systemWarnings,
-      _debug: {
-        rpc: rpcDebug,
-        clusterSlot: currentClusterSlot,
-        rpcTest: rpcTestResult,
-        hasHeliusKey: !!process.env.HELIUS_API_KEY,
-        heliusKeyPrefix: process.env.HELIUS_API_KEY?.substring(0, 8) ?? "none",
-        heliusKeyLen: process.env.HELIUS_API_KEY?.length ?? 0,
-        heliusKeySuffix: process.env.HELIUS_API_KEY?.substring((process.env.HELIUS_API_KEY?.length ?? 4) - 4) ?? "none",
-        rpcEndpoint: getRpcEndpoint().replace(/api-key=[^&]+/, "api-key=MASKED"),
-        hasPublicKey: !!process.env.NEXT_PUBLIC_HELIUS_API_KEY,
-        publicKeyPrefix: process.env.NEXT_PUBLIC_HELIUS_API_KEY?.substring(0, 8) ?? "none",
-      },
     });
   } catch (error: any) {
     console.error("[StatusAPI]", error);
