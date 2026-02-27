@@ -32,8 +32,8 @@ interface BetTransactionProps {
   slotIndex: number;
   fighterId: string;
   fighterName: string;
-  minBet?: number; // minimum SOL bet (default 0.01)
-  maxBet?: number; // maximum SOL bet (default 10)
+  minBet?: number; // minimum SOL bet (default 0.001)
+  maxBet?: number; // maximum SOL bet (default 0.1)
   onSuccess?: (signature: string, solAmount: number) => void;
   onError?: (error: string) => void;
   className?: string;
@@ -51,8 +51,8 @@ export default function BetTransaction({
   slotIndex,
   fighterId,
   fighterName,
-  minBet = 0.01,
-  maxBet = 10,
+  minBet = 0.001,
+  maxBet = 0.1,
   onSuccess,
   onError,
   className = "",
@@ -271,7 +271,7 @@ export default function BetTransaction({
 
       {/* Quick amounts */}
       <div className="flex gap-1">
-        {[0.05, 0.1, 0.5, 1].map((amt) => (
+        {[0.01, 0.025, 0.05, 0.1].map((amt) => (
           <button
             key={amt}
             onClick={() => setSolAmount(String(amt))}
