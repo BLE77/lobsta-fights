@@ -29,10 +29,11 @@ import "@solana/wallet-adapter-react-ui/styles.css";
 type SolanaNetwork = "devnet" | "testnet" | "mainnet-beta";
 
 function getWalletNetwork(): SolanaNetwork {
+  // Betting is on mainnet — if a dedicated betting RPC is configured,
+  // the wallet adapter must authorize on mainnet so users sign with real SOL.
+  if (process.env.NEXT_PUBLIC_BETTING_RPC_URL?.trim()) return "mainnet-beta";
   const explicit = process.env.NEXT_PUBLIC_SOLANA_NETWORK as SolanaNetwork | undefined;
   if (explicit) return explicit;
-  // If betting RPC is configured, default wallet authorization to mainnet.
-  if (process.env.NEXT_PUBLIC_BETTING_RPC_URL?.trim()) return "mainnet-beta";
   return "devnet";
 }
 

@@ -408,15 +408,13 @@ export default function RumblePage() {
   const mobileContext = useSolanaMobileContext();
   const seekerOptimizedUi = mobileContext.shouldUseMobileOptimizations;
 
-  // RPC connection — use Helius if available, otherwise public RPC
-  const network = process.env.NEXT_PUBLIC_SOLANA_NETWORK
-    ?? (process.env.NEXT_PUBLIC_BETTING_RPC_URL?.trim() ? "mainnet-beta" : "devnet");
-  // Client-side RPC uses public endpoints only — Helius key stays server-side
+  // RPC connection — betting is on mainnet, so prefer betting RPC for wallet balance
   const rpcEndpoint = (() => {
     const bettingRpc = process.env.NEXT_PUBLIC_BETTING_RPC_URL?.trim();
     if (bettingRpc) return bettingRpc;
     const explicit = process.env.NEXT_PUBLIC_SOLANA_RPC_URL?.trim();
     if (explicit) return explicit;
+    const network = process.env.NEXT_PUBLIC_SOLANA_NETWORK ?? "devnet";
     return network === "mainnet-beta" ? "https://api.mainnet-beta.solana.com" : "https://api.devnet.solana.com";
   })();
   const connectionRef = useRef(new Connection(rpcEndpoint, "confirmed"));
