@@ -792,6 +792,10 @@ export async function GET(request: Request) {
           : fighters;
         base.set(slotIndex, {
           ...existing,
+          // CRITICAL: Reset remainingFighters when overlaying a different rumble.
+          // Otherwise stale remainingFighters from a previous rumble leaks through
+          // ...existing and causes the post-overlay enrichment to skip this slot.
+          remainingFighters: sameRumble ? existing.remainingFighters : null,
           rumbleId: row.id,
           rumbleNumber: (row as any).rumble_number ?? existing.rumbleNumber ?? null,
           state: sameRumble ? existing.state : (row.status as "idle" | "betting" | "combat" | "payout") ?? "idle",
