@@ -76,5 +76,26 @@ packages/solana/scripts/fighter-mappings.json
 docs/CODEBASE_MAP.md
 docs/LAUNCH_CHECKLIST.md
 
+# Internal docs (tokenomics, deployment, planning — keep local only)
+TOKENOMICS_*.md
+ICHOR_ECONOMY.md
+ICHOR_WHITEPAPER.md
+COMBAT_MINING_CONCEPT.md
+CLAWDBOT_AGENT_INSTRUCTIONS.md
+DEPLOY.md
+DEVNET_GO_LIVE_TODO.md
+HANDOFF.md
+IMAGE_GENERATION_SUMMARY.md
+IMPLEMENTATION_CHECKLIST.md
+MAINNET_DEPLOYMENT.md
+PRD.md
+ROBOT_DESIGN_GUIDE.md
+SECURITY_AND_GO_LIVE_TODO.md
+SECURITY_FIXES_SUMMARY.md
+SESSION_PROMPT.md
+TODO.md
+UCF_TECHNICAL_DOCS.md
+packages/nextjs/public/tokenomics.md
+
 # Claude Code session data
 .claude/
