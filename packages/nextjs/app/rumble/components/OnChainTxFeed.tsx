@@ -7,7 +7,7 @@ const PROGRAM_ID = "2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC";
 const DEVNET_RPC = process.env.NEXT_PUBLIC_SOLANA_RPC_URL?.trim() || "https://api.devnet.solana.com";
 const EXPLORER_TX = "https://explorer.solana.com/tx";
 const TX_LIMIT = 20;
-const REFRESH_MS = 15_000;
+const REFRESH_MS = 45_000;
 
 interface TxEntry {
   signature: string;

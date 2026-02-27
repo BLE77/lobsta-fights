@@ -6,6 +6,7 @@ import { readBettorAccount } from "~~/lib/solana-programs";
 import { ADMIN_FEE_RATE, SPONSORSHIP_RATE } from "~~/lib/betting";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 import { loadActiveRumbles } from "~~/lib/rumble-persistence";
+import { getBettingConnection } from "~~/lib/solana-connection";
 
 export const dynamic = "force-dynamic";
 
@@ -79,7 +80,9 @@ export async function GET(request: Request) {
 
     // Merge on-chain bettor account deployments so UI reflects actual signed bets,
     // even if legacy DB constraints drop one of the legs.
+    // Use mainnet (betting) connection — bettor accounts live on mainnet.
     const walletPubkey = new PublicKey(wallet);
+    const bettingConn = getBettingConnection();
     const grossMultiplier = 1 - ADMIN_FEE_RATE - SPONSORSHIP_RATE;
     for (const [slotIndex, rumbleId] of slotMap.entries()) {
       const rumbleIdNum = parseOnchainRumbleIdNumber(rumbleId);
@@ -87,7 +90,7 @@ export async function GET(request: Request) {
 
       let bettorState = null;
       try {
-        bettorState = await readBettorAccount(walletPubkey, rumbleIdNum);
+        bettorState = await readBettorAccount(walletPubkey, rumbleIdNum, bettingConn);
       } catch {
         continue;
       }

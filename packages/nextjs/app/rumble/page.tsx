@@ -472,7 +472,7 @@ export default function RumblePage() {
       }
     };
     fetchBalance();
-    const interval = setInterval(fetchBalance, 15_000);
+    const interval = setInterval(fetchBalance, 30_000);
     return () => clearInterval(interval);
   }, [publicKey, connection]);
 
@@ -962,11 +962,11 @@ export default function RumblePage() {
     fetchStatus();
     const intervalMs = seekerOptimizedUi
       ? sseConnected
-        ? 12_000
-        : 6_000
+        ? 20_000
+        : 8_000
       : sseConnected
-        ? 10_000
-        : 4_000;
+        ? 15_000
+        : 6_000;
     const pollInterval = setInterval(fetchStatus, intervalMs);
     return () => clearInterval(pollInterval);
   }, [fetchStatus, seekerOptimizedUi, sseConnected]);
@@ -1053,7 +1053,7 @@ export default function RumblePage() {
     }
     fetchClaimBalance();
     fetchMyBets();
-    const intervalMs = seekerOptimizedUi ? 18_000 : 12_000;
+    const intervalMs = seekerOptimizedUi ? 30_000 : 20_000;
     const interval = setInterval(() => {
       fetchClaimBalance();
       fetchMyBets();
