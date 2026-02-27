@@ -426,12 +426,12 @@ function hasErrorToken(err: unknown, token: string): boolean {
 // Fixed damage values — NO variance/RNG
 // ---------------------------------------------------------------------------
 
-const D_STRIKE_HIGH = 26;
-const D_STRIKE_MID = 20;
-const D_STRIKE_LOW = 15;
-const D_CATCH = 30;
-const D_COUNTER = 12;
-const D_SPECIAL = 35;
+const D_STRIKE_HIGH = 39;
+const D_STRIKE_MID = 30;
+const D_STRIKE_LOW = 23;
+const D_CATCH = 45;
+const D_COUNTER = 18;
+const D_SPECIAL = 52;
 const D_METER_PER_TURN = 20;
 const D_SPECIAL_METER_COST = 100;
 
