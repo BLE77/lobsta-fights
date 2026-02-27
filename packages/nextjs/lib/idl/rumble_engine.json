@@ -89,6 +89,90 @@
       "args": []
     },
     {
+      "name": "admin_set_result",
+      "docs": [
+        "Admin override to set rumble result directly.",
+        "Bypasses combat state machine for off-chain resolution (mainnet betting)."
+      ],
+      "discriminator": [
+        156,
+        153,
+        133,
+        152,
+        41,
+        188,
+        61,
+        13
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "rumble",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.id",
+                "account": "Rumble"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "placements",
+          "type": "bytes"
+        },
+        {
+          "name": "winner_index",
+          "type": "u8"
+        }
+      ]
+    },
+    {
       "name": "advance_turn",
       "docs": [
         "Advance to next turn after a resolved turn.",
@@ -166,6 +250,50 @@
         }
       ],
       "args": []
+    },
+    {
+      "name": "callback_matchup_seed",
+      "docs": [
+        "Callback from MagicBlock VRF oracle with matchup randomness.",
+        "",
+        "Only the VRF oracle (VRF_PROGRAM_IDENTITY signer) can call this.",
+        "Stores the randomness in RumbleCombatState.vrf_seed for fair pairing."
+      ],
+      "discriminator": [
+        138,
+        66,
+        216,
+        71,
+        82,
+        144,
+        160,
+        250
+      ],
+      "accounts": [
+        {
+          "name": "vrf_program_identity",
+          "docs": [
+            "The VRF program identity — only the oracle can call this"
+          ],
+          "signer": true,
+          "address": "9irBy75QS2BN81FUgXuHcjqceJJRuc9oDkAe8TKVvvAw"
+        },
+        {
+          "name": "combat_state",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "randomness",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
     },
     {
       "name": "claim_payout",
@@ -641,6 +769,43 @@
       "args": []
     },
     {
+      "name": "commit_combat",
+      "docs": [
+        "Commit combat state from ER back to Solana L1 (periodic sync for spectators)."
+      ],
+      "discriminator": [
+        248,
+        121,
+        35,
+        227,
+        39,
+        96,
+        156,
+        149
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "combat_state",
+          "writable": true
+        },
+        {
+          "name": "magic_program",
+          "address": "Magic11111111111111111111111111111111111111"
+        },
+        {
+          "name": "magic_context",
+          "writable": true,
+          "address": "MagicContext1111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "commit_move",
       "docs": [
         "Fighter commits a move hash for the active rumble turn.",
@@ -936,6 +1101,208 @@
         {
           "name": "betting_deadline",
           "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "delegate_combat",
+      "docs": [
+        "Delegate a combat state PDA to a MagicBlock Ephemeral Rollup.",
+        "Admin-only. Called after matchmaking, before combat starts on ER."
+      ],
+      "discriminator": [
+        63,
+        221,
+        192,
+        49,
+        14,
+        60,
+        69,
+        184
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "buffer_pda",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  117,
+                  102,
+                  102,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pda"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                21,
+                193,
+                72,
+                29,
+                3,
+                100,
+                231,
+                220,
+                152,
+                18,
+                225,
+                103,
+                151,
+                26,
+                181,
+                212,
+                123,
+                116,
+                226,
+                181,
+                219,
+                224,
+                244,
+                177,
+                75,
+                68,
+                11,
+                148,
+                71,
+                93,
+                180,
+                223
+              ]
+            }
+          }
+        },
+        {
+          "name": "delegation_record_pda",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  108,
+                  101,
+                  103,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pda"
+              }
+            ],
+            "program": {
+              "kind": "account",
+              "path": "delegation_program"
+            }
+          }
+        },
+        {
+          "name": "delegation_metadata_pda",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  108,
+                  101,
+                  103,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110,
+                  45,
+                  109,
+                  101,
+                  116,
+                  97,
+                  100,
+                  97,
+                  116,
+                  97
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pda"
+              }
+            ],
+            "program": {
+              "kind": "account",
+              "path": "delegation_program"
+            }
+          }
+        },
+        {
+          "name": "pda",
+          "writable": true
+        },
+        {
+          "name": "owner_program",
+          "address": "2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC"
+        },
+        {
+          "name": "delegation_program",
+          "address": "DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "rumble_id",
+          "type": "u64"
         }
       ]
     },
@@ -1539,6 +1906,134 @@
       ]
     },
     {
+      "name": "request_matchup_seed",
+      "docs": [
+        "Request provably-fair matchup seed via MagicBlock VRF.",
+        "",
+        "Admin calls this after combat starts to get a VRF-derived seed",
+        "for fair fighter pairing. The VRF oracle will automatically call",
+        "`callback_matchup_seed` with the randomness result."
+      ],
+      "discriminator": [
+        13,
+        25,
+        20,
+        21,
+        180,
+        132,
+        25,
+        13
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "combat_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  109,
+                  98,
+                  97,
+                  116,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "rumble_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "oracle_queue",
+          "writable": true,
+          "address": "Cuj97ggrhhidhbu39TijNVqE74xvKJ69gDervRUXAxGh"
+        },
+        {
+          "name": "program_identity",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  100,
+                  101,
+                  110,
+                  116,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "vrf_program",
+          "address": "Vrf1RNUjXmQGjmQrQLvJHs9SNkvDJEsRVFPkfSQUwGz"
+        },
+        {
+          "name": "slot_hashes",
+          "address": "SysvarS1otHashes111111111111111111111111111"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "rumble_id",
+          "type": "u64"
+        },
+        {
+          "name": "client_seed",
+          "type": "u8"
+        }
+      ]
+    },
+    {
       "name": "resolve_turn",
       "docs": [
         "Resolve the active turn from revealed move commitments.",
@@ -2051,6 +2546,43 @@
       ]
     },
     {
+      "name": "undelegate_combat",
+      "docs": [
+        "Commit final combat state and undelegate back to Solana L1."
+      ],
+      "discriminator": [
+        134,
+        147,
+        205,
+        124,
+        18,
+        60,
+        17,
+        198
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "combat_state",
+          "writable": true
+        },
+        {
+          "name": "magic_program",
+          "address": "Magic11111111111111111111111111111111111111"
+        },
+        {
+          "name": "magic_context",
+          "writable": true,
+          "address": "MagicContext1111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "update_treasury",
       "docs": [
         "Update the treasury address. Admin-only, immediate (lower risk than admin transfer)."
@@ -2535,6 +3067,11 @@
       "code": 6040,
       "name": "InvalidNewAdmin",
       "msg": "Invalid new admin address"
+    },
+    {
+      "code": 6041,
+      "name": "VrfSeedAlreadySet",
+      "msg": "VRF matchup seed already set"
     }
   ],
   "types": [
@@ -3022,6 +3559,15 @@
               "array": [
                 "u64",
                 16
+              ]
+            }
+          },
+          {
+            "name": "vrf_seed",
+            "type": {
+              "array": [
+                "u8",
+                32
               ]
             }
           },
