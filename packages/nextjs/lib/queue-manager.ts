@@ -16,6 +16,8 @@ export interface RumbleSlot {
   fighters: string[];
   bettingPool: Map<string, number>;
   bettingDeadline: Date | null;
+  /** When the betting deadline was armed (visible to users). Used to enforce minimum visible betting time. */
+  bettingArmedAt: Date | null;
   combatStartedAt: Date | null;
   rumbleResult: RumbleResult | null;
 }
@@ -85,6 +87,15 @@ const BETTING_CLOSE_GRACE_MS = readDurationMs(
   0,
   15_000,
 );
+// Minimum time the betting window must be visibly open before combat can start.
+// Prevents the scenario where on-chain creation eats most of the deadline
+// and users never get a chance to bet.
+const MIN_VISIBLE_BETTING_MS = readDurationMs(
+  "RUMBLE_MIN_VISIBLE_BETTING_MS",
+  45_000, // 45 seconds minimum visible betting time
+  10_000,
+  5 * 60_000,
+);
 const QUEUE_LOCK_COUNTDOWN_MS = readDurationMs(
   "RUMBLE_QUEUE_LOCK_COUNTDOWN_MS",
   30_000,
@@ -116,6 +127,7 @@ function createEmptySlot(slotIndex: number): RumbleSlot {
     fighters: [],
     bettingPool: new Map(),
     bettingDeadline: null,
+    bettingArmedAt: null,
     combatStartedAt: null,
     rumbleResult: null,
   };
@@ -251,8 +263,21 @@ export class RumbleQueueManager implements QueueManager {
             slot.bettingDeadline &&
             now.getTime() >= slot.bettingDeadline.getTime() + BETTING_CLOSE_GRACE_MS
           ) {
+            // Enforce minimum visible betting time: don't transition if users
+            // haven't had enough time to see the betting window and place bets.
+            const armedAt = slot.bettingArmedAt?.getTime() ?? 0;
+            const visibleMs = armedAt > 0 ? now.getTime() - armedAt : Infinity;
+            if (visibleMs < MIN_VISIBLE_BETTING_MS) {
+              // Extend the deadline so users get the full minimum window
+              const extendedDeadline = new Date(armedAt + MIN_VISIBLE_BETTING_MS);
+              console.log(
+                `[QM] Slot ${slot.slotIndex} betting deadline passed but min visible time not met (${Math.round(visibleMs / 1000)}s < ${MIN_VISIBLE_BETTING_MS / 1000}s). Extending deadline to ${extendedDeadline.toISOString()}`,
+              );
+              slot.bettingDeadline = extendedDeadline;
+              break;
+            }
             console.log(
-              `[QM] Slot ${slot.slotIndex} betting→combat: now=${now.toISOString()} deadline=${slot.bettingDeadline.toISOString()} diff=${now.getTime() - slot.bettingDeadline.getTime()}ms grace=${BETTING_CLOSE_GRACE_MS}ms`,
+              `[QM] Slot ${slot.slotIndex} betting→combat: now=${now.toISOString()} deadline=${slot.bettingDeadline.toISOString()} diff=${now.getTime() - slot.bettingDeadline.getTime()}ms grace=${BETTING_CLOSE_GRACE_MS}ms visibleMs=${Math.round(visibleMs / 1000)}s`,
             );
             this.transitionToCombat(slot, now);
           }
@@ -302,6 +327,7 @@ export class RumbleQueueManager implements QueueManager {
     slot.bettingPool = new Map();
     // Betting window starts only after on-chain rumble initialization.
     slot.bettingDeadline = null;
+    slot.bettingArmedAt = null;
     slot.combatStartedAt = null;
     slot.rumbleResult = null;
     slot.state = "betting";
@@ -317,8 +343,9 @@ export class RumbleQueueManager implements QueueManager {
     if (!slot || slot.state !== "betting") return false;
     if (slot.bettingDeadline) return true;
     slot.bettingDeadline = deadline ?? new Date(Date.now() + BETTING_DURATION_MS);
+    slot.bettingArmedAt = new Date();
     console.log(
-      `[QM] Slot ${slotIndex} betting window armed: deadline=${slot.bettingDeadline.toISOString()}`
+      `[QM] Slot ${slotIndex} betting window armed: deadline=${slot.bettingDeadline.toISOString()} armedAt=${slot.bettingArmedAt.toISOString()}`
     );
     return true;
   }
@@ -338,6 +365,7 @@ export class RumbleQueueManager implements QueueManager {
     slot.fighters = [];
     slot.bettingPool = new Map();
     slot.bettingDeadline = null;
+    slot.bettingArmedAt = null;
     slot.combatStartedAt = null;
     slot.rumbleResult = null;
 
@@ -469,6 +497,7 @@ export class RumbleQueueManager implements QueueManager {
     slot.fighters = [];
     slot.bettingPool = new Map();
     slot.bettingDeadline = null;
+    slot.bettingArmedAt = null;
     slot.combatStartedAt = null;
     slot.rumbleResult = null;
 
@@ -507,6 +536,7 @@ export class RumbleQueueManager implements QueueManager {
     slot.fighters = fighters;
     slot.bettingPool = new Map();
     slot.bettingDeadline = bettingDeadline;
+    slot.bettingArmedAt = bettingDeadline ? new Date() : null;
     slot.combatStartedAt = state === "combat" ? new Date() : null;
     slot.rumbleResult = null;
 

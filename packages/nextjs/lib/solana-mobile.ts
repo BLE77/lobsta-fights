@@ -13,6 +13,7 @@ interface DetectSolanaMobileContextInput {
   href?: string;
   referrer?: string;
   hasInjectedMobileWalletAdapter?: boolean;
+  hasStandaloneDisplayMode?: boolean;
 }
 
 export interface SolanaMobileContext {
@@ -52,6 +53,7 @@ export function detectSolanaMobileContext(
   const referrer = input.referrer ?? "";
   const url = safeUrl(input.href);
   const injected = Boolean(input.hasInjectedMobileWalletAdapter);
+  const isStandalone = Boolean(input.hasStandaloneDisplayMode);
 
   const isMobile = /android|iphone|ipad|ipod/.test(userAgent);
   const isSeeker = userAgent.includes("seeker");
@@ -71,7 +73,7 @@ export function detectSolanaMobileContext(
 
   const isLikelySolanaMobile =
     isMobile &&
-    (isSeeker || isSaga || uaHintsSolanaMobile || isLikelySolanaDappBrowser || injected);
+    (isSeeker || isSaga || uaHintsSolanaMobile || isLikelySolanaDappBrowser || injected || isStandalone);
 
   return {
     isMobile,
@@ -95,6 +97,9 @@ export function useSolanaMobileContext(): SolanaMobileContext {
       href: window.location.href,
       referrer: document.referrer,
       hasInjectedMobileWalletAdapter: "MobileWalletAdapter" in window,
+      hasStandaloneDisplayMode:
+        window.matchMedia?.("(display-mode: standalone)").matches ||
+        window.matchMedia?.("(display-mode: fullscreen)").matches,
     });
   }, []);
 }

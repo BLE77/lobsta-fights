@@ -26,6 +26,16 @@ import { useSolanaMobileContext } from "~~/lib/solana-mobile";
 
 import "@solana/wallet-adapter-react-ui/styles.css";
 
+type SolanaNetwork = "devnet" | "testnet" | "mainnet-beta";
+
+function getWalletNetwork(): SolanaNetwork {
+  const explicit = process.env.NEXT_PUBLIC_SOLANA_NETWORK as SolanaNetwork | undefined;
+  if (explicit) return explicit;
+  // If betting RPC is configured, default wallet authorization to mainnet.
+  if (process.env.NEXT_PUBLIC_BETTING_RPC_URL?.trim()) return "mainnet-beta";
+  return "devnet";
+}
+
 function getRpcEndpoint(): string {
   // Betting is on mainnet — users sign bet/claim txs with real SOL.
   // Use dedicated betting RPC if configured, otherwise fall back to network-based endpoint.
@@ -35,7 +45,7 @@ function getRpcEndpoint(): string {
   const explicit = process.env.NEXT_PUBLIC_SOLANA_RPC_URL?.trim();
   if (explicit) return explicit;
 
-  const network = process.env.NEXT_PUBLIC_SOLANA_NETWORK ?? "devnet";
+  const network = getWalletNetwork();
   // Frontend defaults to public RPC to avoid exposing/rate-limiting a shared key.
   return network === "mainnet-beta"
     ? "https://api.mainnet-beta.solana.com"
@@ -49,9 +59,7 @@ export default function WalletProvider({
 }) {
   const endpoint = useMemo(() => getRpcEndpoint(), []);
   const mobileContext = useSolanaMobileContext();
-  const network =
-    (process.env.NEXT_PUBLIC_SOLANA_NETWORK as "devnet" | "testnet" | "mainnet-beta" | undefined) ??
-    "devnet";
+  const network = getWalletNetwork();
 
   const wallets = useMemo(() => {
     // Keep wallet-standard desktop behavior; prefer Solana Mobile adapter

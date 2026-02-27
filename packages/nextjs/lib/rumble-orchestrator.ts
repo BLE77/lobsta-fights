@@ -1473,26 +1473,47 @@ export class RumbleOrchestrator {
     const rumbleIdNum = parseOnchainRumbleIdNumber(slot.id);
     let deadline: Date | undefined;
     if (rumbleIdNum !== null) {
+      // Bypass read cache to get fresh on-chain state after creation
+      invalidateReadCache(`rumble:${rumbleIdNum}`);
       const onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
-      if (onchain) {
-        const closeRaw = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
-        if (closeRaw > 0n) {
-          const clusterSlot = await getConnection().getSlot("processed").catch(() => null);
-          if (typeof clusterSlot === "number" && Number.isFinite(clusterSlot)) {
-            const clusterSlotBig = BigInt(clusterSlot);
-            const looksLikeUnix = closeRaw > clusterSlotBig + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD;
-            if (looksLikeUnix) {
-              const unixMs = Number(closeRaw) * 1_000;
-              if (Number.isFinite(unixMs) && unixMs > 0) {
+      if (!onchain) {
+        console.warn(`[Orchestrator] armBettingWindowIfReady: on-chain state unreadable for ${slot.id} — will NOT arm deadline until confirmed`);
+        return; // Do NOT arm deadline until on-chain is confirmed readable
+      }
+      if (onchain.state !== "betting") {
+        console.warn(`[Orchestrator] armBettingWindowIfReady: on-chain state is "${onchain.state}" (not betting) for ${slot.id}`);
+        return;
+      }
+      const closeRaw = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
+      if (closeRaw > 0n) {
+        const clusterSlot = await getConnection().getSlot("processed").catch(() => null);
+        if (typeof clusterSlot === "number" && Number.isFinite(clusterSlot)) {
+          const clusterSlotBig = BigInt(clusterSlot);
+          const looksLikeUnix = closeRaw > clusterSlotBig + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD;
+          if (looksLikeUnix) {
+            const unixMs = Number(closeRaw) * 1_000;
+            if (Number.isFinite(unixMs) && unixMs > 0) {
+              // Ensure at least ONCHAIN_BETTING_DURATION_MS remaining
+              const remaining = unixMs - Date.now();
+              if (remaining < ONCHAIN_BETTING_DURATION_MS * 0.5) {
+                // On-chain deadline already partially elapsed — extend to give full window
+                deadline = new Date(Date.now() + ONCHAIN_BETTING_DURATION_MS);
+                console.log(`[Orchestrator] On-chain deadline partially elapsed (${Math.round(remaining / 1000)}s left), extending to full ${ONCHAIN_BETTING_DURATION_MS / 1000}s window`);
+              } else {
                 deadline = new Date(unixMs);
               }
-            } else {
-              const remainingSlots = closeRaw > clusterSlotBig ? closeRaw - clusterSlotBig : 0n;
-              const capped = remainingSlots > 1_000_000n ? 1_000_000n : remainingSlots;
-              deadline = new Date(Date.now() + Number(capped) * SLOT_MS_ESTIMATE);
             }
+          } else {
+            const remainingSlots = closeRaw > clusterSlotBig ? closeRaw - clusterSlotBig : 0n;
+            const capped = remainingSlots > 1_000_000n ? 1_000_000n : remainingSlots;
+            deadline = new Date(Date.now() + Number(capped) * SLOT_MS_ESTIMATE);
           }
         }
+      }
+      // Fallback: on-chain exists but deadline wasn't parseable — give full window
+      if (!deadline) {
+        deadline = new Date(Date.now() + ONCHAIN_BETTING_DURATION_MS);
+        console.log(`[Orchestrator] On-chain deadline not parseable, using full ${ONCHAIN_BETTING_DURATION_MS / 1000}s window`);
       }
     }
 
@@ -1501,6 +1522,7 @@ export class RumbleOrchestrator {
     const updated = this.queueManager.getSlot(slot.slotIndex);
     if (!updated?.bettingDeadline) return;
 
+    console.log(`[Orchestrator] Betting window armed for ${slot.id}: deadline=${updated.bettingDeadline.toISOString()}`);
     this.emit("betting_open", {
       slotIndex: slot.slotIndex,
       rumbleId: slot.id,
