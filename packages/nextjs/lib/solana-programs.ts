@@ -2642,6 +2642,45 @@ export async function sweepTreasury(
   return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
 }
 
+/**
+ * Sweep remaining SOL from a completed mainnet Rumble's vault to the treasury.
+ * Admin-only — requires mainnet admin keypair.
+ */
+export async function sweepTreasuryMainnet(
+  rumbleId: number,
+): Promise<string | null> {
+  const provider = getMainnetAdminProvider();
+  if (!provider) {
+    console.warn("[solana-programs] No mainnet admin keypair, skipping mainnet sweepTreasury");
+    return null;
+  }
+  const program = getRumbleEngineProgram(provider, RUMBLE_ENGINE_ID_MAINNET);
+  const admin = getMainnetAdminKeypair()!;
+
+  const [rumbleConfigPda] = deriveRumbleConfigPdaMainnet();
+  const [rumblePda] = deriveRumblePdaMainnet(rumbleId);
+  const [vaultPda] = deriveVaultPdaMainnet(rumbleId);
+
+  // Read treasury from mainnet config
+  const conn = getBettingConnection();
+  const configInfo = await conn.getAccountInfo(rumbleConfigPda);
+  if (!configInfo) throw new Error("Mainnet rumble config not found");
+  const treasury = new PublicKey(configInfo.data.subarray(8 + 32, 8 + 32 + 32));
+
+  const method = (program.methods as any)
+    .sweepTreasury()
+    .accounts({
+      admin: admin.publicKey,
+      config: rumbleConfigPda,
+      rumble: rumblePda,
+      vault: vaultPda,
+      treasury,
+      systemProgram: SystemProgram.programId,
+    });
+
+  return await sendAdminTxFireAndForget(method, admin, conn);
+}
+
 // ---------------------------------------------------------------------------
 // Fighter Registry - Update Record (admin/server-side)
 // ---------------------------------------------------------------------------

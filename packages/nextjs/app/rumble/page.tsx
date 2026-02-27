@@ -24,6 +24,7 @@ import { audioManager, soundForPairing } from "~~/lib/audio";
 import { BoltIcon, ChatBubbleLeftRightIcon, ListBulletIcon } from "@heroicons/react/24/outline";
 import AudioToggle from "~~/components/AudioToggle";
 import { useSolanaMobileContext } from "~~/lib/solana-mobile";
+import { usePageVisibility } from "~~/hooks/usePageVisibility";
 
 // ---------------------------------------------------------------------------
 // Types for the status API response
@@ -407,6 +408,7 @@ export default function RumblePage() {
   const walletConnected = connected && !!publicKey;
   const mobileContext = useSolanaMobileContext();
   const seekerOptimizedUi = mobileContext.shouldUseMobileOptimizations;
+  const isPageVisible = usePageVisibility();
 
   // RPC connection — betting is on mainnet, so prefer betting RPC for wallet balance
   const rpcEndpoint = (() => {
@@ -457,10 +459,10 @@ export default function RumblePage() {
     setWalletModalVisible(true);
   }, [mobileContext.shouldPreferMobileWalletAdapter, wallets, wallet?.adapter?.name, select, setWalletModalVisible]);
 
-  // Fetch SOL balance when wallet connects
+  // Fetch SOL balance when wallet connects (pauses when tab hidden)
   useEffect(() => {
-    if (!publicKey) {
-      setSolBalance(null);
+    if (!publicKey || !isPageVisible) {
+      if (!publicKey) setSolBalance(null);
       return;
     }
     const fetchBalance = async () => {
@@ -474,7 +476,7 @@ export default function RumblePage() {
     fetchBalance();
     const interval = setInterval(fetchBalance, 30_000);
     return () => clearInterval(interval);
-  }, [publicKey, connection]);
+  }, [publicKey, connection, isPageVisible]);
 
   useEffect(() => {
     claimBalanceRef.current = claimBalance;
@@ -955,10 +957,11 @@ export default function RumblePage() {
     };
   }, [connectSSE]);
 
-  // Poll as a safety net:
+  // Poll as a safety net (pauses entirely when tab hidden):
   // - fast when SSE is down
   // - slower when SSE is healthy to reduce server/RPC load
   useEffect(() => {
+    if (!isPageVisible) return; // Stop polling when tab hidden
     fetchStatus();
     const intervalMs = seekerOptimizedUi
       ? sseConnected
@@ -969,7 +972,7 @@ export default function RumblePage() {
         : 6_000;
     const pollInterval = setInterval(fetchStatus, intervalMs);
     return () => clearInterval(pollInterval);
-  }, [fetchStatus, seekerOptimizedUi, sseConnected]);
+  }, [fetchStatus, seekerOptimizedUi, sseConnected, isPageVisible]);
 
   // ---- Sound effects driven by state changes (works with polling + SSE) ----
   useEffect(() => {
@@ -1043,7 +1046,7 @@ export default function RumblePage() {
     }
   }, [status]);
 
-  // Wallet payout/claimable balance polling
+  // Wallet payout/claimable balance polling (pauses when tab hidden)
   useEffect(() => {
     if (!publicKey) {
       setClaimBalance(null);
@@ -1051,6 +1054,7 @@ export default function RumblePage() {
       setMyBetAmountsBySlot(new Map());
       return;
     }
+    if (!isPageVisible) return; // Stop polling when tab hidden
     fetchClaimBalance();
     fetchMyBets();
     const intervalMs = seekerOptimizedUi ? 30_000 : 20_000;
@@ -1059,7 +1063,7 @@ export default function RumblePage() {
       fetchMyBets();
     }, intervalMs);
     return () => clearInterval(interval);
-  }, [publicKey, fetchClaimBalance, fetchMyBets, seekerOptimizedUi]);
+  }, [publicKey, fetchClaimBalance, fetchMyBets, seekerOptimizedUi, isPageVisible]);
 
   const decodeBase64Tx = (base64: string): Transaction => {
     const binary = atob(base64);
