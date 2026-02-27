@@ -1,8 +1,13 @@
 import { createHash } from "node:crypto";
 import { LAMPORTS_PER_SOL, PublicKey, type Connection } from "@solana/web3.js";
 import { utils as anchorUtils } from "@coral-xyz/anchor";
-import { getBettingConnection } from "./solana-connection";
-import { RUMBLE_ENGINE_ID_MAINNET, readRumbleAccountState, deriveVaultPdaMainnet } from "./solana-programs";
+import { getBettingConnection, getBettingRpcEndpoint } from "./solana-connection";
+import {
+  RUMBLE_ENGINE_ID_MAINNET,
+  readRumbleAccountState,
+  deriveRumblePdaMainnet,
+  deriveVaultPdaMainnet,
+} from "./solana-programs";
 import { freshSupabase } from "./supabase";
 import { getRumbleSessionMinTimestampMs } from "./rumble-session";
 import { parseOnchainRumbleIdNumber } from "./rumble-id";
@@ -103,7 +108,73 @@ function decodeBettorAccountData(data: Buffer): BettorAccountDecoded | null {
   };
 }
 
-async function listBettorAccountsForWallet(
+// ---------------------------------------------------------------------------
+// getProgramAccountsV2 — Helius-specific, 1 credit instead of 10.
+// Falls back to regular getProgramAccounts if V2 fails.
+// ---------------------------------------------------------------------------
+
+interface GpaV2Account {
+  pubkey: string;
+  lamports: number;
+  owner: string;
+  data: string; // base64-encoded
+  space: number;
+}
+
+async function listBettorAccountsV2(
+  wallet: PublicKey,
+  rpcUrl: string,
+): Promise<BettorAccountDecoded[]> {
+  const body = {
+    jsonrpc: "2.0",
+    id: "bettor-scan",
+    method: "getProgramAccountsV2",
+    params: [
+      RUMBLE_ENGINE_ID_MAINNET.toBase58(),
+      {
+        encoding: "base64",
+        commitment: "confirmed",
+        limit: 1000,
+        filters: [
+          {
+            memcmp: {
+              offset: 0,
+              bytes: anchorUtils.bytes.bs58.encode(BETTOR_DISCRIMINATOR),
+            },
+          },
+          {
+            memcmp: {
+              offset: 8,
+              bytes: wallet.toBase58(),
+            },
+          },
+        ],
+      },
+    ],
+  };
+
+  const res = await fetch(rpcUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) throw new Error(`V2 HTTP ${res.status}`);
+
+  const json = await res.json();
+  if (json.error) throw new Error(json.error.message ?? "V2 RPC error");
+
+  const accounts: GpaV2Account[] = json.result?.accounts ?? [];
+  const decoded: BettorAccountDecoded[] = [];
+  for (const acct of accounts) {
+    const buf = Buffer.from(acct.data, "base64");
+    const row = decodeBettorAccountData(buf);
+    if (row) decoded.push(row);
+  }
+  return decoded;
+}
+
+async function listBettorAccountsLegacy(
   wallet: PublicKey,
   connection: Connection,
 ): Promise<BettorAccountDecoded[]> {
@@ -134,8 +205,206 @@ async function listBettorAccountsForWallet(
 }
 
 /**
+ * List bettor accounts for a wallet.
+ * Uses getProgramAccountsV2 (1 credit) with fallback to legacy (10 credits).
+ */
+async function listBettorAccountsForWallet(
+  wallet: PublicKey,
+  connection: Connection,
+): Promise<BettorAccountDecoded[]> {
+  const rpcUrl = getBettingRpcEndpoint();
+  // Only try V2 on Helius endpoints
+  if (rpcUrl.includes("helius")) {
+    try {
+      return await listBettorAccountsV2(wallet, rpcUrl);
+    } catch (err: any) {
+      console.warn(`[claims] getProgramAccountsV2 failed, falling back to legacy:`, err?.message);
+    }
+  }
+  return listBettorAccountsLegacy(wallet, connection);
+}
+
+// ---------------------------------------------------------------------------
+// Batch rumble state reads via getMultipleAccountsInfo (1 credit for all)
+// ---------------------------------------------------------------------------
+
+const STATE_NAMES: Record<number, "betting" | "combat" | "payout" | "complete"> = {
+  0: "betting",
+  1: "combat",
+  2: "payout",
+  3: "complete",
+};
+
+interface MinimalRumbleState {
+  state: "betting" | "combat" | "payout" | "complete";
+  winnerIndex: number | null;
+  totalDeployedLamports: bigint;
+  adminFeeCollectedLamports: bigint;
+  sponsorshipPaidLamports: bigint;
+  bettingPools: bigint[];
+}
+
+/**
+ * Batch-read rumble account states using getMultipleAccountsInfo.
+ * 1 RPC call for ALL rumble IDs instead of N individual calls.
+ */
+async function batchReadRumbleStates(
+  rumbleIds: number[],
+  connection: Connection,
+): Promise<Map<number, MinimalRumbleState | null>> {
+  const result = new Map<number, MinimalRumbleState | null>();
+  if (rumbleIds.length === 0) return result;
+
+  // Derive all PDAs
+  const pdas = rumbleIds.map((id) => deriveRumblePdaMainnet(id)[0]);
+
+  // Batch fetch in chunks of 100 (RPC limit)
+  const CHUNK = 100;
+  for (let i = 0; i < pdas.length; i += CHUNK) {
+    const chunkPdas = pdas.slice(i, i + CHUNK);
+    const chunkIds = rumbleIds.slice(i, i + CHUNK);
+
+    try {
+      const infos = await connection.getMultipleAccountsInfo(chunkPdas, "confirmed");
+      for (let j = 0; j < infos.length; j++) {
+        const info = infos[j];
+        const rumbleId = chunkIds[j];
+        if (!info || info.data.length < 40) {
+          result.set(rumbleId, null);
+          continue;
+        }
+
+        const data = info.data;
+        let offset = 8; // discriminator
+        offset += 8; // id (u64)
+        const stateVal = data[offset]; // state (u8)
+        offset += 1;
+
+        const state = STATE_NAMES[stateVal] ?? "betting";
+
+        // Read fighter_count, betting_deadline, then placements (16 bytes), winner_index
+        const fighterCount = data[offset]; // fighter_count (u8)
+        offset += 1;
+        offset += 8; // betting_deadline (i64)
+        offset += 8; // completed_at (i64)
+        offset += 16; // placements ([u8; 16])
+        const winnerIndex = data[offset]; // winner_index (u8)
+        offset += 1;
+        offset += 1; // bump (u8)
+        offset += 32; // admin (Pubkey)
+
+        // Read total_deployed (u64)
+        const totalDeployedLamports = readU64LE(data, offset);
+        offset += 8;
+
+        // Read admin_fee_collected (u64)
+        const adminFeeCollectedLamports = readU64LE(data, offset);
+        offset += 8;
+
+        // Read sponsorship_paid (u64) — may not exist in older layouts
+        let sponsorshipPaidLamports = 0n;
+        if (data.length >= offset + 8) {
+          sponsorshipPaidLamports = readU64LE(data, offset);
+          offset += 8;
+        }
+
+        // Read betting pools (16 x u64)
+        const bettingPools: bigint[] = [];
+        if (data.length >= offset + 8 * 16) {
+          for (let k = 0; k < 16; k++) {
+            bettingPools.push(readU64LE(data, offset));
+            offset += 8;
+          }
+        }
+
+        result.set(rumbleId, {
+          state,
+          winnerIndex: state === "payout" || state === "complete" ? winnerIndex : null,
+          totalDeployedLamports,
+          adminFeeCollectedLamports,
+          sponsorshipPaidLamports,
+          bettingPools,
+        });
+      }
+    } catch (err: any) {
+      console.error(`[claims] batchReadRumbleStates chunk failed:`, err?.message);
+      // Fall back to individual reads for this chunk
+      for (const id of chunkIds) {
+        try {
+          const s = await readRumbleAccountState(id, connection, RUMBLE_ENGINE_ID_MAINNET);
+          if (s) {
+            result.set(id, {
+              state: s.state,
+              winnerIndex: s.winnerIndex,
+              totalDeployedLamports: s.totalDeployedLamports,
+              adminFeeCollectedLamports: s.adminFeeCollectedLamports,
+              sponsorshipPaidLamports: s.sponsorshipPaidLamports,
+              bettingPools: s.bettingPools ?? [],
+            });
+          } else {
+            result.set(id, null);
+          }
+        } catch {
+          result.set(id, null);
+        }
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * Batch-read vault balances using getMultipleAccountsInfo.
+ * Reads AccountInfo.lamports instead of calling getBalance N times.
+ * 1 RPC call for all vaults.
+ */
+async function batchReadVaultBalances(
+  rumbleIds: number[],
+  connection: Connection,
+): Promise<Map<number, number>> {
+  const result = new Map<number, number>();
+  if (rumbleIds.length === 0) return result;
+
+  const pdas = rumbleIds.map((id) => deriveVaultPdaMainnet(id)[0]);
+
+  const CHUNK = 100;
+  for (let i = 0; i < pdas.length; i += CHUNK) {
+    const chunkPdas = pdas.slice(i, i + CHUNK);
+    const chunkIds = rumbleIds.slice(i, i + CHUNK);
+
+    try {
+      const infos = await connection.getMultipleAccountsInfo(chunkPdas, "confirmed");
+      for (let j = 0; j < infos.length; j++) {
+        result.set(chunkIds[j], infos[j]?.lamports ?? 0);
+      }
+    } catch {
+      // Fallback to individual getBalance
+      for (const id of chunkIds) {
+        try {
+          const [vaultPda] = deriveVaultPdaMainnet(id);
+          const bal = await connection.getBalance(vaultPda, "confirmed");
+          result.set(id, bal);
+        } catch {
+          result.set(id, 0);
+        }
+      }
+    }
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Main snapshot function
+// ---------------------------------------------------------------------------
+
+/**
  * Fully on-chain payout snapshot for a wallet.
  * Source of truth is bettor + rumble program accounts only.
+ *
+ * Optimizations applied:
+ * - getProgramAccountsV2 (1 credit instead of 10)
+ * - getMultipleAccountsInfo for rumble states (1 call instead of N)
+ * - getMultipleAccountsInfo for vault balances (1 call instead of N)
  */
 export async function discoverOnchainWalletPayoutSnapshot(
   wallet: PublicKey,
@@ -152,24 +421,9 @@ export async function discoverOnchainWalletPayoutSnapshot(
           return ts !== null && ts >= minTimestampMs;
         });
 
+  // Batch-read all rumble states in 1 RPC call
   const rumbleIds = [...new Set(bettorRows.map((row) => row.rumbleIdNum))];
-  const rumbleStateById = new Map<number, Awaited<ReturnType<typeof readRumbleAccountState>>>();
-  const CHUNK_SIZE = 10;
-  for (let i = 0; i < rumbleIds.length; i += CHUNK_SIZE) {
-    const chunk = rumbleIds.slice(i, i + CHUNK_SIZE);
-    const rows = await Promise.all(
-      chunk.map(async (rumbleIdNum) => ({
-        rumbleIdNum,
-        state: await readRumbleAccountState(rumbleIdNum, connection, RUMBLE_ENGINE_ID_MAINNET).catch((err) => {
-          console.error(`[claims] readRumbleAccountState failed for rumble ${rumbleIdNum}:`, err?.message ?? err);
-          return null;
-        }),
-      })),
-    );
-    for (const row of rows) {
-      rumbleStateById.set(row.rumbleIdNum, row.state);
-    }
-  }
+  const rumbleStateById = await batchReadRumbleStates(rumbleIds, connection);
 
   const claimableRumbles: OnchainClaimableRumble[] = [];
   let totalClaimedLamports = 0n;
@@ -189,6 +443,10 @@ export async function discoverOnchainWalletPayoutSnapshot(
   } catch {
     // ignore; exposure stays conservative (0 for unknown active map)
   }
+
+  // First pass: identify rumbles that need vault balance checks
+  const needsVaultCheck: number[] = [];
+  const candidateBettors: BettorAccountDecoded[] = [];
 
   for (const bettor of bettorRows) {
     totalClaimedLamports += bettor.totalClaimedLamports;
@@ -211,19 +469,26 @@ export async function discoverOnchainWalletPayoutSnapshot(
     const onchainClaimableLamports = bettor.claimableLamports;
     if (winnerDeploymentLamports <= 0n && onchainClaimableLamports <= 0n) continue;
 
-    // Check vault has enough SOL to actually pay out (skip swept vaults)
-    let vaultBalance = 0;
-    try {
-      const [vaultPda] = deriveVaultPdaMainnet(bettor.rumbleIdNum);
-      vaultBalance = await connection.getBalance(vaultPda, "confirmed");
-      const estimatedPayoutLamports = onchainClaimableLamports > 0n
-        ? onchainClaimableLamports
-        : winnerDeploymentLamports;
-      if (vaultBalance < Number(estimatedPayoutLamports) + 900_000) continue;
-    } catch {
-      // If we can't check vault balance, skip conservatively
-      continue;
-    }
+    needsVaultCheck.push(bettor.rumbleIdNum);
+    candidateBettors.push(bettor);
+  }
+
+  // Batch-read all vault balances in 1 RPC call
+  const uniqueVaultIds = [...new Set(needsVaultCheck)];
+  const vaultBalances = await batchReadVaultBalances(uniqueVaultIds, connection);
+
+  // Second pass: apply vault balance checks and compute payouts
+  for (const bettor of candidateBettors) {
+    const rumbleState = rumbleStateById.get(bettor.rumbleIdNum)!;
+    const winnerIndex = rumbleState.winnerIndex!;
+    const winnerDeploymentLamports = bettor.fighterDeploymentsLamports[winnerIndex] ?? 0n;
+    const onchainClaimableLamports = bettor.claimableLamports;
+
+    const vaultBalance = vaultBalances.get(bettor.rumbleIdNum) ?? 0;
+    const estimatedPayoutLamports = onchainClaimableLamports > 0n
+      ? onchainClaimableLamports
+      : winnerDeploymentLamports;
+    if (vaultBalance < Number(estimatedPayoutLamports) + 900_000) continue;
 
     const onchainClaimableSol = Number(onchainClaimableLamports) / LAMPORTS_PER_SOL;
 
@@ -232,18 +497,15 @@ export async function discoverOnchainWalletPayoutSnapshot(
     if (onchainClaimableSol > 0) {
       inferredClaimableSol = onchainClaimableSol;
     } else {
-      // Proportional payout: (bettor_winner_stake / total_winner_pool) * net_prize_pool
       const totalWinnerPool = rumbleState.bettingPools?.[winnerIndex] ?? 0n;
       const netPrizePool = rumbleState.totalDeployedLamports
         - rumbleState.adminFeeCollectedLamports
         - rumbleState.sponsorshipPaidLamports;
 
       if (totalWinnerPool > 0n && netPrizePool > 0n) {
-        // Use bigint arithmetic to avoid floating point precision issues
         const payoutLamports = (winnerDeploymentLamports * netPrizePool) / totalWinnerPool;
         inferredClaimableSol = Number(payoutLamports) / LAMPORTS_PER_SOL;
       } else {
-        // Fallback: use vault balance proportional share if pool data unavailable
         inferredClaimableSol = Number(winnerDeploymentLamports) / LAMPORTS_PER_SOL;
       }
     }

@@ -88,7 +88,6 @@ import {
   invalidateReadCache,
   closeMoveCommitmentOnChain,
   readRumbleFighters,
-  readRumbleBettingPools,
   postTurnResultOnChain,
   readMoveCommitmentData,
   createRumbleMainnet,
@@ -4257,9 +4256,10 @@ export class RumbleOrchestrator {
       if (rumbleAccount.winnerIndex !== null) {
         const fighterCount = rumbleAccount.fighterCount;
 
-        const onchainPools = await readRumbleBettingPools(rumbleIdNum);
-        if (!onchainPools) {
-          console.warn(`[Orchestrator] readRumbleBettingPools returned null for ${slot.id} — will retry`);
+        // Use bettingPools already read from rumbleAccount (avoids duplicate RPC call)
+        const onchainPools = rumbleAccount.bettingPools;
+        if (!onchainPools || onchainPools.length === 0) {
+          console.warn(`[Orchestrator] bettingPools empty for ${slot.id} — will retry`);
           throw new Error(`On-chain betting pools unavailable for ${slot.id}`);
         }
 

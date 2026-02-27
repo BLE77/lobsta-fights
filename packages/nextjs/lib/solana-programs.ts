@@ -302,6 +302,8 @@ export interface RumbleAccountState {
   rumbleId: bigint;
   state: OnchainRumbleState;
   fighterCount: number;
+  /** Fighter public keys extracted from the on-chain account (avoids separate RPC call). */
+  fighters: PublicKey[];
   placements: number[];
   winnerIndex: number | null;
   bettingPools: bigint[];
@@ -372,6 +374,18 @@ export async function readRumbleAccountState(
     const combatStartedAtOffset = bettingDeadlineOffset + 8;
     const completedAtOffset = combatStartedAtOffset + 8;
 
+    // Extract fighter public keys from the same data (avoids separate RPC call)
+    const fighters: PublicKey[] = [];
+    for (let i = 0; i < fighterCount; i++) {
+      const start = fightersOffset + i * 32;
+      if (start + 32 <= data.length) {
+        const pk = new PublicKey(data.slice(start, start + 32));
+        if (!pk.equals(PublicKey.default)) {
+          fighters.push(pk);
+        }
+      }
+    }
+
     const winnerIndexRaw = data.length > winnerIndexOffset ? data[winnerIndexOffset] : undefined;
     const winnerIndex =
       typeof winnerIndexRaw === "number" && winnerIndexRaw < 16 ? winnerIndexRaw : null;
@@ -401,6 +415,7 @@ export async function readRumbleAccountState(
       rumbleId: parsedRumbleId,
       state,
       fighterCount,
+      fighters,
       placements,
       winnerIndex,
       bettingPools,
@@ -417,29 +432,15 @@ export async function readRumbleAccountState(
 
 /**
  * Read the raw betting_pools[16] (u64 lamport values) from the on-chain
- * rumble account. Returns null if the account doesn't exist.
+ * rumble account. Delegates to cached readRumbleAccountState to avoid
+ * duplicate RPC calls (saves 1 credit per call).
  */
 export async function readRumbleBettingPools(
   rumbleId: bigint | number,
   connection?: Connection,
 ): Promise<bigint[] | null> {
-  const conn = connection ?? getConnection();
-  const [rumblePda] = deriveRumblePda(rumbleId);
-  const info = await conn.getAccountInfo(rumblePda, "confirmed");
-  if (!info || info.data.length < 17) return null;
-
-  const data = info.data;
-  const fightersOffset = 8 + 8 + 1; // discriminator + rumble_id + state
-  const fighterCountOffset = fightersOffset + 32 * 16;
-  const bettingPoolsOffset = fighterCountOffset + 1;
-
-  if (data.length < bettingPoolsOffset + 8 * 16) return null;
-
-  const pools: bigint[] = [];
-  for (let i = 0; i < 16; i++) {
-    pools.push(readU64LE(data, bettingPoolsOffset + i * 8));
-  }
-  return pools;
+  const state = await readRumbleAccountState(rumbleId, connection);
+  return state?.bettingPools ?? null;
 }
 
 /**
@@ -2572,34 +2573,15 @@ export async function completeRumbleMainnet(
 
 /**
  * Read fighter public keys from an on-chain Rumble account.
- * Returns an array of PublicKeys for the registered fighters.
+ * Delegates to cached readRumbleAccountState to avoid duplicate RPC calls
+ * (saves 1 credit per call — same PDA, now extracted during state read).
  */
 export async function readRumbleFighters(
   rumbleId: bigint | number,
   connection?: Connection,
 ): Promise<PublicKey[]> {
-  const conn = connection ?? getConnection();
-  const [rumblePda] = deriveRumblePda(rumbleId);
-  const info = await conn.getAccountInfo(rumblePda, "processed");
-  if (!info || info.data.length < 17) return [];
-
-  const data = info.data;
-  // Layout: 8 (discriminator) + 8 (id) + 1 (state) + [32 * 16] (fighters) + 1 (fighter_count)
-  const fightersOffset = 8 + 8 + 1; // = 17
-  const fighterCountOffset = fightersOffset + 32 * 16; // = 529
-  const fighterCount = data[fighterCountOffset] ?? 0;
-
-  const fighters: PublicKey[] = [];
-  for (let i = 0; i < fighterCount; i++) {
-    const start = fightersOffset + i * 32;
-    const pubkeyBytes = data.slice(start, start + 32);
-    const pk = new PublicKey(pubkeyBytes);
-    // Skip zero/default pubkeys
-    if (!pk.equals(PublicKey.default)) {
-      fighters.push(pk);
-    }
-  }
-  return fighters;
+  const state = await readRumbleAccountState(rumbleId, connection);
+  return state?.fighters ?? [];
 }
 
 /**
