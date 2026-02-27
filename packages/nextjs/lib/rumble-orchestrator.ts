@@ -94,10 +94,13 @@ import {
   createRumbleMainnet,
   reportResultMainnet,
   completeRumbleMainnet,
+  delegateCombatToEr,
+  commitCombatFromEr,
+  undelegateCombatFromEr,
 } from "./solana-programs";
-import { Keypair, PublicKey, Transaction } from "@solana/web3.js";
+import { Keypair, PublicKey, Transaction, Connection } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
-import { getConnection } from "./solana-connection";
+import { getConnection, getErConnection } from "./solana-connection";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -620,6 +623,16 @@ export class RumbleOrchestrator {
   // Track consecutive fatal openTurn failures per rumble to detect unrecoverable on-chain state
   private openTurnFatalFailures: Map<string, number> = new Map();
   private lastTrackerCleanupAt = 0;
+
+  /** Whether MagicBlock Ephemeral Rollups are enabled for combat. */
+  private get erEnabled(): boolean {
+    return process.env.MAGICBLOCK_ER_ENABLED === "true";
+  }
+
+  /** Get the connection to use for combat transactions (ER or L1). */
+  private getCombatConnection(): Connection {
+    return this.erEnabled ? getErConnection() : getConnection();
+  }
 
   constructor(queueManager: RumbleQueueManager) {
     this.queueManager = queueManager;
@@ -2080,6 +2093,18 @@ export class RumbleOrchestrator {
       }
       await this.startCombatOnChain(slot);
 
+      // Delegate combat state to Ephemeral Rollup for real-time execution
+      if (this.erEnabled) {
+        try {
+          const sig = await delegateCombatToEr(rumbleIdNum);
+          if (sig) {
+            console.log(`[ER] delegateCombat succeeded for rumble ${rumbleIdNum}: ${sig}`);
+          }
+        } catch (err) {
+          console.warn(`[ER] delegateCombat failed for rumble ${rumbleIdNum}, falling back to L1:`, err);
+        }
+      }
+
       this.emit("combat_started", {
         slotIndex: idx,
         rumbleId: slot.id,
@@ -2108,7 +2133,7 @@ export class RumbleOrchestrator {
       return;
     }
 
-    let combat = await readRumbleCombatState(rumbleIdNum).catch(() => null);
+    let combat = await readRumbleCombatState(rumbleIdNum, this.getCombatConnection()).catch(() => null);
     if (!combat) return;
 
     const sync = this.syncLocalFightersFromOnchain(slot, state, combat);
@@ -2174,12 +2199,19 @@ export class RumbleOrchestrator {
         remainingFighters: combat.remainingFighters,
       });
 
+      // Sync ER state to L1 for spectators
+      if (this.erEnabled && combat.turnResolved) {
+        commitCombatFromEr(rumbleIdNum).catch((err) =>
+          console.warn(`[ER] commitCombat failed for rumble ${rumbleIdNum}:`, err)
+        );
+      }
+
       // Close MoveCommitment PDAs for the resolved turn (fire-and-forget).
       // Returns rent to each fighter so wallets don't drain over many rumbles.
       for (const fid of slot.fighters) {
         const wallet = state.fighterWallets.get(fid);
         if (!wallet) continue;
-        closeMoveCommitmentOnChain(rumbleIdNum, wallet, turnNum, wallet).catch(() => {});
+        closeMoveCommitmentOnChain(rumbleIdNum, wallet, turnNum, wallet, this.getCombatConnection()).catch(() => {});
       }
 
       for (const eliminatedId of sync.newEliminations) {
@@ -2198,7 +2230,7 @@ export class RumbleOrchestrator {
     // can deadlock the match at "Waiting for combat to begin...".
     if (combat.currentTurn === 0 && combat.remainingFighters > 1) {
       try {
-        const sig = await openTurnOnChain(rumbleIdNum);
+        const sig = await openTurnOnChain(rumbleIdNum, this.getCombatConnection());
         if (sig) {
           console.log(`[OnChain] openTurn succeeded: ${sig}`);
           persist.updateRumbleTxSignature(slot.id, "openTurn", sig);
@@ -2236,11 +2268,11 @@ export class RumbleOrchestrator {
       // Re-read combat state after open_turn so we can proceed to
       // commit/reveal/resolve in the same tick cycle.
       invalidateReadCache(`combat:${rumbleIdNum}`);
-      combat = await readRumbleCombatState(rumbleIdNum).catch(() => null);
+      combat = await readRumbleCombatState(rumbleIdNum, this.getCombatConnection()).catch(() => null);
       if (!combat || combat.currentTurn === 0) return;
     }
 
-    const currentSlot = await getConnection().getSlot("processed");
+    const currentSlot = await this.getCombatConnection().getSlot("processed");
     const currentSlotBig = BigInt(currentSlot);
 
     // --- Missed-window recovery ---
@@ -2260,7 +2292,7 @@ export class RumbleOrchestrator {
             rumbleIdNum,
             combat.currentTurn,
           );
-          const sig = await resolveTurnOnChain(rumbleIdNum, commitmentAccounts);
+          const sig = await resolveTurnOnChain(rumbleIdNum, commitmentAccounts, this.getCombatConnection());
           if (sig) {
             console.log(`[OnChain] resolveTurn succeeded: ${sig}`);
             persist.updateRumbleTxSignature(slot.id, "resolveTurn", sig);
@@ -2279,7 +2311,7 @@ export class RumbleOrchestrator {
       }
       // Re-read to check if resolve succeeded so we can advance in same tick.
       invalidateReadCache(`combat:${rumbleIdNum}`);
-      combat = await readRumbleCombatState(rumbleIdNum).catch(() => null);
+      combat = await readRumbleCombatState(rumbleIdNum, this.getCombatConnection()).catch(() => null);
       if (!combat) return;
 
       // Record the just-resolved turn BEFORE checking remainingFighters.
@@ -2349,7 +2381,7 @@ export class RumbleOrchestrator {
         for (const fid of slot.fighters) {
           const wallet = state.fighterWallets.get(fid);
           if (!wallet) continue;
-          closeMoveCommitmentOnChain(rumbleIdNum, wallet, turnNumPost, wallet).catch(() => {});
+          closeMoveCommitmentOnChain(rumbleIdNum, wallet, turnNumPost, wallet, this.getCombatConnection()).catch(() => {});
         }
 
         for (const eliminatedId of syncAfterResolve.newEliminations) {
@@ -2374,10 +2406,22 @@ export class RumbleOrchestrator {
 
     if (combat.remainingFighters <= 1) {
       try {
-        const sig = await finalizeRumbleOnChainTx(rumbleIdNum);
+        const sig = await finalizeRumbleOnChainTx(rumbleIdNum, this.getCombatConnection());
         if (sig) {
           console.log(`[OnChain] finalizeRumble succeeded: ${sig}`);
           await persist.updateRumbleTxSignature(slot.id, "reportResult", sig);
+
+          // Undelegate combat state back to L1
+          if (this.erEnabled) {
+            try {
+              const undelegateSig = await undelegateCombatFromEr(rumbleIdNum);
+              if (undelegateSig) {
+                console.log(`[ER] undelegateCombat succeeded for rumble ${rumbleIdNum}: ${undelegateSig}`);
+              }
+            } catch (err) {
+              console.warn(`[ER] undelegateCombat failed for rumble ${rumbleIdNum}:`, err);
+            }
+          }
         }
       } catch (err) {
         console.warn(`[OnChain] finalizeRumble failed for ${slot.id}: ${formatError(err)}`);
@@ -2393,7 +2437,7 @@ export class RumbleOrchestrator {
     // More than 1 fighter remains and turn is resolved — advance to next turn.
     if (currentSlotBig >= combat.revealCloseSlot) {
       try {
-        const sig = await advanceTurnOnChain(rumbleIdNum);
+        const sig = await advanceTurnOnChain(rumbleIdNum, this.getCombatConnection());
         if (sig) {
           console.log(`[OnChain] advanceTurn succeeded: ${sig}`);
           persist.updateRumbleTxSignature(slot.id, "advanceTurn", sig);
@@ -2488,7 +2532,7 @@ export class RumbleOrchestrator {
 
   private async sendFighterSignedTx(tx: Transaction, signer: Keypair): Promise<string> {
     tx.partialSign(signer);
-    const conn = getConnection();
+    const conn = this.getCombatConnection();
     const signature = await conn.sendRawTransaction(tx.serialize(), {
       skipPreflight: false,
       preflightCommitment: "processed",
@@ -2566,7 +2610,7 @@ export class RumbleOrchestrator {
         const claimedSig = response.signature;
         // Verify the claimed signature actually landed on-chain
         try {
-          const conn = getConnection();
+          const conn = this.getCombatConnection();
           await new Promise(resolve => setTimeout(resolve, 1_500));
           const status = await conn.getSignatureStatus(claimedSig);
           if (!status?.value || status.value.err) {
@@ -2588,7 +2632,7 @@ export class RumbleOrchestrator {
       // Case 2: Fighter returned a signed transaction for us to submit
       if (typeof response.signed_tx === "string" && response.signed_tx.length > 0) {
         const signedTx = Transaction.from(Buffer.from(response.signed_tx, "base64"));
-        const conn = getConnection();
+        const conn = this.getCombatConnection();
         const signature = await conn.sendRawTransaction(signedTx.serialize(), {
           skipPreflight: false,
           preflightCommitment: "processed",
@@ -2910,7 +2954,7 @@ export class RumbleOrchestrator {
     const wallets = [...state.fighterWallets.values()];
     if (wallets.length === 0) return [];
     const pdas = wallets.map((wallet) => deriveMoveCommitmentPda(rumbleIdNum, wallet, turn)[0]);
-    const infos = await getConnection().getMultipleAccountsInfo(pdas, "processed");
+    const infos = await this.getCombatConnection().getMultipleAccountsInfo(pdas, "processed");
     const resolved: PublicKey[] = [];
     for (let i = 0; i < pdas.length; i++) {
       const info = infos[i];
@@ -3047,7 +3091,7 @@ export class RumbleOrchestrator {
     await persist.updateRumbleTurnLog(slot.id, state.turns, state.turns.length);
 
     // Post results on-chain
-    const sig = await postTurnResultOnChain(rumbleIdNum, duelResults, byeIdx);
+    const sig = await postTurnResultOnChain(rumbleIdNum, duelResults, byeIdx, this.getCombatConnection());
     if (sig) {
       console.log(`[Hybrid] postTurnResult succeeded: ${sig}`);
       persist.updateRumbleTxSignature(slot.id, "postTurnResult", sig);
@@ -3063,7 +3107,7 @@ export class RumbleOrchestrator {
 
     const [rumble, combat] = await Promise.all([
       readRumbleAccountState(rumbleIdNum).catch(() => null),
-      readRumbleCombatState(rumbleIdNum).catch(() => null),
+      readRumbleCombatState(rumbleIdNum, this.getCombatConnection()).catch(() => null),
     ]);
     if (!rumble || !combat) return;
 
@@ -3719,10 +3763,22 @@ export class RumbleOrchestrator {
       }
 
       if (onchainState.state === "combat") {
-        const finalizeSig = await finalizeRumbleOnChainTx(rumbleIdNum).catch(() => null);
+        const finalizeSig = await finalizeRumbleOnChainTx(rumbleIdNum, this.getCombatConnection()).catch(() => null);
         if (finalizeSig) {
           console.log(`[OnChain] finalizeRumble succeeded: ${finalizeSig}`);
           persist.updateRumbleTxSignature(rumbleId, "reportResult", finalizeSig);
+
+          // Undelegate combat state back to L1
+          if (this.erEnabled) {
+            try {
+              const undelegateSig = await undelegateCombatFromEr(rumbleIdNum);
+              if (undelegateSig) {
+                console.log(`[ER] undelegateCombat succeeded for rumble ${rumbleIdNum}: ${undelegateSig}`);
+              }
+            } catch (err) {
+              console.warn(`[ER] undelegateCombat failed for rumble ${rumbleIdNum}:`, err);
+            }
+          }
         }
         onchainState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
       }

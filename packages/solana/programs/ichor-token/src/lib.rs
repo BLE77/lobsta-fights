@@ -2,6 +2,11 @@ use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 use anchor_spl::token::spl_token::instruction::AuthorityType;
 use anchor_spl::token::{self, Burn, Mint, MintTo, SetAuthority, Token, TokenAccount, Transfer};
+use ephemeral_vrf_sdk::anchor::vrf;
+use ephemeral_vrf_sdk::consts::{DEFAULT_QUEUE, VRF_PROGRAM_IDENTITY};
+use ephemeral_vrf_sdk::instructions::create_request_randomness_ix;
+use ephemeral_vrf_sdk::rnd::random_u64;
+use ephemeral_vrf_sdk::types::SerializableAccountMeta;
 
 declare_id!("925GAeqjKMX4B5MDANB91SZCvrx8HpEgmPJwHJzxKJx1");
 
@@ -862,6 +867,188 @@ pub mod ichor_token {
         );
         Ok(())
     }
+
+    /// Request provably-fair Ichor Shower randomness via MagicBlock VRF.
+    ///
+    /// Admin calls this to CPI into the VRF program. The oracle will
+    /// automatically call `callback_ichor_shower_vrf` with the result.
+    pub fn request_ichor_shower_vrf(ctx: Context<RequestIchorShowerVrf>, client_seed: u8) -> Result<()> {
+        let arena = &ctx.accounts.arena_config;
+
+        // Only admin can request
+        require!(ctx.accounts.payer.key() == arena.admin, IchorError::Unauthorized);
+        require!(arena.ichor_shower_pool > 0, IchorError::EmptyShowerPool);
+
+        // Capture keys before mutable borrow
+        let payer_key = ctx.accounts.payer.key();
+        let oracle_queue_key = ctx.accounts.oracle_queue.key();
+        let arena_config_key = ctx.accounts.arena_config.key();
+        let shower_request_key = ctx.accounts.shower_request.key();
+        let ichor_mint_key = ctx.accounts.ichor_mint.key();
+        let recipient_key = ctx.accounts.recipient_token_account.key();
+        let shower_vault_key = ctx.accounts.shower_vault.key();
+        let token_program_key = ctx.accounts.token_program.key();
+
+        let request = &mut ctx.accounts.shower_request;
+
+        // Initialize or validate shower_request PDA
+        if !request.initialized {
+            request.initialized = true;
+            request.bump = ctx.bumps.shower_request;
+            request.active = false;
+            request.request_nonce = 0;
+        }
+
+        // Must not have an active request already
+        require!(!request.active, IchorError::ShowerRequestAlreadyActive);
+
+        // Mark active with recipient
+        request.request_nonce = request.request_nonce.checked_add(1).ok_or(IchorError::MathOverflow)?;
+        request.active = true;
+        request.recipient_token_account = recipient_key;
+        request.requested_slot = Clock::get()?.slot;
+
+        // Save values for event before dropping mutable borrow
+        let nonce = request.request_nonce;
+        let recipient = request.recipient_token_account;
+        let requested_slot = request.requested_slot;
+
+        // Release the mutable borrow so we can call invoke_signed_vrf
+        let _ = request;
+
+        // CPI to MagicBlock VRF
+        let ix = create_request_randomness_ix(
+            ephemeral_vrf_sdk::instructions::RequestRandomnessParams {
+                payer: payer_key,
+                oracle_queue: oracle_queue_key,
+                callback_program_id: crate::ID,
+                callback_discriminator: instruction::CallbackIchorShowerVrf::DISCRIMINATOR.to_vec(),
+                caller_seed: [client_seed; 32],
+                accounts_metas: Some(vec![
+                    SerializableAccountMeta {
+                        pubkey: arena_config_key,
+                        is_signer: false,
+                        is_writable: true,
+                    },
+                    SerializableAccountMeta {
+                        pubkey: shower_request_key,
+                        is_signer: false,
+                        is_writable: true,
+                    },
+                    SerializableAccountMeta {
+                        pubkey: ichor_mint_key,
+                        is_signer: false,
+                        is_writable: true,
+                    },
+                    SerializableAccountMeta {
+                        pubkey: recipient_key,
+                        is_signer: false,
+                        is_writable: true,
+                    },
+                    SerializableAccountMeta {
+                        pubkey: shower_vault_key,
+                        is_signer: false,
+                        is_writable: true,
+                    },
+                    SerializableAccountMeta {
+                        pubkey: token_program_key,
+                        is_signer: false,
+                        is_writable: false,
+                    },
+                ]),
+                ..Default::default()
+            },
+        );
+        ctx.accounts.invoke_signed_vrf(&ctx.accounts.payer.to_account_info(), &ix)?;
+
+        emit!(IchorShowerVrfRequestedEvent {
+            request_nonce: nonce,
+            recipient,
+            requested_slot,
+        });
+
+        Ok(())
+    }
+
+    /// Callback from MagicBlock VRF oracle with provably-fair randomness.
+    ///
+    /// Only the VRF oracle (identified by VRF_PROGRAM_IDENTITY) can call this.
+    /// Uses the randomness to determine if the Ichor Shower triggers.
+    pub fn callback_ichor_shower_vrf(ctx: Context<CallbackIchorShowerVrf>, randomness: [u8; 32]) -> Result<()> {
+        let arena = &mut ctx.accounts.arena_config;
+        let request = &mut ctx.accounts.shower_request;
+
+        require!(request.active, IchorError::NoActiveShowerRequest);
+
+        // Verify recipient matches
+        require!(
+            ctx.accounts.recipient_token_account.key() == request.recipient_token_account,
+            IchorError::PendingRecipientMismatch
+        );
+
+        let rng_value = random_u64(&randomness);
+        let triggered = rng_value % SHOWER_CHANCE == 0;
+
+        if triggered {
+            let vault_balance = ctx.accounts.shower_vault.amount;
+            let pool_amount = arena.ichor_shower_pool.min(vault_balance);
+
+            let recipient_amount = pool_amount.checked_mul(90).ok_or(IchorError::MathOverflow)?.checked_div(100).ok_or(IchorError::MathOverflow)?;
+            let burn_amount = pool_amount.checked_sub(recipient_amount).ok_or(IchorError::MathOverflow)?;
+
+            let arena_info = arena.to_account_info();
+            let bump = &[arena.bump];
+            let seeds: &[&[u8]] = &[ARENA_SEED, bump];
+            let signer_seeds = &[seeds];
+
+            if recipient_amount > 0 {
+                token::transfer(
+                    CpiContext::new_with_signer(
+                        ctx.accounts.token_program.to_account_info(),
+                        Transfer {
+                            from: ctx.accounts.shower_vault.to_account_info(),
+                            to: ctx.accounts.recipient_token_account.to_account_info(),
+                            authority: arena_info.clone(),
+                        },
+                        signer_seeds,
+                    ),
+                    recipient_amount,
+                )?;
+            }
+
+            if burn_amount > 0 {
+                token::burn(
+                    CpiContext::new_with_signer(
+                        ctx.accounts.token_program.to_account_info(),
+                        Burn {
+                            mint: ctx.accounts.ichor_mint.to_account_info(),
+                            from: ctx.accounts.shower_vault.to_account_info(),
+                            authority: arena_info.clone(),
+                        },
+                        signer_seeds,
+                    ),
+                    burn_amount,
+                )?;
+            }
+
+            arena.ichor_shower_pool = 0;
+
+            emit!(IchorShowerEvent {
+                slot: Clock::get()?.slot,
+                amount: pool_amount,
+                recipient: request.recipient_token_account,
+            });
+        }
+
+        // Reset request
+        request.active = false;
+        request.recipient_token_account = Pubkey::default();
+        request.requested_slot = 0;
+        request.target_slot_a = 0;
+        request.target_slot_b = 0;
+
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1414,6 +1601,79 @@ pub struct RevokeMint<'info> {
     pub token_program: Program<'info, Token>,
 }
 
+/// Accounts for requesting VRF-based Ichor Shower randomness.
+/// The `#[vrf]` macro auto-injects: program_identity, vrf_program, slot_hashes, system_program.
+#[vrf]
+#[derive(Accounts)]
+pub struct RequestIchorShowerVrf<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [ARENA_SEED],
+        bump = arena_config.bump,
+    )]
+    pub arena_config: Account<'info, ArenaConfig>,
+
+    #[account(
+        init_if_needed,
+        payer = payer,
+        space = 8 + ShowerRequest::INIT_SPACE,
+        seeds = [SHOWER_REQUEST_SEED],
+        bump
+    )]
+    pub shower_request: Account<'info, ShowerRequest>,
+
+    #[account(address = arena_config.ichor_mint @ IchorError::InvalidMint)]
+    pub ichor_mint: Account<'info, Mint>,
+
+    #[account(mut, token::mint = ichor_mint)]
+    pub recipient_token_account: Account<'info, TokenAccount>,
+
+    #[account(mut, token::mint = ichor_mint, token::authority = arena_config)]
+    pub shower_vault: Account<'info, TokenAccount>,
+
+    /// CHECK: The MagicBlock VRF oracle queue
+    #[account(mut, address = DEFAULT_QUEUE)]
+    pub oracle_queue: AccountInfo<'info>,
+
+    pub token_program: Program<'info, Token>,
+}
+
+/// Accounts for the VRF callback (called by the MagicBlock oracle).
+#[derive(Accounts)]
+pub struct CallbackIchorShowerVrf<'info> {
+    /// The VRF program identity — only the oracle can call this
+    #[account(address = VRF_PROGRAM_IDENTITY)]
+    pub vrf_program_identity: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [ARENA_SEED],
+        bump = arena_config.bump,
+    )]
+    pub arena_config: Account<'info, ArenaConfig>,
+
+    #[account(
+        mut,
+        seeds = [SHOWER_REQUEST_SEED],
+        bump = shower_request.bump,
+    )]
+    pub shower_request: Account<'info, ShowerRequest>,
+
+    #[account(mut, address = arena_config.ichor_mint @ IchorError::InvalidMint)]
+    pub ichor_mint: Account<'info, Mint>,
+
+    #[account(mut, token::mint = ichor_mint)]
+    pub recipient_token_account: Account<'info, TokenAccount>,
+
+    #[account(mut, token::mint = ichor_mint, token::authority = arena_config)]
+    pub shower_vault: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+}
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -1495,6 +1755,13 @@ pub struct EntropyConfigUpdatedEvent {
     pub var_authority: Pubkey,
 }
 
+#[event]
+pub struct IchorShowerVrfRequestedEvent {
+    pub request_nonce: u64,
+    pub recipient: Pubkey,
+    pub requested_slot: u64,
+}
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -1569,6 +1836,12 @@ pub enum IchorError {
 
     #[msg("Invalid season reward: must be >= 0.1 ICHOR and <= 10,000 ICHOR")]
     InvalidSeasonReward,
+
+    #[msg("A shower request is already active")]
+    ShowerRequestAlreadyActive,
+
+    #[msg("No active shower request to settle")]
+    NoActiveShowerRequest,
 }
 
 #[cfg(test)]

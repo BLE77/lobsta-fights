@@ -1,14 +1,17 @@
 /**
  * Solana RPC Connection Setup
  *
- * Creates a connection to Solana RPC.
+ * Creates connections to Solana RPC for both combat (devnet) and betting (mainnet).
  * Provides helpers for sending and confirming transactions.
  *
  * Environment variables:
- *   SOLANA_RPC_URL - explicit RPC endpoint (server-side preferred)
- *   NEXT_PUBLIC_SOLANA_RPC_URL - explicit RPC endpoint fallback
- *   HELIUS_API_KEY - Helius API key (server-side only)
+ *   SOLANA_RPC_URL - explicit RPC endpoint (server-side preferred, combat/devnet)
+ *   NEXT_PUBLIC_SOLANA_RPC_URL - explicit RPC endpoint fallback (combat/devnet)
+ *   HELIUS_API_KEY - Helius API key for devnet (server-side only)
+ *   HELIUS_MAINNET_API_KEY - Helius API key for mainnet betting (server-side only)
  *   NEXT_PUBLIC_SOLANA_NETWORK - "devnet" | "mainnet-beta" (default: "devnet")
+ *   NEXT_PUBLIC_BETTING_RPC_URL - explicit mainnet RPC for betting (frontend)
+ *   NEXT_PUBLIC_BETTING_NETWORK - "mainnet-beta" (hardcoded, not configurable)
  *
  * Dependencies needed (not yet installed):
  *   @solana/web3.js
@@ -62,13 +65,37 @@ export function getRpcEndpoint(): string {
 }
 
 // ---------------------------------------------------------------------------
+// Betting (Mainnet) RPC
+// ---------------------------------------------------------------------------
+
+function getHeliusMainnetApiKey(): string | null {
+  const key = process.env.HELIUS_MAINNET_API_KEY?.trim();
+  if (key) return key;
+  return null;
+}
+
+/**
+ * Get the mainnet RPC endpoint for betting operations.
+ * Uses HELIUS_MAINNET_API_KEY or falls back to public mainnet RPC.
+ */
+export function getBettingRpcEndpoint(): string {
+  const explicit = process.env.NEXT_PUBLIC_BETTING_RPC_URL?.trim();
+  if (explicit) return explicit;
+
+  const key = getHeliusMainnetApiKey();
+  if (key) return `https://mainnet.helius-rpc.com/?api-key=${key}`;
+
+  return "https://api.mainnet-beta.solana.com";
+}
+
+// ---------------------------------------------------------------------------
 // Connection
 // ---------------------------------------------------------------------------
 
 let _connection: Connection | null = null;
 
 /**
- * Get a shared Solana connection instance.
+ * Get a shared Solana connection instance (combat/devnet).
  * Uses the Helius RPC endpoint for the configured network.
  */
 export function getConnection(): Connection {
@@ -78,6 +105,56 @@ export function getConnection(): Connection {
     });
   }
   return _connection;
+}
+
+/** Alias for getConnection() — explicit name for combat operations. */
+export function getCombatConnection(): Connection {
+  return getConnection();
+}
+
+let _bettingConnection: Connection | null = null;
+
+/**
+ * Get a shared Solana connection for betting operations (mainnet).
+ * Separate from combat connection to isolate rate limits and network.
+ */
+export function getBettingConnection(): Connection {
+  if (!_bettingConnection) {
+    _bettingConnection = new Connection(getBettingRpcEndpoint(), {
+      commitment: "confirmed",
+    });
+  }
+  return _bettingConnection;
+}
+
+// ---------------------------------------------------------------------------
+// Ephemeral Rollup (MagicBlock) Connection — real-time combat execution
+// ---------------------------------------------------------------------------
+
+/**
+ * Get the MagicBlock ER RPC endpoint.
+ * Uses MAGICBLOCK_ER_RPC_URL env var, defaults to devnet US endpoint.
+ */
+export function getErRpcEndpoint(): string {
+  const explicit = process.env.MAGICBLOCK_ER_RPC_URL?.trim();
+  if (explicit) return explicit;
+  return "https://devnet-us.magicblock.app/";
+}
+
+let _erConnection: Connection | null = null;
+
+/**
+ * Get a shared connection to the MagicBlock Ephemeral Rollup validator.
+ * Used for combat transactions that run in the ER (sub-50ms latency, zero fees).
+ */
+export function getErConnection(): Connection {
+  if (!_erConnection) {
+    _erConnection = new Connection(getErRpcEndpoint(), {
+      commitment: "confirmed",
+      wsEndpoint: getErRpcEndpoint().replace("https://", "wss://"),
+    });
+  }
+  return _erConnection;
 }
 
 /**

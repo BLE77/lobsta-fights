@@ -23,13 +23,13 @@ export const GUARD_BLOCKS_STRIKE: Record<string, MoveType> = {
 
 // Combat constants - Different damage per strike type for more variety!
 export const STRIKE_DAMAGE: Record<string, number> = {
-  HIGH_STRIKE: 26,   // High risk, high reward - goes for the head
-  MID_STRIKE: 20,    // Balanced body shot
-  LOW_STRIKE: 15,    // Safer leg sweep, less damage
+  HIGH_STRIKE: 39,   // High risk, high reward - goes for the head
+  MID_STRIKE: 30,    // Balanced body shot
+  LOW_STRIKE: 23,    // Safer leg sweep, less damage
 };
-export const CATCH_DAMAGE = 30;      // Big punish for catching a dodge
-export const COUNTER_DAMAGE = 12;    // Damage when you block and counter
-export const SPECIAL_DAMAGE = 35;    // Devastating unblockable
+export const CATCH_DAMAGE = 45;      // Big punish for catching a dodge
+export const COUNTER_DAMAGE = 18;    // Damage when you block and counter
+export const SPECIAL_DAMAGE = 52;    // Devastating unblockable
 export const DAMAGE_VARIANCE = 4; // +/- range for damage rolls
 export const METER_PER_TURN = 20;
 export const SPECIAL_METER_COST = 100;

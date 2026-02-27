@@ -2,6 +2,12 @@ use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 #[cfg(feature = "combat")]
 use sha2::{Digest, Sha256};
+#[cfg(feature = "combat")]
+use ephemeral_rollups_sdk::anchor::{commit, delegate};
+#[cfg(feature = "combat")]
+use ephemeral_rollups_sdk::cpi::DelegateConfig;
+#[cfg(feature = "combat")]
+use ephemeral_rollups_sdk::ephem::{commit_accounts, commit_and_undelegate_accounts};
 
 declare_id!("2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC");
 
@@ -69,17 +75,17 @@ const MOVE_CATCH: u8 = 7;
 const MOVE_SPECIAL: u8 = 8;
 
 #[cfg(feature = "combat")]
-const STRIKE_DAMAGE_HIGH: u16 = 26;
+const STRIKE_DAMAGE_HIGH: u16 = 39;
 #[cfg(feature = "combat")]
-const STRIKE_DAMAGE_MID: u16 = 20;
+const STRIKE_DAMAGE_MID: u16 = 30;
 #[cfg(feature = "combat")]
-const STRIKE_DAMAGE_LOW: u16 = 15;
+const STRIKE_DAMAGE_LOW: u16 = 23;
 #[cfg(feature = "combat")]
-const CATCH_DAMAGE: u16 = 30;
+const CATCH_DAMAGE: u16 = 45;
 #[cfg(feature = "combat")]
-const COUNTER_DAMAGE: u16 = 12;
+const COUNTER_DAMAGE: u16 = 18;
 #[cfg(feature = "combat")]
-const SPECIAL_DAMAGE: u16 = 35;
+const SPECIAL_DAMAGE: u16 = 52;
 #[cfg(feature = "combat")]
 const METER_PER_TURN: u8 = 20;
 #[cfg(feature = "combat")]
@@ -1994,6 +2000,60 @@ pub mod rumble_engine {
         );
         Ok(())
     }
+
+    // -----------------------------------------------------------------------
+    // Ephemeral Rollup delegation (MagicBlock ER)
+    // -----------------------------------------------------------------------
+
+    /// Delegate a combat state PDA to a MagicBlock Ephemeral Rollup.
+    /// Admin-only. Called after matchmaking, before combat starts on ER.
+    #[cfg(feature = "combat")]
+    pub fn delegate_combat(ctx: Context<DelegateCombat>, rumble_id: u64) -> Result<()> {
+        require!(
+            ctx.accounts.authority.key() == ctx.accounts.config.admin,
+            RumbleError::Unauthorized
+        );
+
+        ctx.accounts.delegate_pda(
+            &ctx.accounts.authority,
+            &[COMBAT_STATE_SEED, &rumble_id.to_le_bytes()],
+            DelegateConfig {
+                commit_frequency_ms: 3_000,
+                ..Default::default()
+            },
+        )?;
+
+        msg!("Combat state delegated to Ephemeral Rollup for rumble {}", rumble_id);
+        Ok(())
+    }
+
+    /// Commit combat state from ER back to Solana L1 (periodic sync for spectators).
+    #[cfg(feature = "combat")]
+    pub fn commit_combat(ctx: Context<CommitCombat>) -> Result<()> {
+        commit_accounts(
+            &ctx.accounts.authority,
+            vec![&ctx.accounts.combat_state.to_account_info()],
+            &ctx.accounts.magic_context,
+            &ctx.accounts.magic_program,
+        )?;
+        msg!("Combat state committed to L1");
+        Ok(())
+    }
+
+    /// Commit final combat state and undelegate back to Solana L1.
+    #[cfg(feature = "combat")]
+    pub fn undelegate_combat(ctx: Context<CommitCombat>) -> Result<()> {
+        ctx.accounts.combat_state.exit(&crate::ID)?;
+
+        commit_and_undelegate_accounts(
+            &ctx.accounts.authority,
+            vec![&ctx.accounts.combat_state.to_account_info()],
+            &ctx.accounts.magic_context,
+            &ctx.accounts.magic_program,
+        )?;
+        msg!("Combat state undelegated back to L1");
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2558,6 +2618,35 @@ pub struct CloseCombatState<'info> {
         bump = combat_state.bump,
         constraint = combat_state.rumble_id == rumble.id @ RumbleError::InvalidRumble,
     )]
+    pub combat_state: Account<'info, RumbleCombatState>,
+}
+
+#[cfg(feature = "combat")]
+#[delegate]
+#[derive(Accounts)]
+pub struct DelegateCombat<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        seeds = [CONFIG_SEED],
+        bump = config.bump,
+    )]
+    pub config: Account<'info, RumbleConfig>,
+
+    /// CHECK: The combat state PDA to delegate to the Ephemeral Rollup.
+    #[account(mut, del)]
+    pub pda: AccountInfo<'info>,
+}
+
+#[cfg(feature = "combat")]
+#[commit]
+#[derive(Accounts)]
+pub struct CommitCombat<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(mut)]
     pub combat_state: Account<'info, RumbleCombatState>,
 }
 

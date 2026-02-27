@@ -18,7 +18,7 @@ import {
   Transaction,
 } from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
-import { getConnection } from "./solana-connection";
+import { getConnection, getBettingConnection, getErConnection } from "./solana-connection";
 import { createHash, randomBytes } from "node:crypto";
 import { keccak_256 } from "@noble/hashes/sha3";
 
@@ -39,6 +39,17 @@ export const ICHOR_TOKEN_ID = new PublicKey(
 );
 export const RUMBLE_ENGINE_ID = new PublicKey(
   "2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC"
+);
+
+/**
+ * Mainnet program ID for betting operations.
+ * Same program deployed to mainnet-beta — only betting instructions are called there.
+ * Falls back to devnet program ID if not configured (for testing).
+ */
+export const RUMBLE_ENGINE_ID_MAINNET = new PublicKey(
+  process.env.NEXT_PUBLIC_RUMBLE_ENGINE_MAINNET ??
+  process.env.RUMBLE_ENGINE_MAINNET_PROGRAM_ID ??
+  RUMBLE_ENGINE_ID.toBase58()
 );
 
 // ---------------------------------------------------------------------------
@@ -64,6 +75,11 @@ const COMBAT_STATE_SEED = Buffer.from("combat_state");
 const SLOT_HASHES_SYSVAR_ID = new PublicKey(
   "SysvarS1otHashes111111111111111111111111111"
 );
+
+// MagicBlock Delegation Program
+const DELEGATION_PROGRAM_ID = new PublicKey("DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh");
+const MAGIC_PROGRAM_ID = new PublicKey("Magic11111111111111111111111111111111111111");
+const MAGIC_CONTEXT_ID = new PublicKey("MagicContext1111111111111111111111111111111");
 
 // ---------------------------------------------------------------------------
 // Time-based read cache — reduces RPC calls for hot on-chain reads
@@ -197,6 +213,53 @@ export function deriveCombatStatePda(rumbleId: bigint | number): [PublicKey, num
   );
 }
 
+// ---------------------------------------------------------------------------
+// Mainnet PDA Derivation Helpers (betting operations)
+// ---------------------------------------------------------------------------
+
+export function deriveRumbleConfigPdaMainnet(): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync([CONFIG_SEED], RUMBLE_ENGINE_ID_MAINNET);
+}
+
+export function deriveRumblePdaMainnet(rumbleId: bigint | number): [PublicKey, number] {
+  const buf = Buffer.alloc(8);
+  buf.writeBigUInt64LE(BigInt(rumbleId));
+  return PublicKey.findProgramAddressSync(
+    [RUMBLE_SEED, buf],
+    RUMBLE_ENGINE_ID_MAINNET,
+  );
+}
+
+export function deriveVaultPdaMainnet(rumbleId: bigint | number): [PublicKey, number] {
+  const buf = Buffer.alloc(8);
+  buf.writeBigUInt64LE(BigInt(rumbleId));
+  return PublicKey.findProgramAddressSync(
+    [VAULT_SEED, buf],
+    RUMBLE_ENGINE_ID_MAINNET,
+  );
+}
+
+export function deriveBettorPdaMainnet(
+  rumbleId: bigint | number,
+  bettor: PublicKey,
+): [PublicKey, number] {
+  const buf = Buffer.alloc(8);
+  buf.writeBigUInt64LE(BigInt(rumbleId));
+  return PublicKey.findProgramAddressSync(
+    [BETTOR_SEED, buf, bettor.toBuffer()],
+    RUMBLE_ENGINE_ID_MAINNET,
+  );
+}
+
+export function deriveSponsorshipPdaMainnet(
+  fighterPubkey: PublicKey,
+): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [SPONSORSHIP_SEED, fighterPubkey.toBuffer()],
+    RUMBLE_ENGINE_ID_MAINNET,
+  );
+}
+
 function readU64LE(data: Uint8Array, offset: number): bigint {
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   return view.getBigUint64(offset, true);
@@ -270,15 +333,18 @@ export interface RumbleCombatAccountState {
 
 /**
  * Read a rumble account's current state directly from chain.
+ * Pass programId to read from mainnet program (uses mainnet PDA derivation).
  */
 export async function readRumbleAccountState(
   rumbleId: bigint | number,
   connection?: Connection,
+  programId?: PublicKey,
 ): Promise<RumbleAccountState | null> {
-  const key = `rumble:${rumbleId}`;
+  const useMainnet = programId && !programId.equals(RUMBLE_ENGINE_ID);
+  const key = `rumble:${useMainnet ? "mainnet:" : ""}${rumbleId}`;
   return cachedRead(key, 3000, async () => {
     const conn = connection ?? getConnection();
-    const [rumblePda] = deriveRumblePda(rumbleId);
+    const [rumblePda] = useMainnet ? deriveRumblePdaMainnet(rumbleId) : deriveRumblePda(rumbleId);
     // Use processed commitment to minimize stale reads around betting close.
     const info = await conn.getAccountInfo(rumblePda, "processed");
     if (!info || info.data.length < 17) return null;
@@ -630,11 +696,12 @@ function getIchorTokenProgram(
 }
 
 function getRumbleEngineProgram(
-  provider: anchor.AnchorProvider
+  provider: anchor.AnchorProvider,
+  programId?: PublicKey,
 ): anchor.Program {
   const idl = {
     ...(rumbleEngineIdl as any),
-    address: RUMBLE_ENGINE_ID.toBase58(),
+    address: (programId ?? RUMBLE_ENGINE_ID).toBase58(),
   };
   return new anchor.Program(idl, provider);
 }
@@ -696,6 +763,46 @@ function getAdminProvider(connection?: Connection): anchor.AnchorProvider | null
   if (!keypair) return null;
   const wallet = new NodeWallet(keypair);
   return getProvider(connection, wallet);
+}
+
+// ---------------------------------------------------------------------------
+// Mainnet Admin Keypair (server-side only, separate from devnet)
+// ---------------------------------------------------------------------------
+
+let _mainnetAdminKeypair: Keypair | null = null;
+
+function getMainnetAdminKeypair(): Keypair | null {
+  if (_mainnetAdminKeypair) return _mainnetAdminKeypair;
+
+  const raw = process.env.SOLANA_MAINNET_DEPLOYER_KEYPAIR;
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      _mainnetAdminKeypair = Keypair.fromSecretKey(Uint8Array.from(parsed));
+      return _mainnetAdminKeypair;
+    } catch {
+      try {
+        const bs58 = require("bs58");
+        _mainnetAdminKeypair = Keypair.fromSecretKey(bs58.decode(raw));
+        return _mainnetAdminKeypair;
+      } catch (err) {
+        console.warn("[solana-programs] Failed to parse SOLANA_MAINNET_DEPLOYER_KEYPAIR:", err);
+      }
+    }
+  }
+
+  return null;
+}
+
+function getMainnetAdminProvider(connection?: Connection): anchor.AnchorProvider | null {
+  const keypair = getMainnetAdminKeypair();
+  if (!keypair) return null;
+  const wallet = new NodeWallet(keypair);
+  const conn = connection ?? getBettingConnection();
+  return new anchor.AnchorProvider(conn, wallet, {
+    commitment: "processed",
+    preflightCommitment: "processed",
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1740,10 +1847,11 @@ export async function buildPlaceBetTx(
   rumbleId: number,
   fighterIndex: number,
   lamports: number,
-  connection?: Connection
+  connection?: Connection,
+  programId?: PublicKey,
 ): Promise<Transaction> {
   const provider = getProvider(connection);
-  const program = getRumbleEngineProgram(provider);
+  const program = getRumbleEngineProgram(provider, programId);
 
   const conn = connection ?? getConnection();
   const {
@@ -1752,13 +1860,14 @@ export async function buildPlaceBetTx(
     vaultPda,
     treasury,
     fighterPubkeys,
-  } = await loadRumbleBetContext(rumbleId, conn);
+  } = await loadRumbleBetContext(rumbleId, conn, programId);
   const fighterPubkey = fighterPubkeys[fighterIndex];
   if (!fighterPubkey) {
     throw new Error(`Invalid fighter index ${fighterIndex} for rumble ${rumbleId}`);
   }
-  const [sponsorshipPda] = deriveSponsorshipPda(fighterPubkey);
-  const [bettorAccountPda] = deriveBettorPda(rumbleId, bettor);
+  const useMainnet = programId && !programId.equals(RUMBLE_ENGINE_ID);
+  const [sponsorshipPda] = useMainnet ? deriveSponsorshipPdaMainnet(fighterPubkey) : deriveSponsorshipPda(fighterPubkey);
+  const [bettorAccountPda] = useMainnet ? deriveBettorPdaMainnet(rumbleId, bettor) : deriveBettorPda(rumbleId, bettor);
 
   const tx = await (program.methods as any)
     .placeBet(
@@ -1797,14 +1906,16 @@ export async function buildPlaceBetBatchTx(
   rumbleId: number,
   bets: Array<{ fighterIndex: number; lamports: number }>,
   connection?: Connection,
+  programId?: PublicKey,
 ): Promise<Transaction> {
   if (!Array.isArray(bets) || bets.length === 0) {
     throw new Error("At least one bet is required for batch place_bet");
   }
 
   const provider = getProvider(connection);
-  const program = getRumbleEngineProgram(provider);
+  const program = getRumbleEngineProgram(provider, programId);
   const conn = connection ?? getConnection();
+  const useMainnet = programId && !programId.equals(RUMBLE_ENGINE_ID);
 
   const {
     rumbleConfigPda,
@@ -1812,8 +1923,8 @@ export async function buildPlaceBetBatchTx(
     vaultPda,
     treasury,
     fighterPubkeys,
-  } = await loadRumbleBetContext(rumbleId, conn);
-  const [bettorAccountPda] = deriveBettorPda(rumbleId, bettor);
+  } = await loadRumbleBetContext(rumbleId, conn, programId);
+  const [bettorAccountPda] = useMainnet ? deriveBettorPdaMainnet(rumbleId, bettor) : deriveBettorPda(rumbleId, bettor);
 
   const tx = new Transaction();
 
@@ -1829,7 +1940,7 @@ export async function buildPlaceBetBatchTx(
     if (!fighterPubkey) {
       throw new Error(`Fighter index ${leg.fighterIndex} not found in rumble ${rumbleId}`);
     }
-    const [sponsorshipPda] = deriveSponsorshipPda(fighterPubkey);
+    const [sponsorshipPda] = useMainnet ? deriveSponsorshipPdaMainnet(fighterPubkey) : deriveSponsorshipPda(fighterPubkey);
 
     const ix = await (program.methods as any)
       .placeBet(
@@ -1862,6 +1973,7 @@ export async function buildPlaceBetBatchTx(
 async function loadRumbleBetContext(
   rumbleId: number,
   conn: Connection,
+  programId?: PublicKey,
 ): Promise<{
   rumbleConfigPda: PublicKey;
   rumblePda: PublicKey;
@@ -1869,9 +1981,10 @@ async function loadRumbleBetContext(
   treasury: PublicKey;
   fighterPubkeys: PublicKey[];
 }> {
-  const [rumbleConfigPda] = deriveRumbleConfigPda();
-  const [rumblePda] = deriveRumblePda(rumbleId);
-  const [vaultPda] = deriveVaultPda(rumbleId);
+  const useMainnet = programId && !programId.equals(RUMBLE_ENGINE_ID);
+  const [rumbleConfigPda] = useMainnet ? deriveRumbleConfigPdaMainnet() : deriveRumbleConfigPda();
+  const [rumblePda] = useMainnet ? deriveRumblePdaMainnet(rumbleId) : deriveRumblePda(rumbleId);
+  const [vaultPda] = useMainnet ? deriveVaultPdaMainnet(rumbleId) : deriveVaultPda(rumbleId);
 
   const [rumbleInfo, configInfo] = await Promise.all([
     conn.getAccountInfo(rumblePda),
@@ -2162,14 +2275,16 @@ export async function reportResult(
 export async function buildClaimPayoutTx(
   bettor: PublicKey,
   rumbleId: number,
-  connection?: Connection
+  connection?: Connection,
+  programId?: PublicKey,
 ): Promise<Transaction> {
   const provider = getProvider(connection);
-  const program = getRumbleEngineProgram(provider);
+  const program = getRumbleEngineProgram(provider, programId);
+  const useMainnet = programId && !programId.equals(RUMBLE_ENGINE_ID);
 
-  const [rumblePda] = deriveRumblePda(rumbleId);
-  const [vaultPda] = deriveVaultPda(rumbleId);
-  const [bettorAccountPda] = deriveBettorPda(rumbleId, bettor);
+  const [rumblePda] = useMainnet ? deriveRumblePdaMainnet(rumbleId) : deriveRumblePda(rumbleId);
+  const [vaultPda] = useMainnet ? deriveVaultPdaMainnet(rumbleId) : deriveVaultPda(rumbleId);
+  const [bettorAccountPda] = useMainnet ? deriveBettorPdaMainnet(rumbleId, bettor) : deriveBettorPda(rumbleId, bettor);
 
   const conn = connection ?? getConnection();
 
@@ -2202,6 +2317,7 @@ export async function buildClaimPayoutBatchTx(
   bettor: PublicKey,
   rumbleIds: number[],
   connection?: Connection,
+  programId?: PublicKey,
 ): Promise<Transaction> {
   if (!Array.isArray(rumbleIds) || rumbleIds.length === 0) {
     throw new Error("At least one rumble id is required for batch claim");
@@ -2215,17 +2331,18 @@ export async function buildClaimPayoutBatchTx(
   }
 
   const provider = getProvider(connection);
-  const program = getRumbleEngineProgram(provider);
+  const program = getRumbleEngineProgram(provider, programId);
   const conn = connection ?? getConnection();
+  const useMainnet = programId && !programId.equals(RUMBLE_ENGINE_ID);
   const tx = new Transaction();
 
   // Batch claim instructions can exceed the default compute cap.
   tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 900_000 }));
 
   for (const rumbleId of uniqueRumbleIds) {
-    const [rumblePda] = deriveRumblePda(rumbleId);
-    const [vaultPda] = deriveVaultPda(rumbleId);
-    const [bettorAccountPda] = deriveBettorPda(rumbleId, bettor);
+    const [rumblePda] = useMainnet ? deriveRumblePdaMainnet(rumbleId) : deriveRumblePda(rumbleId);
+    const [vaultPda] = useMainnet ? deriveVaultPdaMainnet(rumbleId) : deriveVaultPda(rumbleId);
+    const [bettorAccountPda] = useMainnet ? deriveBettorPdaMainnet(rumbleId, bettor) : deriveBettorPda(rumbleId, bettor);
 
     const ix = await (program.methods as any)
       .claimPayout()
@@ -2344,6 +2461,109 @@ export async function completeRumble(
     });
 
   return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+}
+
+// ---------------------------------------------------------------------------
+// Mainnet Admin Functions (betting network)
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a rumble on mainnet for betting. Same logic as createRumble but uses
+ * mainnet admin keypair, mainnet connection, and mainnet program ID.
+ */
+export async function createRumbleMainnet(
+  rumbleId: number,
+  fighters: PublicKey[],
+  bettingDeadlineUnix: number,
+): Promise<string | null> {
+  const provider = getMainnetAdminProvider();
+  if (!provider) {
+    console.warn("[solana-programs] No mainnet admin keypair, skipping mainnet createRumble");
+    return null;
+  }
+  const program = getRumbleEngineProgram(provider, RUMBLE_ENGINE_ID_MAINNET);
+  const admin = getMainnetAdminKeypair()!;
+
+  const [rumbleConfigPda] = deriveRumbleConfigPdaMainnet();
+  const [rumblePda] = deriveRumblePdaMainnet(rumbleId);
+
+  const conn = getBettingConnection();
+  const nowUnix = Math.floor(Date.now() / 1000);
+  const bettingCloseUnix = BigInt(Math.max(bettingDeadlineUnix, nowUnix + 30));
+
+  const method = (program.methods as any)
+    .createRumble(
+      new anchor.BN(rumbleId),
+      fighters,
+      new anchor.BN(bettingCloseUnix.toString()),
+    )
+    .accounts({
+      admin: admin.publicKey,
+      config: rumbleConfigPda,
+      rumble: rumblePda,
+      systemProgram: SystemProgram.programId,
+    });
+
+  return await sendAdminTxFireAndForget(method, admin, conn);
+}
+
+/**
+ * Report rumble result on mainnet so bettors can claim payouts.
+ * Uses the admin_set_result instruction (replaces the deprecated report_result).
+ */
+export async function reportResultMainnet(
+  rumbleId: number,
+  placements: number[],
+  winnerIndex: number,
+): Promise<string | null> {
+  const provider = getMainnetAdminProvider();
+  if (!provider) {
+    console.warn("[solana-programs] No mainnet admin keypair, skipping mainnet reportResult");
+    return null;
+  }
+  const program = getRumbleEngineProgram(provider, RUMBLE_ENGINE_ID_MAINNET);
+  const admin = getMainnetAdminKeypair()!;
+
+  const [rumbleConfigPda] = deriveRumbleConfigPdaMainnet();
+  const [rumblePda] = deriveRumblePdaMainnet(rumbleId);
+
+  const method = (program.methods as any)
+    .adminSetResult(Buffer.from(placements), winnerIndex)
+    .accounts({
+      admin: admin.publicKey,
+      config: rumbleConfigPda,
+      rumble: rumblePda,
+    });
+
+  return await sendAdminTxFireAndForget(method, admin, getBettingConnection());
+}
+
+/**
+ * Complete a rumble on mainnet (close accounts, reclaim rent).
+ */
+export async function completeRumbleMainnet(
+  rumbleId: number,
+): Promise<string | null> {
+  const provider = getMainnetAdminProvider();
+  if (!provider) {
+    console.warn("[solana-programs] No mainnet admin keypair, skipping mainnet completeRumble");
+    return null;
+  }
+  const program = getRumbleEngineProgram(provider, RUMBLE_ENGINE_ID_MAINNET);
+  const admin = getMainnetAdminKeypair()!;
+
+  const [rumbleConfigPda] = deriveRumbleConfigPdaMainnet();
+  const [rumblePda] = deriveRumblePdaMainnet(rumbleId);
+
+  const method = (program.methods as any)
+    .completeRumble()
+    .accounts({
+      admin: admin.publicKey,
+      config: rumbleConfigPda,
+      rumble: rumblePda,
+    });
+
+  return await sendAdminTxFireAndForget(method, admin, getBettingConnection());
 }
 
 /**
@@ -2792,4 +3012,95 @@ export async function postTurnResultOnChain(
     ]);
 
   return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+}
+
+// ---------------------------------------------------------------------------
+// MagicBlock Ephemeral Rollup — Delegation / Commit / Undelegate
+// ---------------------------------------------------------------------------
+
+/**
+ * Delegate a rumble's combat state PDA to a MagicBlock Ephemeral Rollup.
+ * This transfers ownership to the delegation program so the ER can process
+ * combat transactions at sub-50ms latency with zero fees.
+ *
+ * Must be called on L1 (devnet) BEFORE sending combat txs to the ER endpoint.
+ */
+export async function delegateCombatToEr(
+  rumbleId: number,
+): Promise<string | null> {
+  const provider = getAdminProvider();
+  if (!provider) {
+    console.warn("[solana-programs] No admin keypair, skipping delegateCombatToEr");
+    return null;
+  }
+  const program = getRumbleEngineProgram(provider);
+  const admin = getAdminKeypair()!;
+  const [rumbleConfigPda] = deriveRumbleConfigPda();
+  const [combatStatePda] = deriveCombatStatePda(rumbleId);
+
+  const method = (program.methods as any)
+    .delegateCombat(new anchor.BN(rumbleId))
+    .accounts({
+      authority: admin.publicKey,
+      config: rumbleConfigPda,
+      pda: combatStatePda,
+    });
+
+  // Delegate on L1 (devnet), NOT on ER
+  return await sendAdminTxFireAndForget(method, admin, getConnection());
+}
+
+/**
+ * Commit combat state from ER back to L1 (periodic sync for spectators).
+ * Called during combat to keep L1 state updated for frontend reads.
+ */
+export async function commitCombatFromEr(
+  rumbleId: number,
+): Promise<string | null> {
+  const provider = getAdminProvider(getErConnection());
+  if (!provider) {
+    console.warn("[solana-programs] No admin keypair, skipping commitCombatFromEr");
+    return null;
+  }
+  const program = getRumbleEngineProgram(provider);
+  const admin = getAdminKeypair()!;
+  const [combatStatePda] = deriveCombatStatePda(rumbleId);
+
+  const method = (program.methods as any)
+    .commitCombat()
+    .accounts({
+      authority: admin.publicKey,
+      combatState: combatStatePda,
+    });
+
+  // Commit is called on the ER
+  return await sendAdminTxFireAndForget(method, admin, getErConnection());
+}
+
+/**
+ * Undelegate combat state from ER back to L1.
+ * Commits final state and returns ownership to the rumble_engine program on L1.
+ * Called after combat ends (finalize).
+ */
+export async function undelegateCombatFromEr(
+  rumbleId: number,
+): Promise<string | null> {
+  const provider = getAdminProvider(getErConnection());
+  if (!provider) {
+    console.warn("[solana-programs] No admin keypair, skipping undelegateCombatFromEr");
+    return null;
+  }
+  const program = getRumbleEngineProgram(provider);
+  const admin = getAdminKeypair()!;
+  const [combatStatePda] = deriveCombatStatePda(rumbleId);
+
+  const method = (program.methods as any)
+    .undelegateCombat()
+    .accounts({
+      authority: admin.publicKey,
+      combatState: combatStatePda,
+    });
+
+  // Undelegate is called on the ER
+  return await sendAdminTxFireAndForget(method, admin, getErConnection());
 }

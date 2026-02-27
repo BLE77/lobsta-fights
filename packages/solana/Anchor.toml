@@ -19,3 +19,8 @@ wallet = "~/.config/solana/id.json"
 
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
+
+# Build commands:
+#   Devnet (full, with combat):  anchor build -p rumble-engine -- --features rumble-engine/combat
+#   Mainnet (betting-only):      cargo build-sbf --manifest-path programs/rumble-engine/Cargo.toml
+#   Deploy devnet:               anchor deploy --program-name rumble_engine --provider.cluster devnet
