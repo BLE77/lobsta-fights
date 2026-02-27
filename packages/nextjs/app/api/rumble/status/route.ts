@@ -15,7 +15,7 @@ import {
 } from "~~/lib/rumble-persistence";
 import { readArenaConfig, readRumbleAccountState, readRumbleCombatState } from "~~/lib/solana-programs";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
-import { getConnection } from "~~/lib/solana-connection";
+import { getConnection, getRpcEndpoint } from "~~/lib/solana-connection";
 import { getCommentaryForRumble } from "~~/lib/commentary-hook";
 import { MAX_TURNS } from "~~/lib/rumble-engine";
 
@@ -1069,6 +1069,10 @@ export async function GET(request: Request) {
       }
     }
 
+    // Temporary debug: expose RPC endpoint (masked) to diagnose Vercel connection
+    const rpcUrl = getRpcEndpoint();
+    const rpcDebug = rpcUrl.includes("helius") ? "helius" : rpcUrl.includes("devnet.solana") ? "public-devnet" : rpcUrl.substring(0, 40);
+
     return NextResponse.json({
       slots,
       queue,
@@ -1083,6 +1087,7 @@ export async function GET(request: Request) {
       },
       runtimeHealth,
       systemWarnings,
+      _debug: { rpc: rpcDebug, clusterSlot: currentClusterSlot },
     });
   } catch (error: any) {
     console.error("[StatusAPI]", error);
