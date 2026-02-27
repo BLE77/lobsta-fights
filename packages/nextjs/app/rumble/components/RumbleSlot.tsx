@@ -195,6 +195,35 @@ export default function RumbleSlot({
   const [showContainerShake, setShowContainerShake] = useState(false);
   const [turnAnimations, setTurnAnimations] = useState<{ turnNumber: number, pairings: any[] } | null>(null);
 
+  // Hold the final combat turn visible for a few seconds before showing payout
+  const FINAL_TURN_HOLD_MS = 5000;
+  const [holdingFinalTurn, setHoldingFinalTurn] = useState(false);
+  const [heldTurns, setHeldTurns] = useState<SlotTurn[]>([]);
+  const [heldFighters, setHeldFighters] = useState<SlotFighter[]>([]);
+  const [heldCurrentTurn, setHeldCurrentTurn] = useState(0);
+  const prevStateRef = useRef<string>(slot.state);
+  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (prevStateRef.current === "combat" && slot.state === "payout" && slot.turns.length > 0) {
+      // Capture the final combat state before switching to payout view
+      setHeldTurns(slot.turns);
+      setHeldFighters(slot.fighters);
+      setHeldCurrentTurn(slot.currentTurn);
+      setHoldingFinalTurn(true);
+      if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = setTimeout(() => {
+        setHoldingFinalTurn(false);
+        setHeldTurns([]);
+        setHeldFighters([]);
+      }, FINAL_TURN_HOLD_MS);
+    }
+    prevStateRef.current = slot.state;
+    return () => {
+      if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
+    };
+  }, [slot.state]);
+
   useEffect(() => {
     const curTurn = slot.currentTurn ?? 0;
     if (curTurn > 0 && curTurn !== lastTurnChangeRef.current.turn) {
@@ -658,8 +687,78 @@ export default function RumbleSlot({
           </div>
         )}
 
-        {/* PAYOUT state */}
-        {slot.state === "payout" && slot.payout && (
+        {/* PAYOUT state — hold final turn visible before showing results */}
+        {slot.state === "payout" && holdingFinalTurn && heldTurns.length > 0 && (
+          <div className="animate-fade-in-up space-y-3">
+            {/* Final combat matchups */}
+            {(() => {
+              const finalTurn = heldTurns[heldTurns.length - 1];
+              if (!finalTurn || !finalTurn.pairings?.length) return null;
+              const fighterMap = new Map(heldFighters.map(f => [f.id, f]));
+              const oddsMap = new Map(slot.odds.map(o => [o.fighterId, o.solDeployed]));
+              return (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <p className="font-mono text-xs font-bold text-red-500 uppercase animate-pulse">
+                      Final Blow // Turn {finalTurn.turnNumber}
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 overflow-hidden">
+                    {finalTurn.pairings.map((p, idx) => {
+                      const fA = fighterMap.get(p.fighterA);
+                      const fB = fighterMap.get(p.fighterB);
+                      if (!fA || !fB) return null;
+                      const isLastOdd = finalTurn.pairings.length % 2 !== 0 && idx === finalTurn.pairings.length - 1;
+                      const gridSpanClass = isLastOdd ? "xl:col-span-2 xl:w-[calc(50%-0.5rem)] xl:mx-auto" : "";
+                      return (
+                        <div key={`final-pairing-${idx}`} className={`flex items-center justify-between bg-stone-900/40 p-2 sm:p-4 rounded-sm border border-red-800/60 relative z-10 w-full h-full ${gridSpanClass}`}>
+                          <div className="flex flex-col items-center w-[40%]">
+                            <FighterHP
+                              name={fA.name}
+                              hp={fA.hp}
+                              maxHp={fA.maxHp}
+                              imageUrl={fA.imageUrl}
+                              isEliminated={fA.eliminatedOnTurn != null}
+                              damageDealt={fA.totalDamageDealt}
+                              solDeployed={oddsMap.get(fA.id)}
+                              isMyBet={myBetFighterIds?.has(fA.id)}
+                              layout="vertical"
+                            />
+                          </div>
+                          <div className="flex flex-col items-center justify-center w-[20%] relative z-20">
+                            <span className="font-fight text-2xl md:text-3xl text-red-500 opacity-80">VS</span>
+                          </div>
+                          <div className="flex flex-col items-center w-[40%]">
+                            <FighterHP
+                              name={fB.name}
+                              hp={fB.hp}
+                              maxHp={fB.maxHp}
+                              imageUrl={fB.imageUrl}
+                              isEliminated={fB.eliminatedOnTurn != null}
+                              damageDealt={fB.totalDamageDealt}
+                              solDeployed={oddsMap.get(fB.id)}
+                              isMyBet={myBetFighterIds?.has(fB.id)}
+                              layout="vertical"
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
+            {/* Turn feed showing the killing blow */}
+            <div className="border-t border-stone-800 pt-2">
+              <CombatFeed
+                turns={heldTurns}
+                currentTurn={heldCurrentTurn}
+                fighterNames={slot.fighterNames}
+              />
+            </div>
+          </div>
+        )}
+        {slot.state === "payout" && !holdingFinalTurn && slot.payout && (
           <div className="animate-fade-in-up">
             <PayoutDisplay
               placements={slot.fighters
