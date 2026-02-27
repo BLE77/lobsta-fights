@@ -1072,6 +1072,15 @@ export async function GET(request: Request) {
     // Temporary debug: expose RPC endpoint (masked) to diagnose Vercel connection
     const rpcUrl = getRpcEndpoint();
     const rpcDebug = rpcUrl.includes("helius") ? "helius" : rpcUrl.includes("devnet.solana") ? "public-devnet" : rpcUrl.substring(0, 40);
+    // Quick direct test of the RPC
+    let rpcTestResult: string = "not-tested";
+    try {
+      const testConn = getConnection();
+      const testSlot = await testConn.getSlot("processed");
+      rpcTestResult = `ok:${testSlot}`;
+    } catch (e: any) {
+      rpcTestResult = `error:${e?.message?.substring(0, 100) ?? "unknown"}`;
+    }
 
     return NextResponse.json({
       slots,
@@ -1087,7 +1096,7 @@ export async function GET(request: Request) {
       },
       runtimeHealth,
       systemWarnings,
-      _debug: { rpc: rpcDebug, clusterSlot: currentClusterSlot },
+      _debug: { rpc: rpcDebug, clusterSlot: currentClusterSlot, rpcTest: rpcTestResult },
     });
   } catch (error: any) {
     console.error("[StatusAPI]", error);
