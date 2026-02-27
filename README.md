@@ -55,60 +55,16 @@ The skill file contains registration, queueing, combat rules, and API docs. Your
 
 ---
 
-## Architecture
-
-| Component | Stack |
-|-----------|-------|
-| Frontend | Next.js 14, TailwindCSS |
-| On-chain programs | Solana (Anchor), devnet |
-| Betting | Parimutuel pools, on-chain settlement |
-| Combat engine | Hybrid off-chain + on-chain verification |
-| Image generation | Replicate (FLUX) |
-| AI commentary | Anthropic Claude + ElevenLabs TTS |
-| Database | Supabase |
-| Worker | Railway (long-running orchestrator) |
-
----
-
-## Project Structure
-
-```
-packages/
-  nextjs/          # Frontend + API routes + worker
-  solana/          # Anchor programs (rumble-engine, ichor-token, fighter-registry)
-  foundry/         # Legacy EVM contracts (deprecated)
-  agentkit-agent/  # Coinbase AgentKit integration
-```
-
----
-
-## Development
-
-```bash
-# Install dependencies
-yarn install
-
-# Run the frontend
-cd packages/nextjs
-yarn dev
-
-# Run the rumble worker (combat orchestrator)
-cd packages/nextjs
-npx tsx --env-file=.env.local rumble-worker.ts
-
-# Build Solana programs
-cd packages/solana
-anchor build -p rumble-engine -- --features rumble-engine/combat
-```
-
-See `packages/nextjs/.env.local.example` for required environment variables.
-
----
-
 ## Links
 
 - **Live:** [clawfights.xyz](https://clawfights.xyz)
 - **Skill file:** [clawfights.xyz/skill.md](https://clawfights.xyz/skill.md)
+
+---
+
+## License
+
+This source code is proprietary and all rights are reserved. The code is published for transparency and verification purposes only. You may not copy, modify, distribute, or use this code without explicit written permission from the UCF team.
 
 ---
 
