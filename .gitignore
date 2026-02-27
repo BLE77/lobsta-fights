@@ -75,3 +75,6 @@ packages/solana/scripts/fighter-mappings.json
 # Sensitive docs
 docs/CODEBASE_MAP.md
 docs/LAUNCH_CHECKLIST.md
+
+# Claude Code session data
+.claude/

@@ -17,6 +17,7 @@ import IchorShowerPool from "./components/IchorShowerPool";
 import ClaimBalancePanel from "./components/ClaimBalancePanel";
 import ChatPanel from "./components/ChatPanel";
 import CommentaryPlayer from "./components/CommentaryPlayer";
+import OnChainTxFeed from "./components/OnChainTxFeed";
 import { useBetConfirmation } from "./hooks/useBetConfirmation";
 import type { CommentarySSEEvent } from "~~/lib/commentary";
 import { audioManager, soundForPairing } from "~~/lib/audio";
@@ -408,9 +409,12 @@ export default function RumblePage() {
   const seekerOptimizedUi = mobileContext.shouldUseMobileOptimizations;
 
   // RPC connection — use Helius if available, otherwise public RPC
-  const network = process.env.NEXT_PUBLIC_SOLANA_NETWORK ?? "devnet";
+  const network = process.env.NEXT_PUBLIC_SOLANA_NETWORK
+    ?? (process.env.NEXT_PUBLIC_BETTING_RPC_URL?.trim() ? "mainnet-beta" : "devnet");
   // Client-side RPC uses public endpoints only — Helius key stays server-side
   const rpcEndpoint = (() => {
+    const bettingRpc = process.env.NEXT_PUBLIC_BETTING_RPC_URL?.trim();
+    if (bettingRpc) return bettingRpc;
     const explicit = process.env.NEXT_PUBLIC_SOLANA_RPC_URL?.trim();
     if (explicit) return explicit;
     return network === "mainnet-beta" ? "https://api.mainnet-beta.solana.com" : "https://api.devnet.solana.com";
@@ -425,17 +429,35 @@ export default function RumblePage() {
     setClaimError(null);
   }, [walletDisconnect]);
 
-  const connectWallet = useCallback(() => {
+  const connectWallet = useCallback(async () => {
+    setError(null);
     if (mobileContext.shouldPreferMobileWalletAdapter) {
       const mobileWallet = wallets.find((entry) =>
         /mobile|seed vault|solana mobile/i.test(entry.adapter.name),
       );
       if (mobileWallet) {
-        select(mobileWallet.adapter.name);
+        if (wallet?.adapter?.name !== mobileWallet.adapter.name) {
+          select(mobileWallet.adapter.name);
+          await new Promise(resolve => setTimeout(resolve, 150));
+        }
+        try {
+          await mobileWallet.adapter.connect();
+          return;
+        } catch (firstError) {
+          console.error("[Rumble] mobile wallet connect attempt 1 failed:", firstError);
+          try {
+            await new Promise(resolve => setTimeout(resolve, 350));
+            await mobileWallet.adapter.connect();
+            return;
+          } catch (secondError) {
+            console.error("[Rumble] mobile wallet connect attempt 2 failed:", secondError);
+            setError(secondError instanceof Error ? secondError.message : "Mobile wallet connection failed");
+          }
+        }
       }
     }
     setWalletModalVisible(true);
-  }, [mobileContext.shouldPreferMobileWalletAdapter, wallets, select, setWalletModalVisible]);
+  }, [mobileContext.shouldPreferMobileWalletAdapter, wallets, wallet?.adapter?.name, select, setWalletModalVisible]);
 
   // Fetch SOL balance when wallet connects
   useEffect(() => {
@@ -1657,6 +1679,10 @@ export default function RumblePage() {
                       <IchorShowerPool
                         currentPool={ichorShower.currentPool}
                       />
+                    </div>
+
+                    <div className="animate-fade-in-up" style={{ animationDelay: '300ms', animationFillMode: 'both' }}>
+                      <OnChainTxFeed />
                     </div>
                   </div>
                 </div>
