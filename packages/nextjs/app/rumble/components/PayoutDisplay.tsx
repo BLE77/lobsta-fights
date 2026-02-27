@@ -1,5 +1,7 @@
 "use client";
 
+import IchorShowerOverlay from "./IchorShowerOverlay";
+
 interface PlacementEntry {
   fighterId: string;
   fighterName: string;
@@ -251,16 +253,9 @@ export default function PayoutDisplay({
       </div>
       </div>
 
-      {/* Ichor Shower Banner */}
+      {/* Ichor Shower Overlay */}
       {payout.ichorShowerTriggered && (
-        <div className="border border-amber-500 bg-amber-900/30 rounded-sm p-3 text-center animate-ichor-shower">
-          <p className="font-fight-glow text-xl text-amber-400">
-            ICHOR SHOWER
-          </p>
-          <p className="font-mono text-sm text-amber-300 mt-1">
-            {ichorShowerAmount.toFixed(4)} ICHOR jackpot triggered!
-          </p>
-        </div>
+        <IchorShowerOverlay amount={ichorShowerAmount} />
       )}
     </div>
   );
