@@ -909,26 +909,28 @@ export async function GET(request: Request) {
           // Case 2: On-chain has already transitioned past betting (Railway
           // called startCombat). Update state to match on-chain so the user
           // sees combat/payout instead of a stuck "Initializing On-Chain..." banner.
+          // DON'T return early — fall through so combat enrichment runs below.
           if (onchain.state !== "betting") {
-            return { ...slot, state: onchain.state as any, bettingDeadline: null };
+            slot = { ...slot, state: onchain.state as any, bettingDeadline: null };
+            // fall through to combat enrichment below
+          } else {
+            // Case 3: On-chain is in betting state with a valid close slot/timestamp.
+            const closeRaw = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
+            if (!(closeRaw > 0n)) {
+              // On-chain betting but no deadline set — use fallback
+              return { ...slot, bettingDeadline: new Date(Date.now() + BETTING_FALLBACK_DURATION_MS).toISOString() };
+            }
+            const looksLikeUnix =
+              currentClusterSlotBig !== null
+                ? closeRaw > currentClusterSlotBig + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD
+                : closeRaw > 1_000_000_000n;
+            const bettingDeadline = looksLikeUnix
+              ? new Date(Number(closeRaw) * 1_000).toISOString()
+              : getStableBettingDeadline(rumbleIdNum, () =>
+                  new Date(Date.now() + slotsToMs(closeRaw)).toISOString(),
+                );
+            return { ...slot, bettingDeadline };
           }
-
-          // Case 3: On-chain is in betting state with a valid close slot/timestamp.
-          const closeRaw = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
-          if (!(closeRaw > 0n)) {
-            // On-chain betting but no deadline set — use fallback
-            return { ...slot, bettingDeadline: new Date(Date.now() + BETTING_FALLBACK_DURATION_MS).toISOString() };
-          }
-          const looksLikeUnix =
-            currentClusterSlotBig !== null
-              ? closeRaw > currentClusterSlotBig + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD
-              : closeRaw > 1_000_000_000n;
-          const bettingDeadline = looksLikeUnix
-            ? new Date(Number(closeRaw) * 1_000).toISOString()
-            : getStableBettingDeadline(rumbleIdNum, () =>
-                new Date(Date.now() + slotsToMs(closeRaw)).toISOString(),
-              );
-          return { ...slot, bettingDeadline };
         }
 
         // --- Combat state: enrich from on-chain CombatState PDA ---
