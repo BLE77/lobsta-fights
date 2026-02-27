@@ -1096,7 +1096,15 @@ export async function GET(request: Request) {
       },
       runtimeHealth,
       systemWarnings,
-      _debug: { rpc: rpcDebug, clusterSlot: currentClusterSlot, rpcTest: rpcTestResult },
+      _debug: {
+        rpc: rpcDebug,
+        clusterSlot: currentClusterSlot,
+        rpcTest: rpcTestResult,
+        hasHeliusKey: !!process.env.HELIUS_API_KEY,
+        heliusKeyPrefix: process.env.HELIUS_API_KEY?.substring(0, 8) ?? "none",
+        hasPublicKey: !!process.env.NEXT_PUBLIC_HELIUS_API_KEY,
+        publicKeyPrefix: process.env.NEXT_PUBLIC_HELIUS_API_KEY?.substring(0, 8) ?? "none",
+      },
     });
   } catch (error: any) {
     console.error("[StatusAPI]", error);
