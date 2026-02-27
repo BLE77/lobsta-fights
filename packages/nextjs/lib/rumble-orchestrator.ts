@@ -3112,6 +3112,29 @@ export class RumbleOrchestrator {
     state.lastOnchainTurnResolved = turn;
     await persist.updateRumbleTurnLog(slot.id, state.turns, state.turns.length);
 
+    // Compute remaining fighters after this turn's eliminations
+    const remainingAfterTurn = aliveIndices.length - turnEliminations.length;
+
+    // Emit turn_resolved so the UI and commentary hook receive the turn data.
+    // Without this, hybrid-resolved turns are invisible to SSE listeners.
+    this.emit("turn_resolved", {
+      slotIndex: slot.slotIndex,
+      rumbleId: slot.id,
+      turn: localTurn,
+      remainingFighters: remainingAfterTurn,
+    });
+
+    for (const eliminatedId of turnEliminations) {
+      if (!eliminatedId) continue;
+      this.emit("fighter_eliminated", {
+        slotIndex: slot.slotIndex,
+        rumbleId: slot.id,
+        fighterId: eliminatedId,
+        turnNumber: turn,
+        remainingFighters: remainingAfterTurn,
+      });
+    }
+
     // Post results on-chain
     const sig = await postTurnResultOnChain(rumbleIdNum, duelResults, byeIdx, this.getCombatConnection());
     if (sig) {
