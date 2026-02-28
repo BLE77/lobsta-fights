@@ -47,7 +47,7 @@ const nextConfig = {
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: blob: https:",
               "font-src 'self' data:",
-              "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://*.helius-rpc.com https://api.devnet.solana.com https://api.mainnet-beta.solana.com",
+              "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://*.helius-rpc.com wss://*.helius-rpc.com https://api.devnet.solana.com https://api.mainnet-beta.solana.com",
               "media-src 'self' blob: https://*.supabase.co",
               "worker-src 'self'",
               "manifest-src 'self'",

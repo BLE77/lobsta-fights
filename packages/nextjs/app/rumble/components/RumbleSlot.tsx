@@ -6,6 +6,7 @@ import CombatFeed from "./CombatFeed";
 import EliminationPopup from "./EliminationPopup";
 import FighterHP from "./FighterHP";
 import PayoutDisplay from "./PayoutDisplay";
+import { useOnChainBettingState } from "../hooks/useOnChainBettingState";
 
 // ---------------------------------------------------------------------------
 // Types matching the API response shape (from api/rumble/status)
@@ -177,7 +178,10 @@ export default function RumbleSlot({
   myBetAmounts,
   lastCompletedResult,
 }: RumbleSlotProps) {
-  const label = getStateLabel(slot.state);
+  const { bettingClosedOnChain } = useOnChainBettingState(slot.rumbleId, slot.state);
+  const effectiveState: SlotData["state"] =
+    slot.state === "betting" && bettingClosedOnChain ? "combat" : slot.state;
+  const label = getStateLabel(effectiveState);
   const myBetFighterIds = myBetAmounts ? new Set(myBetAmounts.keys()) : undefined;
   const [activeEliminations, setActiveEliminations] = useState<
     ActiveElimination[]
@@ -332,7 +336,7 @@ export default function RumbleSlot({
       };
     }
     if (slot.state === "betting" && slot.bettingDeadline) {
-      const BET_CLOSE_GUARD_MS = 12_000;
+      const BET_CLOSE_GUARD_MS = 3_000;
       const targetMs = new Date(slot.bettingDeadline).getTime() - BET_CLOSE_GUARD_MS;
       if (!Number.isFinite(targetMs)) return null;
       return {
@@ -446,7 +450,7 @@ export default function RumbleSlot({
       {/* Content */}
       <div className="p-4">
         {/* IDLE state */}
-        {slot.state === "idle" && (
+        {effectiveState === "idle" && (
           <div className="animate-fade-in-up">
             {lastCompletedResult ? (
               <div className="space-y-3">
@@ -480,7 +484,7 @@ export default function RumbleSlot({
         )}
 
         {/* BETTING state */}
-        {slot.state === "betting" && (
+        {effectiveState === "betting" && (
           <div className="animate-fade-in-up">
             <BettingPanel
               slotIndex={slot.slotIndex}
@@ -495,7 +499,7 @@ export default function RumbleSlot({
         )}
 
         {/* COMBAT state */}
-        {slot.state === "combat" && (
+        {effectiveState === "combat" && (
           <div className="animate-fade-in-up space-y-3">
             {/* Alive fighters HP bars + elimination overlays */}
             <div className="relative">
@@ -688,7 +692,7 @@ export default function RumbleSlot({
         )}
 
         {/* PAYOUT state — hold final turn visible before showing results */}
-        {slot.state === "payout" && holdingFinalTurn && heldTurns.length > 0 && (
+        {effectiveState === "payout" && holdingFinalTurn && heldTurns.length > 0 && (
           <div className="animate-fade-in-up space-y-3">
             {/* Final combat matchups */}
             {(() => {
@@ -758,7 +762,7 @@ export default function RumbleSlot({
             </div>
           </div>
         )}
-        {slot.state === "payout" && !holdingFinalTurn && slot.payout && (
+        {effectiveState === "payout" && !holdingFinalTurn && slot.payout && (
           <div className="animate-fade-in-up">
             <PayoutDisplay
               placements={slot.fighters

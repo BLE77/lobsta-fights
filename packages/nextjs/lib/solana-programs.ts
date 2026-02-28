@@ -90,23 +90,46 @@ const VRF_DEFAULT_QUEUE = new PublicKey("Cuj97ggrhhidhbu39TijNVqE74xvKJ69gDervRU
 // ---------------------------------------------------------------------------
 
 const _readCache = new Map<string, { data: unknown; expiresAt: number }>();
+const _readInFlight = new Map<string, Promise<unknown>>();
 
 function cachedRead<T>(key: string, ttlMs: number, fn: () => Promise<T>): Promise<T> {
   const now = Date.now();
   const hit = _readCache.get(key);
   if (hit && hit.expiresAt > now) return Promise.resolve(hit.data as T);
-  return fn().then(r => {
-    _readCache.set(key, { data: r, expiresAt: now + ttlMs });
-    if (_readCache.size > 200) {
-      for (const [k, v] of _readCache) { if (v.expiresAt <= now) _readCache.delete(k); }
-    }
-    return r;
-  });
+  const pending = _readInFlight.get(key);
+  if (pending) return pending as Promise<T>;
+
+  const request = fn()
+    .then((r) => {
+      const ts = Date.now();
+      _readCache.set(key, { data: r, expiresAt: ts + ttlMs });
+      if (_readCache.size > 200) {
+        for (const [k, v] of _readCache) {
+          if (v.expiresAt <= ts) _readCache.delete(k);
+        }
+      }
+      return r;
+    })
+    .finally(() => {
+      _readInFlight.delete(key);
+    });
+
+  _readInFlight.set(key, request as Promise<unknown>);
+  return request;
 }
 
 export function invalidateReadCache(prefix?: string) {
-  if (!prefix) { _readCache.clear(); return; }
-  for (const k of _readCache.keys()) { if (k.startsWith(prefix)) _readCache.delete(k); }
+  if (!prefix) {
+    _readCache.clear();
+    _readInFlight.clear();
+    return;
+  }
+  for (const k of _readCache.keys()) {
+    if (k.startsWith(prefix)) _readCache.delete(k);
+  }
+  for (const k of _readInFlight.keys()) {
+    if (k.startsWith(prefix)) _readInFlight.delete(k);
+  }
 }
 
 // ---------------------------------------------------------------------------

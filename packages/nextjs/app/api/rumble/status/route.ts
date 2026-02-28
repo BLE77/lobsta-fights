@@ -18,16 +18,11 @@ import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 import { getConnection } from "~~/lib/solana-connection";
 import { getCommentaryForRumble } from "~~/lib/commentary-hook";
 import { MAX_TURNS } from "~~/lib/rumble-engine";
+import { flushRpcMetrics, runWithRpcMetrics } from "~~/lib/solana-rpc-metrics";
 
 export const dynamic = "force-dynamic";
 const SLOT_MS_ESTIMATE = Math.max(250, Number(process.env.RUMBLE_SLOT_MS_ESTIMATE ?? "400"));
 const ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD = 5_000_000n;
-// Fallback betting duration for Vercel cold-start when on-chain account isn't readable yet.
-// This gives users a visible "Betting Open" window while Railway creates the on-chain account.
-const BETTING_FALLBACK_DURATION_MS = Math.max(
-  30_000,
-  Math.min(10 * 60_000, Number(process.env.RUMBLE_BETTING_DURATION_MS ?? "120000")),
-);
 const STATUS_MUTATION_ENABLED = (() => {
   const env = process.env.RUMBLE_PUBLIC_STATUS_MUTATION_ENABLED;
   if (typeof env === "string" && env.length > 0) return env === "true";
@@ -67,20 +62,6 @@ async function getCachedSlot(): Promise<number | null> {
 // for the same on-chain state, instead of recomputing Date.now()+eta each call.
 // ---------------------------------------------------------------------------
 const _nextTurnAtCache = new Map<string, { iso: string; expiresAt: number }>();
-
-const _bettingDeadlineCache = new Map<number, { iso: string; expiresAt: number }>();
-
-function getStableBettingDeadline(rumbleIdNum: number, computeIso: () => string): string {
-  const now = Date.now();
-  const cached = _bettingDeadlineCache.get(rumbleIdNum);
-  if (cached && cached.expiresAt > now) return cached.iso;
-  if (_bettingDeadlineCache.size > 50) {
-    for (const [k, v] of _bettingDeadlineCache) { if (v.expiresAt <= now) _bettingDeadlineCache.delete(k); }
-  }
-  const iso = computeIso();
-  _bettingDeadlineCache.set(rumbleIdNum, { iso, expiresAt: now + 30_000 });
-  return iso;
-}
 
 function getStableNextTurnAt(
   rumbleIdNum: number,
@@ -312,25 +293,26 @@ function fighterRobotMeta(lookup: Map<string, FighterInfo>, id: string): RobotMe
 // ---------------------------------------------------------------------------
 
 export async function GET(request: Request) {
-  const rlKey = getRateLimitKey(request);
-  const rl = checkRateLimit("PUBLIC_READ", rlKey);
-  if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+  return runWithRpcMetrics("GET /api/rumble/status", async () => {
+    const rlKey = getRateLimitKey(request);
+    const rl = checkRateLimit("PUBLIC_READ", rlKey);
+    if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
 
-  try {
-    // In production, keep status read-only by default to avoid split-brain
-    // serverless instances mutating queue/combat state independently.
-    if (STATUS_MUTATION_ENABLED) {
-      await ensureRumblePublicHeartbeat("status");
+    try {
+      // In production, keep status read-only by default to avoid split-brain
+      // serverless instances mutating queue/combat state independently.
+      if (STATUS_MUTATION_ENABLED) {
+        await ensureRumblePublicHeartbeat("status");
 
-      if (!hasRecovered()) {
-        await recoverOrchestratorState().catch((err) => {
-          console.warn("[StatusAPI] state recovery failed", err);
-        });
+        if (!hasRecovered()) {
+          await recoverOrchestratorState().catch((err) => {
+            console.warn("[StatusAPI] state recovery failed", err);
+          });
+        }
       }
-    }
 
-    const orchestrator = getOrchestrator();
-    const qm = getQueueManager();
+      const orchestrator = getOrchestrator();
+      const qm = getQueueManager();
 
     // Deadlock self-heal:
     // if queue has enough fighters to start but all slots are idle, force one
@@ -551,10 +533,10 @@ export async function GET(request: Request) {
               bettingDeadline = Number.isFinite(unixMs) ? new Date(unixMs).toISOString() : slot.bettingDeadline;
             } else {
               const etaMs = slotsToMs(closeRaw);
-              bettingDeadline = getStableBettingDeadline(rumbleIdNum, () =>
-                new Date(Date.now() + etaMs).toISOString(),
-              );
+              bettingDeadline = new Date(Date.now() + etaMs).toISOString();
             }
+          } else {
+            bettingDeadline = null;
           }
         } else {
           bettingDeadline = null;
@@ -891,19 +873,11 @@ export async function GET(request: Request) {
         if (slot.state === "betting") {
           const onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
 
-          // Case 1: On-chain doesn't exist yet (still being created on Railway).
-          // Use a fallback deadline so the user sees "Betting Open" immediately
-          // instead of "Initializing On-Chain..." forever.
+          // Case 1: On-chain doesn't exist yet (still being created).
+          // Do not synthesize a timer from server time; keep timer unarmed
+          // until on-chain state is readable.
           if (!onchain) {
-            const persisted = latestPersistedBySlot.get(slot.slotIndex);
-            if (persisted) {
-              const createdAt = new Date(persisted.created_at).getTime();
-              const fallbackDeadline = Number.isFinite(createdAt)
-                ? new Date(createdAt + BETTING_FALLBACK_DURATION_MS).toISOString()
-                : new Date(Date.now() + BETTING_FALLBACK_DURATION_MS).toISOString();
-              return { ...slot, bettingDeadline: fallbackDeadline };
-            }
-            return { ...slot, bettingDeadline: new Date(Date.now() + BETTING_FALLBACK_DURATION_MS).toISOString() };
+            return { ...slot, bettingDeadline: null };
           }
 
           // Case 2: On-chain has already transitioned past betting (Railway
@@ -917,8 +891,8 @@ export async function GET(request: Request) {
             // Case 3: On-chain is in betting state with a valid close slot/timestamp.
             const closeRaw = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
             if (!(closeRaw > 0n)) {
-              // On-chain betting but no deadline set — use fallback
-              return { ...slot, bettingDeadline: new Date(Date.now() + BETTING_FALLBACK_DURATION_MS).toISOString() };
+              // On-chain betting but deadline not armed yet.
+              return { ...slot, bettingDeadline: null };
             }
             const looksLikeUnix =
               currentClusterSlotBig !== null
@@ -926,9 +900,7 @@ export async function GET(request: Request) {
                 : closeRaw > 1_000_000_000n;
             const bettingDeadline = looksLikeUnix
               ? new Date(Number(closeRaw) * 1_000).toISOString()
-              : getStableBettingDeadline(rumbleIdNum, () =>
-                  new Date(Date.now() + slotsToMs(closeRaw)).toISOString(),
-                );
+              : new Date(Date.now() + slotsToMs(closeRaw)).toISOString();
             return { ...slot, bettingDeadline };
           }
         }
@@ -1070,23 +1042,26 @@ export async function GET(request: Request) {
     }
 
 
-    return NextResponse.json({
-      slots,
-      queue,
-      queueLength: queueEntries.length + activeFighterCount,
-      nextRumbleIn,
-      ichorShower: {
-        currentPool:
-          arenaConfig
-            ? Number(arenaConfig.ichorShowerPool) / 1_000_000_000
-            : Number(showerState?.pool_amount ?? 0),
-        rumblesSinceLastTrigger,
-      },
-      runtimeHealth,
-      systemWarnings,
-    });
-  } catch (error: any) {
-    console.error("[StatusAPI]", error);
-    return NextResponse.json({ error: "Failed to fetch rumble status" }, { status: 500 });
-  }
+      return NextResponse.json({
+        slots,
+        queue,
+        queueLength: queueEntries.length + activeFighterCount,
+        nextRumbleIn,
+        ichorShower: {
+          currentPool:
+            arenaConfig
+              ? Number(arenaConfig.ichorShowerPool) / 1_000_000_000
+              : Number(showerState?.pool_amount ?? 0),
+          rumblesSinceLastTrigger,
+        },
+        runtimeHealth,
+        systemWarnings,
+      });
+    } catch (error: any) {
+      console.error("[StatusAPI]", error);
+      return NextResponse.json({ error: "Failed to fetch rumble status" }, { status: 500 });
+    } finally {
+      flushRpcMetrics();
+    }
+  });
 }

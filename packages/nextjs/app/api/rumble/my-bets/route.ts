@@ -7,25 +7,28 @@ import { ADMIN_FEE_RATE, SPONSORSHIP_RATE } from "~~/lib/betting";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 import { loadActiveRumbles } from "~~/lib/rumble-persistence";
 import { getBettingConnection } from "~~/lib/solana-connection";
+import { flushRpcMetrics, runWithRpcMetrics } from "~~/lib/solana-rpc-metrics";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
-  const rlKey = getRateLimitKey(request);
-  const rl = checkRateLimit("PUBLIC_READ", rlKey);
-  if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+  return runWithRpcMetrics("GET /api/rumble/my-bets", async () => {
+    const rlKey = getRateLimitKey(request);
+    const rl = checkRateLimit("PUBLIC_READ", rlKey);
+    if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
 
-  try {
-    const { searchParams } = new URL(request.url);
-    const wallet = searchParams.get("wallet") ?? searchParams.get("wallet_address");
-    if (!wallet) {
-      return NextResponse.json({ error: "Missing wallet query parameter" }, { status: 400 });
-    }
     try {
-      new PublicKey(wallet);
-    } catch {
-      return NextResponse.json({ error: "Invalid wallet address" }, { status: 400 });
-    }
+      const { searchParams } = new URL(request.url);
+      const wallet = searchParams.get("wallet") ?? searchParams.get("wallet_address");
+      const includeOnchain = searchParams.get("include_onchain") === "1";
+      if (!wallet) {
+        return NextResponse.json({ error: "Missing wallet query parameter" }, { status: 400 });
+      }
+      try {
+        new PublicKey(wallet);
+      } catch {
+        return NextResponse.json({ error: "Invalid wallet address" }, { status: 400 });
+      }
 
     // Load active rumbles from Supabase instead of in-memory orchestrator
     // so this works on Vercel (which doesn't run the Railway worker).
@@ -78,43 +81,45 @@ export async function GET(request: Request) {
       slotBets.set(fighterId, current);
     }
 
-    // Merge on-chain bettor account deployments so UI reflects actual signed bets,
-    // even if legacy DB constraints drop one of the legs.
-    // Use mainnet (betting) connection — bettor accounts live on mainnet.
-    const walletPubkey = new PublicKey(wallet);
-    const bettingConn = getBettingConnection();
-    const grossMultiplier = 1 - ADMIN_FEE_RATE - SPONSORSHIP_RATE;
-    for (const [slotIndex, rumbleId] of slotMap.entries()) {
-      const rumbleIdNum = parseOnchainRumbleIdNumber(rumbleId);
-      if (rumbleIdNum === null) continue;
+    // Optional on-chain reconciliation:
+    // this is expensive (getAccountInfo per active slot). Keep it opt-in for
+    // immediate post-bet reconciliation, not steady polling.
+    if (includeOnchain) {
+      const walletPubkey = new PublicKey(wallet);
+      const bettingConn = getBettingConnection();
+      const grossMultiplier = 1 - ADMIN_FEE_RATE - SPONSORSHIP_RATE;
+      for (const [slotIndex, rumbleId] of slotMap.entries()) {
+        const rumbleIdNum = parseOnchainRumbleIdNumber(rumbleId);
+        if (rumbleIdNum === null) continue;
 
-      let bettorState = null;
-      try {
-        bettorState = await readBettorAccount(walletPubkey, rumbleIdNum, bettingConn);
-      } catch {
-        continue;
-      }
-      if (!bettorState || !bettorState.fighterDeploymentsLamports?.length) continue;
+        let bettorState = null;
+        try {
+          bettorState = await readBettorAccount(walletPubkey, rumbleIdNum, bettingConn);
+        } catch {
+          continue;
+        }
+        if (!bettorState || !bettorState.fighterDeploymentsLamports?.length) continue;
 
-      const fighters = slotFighters.get(slotIndex) ?? [];
-      if (!bySlot.has(slotIndex)) bySlot.set(slotIndex, new Map());
-      const slotBets = bySlot.get(slotIndex)!;
+        const fighters = slotFighters.get(slotIndex) ?? [];
+        if (!bySlot.has(slotIndex)) bySlot.set(slotIndex, new Map());
+        const slotBets = bySlot.get(slotIndex)!;
 
-      for (let i = 0; i < bettorState.fighterDeploymentsLamports.length; i++) {
-        const lamports = bettorState.fighterDeploymentsLamports[i] ?? 0n;
-        if (lamports <= 0n) continue;
-        const fighterId = fighters[i];
-        if (!fighterId) continue;
+        for (let i = 0; i < bettorState.fighterDeploymentsLamports.length; i++) {
+          const lamports = bettorState.fighterDeploymentsLamports[i] ?? 0n;
+          if (lamports <= 0n) continue;
+          const fighterId = fighters[i];
+          if (!fighterId) continue;
 
-        const onchainNetSol = Number(lamports) / LAMPORTS_PER_SOL;
-        const onchainSol =
-          grossMultiplier > 0 ? onchainNetSol / grossMultiplier : onchainNetSol;
-        const current = slotBets.get(fighterId) ?? { solAmount: 0, betCount: 0 };
-        // Prefer the larger amount when both DB and chain entries exist.
-        current.solAmount = Math.max(current.solAmount, onchainSol);
-        // Ensure at least one leg is visible for this fighter.
-        current.betCount = Math.max(current.betCount, 1);
-        slotBets.set(fighterId, current);
+          const onchainNetSol = Number(lamports) / LAMPORTS_PER_SOL;
+          const onchainSol =
+            grossMultiplier > 0 ? onchainNetSol / grossMultiplier : onchainNetSol;
+          const current = slotBets.get(fighterId) ?? { solAmount: 0, betCount: 0 };
+          // Prefer the larger amount when both DB and chain entries exist.
+          current.solAmount = Math.max(current.solAmount, onchainSol);
+          // Ensure at least one leg is visible for this fighter.
+          current.betCount = Math.max(current.betCount, 1);
+          slotBets.set(fighterId, current);
+        }
       }
     }
 
@@ -137,15 +142,18 @@ export async function GET(request: Request) {
       })
       .sort((a, b) => a.slot_index - b.slot_index);
 
-    const totalSol = slots.reduce((sum, s) => sum + s.total_sol, 0);
-    return NextResponse.json({
-      wallet,
-      slots,
-      total_sol: Number(totalSol.toFixed(9)),
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
-    console.error("[RumbleMyBetsAPI]", error);
-    return NextResponse.json({ error: "Failed to fetch wallet bets" }, { status: 500 });
-  }
+      const totalSol = slots.reduce((sum, s) => sum + s.total_sol, 0);
+      return NextResponse.json({
+        wallet,
+        slots,
+        total_sol: Number(totalSol.toFixed(9)),
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error("[RumbleMyBetsAPI]", error);
+      return NextResponse.json({ error: "Failed to fetch wallet bets" }, { status: 500 });
+    } finally {
+      flushRpcMetrics();
+    }
+  });
 }

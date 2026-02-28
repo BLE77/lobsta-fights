@@ -47,7 +47,7 @@ export default function Home() {
   };
 
   return (
-    <main className="relative flex flex-col items-center min-h-screen text-stone-200 px-4 py-6 md:p-8 pt-safe overflow-x-hidden">
+    <main className="relative flex flex-col items-center min-h-screen text-stone-200 px-4 py-6 md:p-8 pt-safe pb-32 overflow-x-hidden">
       {/* Background Video */}
       <div className="fixed inset-0 z-0 overflow-hidden pointer-events-none" aria-hidden="true">
         {mobileContext.shouldUseMobileOptimizations ? (

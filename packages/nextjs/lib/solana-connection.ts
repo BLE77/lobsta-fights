@@ -27,6 +27,7 @@ import {
   type SendOptions,
   type Commitment,
 } from "@solana/web3.js";
+import { instrumentConnection } from "./solana-rpc-metrics";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -107,9 +108,12 @@ let _connection: Connection | null = null;
  */
 export function getConnection(): Connection {
   if (!_connection) {
-    _connection = new Connection(getRpcEndpoint(), {
-      commitment: "confirmed",
-    });
+    _connection = instrumentConnection(
+      new Connection(getRpcEndpoint(), {
+        commitment: "confirmed",
+      }),
+      "combat",
+    );
   }
   return _connection;
 }
@@ -127,9 +131,12 @@ let _bettingConnection: Connection | null = null;
  */
 export function getBettingConnection(): Connection {
   if (!_bettingConnection) {
-    _bettingConnection = new Connection(getBettingRpcEndpoint(), {
-      commitment: "confirmed",
-    });
+    _bettingConnection = instrumentConnection(
+      new Connection(getBettingRpcEndpoint(), {
+        commitment: "confirmed",
+      }),
+      "betting",
+    );
   }
   return _bettingConnection;
 }
@@ -156,10 +163,13 @@ let _erConnection: Connection | null = null;
  */
 export function getErConnection(): Connection {
   if (!_erConnection) {
-    _erConnection = new Connection(getErRpcEndpoint(), {
-      commitment: "confirmed",
-      wsEndpoint: getErRpcEndpoint().replace("https://", "wss://"),
-    });
+    _erConnection = instrumentConnection(
+      new Connection(getErRpcEndpoint(), {
+        commitment: "confirmed",
+        wsEndpoint: getErRpcEndpoint().replace("https://", "wss://"),
+      }),
+      "er",
+    );
   }
   return _erConnection;
 }
@@ -168,7 +178,7 @@ export function getErConnection(): Connection {
  * Create a fresh connection (bypasses the cached singleton).
  */
 export function createFreshConnection(commitment: Commitment = "confirmed"): Connection {
-  return new Connection(getRpcEndpoint(), { commitment });
+  return instrumentConnection(new Connection(getRpcEndpoint(), { commitment }), "fresh");
 }
 
 // ---------------------------------------------------------------------------

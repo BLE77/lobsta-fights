@@ -147,7 +147,7 @@ const LEGACY_EVENT_MAP: Partial<Record<SSEEvent["type"], OrchestratorSseName>> =
   turn: "turn_resolved",
   elimination: "fighter_eliminated",
 };
-const CLIENT_BET_CLOSE_GUARD_MS = 12_000;
+const CLIENT_BET_CLOSE_GUARD_MS = 3_000;
 
 function isSlotState(value: unknown): value is SlotData["state"] {
   return value === "idle" || value === "betting" || value === "combat" || value === "payout";
@@ -696,14 +696,15 @@ export default function RumblePage() {
     }
   }, [publicKey]);
 
-  const fetchMyBets = useCallback(async () => {
+  const fetchMyBets = useCallback(async (options?: { includeOnchain?: boolean }) => {
     if (!publicKey) {
       setMyBetAmountsBySlot(new Map());
       return;
     }
     try {
       const wallet = encodeURIComponent(publicKey.toBase58());
-      const res = await fetch(`/api/rumble/my-bets?wallet=${wallet}&_t=${Date.now()}`, {
+      const includeOnchain = options?.includeOnchain === true ? "&include_onchain=1" : "";
+      const res = await fetch(`/api/rumble/my-bets?wallet=${wallet}${includeOnchain}&_t=${Date.now()}`, {
         cache: "no-store",
       });
       const data = await res.json();
@@ -754,7 +755,7 @@ export default function RumblePage() {
     walletAddress: publicKey?.toBase58() ?? null,
     onBetConfirmed: useCallback(() => {
       // Webhook confirmed our tx on-chain — refresh bets + balance immediately
-      fetchMyBets();
+      fetchMyBets({ includeOnchain: true });
       fetchClaimBalance();
       fetchStatus();
     }, [fetchMyBets, fetchClaimBalance, fetchStatus]),
@@ -899,7 +900,7 @@ export default function RumblePage() {
           break;
 
         case "betting_closed":
-          // Betting is closed but slot remains in pre-combat transition.
+          slot.bettingDeadline = null;
           break;
 
         case "combat_started":
@@ -1365,7 +1366,7 @@ export default function RumblePage() {
       // to give the DB/chain time to propagate the new bet
       fetchStatus();
       fetchClaimBalance();
-      setTimeout(() => fetchMyBets(), 4_000);
+      setTimeout(() => fetchMyBets({ includeOnchain: true }), 4_000);
       const newBalance = await connection.getBalance(publicKey, "confirmed");
       setSolBalance(newBalance / LAMPORTS_PER_SOL);
 

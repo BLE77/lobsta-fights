@@ -10,6 +10,7 @@ import { getBettingConnection } from "~~/lib/solana-connection";
 import { ensureRumblePublicHeartbeat } from "~~/lib/rumble-public-heartbeat";
 import { loadActiveRumbles } from "~~/lib/rumble-persistence";
 import { requireJsonContentType, sanitizeErrorResponse } from "~~/lib/api-middleware";
+import { flushRpcMetrics, runWithRpcMetrics } from "~~/lib/solana-rpc-metrics";
 
 export const dynamic = "force-dynamic";
 const BETTING_CLOSE_GUARD_MS = Math.max(1000, Number(process.env.RUMBLE_BETTING_CLOSE_GUARD_MS ?? "12000"));
@@ -65,17 +66,18 @@ async function loadLatestBettingRumbleForSlot(slotIndex: number): Promise<{
 }
 
 export async function POST(request: Request) {
-  const rlKey = getRateLimitKey(request);
-  const rl = checkRateLimit("PUBLIC_WRITE", rlKey);
-  if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
-  const contentTypeError = requireJsonContentType(request);
-  if (contentTypeError) return contentTypeError;
+  return runWithRpcMetrics("POST /api/rumble/bet/prepare", async () => {
+    const rlKey = getRateLimitKey(request);
+    const rl = checkRateLimit("PUBLIC_WRITE", rlKey);
+    if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+    const contentTypeError = requireJsonContentType(request);
+    if (contentTypeError) return contentTypeError;
 
-  try {
-    const body = await request.json().catch(() => ({}));
-    const slotIndex = body.slot_index ?? body.slotIndex;
-    const walletAddress = body.wallet_address ?? body.walletAddress;
-    const rawBatch = Array.isArray(body.bets) ? body.bets : null;
+    try {
+      const body = await request.json().catch(() => ({}));
+      const slotIndex = body.slot_index ?? body.slotIndex;
+      const walletAddress = body.wallet_address ?? body.walletAddress;
+      const rawBatch = Array.isArray(body.bets) ? body.bets : null;
 
     if (rawBatch && rawBatch.length > 16) {
       return NextResponse.json({ error: "Maximum 16 bets per batch" }, { status: 400 });
@@ -387,8 +389,11 @@ export async function POST(request: Request) {
         { status: onchainNotReady ? 409 : 500 },
       );
     }
-  } catch (error) {
-    console.error("[RumbleBetPrepareAPI]", error);
-    return NextResponse.json(sanitizeErrorResponse(error, "Failed to prepare bet transaction"), { status: 500 });
-  }
+    } catch (error) {
+      console.error("[RumbleBetPrepareAPI]", error);
+      return NextResponse.json(sanitizeErrorResponse(error, "Failed to prepare bet transaction"), { status: 500 });
+    } finally {
+      flushRpcMetrics();
+    }
+  });
 }

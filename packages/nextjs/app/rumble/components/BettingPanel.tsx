@@ -27,6 +27,23 @@ interface BettingPanelProps {
   myBetAmounts?: Map<string, number>;
 }
 
+const BET_CLOSE_GUARD_MS = 3_000;
+
+function getRemainingBetWindowMs(deadline: string | null, nowMs: number = Date.now()): number | null {
+  if (!deadline) return null;
+  const deadlineMs = new Date(deadline).getTime();
+  if (!Number.isFinite(deadlineMs)) return 0;
+  return Math.max(0, deadlineMs - BET_CLOSE_GUARD_MS - nowMs);
+}
+
+function formatRemaining(ms: number): string {
+  if (ms <= 0) return "CLOSED";
+  const secs = Math.floor(ms / 1000);
+  const mins = Math.floor(secs / 60);
+  const remaining = secs % 60;
+  return `${mins}:${remaining.toString().padStart(2, "0")}`;
+}
+
 export default function BettingPanel({
   slotIndex,
   fighters,
@@ -37,35 +54,15 @@ export default function BettingPanel({
   myBetAmounts,
 }: BettingPanelProps) {
   const [bets, setBets] = useState<Map<string, string>>(new Map());
-  const [timeLeft, setTimeLeft] = useState("");
+  const [remainingMs, setRemainingMs] = useState<number | null>(() => getRemainingBetWindowMs(deadline));
   const [deploying, setDeploying] = useState<Set<string>>(new Set());
   const [lastTxSignature, setLastTxSignature] = useState<string | null>(null);
   const [successFighterId, setSuccessFighterId] = useState<string | null>(null);
 
-  // Countdown timer — offset by the on-chain close guard so the UI shows
-  // CLOSED at the same moment the bet placement code rejects submissions.
-  const BET_CLOSE_GUARD_MS = 12_000;
   useEffect(() => {
-    if (!deadline) return;
-    const deadlineMs = new Date(deadline).getTime();
-    if (!Number.isFinite(deadlineMs)) {
-      setTimeLeft("CLOSED");
-      return;
-    }
-    const update = () => {
-      const now = Date.now();
-      const end = deadlineMs - BET_CLOSE_GUARD_MS;
-      const diff = Math.max(0, end - now);
-      const secs = Math.floor(diff / 1000);
-      const mins = Math.floor(secs / 60);
-      const remaining = secs % 60;
-      setTimeLeft(
-        diff <= 0
-          ? "CLOSED"
-          : `${mins}:${remaining.toString().padStart(2, "0")}`
-      );
-    };
+    const update = () => setRemainingMs(getRemainingBetWindowMs(deadline));
     update();
+    if (!deadline) return;
     const interval = setInterval(update, 1000);
     return () => clearInterval(interval);
   }, [deadline]);
@@ -152,10 +149,12 @@ export default function BettingPanel({
   const myStakeEntries = myBetAmounts ? [...myBetAmounts.entries()] : [];
   const myStakeTotal = myStakeEntries.reduce((sum, [, amount]) => sum + amount, 0);
   const deployableCount = [...bets.values()].filter(v => (parseFloat(v) || 0) > 0).length;
+  const timeLeft = remainingMs === null ? "" : formatRemaining(remainingMs);
 
-  const bettingInitialized = !!deadline;
-  const isClosed = bettingInitialized && timeLeft === "CLOSED";
-  const canSubmitBets = bettingInitialized && !isClosed;
+  const bettingInitialized = remainingMs !== null;
+  const isBetWindowOpen = bettingInitialized && remainingMs > 0;
+  const isClosed = bettingInitialized && !isBetWindowOpen;
+  const canSubmitBets = isBetWindowOpen;
 
   return (
     <div className="space-y-3">

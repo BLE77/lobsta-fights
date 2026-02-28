@@ -91,10 +91,11 @@ export default function WalletConnect({
     }
   }, [connected, publicKey, fetchBalances, onConnect]);
 
-  // Refresh balances every 30 seconds while connected
+  // Refresh balances every 90 seconds while connected.
+  // Bets/claims trigger explicit refreshes elsewhere, so frequent polling only burns RPC credits.
   useEffect(() => {
     if (!connected || !publicKey) return;
-    const interval = setInterval(fetchBalances, 30_000);
+    const interval = setInterval(fetchBalances, 90_000);
     return () => clearInterval(interval);
   }, [connected, publicKey, fetchBalances]);
 

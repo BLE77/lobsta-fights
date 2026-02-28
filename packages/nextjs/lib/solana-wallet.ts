@@ -60,38 +60,46 @@ const ICHOR_TOKEN_MINT =
   "ICHoRxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"; // placeholder
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
+const WALLET_BALANCE_CACHE_TTL_MS = Math.max(
+  5_000,
+  Number(process.env.RUMBLE_WALLET_BALANCE_CACHE_TTL_MS ?? "20000"),
+);
 
-// ---------------------------------------------------------------------------
-// API Functions
-// ---------------------------------------------------------------------------
+const _walletBalanceCache = new Map<string, { at: number; value: WalletBalances }>();
+const _walletBalanceInFlight = new Map<string, Promise<WalletBalances>>();
 
-/**
- * Fetch SOL and token balances for a wallet, including ICHOR balance.
- */
-export async function getWalletBalances(
-  walletAddress: string,
-): Promise<WalletBalances> {
-  const apiKey = getHeliusApiKey();
+function getWalletBalanceCacheKey(walletAddress: string): string {
+  return `${getNetwork()}:${walletAddress}`;
+}
+
+function pruneWalletBalanceCache(now: number): void {
+  if (_walletBalanceCache.size <= 500) return;
+  for (const [key, entry] of _walletBalanceCache.entries()) {
+    if (now - entry.at >= WALLET_BALANCE_CACHE_TTL_MS * 3) {
+      _walletBalanceCache.delete(key);
+    }
+  }
+}
+
+function parseNativeLamportsFromDas(tokenData: any): number | null {
+  const candidates = [
+    tokenData?.result?.nativeBalance?.lamports,
+    tokenData?.result?.nativeBalance?.amount,
+    tokenData?.result?.nativeBalance?.nativeBalance,
+  ];
+  for (const raw of candidates) {
+    const lamports = Number(raw);
+    if (Number.isFinite(lamports) && lamports >= 0) return lamports;
+  }
+  return null;
+}
+
+async function fetchWalletBalancesUncached(walletAddress: string): Promise<WalletBalances> {
   const rpcUrl = getHeliusBaseUrl();
 
-  // Fetch native SOL balance via RPC
-  const solBalanceRes = await fetch(rpcUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "getBalance",
-      params: [walletAddress],
-    }),
-    cache: "no-store",
-  });
-
-  const solBalanceData = await solBalanceRes.json();
-  const lamports: number = solBalanceData?.result?.value ?? 0;
-  const solBalance = lamports / LAMPORTS_PER_SOL;
-
-  // Fetch token balances via Helius DAS (Digital Asset Standard) API
+  // Fetch token balances via Helius DAS (Digital Asset Standard) API.
+  // This typically includes native SOL lamports too, so we can often avoid a
+  // second getBalance RPC call.
   const tokenRes = await fetch(rpcUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -111,6 +119,24 @@ export async function getWalletBalances(
   });
 
   const tokenData = await tokenRes.json();
+  let lamports = parseNativeLamportsFromDas(tokenData);
+  if (lamports === null) {
+    // Fallback for networks/providers that omit native lamports in DAS payload.
+    const solBalanceRes = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "getBalance",
+        params: [walletAddress],
+      }),
+      cache: "no-store",
+    });
+    const solBalanceData = await solBalanceRes.json();
+    lamports = Number(solBalanceData?.result?.value ?? 0);
+  }
+  const solBalance = lamports / LAMPORTS_PER_SOL;
 
   const tokens: TokenBalance[] = [];
   let ichorBalance = 0;
@@ -141,7 +167,6 @@ export async function getWalletBalances(
     }
   }
 
-  // Check native balance USD from DAS response
   const nativeBalance = tokenData?.result?.nativeBalance;
   const solUsdValue = nativeBalance?.total_price;
 
@@ -151,6 +176,41 @@ export async function getWalletBalances(
     tokens,
     ichorBalance,
   };
+}
+
+// ---------------------------------------------------------------------------
+// API Functions
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch SOL and token balances for a wallet, including ICHOR balance.
+ */
+export async function getWalletBalances(
+  walletAddress: string,
+): Promise<WalletBalances> {
+  const key = getWalletBalanceCacheKey(walletAddress);
+  const now = Date.now();
+  const cached = _walletBalanceCache.get(key);
+  if (cached && now - cached.at < WALLET_BALANCE_CACHE_TTL_MS) {
+    return cached.value;
+  }
+
+  const inFlight = _walletBalanceInFlight.get(key);
+  if (inFlight) return inFlight;
+
+  const promise = fetchWalletBalancesUncached(walletAddress)
+    .then((value) => {
+      const ts = Date.now();
+      _walletBalanceCache.set(key, { at: ts, value });
+      pruneWalletBalanceCache(ts);
+      return value;
+    })
+    .finally(() => {
+      _walletBalanceInFlight.delete(key);
+    });
+
+  _walletBalanceInFlight.set(key, promise);
+  return promise;
 }
 
 /**

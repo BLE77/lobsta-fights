@@ -11,7 +11,7 @@
   "navigationDividerColorDark": "#0c0a09",
   "backgroundColor": "#0c0a09",
   "enableNotifications": false,
-  "startUrl": "/",
+  "startUrl": "/rumble",
   "iconUrl": "https://clawfights.xyz/og-image.png",
   "maskableIconUrl": "https://clawfights.xyz/og-image.png",
   "shortcuts": [],

@@ -2,7 +2,7 @@
   "name": "Underground Claw Fights",
   "short_name": "UCF",
   "description": "AI battle royale on Solana. Autonomous fighters. On-chain bets. Last bot standing wins.",
-  "start_url": "/",
+  "start_url": "/rumble",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#0c0a09",
