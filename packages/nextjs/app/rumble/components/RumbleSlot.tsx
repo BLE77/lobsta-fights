@@ -304,15 +304,15 @@ export default function RumbleSlot({
   }, [(slot as any).nextTurnTargetSlot, (slot as any).currentSlot, slot.currentTurn]);
 
   useEffect(() => {
-    const trackCombat = slot.state === "combat";
-    const trackBetting = slot.state === "betting" && !!slot.bettingDeadline;
+    const trackCombat = effectiveState === "combat";
+    const trackBetting = effectiveState === "betting" && !!slot.bettingDeadline;
     if (!trackCombat && !trackBetting) return;
     const timer = setInterval(() => setCountdownNow(Date.now()), 1_000);
     return () => clearInterval(timer);
-  }, [slot.state, slot.bettingDeadline]);
+  }, [effectiveState, slot.bettingDeadline]);
 
   const liveCountdown = (() => {
-    if (slot.state === "combat" && slotAnchorRef.current) {
+    if (effectiveState === "combat" && slotAnchorRef.current) {
       const { targetSlot, currentSlot, anchoredAt } = slotAnchorRef.current;
       const slotMs = (slot as any).slotMsEstimate ?? 400;
       const totalEtaMs = (targetSlot - currentSlot) * slotMs;
@@ -320,7 +320,7 @@ export default function RumbleSlot({
       const remaining = Math.max(0, Math.ceil((totalEtaMs - elapsed) / 1_000));
       return { label: "NEXT TURN", seconds: remaining };
     }
-    if (slot.state === "combat" && slot.nextTurnAt) {
+    if (effectiveState === "combat" && slot.nextTurnAt) {
       const targetMs = new Date(slot.nextTurnAt).getTime();
       if (!Number.isFinite(targetMs)) return null;
       return {
@@ -328,7 +328,7 @@ export default function RumbleSlot({
         seconds: Math.max(0, Math.ceil((targetMs - countdownNow) / 1_000)),
       };
     }
-    if (slot.state === "combat" && slot.turnIntervalMs) {
+    if (effectiveState === "combat" && slot.turnIntervalMs) {
       const anchor = lastTurnChangeRef.current;
       const targetMs = anchor.at + slot.turnIntervalMs;
       const remaining = Math.max(0, Math.ceil((targetMs - countdownNow) / 1_000));
@@ -337,12 +337,14 @@ export default function RumbleSlot({
         seconds: remaining,
       };
     }
-    if (slot.state === "betting" && slot.bettingDeadline) {
+    if (effectiveState === "betting" && slot.bettingDeadline) {
       const targetMs = new Date(slot.bettingDeadline).getTime() - Math.max(1_000, betCloseGuardMs);
       if (!Number.isFinite(targetMs)) return null;
+      const remaining = Math.ceil((targetMs - countdownNow) / 1_000);
+      if (remaining <= 0) return null;
       return {
         label: "FIRST TURN",
-        seconds: Math.max(0, Math.ceil((targetMs - countdownNow) / 1_000)),
+        seconds: remaining,
       };
     }
     return null;
