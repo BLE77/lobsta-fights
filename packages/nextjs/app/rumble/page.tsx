@@ -1446,6 +1446,16 @@ export default function RumblePage() {
         <div className="absolute inset-0 bg-stone-950/90"></div>
       </div>
 
+      {/* Bug Cleaning Overlay */}
+      <div className="fixed bottom-4 left-4 z-[100] flex items-end gap-3 pointer-events-none animate-fade-in-up">
+        <img src="/cleaning-bugs.jpg" alt="Cleaning bugs" className="w-48 sm:w-64 h-auto object-cover rounded-lg shadow-[0_0_30px_rgba(0,0,0,0.9)] border border-stone-800" />
+        <div className="bg-stone-900/95 backdrop-blur-md border border-stone-700 p-3 rounded-lg shadow-2xl mb-4 max-w-[220px]">
+          <p className="font-mono text-xs text-stone-300 uppercase leading-snug">
+            "Just cleaning up some bugs before mainnet"
+          </p>
+        </div>
+      </div>
+
       {/* Content */}
       <div className="relative z-10 w-full">
         {/* Header */}
