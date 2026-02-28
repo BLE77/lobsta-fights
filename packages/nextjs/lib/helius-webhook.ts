@@ -3,32 +3,32 @@
  *
  * Utilities for registering and managing Helius Enhanced Webhooks,
  * and for parsing incoming webhook payloads to identify bet transactions.
+ *
+ * Supports both devnet (combat) and mainnet (betting) webhooks.
  */
 
-import { RUMBLE_ENGINE_ID } from "./solana-programs";
+import { RUMBLE_ENGINE_ID, RUMBLE_ENGINE_ID_MAINNET } from "./solana-programs";
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
-function getHeliusApiKey(): string {
-  const key = process.env.HELIUS_API_KEY?.trim();
-  if (!key) throw new Error("Missing HELIUS_API_KEY");
+/**
+ * Returns the mainnet Helius API key (used for betting webhook).
+ * Falls back to generic HELIUS_API_KEY if mainnet-specific key not set.
+ */
+function getMainnetApiKey(): string {
+  const key =
+    process.env.HELIUS_MAINNET_API_KEY?.trim() ||
+    process.env.HELIUS_API_KEY?.trim();
+  if (!key) throw new Error("Missing HELIUS_MAINNET_API_KEY or HELIUS_API_KEY");
   return key;
 }
 
-function getNetwork(): "devnet" | "mainnet-beta" {
-  const net = process.env.NEXT_PUBLIC_SOLANA_NETWORK;
-  if (net === "mainnet-beta") return "mainnet-beta";
-  return "devnet";
-}
-
-function getHeliusApiBaseUrl(): string {
-  const network = getNetwork();
-  if (network === "mainnet-beta") {
-    return "https://api.helius.xyz";
-  }
-  return "https://api-devnet.helius.xyz";
+function getDevnetApiKey(): string {
+  const key = process.env.HELIUS_API_KEY?.trim();
+  if (!key) throw new Error("Missing HELIUS_API_KEY");
+  return key;
 }
 
 /**
@@ -48,7 +48,7 @@ export interface HeliusWebhookConfig {
   webhookURL: string;
   transactionTypes: string[];
   accountAddresses: string[];
-  webhookType: "enhanced" | "raw" | "discord";
+  webhookType: "enhanced" | "enhancedDevnet" | "raw" | "rawDevnet" | "discord" | "discordDevnet";
 }
 
 export interface HeliusWebhookResponse {
@@ -61,18 +61,19 @@ export interface HeliusWebhookResponse {
 }
 
 /**
- * Register a new Enhanced Webhook with Helius to receive transaction
- * notifications for the Rumble Engine program.
+ * Register a MAINNET Enhanced Webhook with Helius to receive transaction
+ * notifications for the Rumble Engine program (betting operations).
+ *
+ * Uses "enhanced" type (mainnet) and filters only successful txs.
  */
 export async function registerHeliusWebhook(
   webhookURL: string,
   extraAccountAddresses: string[] = [],
 ): Promise<HeliusWebhookResponse> {
-  const apiKey = getHeliusApiKey();
-  const baseUrl = getHeliusApiBaseUrl();
+  const apiKey = getMainnetApiKey();
 
   const accountAddresses = [
-    RUMBLE_ENGINE_ID.toBase58(),
+    RUMBLE_ENGINE_ID_MAINNET.toBase58(),
     ...extraAccountAddresses,
   ];
 
@@ -82,7 +83,8 @@ export async function registerHeliusWebhook(
     webhookURL,
     transactionTypes: ["Any"],
     accountAddresses,
-    webhookType: "enhanced",
+    webhookType: "enhanced", // "enhanced" = mainnet
+    txnStatus: "success",   // Only notify on successful txs
   };
 
   // Helius supports authHeader for webhook authentication
@@ -90,7 +92,8 @@ export async function registerHeliusWebhook(
     body.authHeader = `Bearer ${secret}`;
   }
 
-  const res = await fetch(`${baseUrl}/v0/webhooks?api-key=${apiKey}`, {
+  // Mainnet API endpoint
+  const res = await fetch(`https://api.helius.xyz/v0/webhooks?api-key=${apiKey}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -105,32 +108,95 @@ export async function registerHeliusWebhook(
 }
 
 /**
- * List all registered Helius webhooks for this API key.
+ * Register a DEVNET Enhanced Webhook (for combat-related notifications).
  */
-export async function listHeliusWebhooks(): Promise<HeliusWebhookResponse[]> {
-  const apiKey = getHeliusApiKey();
-  const baseUrl = getHeliusApiBaseUrl();
+export async function registerDevnetWebhook(
+  webhookURL: string,
+  extraAccountAddresses: string[] = [],
+): Promise<HeliusWebhookResponse> {
+  const apiKey = getDevnetApiKey();
 
-  const res = await fetch(`${baseUrl}/v0/webhooks?api-key=${apiKey}`, {
-    method: "GET",
+  const accountAddresses = [
+    RUMBLE_ENGINE_ID.toBase58(),
+    ...extraAccountAddresses,
+  ];
+
+  const secret = getWebhookSecret();
+
+  const body: Record<string, unknown> = {
+    webhookURL,
+    transactionTypes: ["Any"],
+    accountAddresses,
+    webhookType: "enhancedDevnet", // "enhancedDevnet" = devnet
+    txnStatus: "success",
+  };
+
+  if (secret) {
+    body.authHeader = `Bearer ${secret}`;
+  }
+
+  const res = await fetch(`https://api-devnet.helius.xyz/v0/webhooks?api-key=${apiKey}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
 
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
-    throw new Error(`Helius list webhooks failed (${res.status}): ${errText}`);
+    throw new Error(`Helius devnet webhook registration failed (${res.status}): ${errText}`);
   }
 
   return res.json();
 }
 
 /**
- * Delete a Helius webhook by ID.
+ * List all registered Helius webhooks for this API key.
+ * Checks both mainnet and devnet keys.
+ */
+export async function listHeliusWebhooks(): Promise<HeliusWebhookResponse[]> {
+  const results: HeliusWebhookResponse[] = [];
+
+  // Try mainnet
+  try {
+    const mainnetKey = getMainnetApiKey();
+    const res = await fetch(`https://api.helius.xyz/v0/webhooks?api-key=${mainnetKey}`);
+    if (res.ok) {
+      const mainnetHooks = await res.json();
+      results.push(...mainnetHooks);
+    }
+  } catch { /* no mainnet key */ }
+
+  // Try devnet (may be same key)
+  try {
+    const devnetKey = getDevnetApiKey();
+    if (devnetKey !== (process.env.HELIUS_MAINNET_API_KEY?.trim() ?? "")) {
+      const res = await fetch(`https://api-devnet.helius.xyz/v0/webhooks?api-key=${devnetKey}`);
+      if (res.ok) {
+        const devnetHooks = await res.json();
+        results.push(...devnetHooks);
+      }
+    }
+  } catch { /* no devnet key */ }
+
+  return results;
+}
+
+/**
+ * Delete a Helius webhook by ID. Tries both mainnet and devnet APIs.
  */
 export async function deleteHeliusWebhook(webhookId: string): Promise<void> {
-  const apiKey = getHeliusApiKey();
-  const baseUrl = getHeliusApiBaseUrl();
+  // Try mainnet first
+  try {
+    const mainnetKey = getMainnetApiKey();
+    const res = await fetch(`https://api.helius.xyz/v0/webhooks/${webhookId}?api-key=${mainnetKey}`, {
+      method: "DELETE",
+    });
+    if (res.ok) return;
+  } catch { /* try devnet */ }
 
-  const res = await fetch(`${baseUrl}/v0/webhooks/${webhookId}?api-key=${apiKey}`, {
+  // Try devnet
+  const devnetKey = getDevnetApiKey();
+  const res = await fetch(`https://api-devnet.helius.xyz/v0/webhooks/${webhookId}?api-key=${devnetKey}`, {
     method: "DELETE",
   });
 
@@ -145,9 +211,9 @@ export async function deleteHeliusWebhook(webhookId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * A parsed bet event extracted from a Helius enhanced webhook payload.
+ * A parsed rumble event extracted from a Helius enhanced webhook payload.
  */
-export interface ParsedBetEvent {
+export interface ParsedRumbleEvent {
   signature: string;
   slot: number;
   timestamp: number;
@@ -160,20 +226,33 @@ export interface ParsedBetEvent {
   accountKeys: string[];
   /** Raw transaction type from Helius */
   type: string;
+  /** SOL balance changes from the tx (for detecting payouts/bets) */
+  nativeTransfers: Array<{
+    fromUserAccount: string;
+    toUserAccount: string;
+    amount: number;
+  }>;
   /** Full enhanced transaction data for further inspection */
   raw: unknown;
 }
 
+/** @deprecated Use ParsedRumbleEvent */
+export type ParsedBetEvent = ParsedRumbleEvent;
+
 /**
- * Parse a Helius enhanced webhook payload array into structured bet events.
+ * Parse a Helius enhanced webhook payload array into structured events.
  *
  * Helius sends an array of enhanced transaction objects. We filter for
- * transactions that involve the Rumble Engine program.
+ * transactions that involve the Rumble Engine program (on either network).
  */
 export function parseHeliusWebhookPayload(
   payload: unknown[],
-): ParsedBetEvent[] {
-  const events: ParsedBetEvent[] = [];
+): ParsedRumbleEvent[] {
+  const events: ParsedRumbleEvent[] = [];
+  const programIds = new Set([
+    RUMBLE_ENGINE_ID.toBase58(),
+    RUMBLE_ENGINE_ID_MAINNET.toBase58(),
+  ]);
 
   for (const item of payload) {
     if (!item || typeof item !== "object") continue;
@@ -196,6 +275,21 @@ export function parseHeliusWebhookPayload(
       }
     }
 
+    // Extract native SOL transfers
+    const nativeTransfers: ParsedRumbleEvent["nativeTransfers"] = [];
+    const rawTransfers = (tx as any).nativeTransfers;
+    if (Array.isArray(rawTransfers)) {
+      for (const t of rawTransfers) {
+        if (t && typeof t.fromUserAccount === "string") {
+          nativeTransfers.push({
+            fromUserAccount: t.fromUserAccount,
+            toUserAccount: t.toUserAccount ?? "",
+            amount: typeof t.amount === "number" ? t.amount : 0,
+          });
+        }
+      }
+    }
+
     // Check instructions for Rumble Engine involvement
     let isRumbleEngine = false;
     let programId = "";
@@ -203,12 +297,10 @@ export function parseHeliusWebhookPayload(
     const instructions = (tx as any).instructions;
     if (Array.isArray(instructions)) {
       for (const ix of instructions) {
-        if (ix && typeof ix.programId === "string") {
-          if (ix.programId === RUMBLE_ENGINE_ID.toBase58()) {
-            isRumbleEngine = true;
-            programId = ix.programId;
-            break;
-          }
+        if (ix && typeof ix.programId === "string" && programIds.has(ix.programId)) {
+          isRumbleEngine = true;
+          programId = ix.programId;
+          break;
         }
       }
     }
@@ -220,12 +312,10 @@ export function parseHeliusWebhookPayload(
         for (const inner of innerInstructions) {
           const innerIxs = Array.isArray(inner?.instructions) ? inner.instructions : [];
           for (const ix of innerIxs) {
-            if (ix && typeof ix.programId === "string") {
-              if (ix.programId === RUMBLE_ENGINE_ID.toBase58()) {
-                isRumbleEngine = true;
-                programId = ix.programId;
-                break;
-              }
+            if (ix && typeof ix.programId === "string" && programIds.has(ix.programId)) {
+              isRumbleEngine = true;
+              programId = ix.programId;
+              break;
             }
           }
           if (isRumbleEngine) break;
@@ -234,9 +324,14 @@ export function parseHeliusWebhookPayload(
     }
 
     // Also check if any account key references the program
-    if (!isRumbleEngine && accountKeys.includes(RUMBLE_ENGINE_ID.toBase58())) {
-      isRumbleEngine = true;
-      programId = RUMBLE_ENGINE_ID.toBase58();
+    if (!isRumbleEngine) {
+      for (const pk of programIds) {
+        if (accountKeys.includes(pk)) {
+          isRumbleEngine = true;
+          programId = pk;
+          break;
+        }
+      }
     }
 
     // Only include transactions that involve our program
@@ -251,6 +346,7 @@ export function parseHeliusWebhookPayload(
       isRumbleEngine,
       accountKeys,
       type,
+      nativeTransfers,
       raw: tx,
     });
   }

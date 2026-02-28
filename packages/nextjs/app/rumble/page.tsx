@@ -474,7 +474,8 @@ export default function RumblePage() {
       }
     };
     fetchBalance();
-    const interval = setInterval(fetchBalance, 30_000);
+    // SOL balance: 60s polling (wallet balance changes only on bets/claims)
+    const interval = setInterval(fetchBalance, 60_000);
     return () => clearInterval(interval);
   }, [publicKey, connection, isPageVisible]);
 
@@ -958,18 +959,19 @@ export default function RumblePage() {
   }, [connectSSE]);
 
   // Poll as a safety net (pauses entirely when tab hidden):
-  // - fast when SSE is down
-  // - slower when SSE is healthy to reduce server/RPC load
+  // SSE + Helius webhooks handle real-time updates. Polling is just backup.
+  // - 45-60s when SSE healthy (SSE pushes instant combat updates)
+  // - 10-15s when SSE down (need faster fallback)
   useEffect(() => {
     if (!isPageVisible) return; // Stop polling when tab hidden
     fetchStatus();
     const intervalMs = seekerOptimizedUi
       ? sseConnected
-        ? 20_000
-        : 8_000
+        ? 60_000
+        : 15_000
       : sseConnected
-        ? 15_000
-        : 6_000;
+        ? 45_000
+        : 10_000;
     const pollInterval = setInterval(fetchStatus, intervalMs);
     return () => clearInterval(pollInterval);
   }, [fetchStatus, seekerOptimizedUi, sseConnected, isPageVisible]);
@@ -1047,6 +1049,8 @@ export default function RumblePage() {
   }, [status]);
 
   // Wallet payout/claimable balance polling (pauses when tab hidden)
+  // Helius webhook + Supabase Realtime push instant updates via useBetConfirmation.
+  // Polling is just a safety net — 60-90s intervals are fine.
   useEffect(() => {
     if (!publicKey) {
       setClaimBalance(null);
@@ -1057,7 +1061,7 @@ export default function RumblePage() {
     if (!isPageVisible) return; // Stop polling when tab hidden
     fetchClaimBalance();
     fetchMyBets();
-    const intervalMs = seekerOptimizedUi ? 30_000 : 20_000;
+    const intervalMs = seekerOptimizedUi ? 90_000 : 60_000;
     const interval = setInterval(() => {
       fetchClaimBalance();
       fetchMyBets();
