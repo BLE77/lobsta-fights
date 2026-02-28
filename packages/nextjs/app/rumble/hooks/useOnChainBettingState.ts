@@ -9,6 +9,8 @@ import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 // ---------------------------------------------------------------------------
 
 const RUMBLE_ENGINE_ID = new PublicKey(
+  process.env.NEXT_PUBLIC_RUMBLE_ENGINE_MAINNET?.trim() ||
+  process.env.NEXT_PUBLIC_RUMBLE_ENGINE_ID_MAINNET?.trim() ||
   "2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC"
 );
 const RUMBLE_SEED = Buffer.from("rumble");
@@ -35,20 +37,30 @@ function deriveRumblePda(rumbleId: number): [PublicKey, number] {
 
 let _wssConnection: Connection | null = null;
 
+function toWsEndpoint(httpEndpoint: string): string {
+  if (httpEndpoint.startsWith("https://")) {
+    return `wss://${httpEndpoint.slice("https://".length)}`;
+  }
+  if (httpEndpoint.startsWith("http://")) {
+    return `ws://${httpEndpoint.slice("http://".length)}`;
+  }
+  return httpEndpoint;
+}
+
 function getWssConnection(): Connection | null {
   if (_wssConnection) return _wssConnection;
-  const key =
-    typeof window !== "undefined"
-      ? process.env.NEXT_PUBLIC_HELIUS_API_KEY?.trim()
-      : undefined;
-  if (!key) return null;
-  const wssUrl = `wss://devnet.helius-rpc.com/?api-key=${key}`;
-  const httpsUrl = `https://devnet.helius-rpc.com/?api-key=${key}`;
+  const explicitRpc = process.env.NEXT_PUBLIC_BETTING_RPC_URL?.trim();
+  const explicitWs = process.env.NEXT_PUBLIC_BETTING_WS_URL?.trim();
+  const heliusMainnetKey = process.env.NEXT_PUBLIC_HELIUS_MAINNET_API_KEY?.trim();
+  const httpsUrl =
+    explicitRpc ||
+    (heliusMainnetKey ? `https://mainnet.helius-rpc.com/?api-key=${heliusMainnetKey}` : "https://api.mainnet-beta.solana.com");
+  const wssUrl = explicitWs || toWsEndpoint(httpsUrl);
   _wssConnection = new Connection(httpsUrl, {
     wsEndpoint: wssUrl,
     commitment: "processed",
   });
-  console.log("[OnChainBettingState] Helius WS connection created");
+  console.log("[OnChainBettingState] Mainnet WS connection created");
   return _wssConnection;
 }
 
@@ -89,7 +101,7 @@ export function useOnChainBettingState(
 
     const conn = getWssConnection();
     if (!conn) {
-      console.log("[OnChainBettingState] No Helius API key — WS disabled");
+      console.log("[OnChainBettingState] No mainnet WS endpoint — WS disabled");
       return;
     }
 

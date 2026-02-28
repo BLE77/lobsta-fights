@@ -18,7 +18,12 @@ import {
   Transaction,
 } from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
-import { getConnection, getBettingConnection, getErConnection } from "./solana-connection";
+import {
+  getConnection,
+  getBettingConnection,
+  getBettingReadConnections,
+  getErConnection,
+} from "./solana-connection";
 import { createHash, randomBytes } from "node:crypto";
 import { keccak_256 } from "@noble/hashes/sha3";
 
@@ -92,7 +97,16 @@ const VRF_DEFAULT_QUEUE = new PublicKey("Cuj97ggrhhidhbu39TijNVqE74xvKJ69gDervRU
 const _readCache = new Map<string, { data: unknown; expiresAt: number }>();
 const _readInFlight = new Map<string, Promise<unknown>>();
 
-function cachedRead<T>(key: string, ttlMs: number, fn: () => Promise<T>): Promise<T> {
+type CachedReadOptions = {
+  nullTtlMs?: number;
+};
+
+function cachedRead<T>(
+  key: string,
+  ttlMs: number,
+  fn: () => Promise<T>,
+  options?: CachedReadOptions,
+): Promise<T> {
   const now = Date.now();
   const hit = _readCache.get(key);
   if (hit && hit.expiresAt > now) return Promise.resolve(hit.data as T);
@@ -102,7 +116,13 @@ function cachedRead<T>(key: string, ttlMs: number, fn: () => Promise<T>): Promis
   const request = fn()
     .then((r) => {
       const ts = Date.now();
-      _readCache.set(key, { data: r, expiresAt: ts + ttlMs });
+      const isNullish = r === null || r === undefined;
+      const effectiveTtl = isNullish
+        ? Math.max(0, options?.nullTtlMs ?? ttlMs)
+        : ttlMs;
+      if (effectiveTtl > 0) {
+        _readCache.set(key, { data: r, expiresAt: ts + effectiveTtl });
+      }
       if (_readCache.size > 200) {
         for (const [k, v] of _readCache) {
           if (v.expiresAt <= ts) _readCache.delete(k);
@@ -360,6 +380,15 @@ export interface RumbleCombatAccountState {
   bump: number;
 }
 
+function getConnectionCacheKey(connection: Connection): string {
+  const connAny = connection as unknown as {
+    rpcEndpoint?: string;
+    _rpcEndpoint?: string;
+  };
+  const endpoint = connAny.rpcEndpoint ?? connAny._rpcEndpoint ?? "unknown";
+  return endpoint.replace(/api[_-]key=[^&]+/gi, "api-key=redacted");
+}
+
 /**
  * Read a rumble account's current state directly from chain.
  * Pass programId to read from mainnet program (uses mainnet PDA derivation).
@@ -370,9 +399,10 @@ export async function readRumbleAccountState(
   programId?: PublicKey,
 ): Promise<RumbleAccountState | null> {
   const useMainnet = programId && !programId.equals(RUMBLE_ENGINE_ID);
-  const key = `rumble:${useMainnet ? "mainnet:" : ""}${rumbleId}`;
+  const conn = connection ?? (useMainnet ? getBettingConnection() : getConnection());
+  const endpointKey = getConnectionCacheKey(conn);
+  const key = `rumble:${useMainnet ? "mainnet:" : ""}${rumbleId}:${endpointKey}`;
   return cachedRead(key, 3000, async () => {
-    const conn = connection ?? getConnection();
     const [rumblePda] = useMainnet ? deriveRumblePdaMainnet(rumbleId) : deriveRumblePda(rumbleId);
     // Use processed commitment to minimize stale reads around betting close.
     const info = await conn.getAccountInfo(rumblePda, "processed");
@@ -450,7 +480,46 @@ export async function readRumbleAccountState(
       combatStartedAtTs,
       completedAtTs,
     };
+  }, {
+    // Avoid poisoning retries for newly-created accounts while still reducing
+    // hot-loop misses.
+    nullTtlMs: 500,
   });
+}
+
+interface ResilientMainnetReadOptions {
+  maxPasses?: number;
+  retryDelayMs?: number;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Read mainnet betting state with endpoint fallback.
+ * Never falls back to devnet, preserving mainnet as source-of-truth.
+ */
+export async function readMainnetRumbleAccountStateResilient(
+  rumbleId: bigint | number,
+  options?: ResilientMainnetReadOptions,
+): Promise<RumbleAccountState | null> {
+  const maxPasses = Math.max(1, options?.maxPasses ?? 2);
+  const retryDelayMs = Math.max(0, options?.retryDelayMs ?? 150);
+  for (let pass = 0; pass < maxPasses; pass++) {
+    for (const conn of getBettingReadConnections()) {
+      const state = await readRumbleAccountState(
+        rumbleId,
+        conn,
+        RUMBLE_ENGINE_ID_MAINNET,
+      ).catch(() => null);
+      if (state) return state;
+    }
+    if (pass < maxPasses - 1 && retryDelayMs > 0) {
+      await sleep(retryDelayMs);
+    }
+  }
+  return null;
 }
 
 /**

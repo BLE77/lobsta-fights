@@ -81,6 +81,7 @@ import {
   readArenaConfig,
   readRumbleConfig,
   readRumbleAccountState,
+  readMainnetRumbleAccountStateResilient,
   getAdminSignerPublicKey,
   type RumbleCombatAccountState,
   readShowerRequest,
@@ -1578,12 +1579,20 @@ export class RumbleOrchestrator {
     const retryAt = this.onchainRumbleCreateRetryAt.get(rumbleId) ?? 0;
     if (now < retryAt) return;
 
+    const targetBettingDeadlineUnix = Math.floor((Date.now() + ONCHAIN_BETTING_DURATION_MS) / 1000);
     const createdOrExists = await this.ensureOnchainRumbleExists(
       rumbleId,
       slot.fighters,
-      Math.floor((Date.now() + ONCHAIN_BETTING_DURATION_MS) / 1000),
+      targetBettingDeadlineUnix,
     );
-    if (createdOrExists) {
+    const mainnetReady = createdOrExists
+      ? await this.ensureMainnetRumbleExists(
+          rumbleId,
+          slot.fighters,
+          targetBettingDeadlineUnix,
+        )
+      : false;
+    if (createdOrExists && mainnetReady) {
       this.onchainRumbleCreateRetryAt.delete(rumbleId);
       this.onchainRumbleCreateStartedAt.delete(rumbleId);
       this.clearOnchainCreateFailure(rumbleId);
@@ -1605,15 +1614,23 @@ export class RumbleOrchestrator {
   async ensureOnchainRumbleForSlot(slotIndex: number): Promise<boolean> {
     const slot = this.queueManager.getSlot(slotIndex);
     if (!slot || slot.state !== "betting") return false;
+    const targetBettingDeadlineUnix = Math.floor((Date.now() + ONCHAIN_BETTING_DURATION_MS) / 1000);
     const exists = await this.ensureOnchainRumbleExists(
       slot.id,
       slot.fighters,
-      Math.floor((Date.now() + ONCHAIN_BETTING_DURATION_MS) / 1000),
+      targetBettingDeadlineUnix,
     );
-    if (exists) {
+    const mainnetReady = exists
+      ? await this.ensureMainnetRumbleExists(
+          slot.id,
+          slot.fighters,
+          targetBettingDeadlineUnix,
+        )
+      : false;
+    if (exists && mainnetReady) {
       await this.armBettingWindowIfReady(slot);
     }
-    return exists;
+    return exists && mainnetReady;
   }
 
   private async armBettingWindowIfReady(slot: RumbleSlot): Promise<void> {
@@ -1621,11 +1638,14 @@ export class RumbleOrchestrator {
     const rumbleIdNum = parseOnchainRumbleIdNumber(slot.id);
     let deadline: Date | undefined;
     if (rumbleIdNum !== null) {
-      // Bypass read cache to get fresh on-chain state after creation
-      invalidateReadCache(`rumble:${rumbleIdNum}`);
-      const onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+      // Bypass read cache to get fresh mainnet betting state after creation.
+      invalidateReadCache(`rumble:mainnet:${rumbleIdNum}`);
+      const onchain = await readMainnetRumbleAccountStateResilient(rumbleIdNum, {
+        maxPasses: 2,
+        retryDelayMs: 100,
+      }).catch(() => null);
       if (!onchain) {
-        console.warn(`[Orchestrator] armBettingWindowIfReady: on-chain state unreadable for ${slot.id} — will NOT arm deadline until confirmed`);
+        console.warn(`[Orchestrator] armBettingWindowIfReady: mainnet on-chain state unreadable for ${slot.id} — will NOT arm deadline until confirmed`);
         return; // Do NOT arm deadline until on-chain is confirmed readable
       }
       if (onchain.state !== "betting") {
@@ -1634,7 +1654,7 @@ export class RumbleOrchestrator {
       }
       const closeRaw = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
       if (closeRaw > 0n) {
-        const clusterSlot = await getConnection().getSlot("processed").catch(() => null);
+        const clusterSlot = await getBettingConnection().getSlot("processed").catch(() => null);
         if (typeof clusterSlot === "number" && Number.isFinite(clusterSlot)) {
           const clusterSlotBig = BigInt(clusterSlot);
           const looksLikeUnix = closeRaw > clusterSlotBig + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD;
@@ -1927,6 +1947,119 @@ export class RumbleOrchestrator {
     }
 
     this.clearOnchainCreateFailure(rumbleId);
+    return true;
+  }
+
+  private async ensureMainnetRumbleExists(
+    rumbleId: string,
+    fighterIds: string[],
+    bettingDeadlineUnix: number,
+  ): Promise<boolean> {
+    const slotIndex = this.resolveSlotIndexForRumble(rumbleId);
+    const rumbleIdNum = parseOnchainRumbleIdNumber(rumbleId);
+    if (rumbleIdNum === null) {
+      this.recordOnchainCreateFailure(
+        rumbleId,
+        "Could not parse numeric rumble id for mainnet create",
+        fighterIds.length,
+        slotIndex,
+      );
+      return false;
+    }
+
+    const existing = await readMainnetRumbleAccountStateResilient(rumbleIdNum, {
+      maxPasses: 2,
+      retryDelayMs: 100,
+    }).catch(() => null);
+    if (existing) {
+      return true;
+    }
+
+    const walletMap = await persist.lookupFighterWallets(fighterIds);
+    const fighterPubkeys: PublicKey[] = [];
+    for (const fid of fighterIds) {
+      const walletAddr = walletMap.get(fid);
+      if (!walletAddr) {
+        this.recordOnchainCreateFailure(
+          rumbleId,
+          `Missing fighter wallet for ${fid} (mainnet create)`,
+          fighterIds.length,
+          slotIndex,
+        );
+        return false;
+      }
+      try {
+        fighterPubkeys.push(new PublicKey(walletAddr));
+      } catch {
+        this.recordOnchainCreateFailure(
+          rumbleId,
+          `Invalid fighter wallet for ${fid} (mainnet create)`,
+          fighterIds.length,
+          slotIndex,
+        );
+        return false;
+      }
+    }
+
+    try {
+      const sig = await createRumbleMainnet(rumbleIdNum, fighterPubkeys, bettingDeadlineUnix);
+      if (!sig) {
+        this.recordOnchainCreateFailure(
+          rumbleId,
+          "mainnet createRumble RPC returned null signature",
+          fighterIds.length,
+          slotIndex,
+        );
+        return false;
+      }
+      console.log(`[OnChain:Mainnet] createRumble succeeded (self-heal): ${sig}`);
+      persist.updateRumbleTxSignature(rumbleId, "createRumble_mainnet", sig);
+    } catch (err) {
+      if (
+        this.hasErrorTokenAny(err, [
+          "already in use",
+          "already initialized",
+          "custom program error: 0x0",
+        ])
+      ) {
+        console.log(`[OnChain:Mainnet] createRumble already materialized for ${rumbleId}; continuing`);
+      } else {
+        this.recordOnchainCreateFailure(
+          rumbleId,
+          `mainnet createRumble error: ${formatError(err)}`,
+          fighterIds.length,
+          slotIndex,
+        );
+        return false;
+      }
+    }
+
+    invalidateReadCache(`rumble:mainnet:${rumbleIdNum}`);
+    let after: Awaited<ReturnType<typeof readMainnetRumbleAccountStateResilient>> = null;
+    for (let attempt = 0; attempt < ONCHAIN_CREATE_VERIFY_ATTEMPTS; attempt++) {
+      if (attempt > 0) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, ONCHAIN_CREATE_VERIFY_BACKOFF_MS * attempt)
+        );
+      }
+      invalidateReadCache(`rumble:mainnet:${rumbleIdNum}`);
+      after = await readMainnetRumbleAccountStateResilient(rumbleIdNum, {
+        maxPasses: 2,
+        retryDelayMs: 100,
+      }).catch(() => null);
+      if (after) break;
+    }
+
+    if (!after) {
+      this.recordOnchainCreateFailure(
+        rumbleId,
+        `mainnet createRumble sent but PDA still not readable after ${ONCHAIN_CREATE_VERIFY_ATTEMPTS} checks`,
+        fighterIds.length,
+        slotIndex,
+      );
+      return false;
+    }
+
     return true;
   }
 

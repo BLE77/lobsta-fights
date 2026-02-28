@@ -79,6 +79,18 @@ function getHeliusMainnetApiKey(): string | null {
   return null;
 }
 
+function splitEndpointList(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(/[,\s]+/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function normalizeEndpoint(url: string): string {
+  return url.trim().replace(/\/+$/, "");
+}
+
 /**
  * Get the mainnet RPC endpoint for betting operations.
  * Server-side prefers HELIUS_MAINNET_API_KEY (supports getProgramAccounts).
@@ -94,6 +106,35 @@ export function getBettingRpcEndpoint(): string {
   if (explicit) return explicit;
 
   return "https://api.mainnet-beta.solana.com";
+}
+
+/**
+ * Candidate RPC endpoints for mainnet betting reads.
+ * Keeps the configured primary first, then optional fallbacks, then public mainnet.
+ */
+export function getBettingReadRpcEndpoints(): string[] {
+  const endpoints: string[] = [getBettingRpcEndpoint()];
+  const envFallbacks = [
+    process.env.RUMBLE_BETTING_RPC_FALLBACKS,
+    process.env.RUMBLE_BETTING_READ_RPC_ENDPOINTS,
+  ];
+  for (const raw of envFallbacks) {
+    endpoints.push(...splitEndpointList(raw));
+  }
+  const publicBettingRpc = process.env.NEXT_PUBLIC_BETTING_RPC_URL?.trim();
+  if (publicBettingRpc) endpoints.push(publicBettingRpc);
+  endpoints.push("https://api.mainnet-beta.solana.com");
+
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+  for (const endpoint of endpoints) {
+    if (!endpoint) continue;
+    const normalized = normalizeEndpoint(endpoint);
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    deduped.push(endpoint);
+  }
+  return deduped;
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +180,33 @@ export function getBettingConnection(): Connection {
     );
   }
   return _bettingConnection;
+}
+
+const _bettingReadFallbackConnections = new Map<string, Connection>();
+
+/**
+ * Get ordered read connections for betting state checks.
+ * First entry is always the primary betting connection.
+ */
+export function getBettingReadConnections(): Connection[] {
+  const primary = getBettingConnection();
+  const primaryEndpoint = normalizeEndpoint(getBettingRpcEndpoint());
+  const out: Connection[] = [primary];
+  for (const endpoint of getBettingReadRpcEndpoints()) {
+    if (normalizeEndpoint(endpoint) === primaryEndpoint) continue;
+    let conn = _bettingReadFallbackConnections.get(endpoint);
+    if (!conn) {
+      conn = instrumentConnection(
+        new Connection(endpoint, {
+          commitment: "confirmed",
+        }),
+        "betting_fallback",
+      );
+      _bettingReadFallbackConnections.set(endpoint, conn);
+    }
+    out.push(conn);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import { getOrchestrator } from "~~/lib/rumble-orchestrator";
-import { buildPlaceBetBatchTx, buildPlaceBetTx, readRumbleAccountState, RUMBLE_ENGINE_ID_MAINNET } from "~~/lib/solana-programs";
+import {
+  buildPlaceBetBatchTx,
+  buildPlaceBetTx,
+  readMainnetRumbleAccountStateResilient,
+  RUMBLE_ENGINE_ID_MAINNET,
+} from "~~/lib/solana-programs";
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 import { MAX_BET_SOL, MIN_BET_SOL } from "~~/lib/tx-verify";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
@@ -225,7 +230,10 @@ export async function POST(request: Request) {
     // still open on-chain. Prevents stale UI/off-chain state from producing a
     // tx that will immediately fail simulation with BettingClosed.
     const bettingConn = getBettingConnection();
-    let onchainRumble = await readRumbleAccountState(rumbleIdNum, bettingConn, RUMBLE_ENGINE_ID_MAINNET).catch(() => null);
+    let onchainRumble = await readMainnetRumbleAccountStateResilient(rumbleIdNum, {
+      maxPasses: 2,
+      retryDelayMs: 100,
+    }).catch(() => null);
     if (!onchainRumble) {
       // Self-heal: if this slot is betting but the on-chain account is missing,
       // trigger orchestrator recovery/create once and re-read before failing.
@@ -234,7 +242,10 @@ export async function POST(request: Request) {
         .catch(() => false);
       if (recovered) {
         await sleep(250);
-        onchainRumble = await readRumbleAccountState(rumbleIdNum, bettingConn, RUMBLE_ENGINE_ID_MAINNET).catch(() => null);
+        onchainRumble = await readMainnetRumbleAccountStateResilient(rumbleIdNum, {
+          maxPasses: 3,
+          retryDelayMs: 150,
+        }).catch(() => null);
       }
     }
     if (!onchainRumble) {

@@ -986,23 +986,29 @@ export default function RumblePage() {
     };
   }, [connectSSE]);
 
-  // Poll as a safety net (pauses entirely when tab hidden):
-  // SSE + Helius webhooks handle real-time updates. Polling is just backup.
-  // - 45-60s when SSE healthy (SSE pushes instant combat updates)
-  // - 10-15s when SSE down (need faster fallback)
+  // Poll frequency is state-aware:
+  // - Combat: 5s (turns happen every ~10-15s, need to catch each one)
+  // - Betting: 10s (odds updates, new bets)
+  // - Idle/Payout: 30s (nothing time-critical)
+  // NOTE: SSE events only work when orchestrator runs in-process (local dev).
+  // On production (Vercel + Railway worker), SSE connects but delivers no events,
+  // so polling is the primary update mechanism.
+  const hasActiveCombat = status?.slots.some(s => s.state === "combat") ?? false;
+  const hasActiveBetting = status?.slots.some(s => s.state === "betting") ?? false;
   useEffect(() => {
     if (!isPageVisible) return; // Stop polling when tab hidden
     fetchStatus();
-    const intervalMs = seekerOptimizedUi
-      ? sseConnected
-        ? 60_000
-        : 15_000
-      : sseConnected
-        ? 45_000
-        : 10_000;
+    let intervalMs: number;
+    if (hasActiveCombat) {
+      intervalMs = 5_000;
+    } else if (hasActiveBetting) {
+      intervalMs = 10_000;
+    } else {
+      intervalMs = 30_000;
+    }
     const pollInterval = setInterval(fetchStatus, intervalMs);
     return () => clearInterval(pollInterval);
-  }, [fetchStatus, seekerOptimizedUi, sseConnected, isPageVisible]);
+  }, [fetchStatus, hasActiveCombat, hasActiveBetting, isPageVisible]);
 
   // ---- Sound effects driven by state changes (works with polling + SSE) ----
   useEffect(() => {

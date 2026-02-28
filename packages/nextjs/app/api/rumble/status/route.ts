@@ -16,8 +16,8 @@ import {
 import {
   readArenaConfig,
   readRumbleAccountState,
+  readMainnetRumbleAccountStateResilient,
   readRumbleCombatState,
-  RUMBLE_ENGINE_ID_MAINNET,
 } from "~~/lib/solana-programs";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 import { getBettingConnection, getConnection } from "~~/lib/solana-connection";
@@ -476,7 +476,7 @@ export async function GET(request: Request) {
         odds,
         totalPool,
         // Never arm betting timer from in-memory state alone. Timer appears
-        // only after the betting program confirms on-chain betting is live.
+        // only after mainnet betting state confirms the window is live.
         bettingDeadline: slotInfo.state === "betting" ? null : slotInfo.bettingDeadline?.toISOString() ?? null,
         nextTurnAt: slotInfo.nextTurnAt?.toISOString() ?? null,
         turnIntervalMs: slotInfo.turnIntervalMs ?? null,
@@ -517,6 +517,17 @@ export async function GET(request: Request) {
       const capped = delta > 1_000_000n ? 1_000_000n : delta;
       return Number(capped) * SLOT_MS_ESTIMATE;
     };
+    const mainnetRumbleStateById = new Map<number, Promise<Awaited<ReturnType<typeof readMainnetRumbleAccountStateResilient>>>>();
+    const getMainnetRumbleState = (rumbleIdNum: number) => {
+      const hit = mainnetRumbleStateById.get(rumbleIdNum);
+      if (hit) return hit;
+      const req = readMainnetRumbleAccountStateResilient(rumbleIdNum, {
+        maxPasses: 2,
+        retryDelayMs: 100,
+      });
+      mainnetRumbleStateById.set(rumbleIdNum, req);
+      return req;
+    };
 
     slots = await Promise.all(
       slots.map(async slot => {
@@ -526,11 +537,7 @@ export async function GET(request: Request) {
         if (rumbleIdNum === null) return slot;
         const onchain =
           slot.state === "betting"
-            ? await readRumbleAccountState(
-                rumbleIdNum,
-                getBettingConnection(),
-                RUMBLE_ENGINE_ID_MAINNET,
-              ).catch(() => null)
+            ? await getMainnetRumbleState(rumbleIdNum).catch(() => null)
             : await readRumbleAccountState(rumbleIdNum).catch(() => null);
         if (!onchain) {
           return slot.state === "betting" ? { ...slot, bettingDeadline: null } : slot;
@@ -908,15 +915,9 @@ export async function GET(request: Request) {
 
         // --- Betting state: restore countdown from on-chain close slot ---
         if (slot.state === "betting") {
-          const onchain = await readRumbleAccountState(
-            rumbleIdNum,
-            getBettingConnection(),
-            RUMBLE_ENGINE_ID_MAINNET,
-          ).catch(() => null);
+          const onchain = await getMainnetRumbleState(rumbleIdNum).catch(() => null);
 
-          // Case 1: On-chain doesn't exist yet (still being created).
-          // Do not synthesize a timer from server time; keep timer unarmed
-          // until on-chain state is readable.
+          // If on-chain account is unreadable, do not show a betting timer.
           if (!onchain) {
             return { ...slot, bettingDeadline: null };
           }
