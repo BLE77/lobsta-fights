@@ -18,6 +18,7 @@ import ClaimBalancePanel from "./components/ClaimBalancePanel";
 import ChatPanel from "./components/ChatPanel";
 import CommentaryPlayer from "./components/CommentaryPlayer";
 import OnChainTxFeed from "./components/OnChainTxFeed";
+import WinnerPopup from "./components/WinnerPopup";
 import { useBetConfirmation } from "./hooks/useBetConfirmation";
 import type { CommentarySSEEvent } from "~~/lib/commentary";
 import { audioManager, soundForPairing } from "~~/lib/audio";
@@ -391,6 +392,14 @@ export default function RumblePage() {
   const claimBalanceRef = useRef<ClaimBalanceStatus | null>(null);
   const pollSeqRef = useRef(0);
 
+  // Winner popup state
+  const [winnerPopup, setWinnerPopup] = useState<{
+    fighterName: string;
+    imageUrl: string | null;
+    solWon: number;
+  } | null>(null);
+  const shownWinPopupRumbleIds = useRef<Set<string>>(new Set());
+
   // Track previous slot states for sound effect detection (works with both SSE and polling)
   const prevSlotAudioState = useRef<Map<number, { state: string; turnCount: number; fighterCount: number }>>(new Map());
 
@@ -576,6 +585,22 @@ export default function RumblePage() {
           if (!existing || existing.rumbleId !== completed.rumbleId) {
             next.set(slot.slotIndex, completed);
             changed = true;
+
+            // Trigger winner popup if user bet on the winning fighter
+            const winner = completed.placements[0];
+            if (
+              winner &&
+              completed.myBetFighterIds?.includes(winner.fighterId) &&
+              !shownWinPopupRumbleIds.current.has(completed.rumbleId)
+            ) {
+              shownWinPopupRumbleIds.current.add(completed.rumbleId);
+              const solWon = completed.payout?.winnerBettorsPayout ?? 0;
+              setWinnerPopup({
+                fighterName: winner.fighterName,
+                imageUrl: winner.imageUrl ?? null,
+                solWon,
+              });
+            }
           }
         }
         if (changed) {
@@ -1739,6 +1764,16 @@ export default function RumblePage() {
           </div>
         </footer>
       </div>
+
+      {/* Winner popup overlay */}
+      {winnerPopup && (
+        <WinnerPopup
+          fighterName={winnerPopup.fighterName}
+          imageUrl={winnerPopup.imageUrl}
+          solWon={winnerPopup.solWon}
+          onDismiss={() => setWinnerPopup(null)}
+        />
+      )}
     </main>
   );
 }

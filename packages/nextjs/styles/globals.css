@@ -280,6 +280,22 @@ body {
   animation: winner-reveal 0.6s ease-out both;
 }
 
+/* Winner popup pulsing text */
+@keyframes winner-pulse {
+  0%, 100% {
+    text-shadow: 0 0 20px rgba(251, 191, 36, 0.4), 0 0 40px rgba(251, 191, 36, 0.2);
+    transform: scale(1);
+  }
+  50% {
+    text-shadow: 0 0 40px rgba(251, 191, 36, 0.8), 0 0 80px rgba(251, 191, 36, 0.4);
+    transform: scale(1.05);
+  }
+}
+
+.animate-winner-pulse {
+  animation: winner-pulse 1.5s ease-in-out infinite;
+}
+
 /* Ichor Shower jackpot glow */
 @keyframes ichor-shower-glow {
 
