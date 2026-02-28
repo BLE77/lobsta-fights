@@ -475,9 +475,9 @@ export async function GET(request: Request) {
         fighters,
         odds,
         totalPool,
-        // Never arm betting timer from in-memory state alone. Timer appears
-        // only after mainnet betting state confirms the window is live.
-        bettingDeadline: slotInfo.state === "betting" ? null : slotInfo.bettingDeadline?.toISOString() ?? null,
+        // Keep in-memory deadline as baseline; on-chain enrichment below will
+        // override with a more accurate value when available.
+        bettingDeadline: slotInfo.bettingDeadline?.toISOString() ?? null,
         nextTurnAt: slotInfo.nextTurnAt?.toISOString() ?? null,
         turnIntervalMs: slotInfo.turnIntervalMs ?? null,
         currentTurn: combatState?.turns.length ?? 0,
@@ -521,10 +521,14 @@ export async function GET(request: Request) {
     const getMainnetRumbleState = (rumbleIdNum: number) => {
       const hit = mainnetRumbleStateById.get(rumbleIdNum);
       if (hit) return hit;
-      const req = readMainnetRumbleAccountStateResilient(rumbleIdNum, {
-        maxPasses: 2,
-        retryDelayMs: 100,
-      });
+      // Cap mainnet read at 3s to prevent Vercel 10s timeout
+      const req = Promise.race([
+        readMainnetRumbleAccountStateResilient(rumbleIdNum, {
+          maxPasses: 1,
+          retryDelayMs: 0,
+        }),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 3_000)),
+      ]);
       mainnetRumbleStateById.set(rumbleIdNum, req);
       return req;
     };
@@ -535,12 +539,17 @@ export async function GET(request: Request) {
         if (slot.state === "idle" || slot.state === "payout") return slot;
         const rumbleIdNum = parseOnchainRumbleIdNumber(slot.rumbleId);
         if (rumbleIdNum === null) return slot;
-        const onchain =
+        let onchain =
           slot.state === "betting"
             ? await getMainnetRumbleState(rumbleIdNum).catch(() => null)
             : await readRumbleAccountState(rumbleIdNum).catch(() => null);
+        // Fallback: if mainnet read failed during betting, try devnet
+        if (!onchain && slot.state === "betting") {
+          onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+        }
         if (!onchain) {
-          return slot.state === "betting" ? { ...slot, bettingDeadline: null } : slot;
+          // Keep existing slot data as-is (don't null out deadline)
+          return slot;
         }
 
         // Only ADVANCE state from on-chain data, never regress it.
@@ -915,11 +924,15 @@ export async function GET(request: Request) {
 
         // --- Betting state: restore countdown from on-chain close slot ---
         if (slot.state === "betting") {
-          const onchain = await getMainnetRumbleState(rumbleIdNum).catch(() => null);
-
-          // If on-chain account is unreadable, do not show a betting timer.
+          let onchain = await getMainnetRumbleState(rumbleIdNum).catch(() => null);
+          // Fallback: if mainnet failed, try devnet
           if (!onchain) {
-            return { ...slot, bettingDeadline: null };
+            onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+          }
+
+          // If neither network has the account, keep existing slot data as-is
+          if (!onchain) {
+            return slot;
           }
 
           // Case 2: On-chain has already transitioned past betting (Railway
