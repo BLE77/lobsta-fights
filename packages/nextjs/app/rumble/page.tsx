@@ -154,6 +154,23 @@ function isSlotState(value: unknown): value is SlotData["state"] {
   return value === "idle" || value === "betting" || value === "combat" || value === "payout";
 }
 
+// Forward-only state ordering to prevent UI flicker from stale poll/SSE data.
+// For the SAME rumbleId, state can only move forward in this order.
+// A new rumbleId resets the guard (new lifecycle).
+const STATE_ORDER: Record<SlotData["state"], number> = {
+  idle: 0,
+  betting: 1,
+  combat: 2,
+  payout: 3,
+};
+
+function isForwardTransition(
+  prevState: SlotData["state"],
+  nextState: SlotData["state"],
+): boolean {
+  return STATE_ORDER[nextState] >= STATE_ORDER[prevState];
+}
+
 function buildLastCompletedResult(slot: SlotData): LastCompletedSlotResult | null {
   if (!slot.payout) return null;
   const placements = slot.fighters
@@ -543,7 +560,27 @@ export default function RumblePage() {
 
       if (seq !== pollSeqRef.current) return; // stale response, discard
       const data = normalizeStatusPayload(raw);
-      setStatus(data);
+
+      // Forward-only state guard: prevent stale poll snapshots from regressing
+      // a slot's state (e.g., combat → betting) for the same rumble lifecycle.
+      // This eliminates UI flicker caused by interleaved poll/SSE updates.
+      setStatus((prev) => {
+        if (!prev) return data;
+        const guardedSlots = data.slots.map((incoming) => {
+          const existing = prev.slots.find(
+            (s) => s.slotIndex === incoming.slotIndex,
+          );
+          if (!existing) return incoming;
+          // New rumble → allow any state (fresh lifecycle)
+          if (existing.rumbleId !== incoming.rumbleId) return incoming;
+          // Backward transition for same rumble → keep existing state
+          if (!isForwardTransition(existing.state, incoming.state)) {
+            return { ...incoming, state: existing.state };
+          }
+          return incoming;
+        });
+        return { ...data, slots: guardedSlots };
+      });
       setError(null);
 
       // Keep the latest completed payout visible while slots wait for the next fighters.
@@ -929,7 +966,10 @@ export default function RumblePage() {
 
         case "slot_state_change":
           if (isSlotState(event.data?.state)) {
-            slot.state = event.data.state;
+            // Forward-only guard: don't regress state for same rumble
+            if (isForwardTransition(slot.state, event.data.state)) {
+              slot.state = event.data.state;
+            }
           }
           if (event.data?.payout && typeof event.data.payout === "object") {
             slot.payout = event.data.payout;
