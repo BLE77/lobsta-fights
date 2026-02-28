@@ -543,9 +543,11 @@ export async function GET(request: Request) {
           slot.state === "betting"
             ? await getMainnetRumbleState(rumbleIdNum).catch(() => null)
             : await readRumbleAccountState(rumbleIdNum).catch(() => null);
+        let useDevnetSlotContext = slot.state !== "betting"; // non-betting reads already use devnet
         // Fallback: if mainnet read failed during betting, try devnet
         if (!onchain && slot.state === "betting") {
           onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+          useDevnetSlotContext = true;
         }
         if (!onchain) {
           // Keep existing slot data as-is (don't null out deadline)
@@ -579,19 +581,28 @@ export async function GET(request: Request) {
         if (state === "betting") {
           const closeRaw = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
           if (closeRaw > 0n) {
+            const effectiveCurrentSlot = useDevnetSlotContext ? currentClusterSlotBig : currentBettingSlotBig;
             const looksLikeUnix =
-              currentBettingSlotBig !== null
-                ? closeRaw > currentBettingSlotBig + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD
+              effectiveCurrentSlot !== null
+                ? closeRaw > effectiveCurrentSlot + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD
                 : closeRaw > 1_000_000_000n;
             if (looksLikeUnix) {
               const unixMs = Number(closeRaw) * 1_000;
               bettingDeadline = Number.isFinite(unixMs) ? new Date(unixMs).toISOString() : null;
             } else {
-              const etaMs = bettingSlotsToMs(closeRaw);
+              const etaMs = useDevnetSlotContext ? slotsToMs(closeRaw) : bettingSlotsToMs(closeRaw);
               bettingDeadline = etaMs > 0 ? new Date(Date.now() + etaMs).toISOString() : null;
             }
           } else {
             bettingDeadline = null;
+          }
+          // Validate computed deadline: discard if unreasonable
+          if (bettingDeadline) {
+            const deadlineMs = new Date(bettingDeadline).getTime();
+            const nowMs = Date.now();
+            if (!Number.isFinite(deadlineMs) || deadlineMs < nowMs - 60_000 || deadlineMs > nowMs + 10 * 60 * 1000) {
+              bettingDeadline = slot.bettingDeadline ?? null;
+            }
           }
         }
 
@@ -925,9 +936,11 @@ export async function GET(request: Request) {
         // --- Betting state: restore countdown from on-chain close slot ---
         if (slot.state === "betting") {
           let onchain = await getMainnetRumbleState(rumbleIdNum).catch(() => null);
+          let useDevnetSlotContext = false;
           // Fallback: if mainnet failed, try devnet
           if (!onchain) {
             onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+            useDevnetSlotContext = true;
           }
 
           // If neither network has the account, keep existing slot data as-is
@@ -949,16 +962,25 @@ export async function GET(request: Request) {
               // On-chain betting but deadline not armed yet.
               return { ...slot, bettingDeadline: null };
             }
+            const effectiveCurrentSlot = useDevnetSlotContext ? currentClusterSlotBig : currentBettingSlotBig;
             const looksLikeUnix =
-              currentBettingSlotBig !== null
-                ? closeRaw > currentBettingSlotBig + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD
+              effectiveCurrentSlot !== null
+                ? closeRaw > effectiveCurrentSlot + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD
                 : closeRaw > 1_000_000_000n;
-            const etaMs = bettingSlotsToMs(closeRaw);
-            const bettingDeadline = looksLikeUnix
+            const etaMs = useDevnetSlotContext ? slotsToMs(closeRaw) : bettingSlotsToMs(closeRaw);
+            let bettingDeadline: string | null = looksLikeUnix
               ? new Date(Number(closeRaw) * 1_000).toISOString()
               : etaMs > 0
                 ? new Date(Date.now() + etaMs).toISOString()
                 : null;
+            // Validate computed deadline: discard if unreasonable
+            if (bettingDeadline) {
+              const deadlineMs = new Date(bettingDeadline).getTime();
+              const nowMs = Date.now();
+              if (!Number.isFinite(deadlineMs) || deadlineMs < nowMs - 60_000 || deadlineMs > nowMs + 10 * 60 * 1000) {
+                bettingDeadline = slot.bettingDeadline ?? null;
+              }
+            }
             return { ...slot, bettingDeadline };
           }
         }
