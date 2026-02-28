@@ -1585,14 +1585,15 @@ export class RumbleOrchestrator {
       slot.fighters,
       targetBettingDeadlineUnix,
     );
-    const mainnetReady = createdOrExists
-      ? await this.ensureMainnetRumbleExists(
-          rumbleId,
-          slot.fighters,
-          targetBettingDeadlineUnix,
-        )
-      : false;
-    if (createdOrExists && mainnetReady) {
+    // Mainnet is best-effort — don't block devnet fights if mainnet wallet is broke
+    if (createdOrExists) {
+      this.ensureMainnetRumbleExists(
+        rumbleId,
+        slot.fighters,
+        targetBettingDeadlineUnix,
+      ).catch((err) => console.warn(`[OnChain:Mainnet] ensureMainnetRumbleExists non-blocking error:`, err));
+    }
+    if (createdOrExists) {
       this.onchainRumbleCreateRetryAt.delete(rumbleId);
       this.onchainRumbleCreateStartedAt.delete(rumbleId);
       this.clearOnchainCreateFailure(rumbleId);
@@ -1620,17 +1621,16 @@ export class RumbleOrchestrator {
       slot.fighters,
       targetBettingDeadlineUnix,
     );
-    const mainnetReady = exists
-      ? await this.ensureMainnetRumbleExists(
-          slot.id,
-          slot.fighters,
-          targetBettingDeadlineUnix,
-        )
-      : false;
-    if (exists && mainnetReady) {
+    // Mainnet is best-effort — don't block devnet fights if mainnet wallet is broke
+    if (exists) {
+      this.ensureMainnetRumbleExists(
+        slot.id,
+        slot.fighters,
+        targetBettingDeadlineUnix,
+      ).catch((err) => console.warn(`[OnChain:Mainnet] ensureMainnetRumbleExists non-blocking error:`, err));
       await this.armBettingWindowIfReady(slot);
     }
-    return exists && mainnetReady;
+    return exists;
   }
 
   private async armBettingWindowIfReady(slot: RumbleSlot): Promise<void> {
