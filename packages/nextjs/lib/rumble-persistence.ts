@@ -404,6 +404,32 @@ export interface PendingSettlementRumble {
  * Load recent completed rumbles so we can reconcile on-chain report_result
  * if a previous on-chain settlement step failed.
  */
+/**
+ * Load a single rumble record by its ID.
+ * Returns null if not found.
+ */
+export async function loadRumbleById(
+  rumbleId: string,
+): Promise<{ id: string; status: string; winner_id: string | null } | null> {
+  try {
+    const sb = freshServiceClient();
+    const { data, error } = await sb
+      .from("ucf_rumbles")
+      .select("id, status, winner_id")
+      .eq("id", rumbleId)
+      .single();
+    if (error || !data) return null;
+    return {
+      id: String((data as any).id ?? ""),
+      status: String((data as any).status ?? ""),
+      winner_id: typeof (data as any).winner_id === "string" ? String((data as any).winner_id) : null,
+    };
+  } catch (err) {
+    logError("loadRumbleById failed", err);
+    return null;
+  }
+}
+
 export async function loadRecentCompletedRumblesForOnchainReconcile(
   limit: number = 20,
 ): Promise<CompletedRumbleForOnchainReconcile[]> {
@@ -1139,6 +1165,8 @@ export type TxStep =
   | "completeRumble"
   | "completeRumble_mainnet"
   | "sweepTreasury"
+  | "sweepTreasury_mainnet"
+  | "sweepTreasury_devnet"
   | "postTurnResult"
   | `ichor-fighter-${string}`
   | `ichor-bettor-${string}`;

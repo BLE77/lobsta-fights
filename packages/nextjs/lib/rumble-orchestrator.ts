@@ -93,6 +93,9 @@ import {
   createRumbleMainnet,
   reportResultMainnet,
   completeRumbleMainnet,
+  sweepTreasuryMainnet,
+  sweepTreasury as sweepTreasuryDevnet,
+  RUMBLE_ENGINE_ID_MAINNET,
   delegateCombatToEr,
   commitCombatFromEr,
   undelegateCombatFromEr,
@@ -101,7 +104,7 @@ import {
 } from "./solana-programs";
 import { Keypair, PublicKey, Transaction, Connection } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
-import { getConnection, getErConnection } from "./solana-connection";
+import { getConnection, getErConnection, getBettingConnection } from "./solana-connection";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -407,6 +410,16 @@ interface PendingFinalization {
   completeDone: boolean;
 }
 
+interface PendingSweep {
+  rumbleId: string;
+  rumbleIdNum: number;
+  /** Earliest wall-clock time we should attempt the sweep. */
+  sweepAfter: number;
+  attempts: number;
+  /** True when no bettor placed a bet on the winning fighter. */
+  noWinnerBets: boolean;
+}
+
 function formatError(err: unknown): string {
   if (err instanceof Error) return `${err.name}: ${err.message}`;
   try {
@@ -607,6 +620,7 @@ export class RumbleOrchestrator {
   private settledRumbleIds: Map<string, number> = new Map(); // rumbleId → timestamp
   private settlingRumbleIds: Set<string> = new Set(); // rumble IDs currently attempting on-chain settlement
   private pendingFinalizations: Map<string, PendingFinalization> = new Map();
+  private pendingSweeps: Map<string, PendingSweep> = new Map();
   private onchainRumbleCreateRetryAt: Map<string, number> = new Map();
   private onchainRumbleCreateStartedAt: Map<string, number> = new Map();
   private onchainRumbleCreateLastError: Map<string, OnchainCreateFailure> = new Map();
@@ -885,6 +899,7 @@ export class RumbleOrchestrator {
     await Promise.all(slotPromises);
 
     await this.processPendingRumbleFinalizations();
+    await this.processPendingSweeps();
     this.pollPendingIchorShower();
   }
 
@@ -958,6 +973,7 @@ export class RumbleOrchestrator {
     this.trimMap(this.settledRumbleIds);
     this.trimSet(this.settlingRumbleIds);
     this.trimMap(this.pendingFinalizations);
+    this.trimMap(this.pendingSweeps);
     this.trimMap(this.onchainRumbleCreateRetryAt);
     this.trimMap(this.onchainRumbleCreateStartedAt);
     this.trimMap(this.onchainRumbleCreateLastError);
@@ -1286,13 +1302,7 @@ export class RumbleOrchestrator {
       }
     }
 
-    // 2) sweepTreasury — DISABLED
-    // Vault SOL must remain available for winners to claim at any time.
-    // Auto-sweeping drained the vault before bettors could claim, causing
-    // InsufficientVaultFunds errors.  Treasury cut is effectively collected
-    // when there are no more claimants (admin can sweep manually if needed).
-
-    // 2b) Complete rumble on mainnet (fire-and-forget — don't block devnet finalization)
+    // 2) Complete rumble on mainnet (fire-and-forget — don't block devnet finalization)
     completeRumbleMainnet(entry.rumbleIdNum)
       .then((mainnetSig) => {
         if (mainnetSig) {
@@ -1303,6 +1313,12 @@ export class RumbleOrchestrator {
       .catch((err) => {
         console.warn(`[OnChain:Mainnet] completeRumble error (non-blocking):`, err);
       });
+
+    // 2b) Check if anyone bet on the winner — if not, queue immediate sweep.
+    //     If there ARE winner bets, queue a delayed sweep (24h claim window).
+    this.checkAndEnqueueSweep(entry.rumbleId, entry.rumbleIdNum).catch((err) => {
+      console.warn(`[Sweep] Failed to check/enqueue sweep for ${entry.rumbleId}:`, formatError(err));
+    });
 
     // 3) Reclaim rent from MoveCommitment PDAs (~1.46 SOL per rumble, fire-and-forget)
     try {
@@ -1327,7 +1343,140 @@ export class RumbleOrchestrator {
     }
 
     this.pendingFinalizations.delete(entry.rumbleId);
-    console.log(`[OnChain] finalization complete for ${entry.rumbleId} (sweep disabled — vault stays for claims)`);
+    console.log(`[OnChain] finalization complete for ${entry.rumbleId}`);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Vault Sweep — auto-sweep when no bettors can claim
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Read the mainnet on-chain state to determine if anyone bet on the winner.
+   * If bettingPools[winnerIndex] == 0, nobody can call claim_payout, so the
+   * vault is safe to sweep immediately (once the 24h on-chain window passes).
+   * Confirms via BOTH on-chain state and the DB to be doubly sure.
+   */
+  private async checkAndEnqueueSweep(rumbleId: string, rumbleIdNum: number): Promise<void> {
+    // Read mainnet on-chain state (where the real SOL lives)
+    let noWinnerBets = false;
+    try {
+      const bettingConn = getBettingConnection();
+      const mainnetState = await readRumbleAccountState(
+        rumbleIdNum,
+        bettingConn,
+        RUMBLE_ENGINE_ID_MAINNET,
+      ).catch(() => null);
+
+      if (mainnetState && mainnetState.winnerIndex !== null && mainnetState.winnerIndex !== undefined) {
+        const winnerPool = mainnetState.bettingPools[mainnetState.winnerIndex] ?? 0n;
+        const totalDeployed = mainnetState.totalDeployedLamports ?? 0n;
+
+        if (totalDeployed > 0n && winnerPool === 0n) {
+          // Double-confirm via DB: check if any bets exist for the winner
+          const dbBets = await persist.loadBetsForRumble(rumbleId).catch(() => []);
+          // Find the winner fighter ID from DB
+          const rumbleRecord = await persist.loadRumbleById(rumbleId).catch(() => null);
+          const winnerId = (rumbleRecord as any)?.winner_id ?? null;
+
+          let dbWinnerBets = 0;
+          if (winnerId && dbBets.length > 0) {
+            dbWinnerBets = dbBets.filter(
+              (b: any) => String(b.fighter_id) === String(winnerId),
+            ).length;
+          }
+
+          if (dbWinnerBets === 0) {
+            noWinnerBets = true;
+            console.log(
+              `[Sweep] Rumble ${rumbleId}: NO bets on winner (winnerIdx=${mainnetState.winnerIndex}, ` +
+              `winnerPool=0, totalDeployed=${totalDeployed}, dbWinnerBets=0). ` +
+              `Queuing auto-sweep.`,
+            );
+          } else {
+            console.log(
+              `[Sweep] Rumble ${rumbleId}: on-chain winnerPool=0 but DB shows ${dbWinnerBets} winner bets — skipping auto-sweep (mismatch)`,
+            );
+          }
+        } else if (totalDeployed === 0n) {
+          console.log(`[Sweep] Rumble ${rumbleId}: no bets placed at all, nothing to sweep`);
+          return;
+        } else {
+          console.log(
+            `[Sweep] Rumble ${rumbleId}: winner has bets (pool=${winnerPool}). Queuing delayed sweep after claim window.`,
+          );
+        }
+      } else {
+        console.log(`[Sweep] Rumble ${rumbleId}: could not read mainnet state or no winner — queuing delayed sweep`);
+      }
+    } catch (err) {
+      console.warn(`[Sweep] Failed to read mainnet state for ${rumbleId}:`, formatError(err));
+    }
+
+    // For no-winner-bets: try sweeping after a short delay (the on-chain 24h window
+    // still applies, but we retry periodically). For normal cases: sweep after 24h+.
+    const SWEEP_NO_WINNERS_DELAY_MS = 60_000; // retry every 60s for no-winner case
+    const SWEEP_NORMAL_DELAY_MS = 24 * 60 * 60 * 1_000 + 120_000; // 24h + 2min buffer
+
+    this.pendingSweeps.set(rumbleId, {
+      rumbleId,
+      rumbleIdNum,
+      sweepAfter: Date.now() + (noWinnerBets ? SWEEP_NO_WINNERS_DELAY_MS : SWEEP_NORMAL_DELAY_MS),
+      attempts: 0,
+      noWinnerBets,
+    });
+  }
+
+  private async processPendingSweeps(): Promise<void> {
+    if (this.pendingSweeps.size === 0) return;
+    const now = Date.now();
+    const due = [...this.pendingSweeps.values()].filter((s) => s.sweepAfter <= now);
+    if (due.length === 0) return;
+
+    for (const sweep of due) {
+      sweep.attempts += 1;
+      const MAX_SWEEP_ATTEMPTS = 10;
+
+      try {
+        // Try mainnet sweep first (where real SOL is)
+        const mainnetSig = await sweepTreasuryMainnet(sweep.rumbleIdNum);
+        if (mainnetSig) {
+          console.log(
+            `[Sweep] Mainnet vault swept for ${sweep.rumbleId}: ${mainnetSig}` +
+            (sweep.noWinnerBets ? " (no winner bets — auto-sweep)" : ""),
+          );
+          persist.updateRumbleTxSignature(sweep.rumbleId, "sweepTreasury_mainnet", mainnetSig);
+        }
+
+        // Also sweep devnet vault
+        sweepTreasuryDevnet(sweep.rumbleIdNum)
+          .then((devnetSig) => {
+            if (devnetSig) {
+              console.log(`[Sweep] Devnet vault swept for ${sweep.rumbleId}: ${devnetSig}`);
+              persist.updateRumbleTxSignature(sweep.rumbleId, "sweepTreasury_devnet", devnetSig);
+            }
+          })
+          .catch(() => {}); // devnet sweep is best-effort
+
+        this.pendingSweeps.delete(sweep.rumbleId);
+      } catch (err) {
+        const msg = formatError(err);
+        if (msg.includes("ClaimWindowActive")) {
+          // On-chain 24h window hasn't passed yet — retry later
+          const retryMs = sweep.noWinnerBets ? 5 * 60_000 : 30 * 60_000;
+          sweep.sweepAfter = now + retryMs;
+          console.log(
+            `[Sweep] ClaimWindowActive for ${sweep.rumbleId}, retrying in ${retryMs / 60_000}min` +
+            (sweep.noWinnerBets ? " (no winner bets)" : ""),
+          );
+        } else if (sweep.attempts >= MAX_SWEEP_ATTEMPTS) {
+          console.error(`[Sweep] Giving up on ${sweep.rumbleId} after ${MAX_SWEEP_ATTEMPTS} attempts: ${msg}`);
+          this.pendingSweeps.delete(sweep.rumbleId);
+        } else {
+          sweep.sweepAfter = now + 60_000;
+          console.warn(`[Sweep] Retry ${sweep.attempts}/${MAX_SWEEP_ATTEMPTS} for ${sweep.rumbleId}: ${msg}`);
+        }
+      }
+    }
   }
 
   private pollPendingIchorShower(): void {
