@@ -32,6 +32,9 @@ export default function IchorShowerPool({
         <p className="font-mono text-[10px] text-stone-600">
           When it triggers, one lucky winner takes it all
         </p>
+        <p className="font-mono text-[10px] text-amber-700 mt-2">
+          ICHOR Shower runs on Devnet
+        </p>
       </div>
     </div>
   );

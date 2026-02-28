@@ -2,11 +2,13 @@
 
 import { Toaster } from "react-hot-toast";
 import WalletProvider from "~~/app/providers/WalletProvider";
+import BottomNav from "./BottomNav";
 
 export function ScaffoldEthApp({ children }: { children: React.ReactNode }) {
   return (
     <WalletProvider>
       {children}
+      <BottomNav />
       <Toaster
         position="bottom-right"
         toastOptions={{

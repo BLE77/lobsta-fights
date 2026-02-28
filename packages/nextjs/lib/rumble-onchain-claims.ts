@@ -488,7 +488,9 @@ export async function discoverOnchainWalletPayoutSnapshot(
     const estimatedPayoutLamports = onchainClaimableLamports > 0n
       ? onchainClaimableLamports
       : winnerDeploymentLamports;
-    if (vaultBalance < Number(estimatedPayoutLamports) + 900_000) continue;
+    // Vault PDAs are ephemeral and can be fully drained (no rent reserve needed).
+    // Only skip if vault literally can't cover the estimated payout.
+    if (vaultBalance < Number(estimatedPayoutLamports)) continue;
 
     const onchainClaimableSol = Number(onchainClaimableLamports) / LAMPORTS_PER_SOL;
 

@@ -271,7 +271,7 @@ export default function BetTransaction({
 
       {/* Quick amounts */}
       <div className="flex gap-1">
-        {[0.01, 0.025, 0.05, 0.1].map((amt) => (
+        {[0.02, 0.05, 0.075, 0.1].map((amt) => (
           <button
             key={amt}
             onClick={() => setSolAmount(String(amt))}

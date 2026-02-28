@@ -521,7 +521,7 @@ export default function RumblePage() {
             phaseStart: Date.now() - 10000,
             phaseEnd: Date.now() + 600000,
             minFighters: 8,
-            minBet: 0.01,
+            minBet: 0.02,
             poolSize: 15.4,
             fighters: [
               { fighterId: "f1", fighterName: "ClawdBot", hp: 100, maxHp: 100, solDeployed: 5.2, betCount: 14, impliedProbability: 0.33, potentialReturn: 3.0, imageUrl: "https://teal-distinct-tarantula-166.mypinata.cloud/ipfs/bafybeicgclzndr3wwk4d4qpxe5edv67j6shm4zffp7v6ps2bhmstex64ka" },
@@ -1224,7 +1224,7 @@ export default function RumblePage() {
     }
     for (const bet of bets) {
       if (!Number.isFinite(bet.amount) || bet.amount <= 0 || bet.amount > 10) {
-        setBetError("Each bet must be between 0.01 and 10 SOL");
+        setBetError("Each bet must be between 0.02 and 10 SOL");
         setTimeout(() => setBetError(null), 5000);
         throw new Error("Invalid amount");
       }
@@ -1586,7 +1586,10 @@ export default function RumblePage() {
                   </div>
 
                   {betError && (
-                    <div className="fixed bottom-4 right-4 z-50 bg-red-900/90 border border-red-600 text-red-300 font-mono text-xs px-4 py-2 rounded-sm shadow-lg animate-fade-in-up">
+                    <div
+                      onClick={() => setBetError(null)}
+                      className="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-red-900/90 border border-red-600 text-red-300 font-mono text-xs px-4 py-2 rounded-sm shadow-lg animate-fade-in-up cursor-pointer hover:bg-red-800/90 transition-colors"
+                    >
                       {betError}
                     </div>
                   )}

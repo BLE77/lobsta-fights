@@ -3858,10 +3858,11 @@ export class RumbleOrchestrator {
 
       // Post result to mainnet so bettors can claim real SOL payouts.
       // Fire-and-forget — mainnet failure must NOT block devnet settlement.
-      const placementsArray = new Array(16).fill(0);
+      const fighterCount = fighterOrder.length;
+      const placementsArray = new Array(fighterCount).fill(0);
       for (const p of placements) {
         const idx = fighterOrder.indexOf(p.id);
-        if (idx >= 0 && idx < 16) placementsArray[idx] = p.placement;
+        if (idx >= 0 && idx < fighterCount) placementsArray[idx] = p.placement;
       }
       const winnerIdx = fighterOrder.indexOf(winnerId);
       if (winnerIdx >= 0) {

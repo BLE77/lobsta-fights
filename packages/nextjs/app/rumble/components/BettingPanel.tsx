@@ -77,7 +77,7 @@ export default function BettingPanel({
         next.delete(fighterId);
         return next;
       }
-      next.set(fighterId, prev.get(fighterId) ?? "0.01");
+      next.set(fighterId, prev.get(fighterId) ?? "0.02");
       return next;
     });
   };
@@ -329,7 +329,7 @@ export default function BettingPanel({
                 <div className="flex flex-col gap-1 p-2 bg-stone-900/80 border-x border-b border-amber-500/50 rounded-b-sm shadow-inner shadow-black/50">
                   {/* Quick amount buttons */}
                   <div className="grid grid-cols-4 gap-1">
-                    {[0.01, 0.025, 0.05, 0.1].map((amt) => (
+                    {[0.02, 0.05, 0.075, 0.1].map((amt) => (
                       <button
                         key={amt}
                         onClick={() => updateAmount(f.fighterId, String(amt))}
@@ -349,7 +349,7 @@ export default function BettingPanel({
                       value={bets.get(f.fighterId) ?? ""}
                       onChange={(e) => updateAmount(f.fighterId, e.target.value)}
                       placeholder="SOL..."
-                      min="0.01"
+                      min="0.02"
                       step="0.01"
                       className="flex-1 min-w-0 bg-stone-950 border border-stone-800 rounded-sm px-2 py-1 text-stone-200 font-mono text-xs focus:outline-none focus:border-amber-600 transition-colors"
                     />
