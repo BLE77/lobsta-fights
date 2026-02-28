@@ -275,45 +275,39 @@ async function batchReadRumbleStates(
         }
 
         const data = info.data;
-        let offset = 8; // discriminator
-        offset += 8; // id (u64)
-        const stateVal = data[offset]; // state (u8)
-        offset += 1;
-
+        // Rumble account layout (must match on-chain struct exactly):
+        // discriminator(8) + id(8) + state(1) + fighters(32*16=512) +
+        // fighter_count(1) + betting_pools(8*16=128) + total_deployed(8) +
+        // admin_fee_collected(8) + sponsorship_paid(8) + placements(16) +
+        // winner_index(1) + betting_deadline(8) + combat_started_at(8) +
+        // completed_at(8) + bump(1) = 724
+        const stateVal = data[16]; // state (u8)
         const state = STATE_NAMES[stateVal] ?? "betting";
 
-        // Read fighter_count, betting_deadline, then placements (16 bytes), winner_index
-        const fighterCount = data[offset]; // fighter_count (u8)
-        offset += 1;
-        offset += 8; // betting_deadline (i64)
-        offset += 8; // completed_at (i64)
-        offset += 16; // placements ([u8; 16])
-        const winnerIndex = data[offset]; // winner_index (u8)
-        offset += 1;
-        offset += 1; // bump (u8)
-        offset += 32; // admin (Pubkey)
+        const fightersOffset = 8 + 8 + 1; // 17
+        const fighterCountOffset = fightersOffset + 32 * 16; // 529
+        const fighterCount = data[fighterCountOffset];
+        const bettingPoolsOffset = fighterCountOffset + 1; // 530
+        const totalDeployedOffset = bettingPoolsOffset + 8 * 16; // 658
+        const adminFeeCollectedOffset = totalDeployedOffset + 8; // 666
+        const sponsorshipPaidOffset = adminFeeCollectedOffset + 8; // 674
+        const placementsOffset = sponsorshipPaidOffset + 8; // 682
+        const winnerIndexOffset = placementsOffset + 16; // 698
 
-        // Read total_deployed (u64)
-        const totalDeployedLamports = readU64LE(data, offset);
-        offset += 8;
+        const winnerIndex = data[winnerIndexOffset];
 
-        // Read admin_fee_collected (u64)
-        const adminFeeCollectedLamports = readU64LE(data, offset);
-        offset += 8;
-
-        // Read sponsorship_paid (u64) — may not exist in older layouts
-        let sponsorshipPaidLamports = 0n;
-        if (data.length >= offset + 8) {
-          sponsorshipPaidLamports = readU64LE(data, offset);
-          offset += 8;
-        }
+        const totalDeployedLamports = data.length >= totalDeployedOffset + 8
+          ? readU64LE(data, totalDeployedOffset) : 0n;
+        const adminFeeCollectedLamports = data.length >= adminFeeCollectedOffset + 8
+          ? readU64LE(data, adminFeeCollectedOffset) : 0n;
+        const sponsorshipPaidLamports = data.length >= sponsorshipPaidOffset + 8
+          ? readU64LE(data, sponsorshipPaidOffset) : 0n;
 
         // Read betting pools (16 x u64)
         const bettingPools: bigint[] = [];
-        if (data.length >= offset + 8 * 16) {
+        if (data.length >= bettingPoolsOffset + 8 * 16) {
           for (let k = 0; k < 16; k++) {
-            bettingPools.push(readU64LE(data, offset));
-            offset += 8;
+            bettingPools.push(readU64LE(data, bettingPoolsOffset + k * 8));
           }
         }
 

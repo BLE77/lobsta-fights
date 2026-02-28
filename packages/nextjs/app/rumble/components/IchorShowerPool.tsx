@@ -33,7 +33,9 @@ export default function IchorShowerPool({
           When it triggers, one lucky winner takes it all
         </p>
         <p className="font-mono text-[10px] text-amber-700 mt-2">
-          ICHOR Shower runs on Devnet
+          All $ICHOR functions are on Devnet.
+          <br />
+          Only SOL betting is live on Mainnet.
         </p>
       </div>
     </div>

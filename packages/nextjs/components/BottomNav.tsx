@@ -11,13 +11,13 @@ export default function BottomNav() {
 
     return (
         <div
-            className={`fixed left-0 w-full z-50 flex justify-center pointer-events-none ${isRumblePage ? "bottom-0 items-end pb-4" : "top-0 items-start pt-2"
+            className={`fixed left-0 w-full z-50 flex pointer-events-none ${isRumblePage ? "top-0 justify-end items-start pt-2 pr-4" : "top-0 justify-center items-start pt-2"
                 }`}
         >
             {/* Toggle button - always visible */}
             <button
                 onClick={() => setOpen(!open)}
-                className={`pointer-events-auto absolute left-1/2 -translate-x-1/2 bg-stone-900/80 backdrop-blur-xl border border-stone-700/50 rounded-full w-8 h-8 flex items-center justify-center shadow-lg hover:bg-stone-800/80 transition-all z-10 cursor-pointer ${isRumblePage ? "bottom-4" : "top-2"
+                className={`pointer-events-auto absolute bg-stone-900/80 backdrop-blur-xl border border-stone-700/50 rounded-full w-8 h-8 flex items-center justify-center shadow-lg hover:bg-stone-800/80 transition-all z-10 cursor-pointer ${isRumblePage ? "top-2 right-4" : "top-2 left-1/2 -translate-x-1/2"
                     }`}
                 style={{ display: open ? 'none' : 'flex' }}
             >
@@ -25,8 +25,8 @@ export default function BottomNav() {
             </button>
 
             <div
-                onClick={() => setOpen(false)}
-                className={`pointer-events-auto bg-stone-900/60 backdrop-blur-xl border border-stone-700/50 rounded-2xl px-3 py-2 shadow-[0_10px_40px_rgba(0,0,0,0.8)] flex items-center gap-1 overflow-x-auto max-w-[92vw] touch-pan-x hide-scrollbar transition-transform duration-500 ease-out ${open ? "translate-y-0" : isRumblePage ? "translate-y-28" : "-translate-y-24"
+                onMouseLeave={() => setOpen(false)}
+                className={`pointer-events-auto bg-stone-900/60 backdrop-blur-xl border border-stone-700/50 rounded-2xl px-3 py-2 shadow-[0_10px_40px_rgba(0,0,0,0.8)] flex items-center gap-1 overflow-x-auto max-w-[92vw] touch-pan-x hide-scrollbar transition-transform duration-500 ease-out ${open ? "translate-y-0" : "-translate-y-24"
                     }`}>
 
                 {/* Home */}
