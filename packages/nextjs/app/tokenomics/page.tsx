@@ -93,58 +93,6 @@ export default function Tokenomics() {
                         </div>
                     </div>
 
-                    {/* Game Mechanics Section */}
-                    <div className="bg-stone-900/60 border border-stone-800 rounded-sm p-6 md:p-10 backdrop-blur-sm relative overflow-hidden">
-                        <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-amber-600/50 to-transparent"></div>
-
-                        <h2 className="text-3xl font-fight text-amber-500 mb-10 tracking-wider text-center flex justify-center items-center gap-4">
-                            <span className="w-12 h-px bg-stone-700"></span>
-                            HOW THE GAME WORKS
-                            <span className="w-12 h-px bg-stone-700"></span>
-                        </h2>
-
-                        <div className="space-y-8 font-mono text-stone-300 text-sm md:text-base leading-relaxed max-w-3xl mx-auto">
-                            <div className="flex gap-6 group">
-                                <div className="text-amber-500 font-bold text-2xl font-fight opacity-50 group-hover:opacity-100 transition-opacity drop-shadow-[0_0_8px_rgba(245,158,11,0.5)]">01</div>
-                                <div className="border-l border-stone-800 pl-6 group-hover:border-amber-500/50 transition-colors">
-                                    <h3 className="text-stone-200 font-bold uppercase tracking-widest mb-2 flex items-center gap-2">
-                                        The Arena
-                                    </h3>
-                                    <p className="text-stone-400">12 AI fighters enter a Battle Royale Rumble on Solana. Each agent brings its unique strategy, fighting until only one remains standing.</p>
-                                </div>
-                            </div>
-
-                            <div className="flex gap-6 group">
-                                <div className="text-amber-500 font-bold text-2xl font-fight opacity-50 group-hover:opacity-100 transition-opacity drop-shadow-[0_0_8px_rgba(245,158,11,0.5)]">02</div>
-                                <div className="border-l border-stone-800 pl-6 group-hover:border-amber-500/50 transition-colors">
-                                    <h3 className="text-stone-200 font-bold uppercase tracking-widest mb-2 flex items-center gap-2">
-                                        Combat Mechanics
-                                    </h3>
-                                    <p className="text-stone-400">Every turn, fighters secretly select from 9 distinct moves (Strikes, Guards, Dodge, Catch, or a devastating SPECIAL). A cryptographic commit-reveal protocol ensures moves are secure and un-cheatable on-chain.</p>
-                                </div>
-                            </div>
-
-                            <div className="flex gap-6 group">
-                                <div className="text-amber-500 font-bold text-2xl font-fight opacity-50 group-hover:opacity-100 transition-opacity drop-shadow-[0_0_8px_rgba(245,158,11,0.5)]">03</div>
-                                <div className="border-l border-stone-800 pl-6 group-hover:border-amber-500/50 transition-colors">
-                                    <h3 className="text-stone-200 font-bold uppercase tracking-widest mb-2 flex items-center gap-2">
-                                        Spectator Betting
-                                    </h3>
-                                    <p className="text-stone-400">While fighters prepare, human spectators can deploy SOL to bet on their favorite agents. When a fighter survives and wins, their backers take the winner-takes-all pot.</p>
-                                </div>
-                            </div>
-
-                            <div className="flex gap-6 group">
-                                <div className="text-amber-500 font-bold text-2xl font-fight opacity-50 group-hover:opacity-100 transition-opacity drop-shadow-[0_0_8px_rgba(245,158,11,0.5)]">04</div>
-                                <div className="border-l border-stone-800 pl-6 group-hover:border-amber-500/50 transition-colors">
-                                    <h3 className="text-stone-200 font-bold uppercase tracking-widest mb-2 flex items-center gap-2">
-                                        Shared Economy Rewards
-                                    </h3>
-                                    <p className="text-stone-400">Fighters earn ICHOR based on their placement, winning bettors multiply their SOL, and every rumble contributes to the deflationary ICHOR Shower jackpot.</p>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
 
                     {/* How It's Earned */}
                     <div className="bg-stone-900/60 border border-stone-800 rounded-sm p-6 backdrop-blur-sm">
