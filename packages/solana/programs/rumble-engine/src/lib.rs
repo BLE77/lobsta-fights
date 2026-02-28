@@ -2328,7 +2328,6 @@ pub struct CombatAction<'info> {
     pub keeper: Signer<'info>,
 
     #[account(
-        mut,
         seeds = [RUMBLE_SEED, rumble.id.to_le_bytes().as_ref()],
         bump = rumble.bump,
     )]
@@ -2359,7 +2358,6 @@ pub struct AdminCombatAction<'info> {
     pub config: Account<'info, RumbleConfig>,
 
     #[account(
-        mut,
         seeds = [RUMBLE_SEED, rumble.id.to_le_bytes().as_ref()],
         bump = rumble.bump,
     )]

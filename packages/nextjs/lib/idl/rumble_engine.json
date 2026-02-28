@@ -196,7 +196,6 @@
         },
         {
           "name": "rumble",
-          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -1466,7 +1465,6 @@
         },
         {
           "name": "rumble",
-          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -1750,7 +1748,6 @@
         },
         {
           "name": "rumble",
-          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -2057,7 +2054,6 @@
         },
         {
           "name": "rumble",
-          "writable": true,
           "pda": {
             "seeds": [
               {

@@ -2730,23 +2730,24 @@ export class RumbleOrchestrator {
     // --- Turn is resolved: finalize or advance ---
 
     if (combat.remainingFighters <= 1) {
+      // Undelegate combat state FIRST so both rumble + combat_state are writable on L1
+      if (this.erEnabled) {
+        try {
+          const undelegateSig = await undelegateCombatFromEr(rumbleIdNum);
+          if (undelegateSig) {
+            console.log(`[ER] undelegateCombat succeeded for rumble ${rumbleIdNum}: ${undelegateSig}`);
+          }
+        } catch (err) {
+          console.warn(`[ER] undelegateCombat failed for rumble ${rumbleIdNum}:`, err);
+        }
+      }
+
+      // Finalize on L1 (rumble PDA is never delegated, needs mut access)
       try {
-        const sig = await finalizeRumbleOnChainTx(rumbleIdNum, this.getCombatConnection());
+        const sig = await finalizeRumbleOnChainTx(rumbleIdNum, getConnection());
         if (sig) {
           console.log(`[OnChain] finalizeRumble succeeded: ${sig}`);
           await persist.updateRumbleTxSignature(slot.id, "reportResult", sig);
-
-          // Undelegate combat state back to L1
-          if (this.erEnabled) {
-            try {
-              const undelegateSig = await undelegateCombatFromEr(rumbleIdNum);
-              if (undelegateSig) {
-                console.log(`[ER] undelegateCombat succeeded for rumble ${rumbleIdNum}: ${undelegateSig}`);
-              }
-            } catch (err) {
-              console.warn(`[ER] undelegateCombat failed for rumble ${rumbleIdNum}:`, err);
-            }
-          }
         }
       } catch (err) {
         console.warn(`[OnChain] finalizeRumble failed for ${slot.id}: ${formatError(err)}`);
@@ -4111,22 +4112,23 @@ export class RumbleOrchestrator {
       }
 
       if (onchainState.state === "combat") {
-        const finalizeSig = await finalizeRumbleOnChainTx(rumbleIdNum, this.getCombatConnection()).catch(() => null);
+        // Undelegate combat state FIRST so both rumble + combat_state are writable on L1
+        if (this.erEnabled) {
+          try {
+            const undelegateSig = await undelegateCombatFromEr(rumbleIdNum);
+            if (undelegateSig) {
+              console.log(`[ER] undelegateCombat succeeded for rumble ${rumbleIdNum}: ${undelegateSig}`);
+            }
+          } catch (err) {
+            console.warn(`[ER] undelegateCombat failed for rumble ${rumbleIdNum}:`, err);
+          }
+        }
+
+        // Finalize on L1 (rumble PDA is never delegated, needs mut access)
+        const finalizeSig = await finalizeRumbleOnChainTx(rumbleIdNum, getConnection()).catch(() => null);
         if (finalizeSig) {
           console.log(`[OnChain] finalizeRumble succeeded: ${finalizeSig}`);
           persist.updateRumbleTxSignature(rumbleId, "reportResult", finalizeSig);
-
-          // Undelegate combat state back to L1
-          if (this.erEnabled) {
-            try {
-              const undelegateSig = await undelegateCombatFromEr(rumbleIdNum);
-              if (undelegateSig) {
-                console.log(`[ER] undelegateCombat succeeded for rumble ${rumbleIdNum}: ${undelegateSig}`);
-              }
-            } catch (err) {
-              console.warn(`[ER] undelegateCombat failed for rumble ${rumbleIdNum}:`, err);
-            }
-          }
         }
         onchainState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
       }
