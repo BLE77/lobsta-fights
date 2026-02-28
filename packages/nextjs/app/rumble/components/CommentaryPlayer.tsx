@@ -486,7 +486,7 @@ class RadioMixer {
         if (res.status === 503) {
           const payload = await res.json().catch(() => null);
           const code = typeof payload?.code === "string" ? payload.code : "";
-          if (code === "COMMENTARY_NOT_CONFIGURED") {
+          if (code === "COMMENTARY_NOT_CONFIGURED" || code === "COMMENTARY_QUOTA_EXCEEDED") {
             this.voiceQueue = [];
             this.processingVoice = false;
             this.voicePlaying = false;

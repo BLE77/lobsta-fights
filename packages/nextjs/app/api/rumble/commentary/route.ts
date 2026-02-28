@@ -38,6 +38,7 @@ const ELEVENLABS_MODEL = "eleven_flash_v2_5";
 const ELEVENLABS_FALLBACK_VOICE = "21m00Tcm4TlvDq8ikWAM"; // public default voice
 const COMMENTARY_CLIP_TTL_MS = 5 * 60 * 1000;
 const COMMENTARY_CLIP_CACHE_MAX = 400;
+const COMMENTARY_PROVIDER_COOLDOWN_MS = 10 * 60 * 1000;
 
 interface CommentaryClip {
   commentary: string;
@@ -51,6 +52,7 @@ type CommentaryInflightMap = Map<string, Promise<CommentaryClip>>;
 const g = globalThis as unknown as {
   __rumbleCommentaryClipCache?: CommentaryClipCache;
   __rumbleCommentaryInflight?: CommentaryInflightMap;
+  __rumbleCommentaryProviderBlockedUntil?: number;
 };
 
 function getClipCache(): CommentaryClipCache {
@@ -65,6 +67,16 @@ function getInflightMap(): CommentaryInflightMap {
     g.__rumbleCommentaryInflight = new Map();
   }
   return g.__rumbleCommentaryInflight;
+}
+
+function getProviderBlockedUntil(): number {
+  return typeof g.__rumbleCommentaryProviderBlockedUntil === "number"
+    ? g.__rumbleCommentaryProviderBlockedUntil
+    : 0;
+}
+
+function blockProviderUntil(timestampMs: number): void {
+  g.__rumbleCommentaryProviderBlockedUntil = timestampMs;
 }
 
 function pruneClipCache(cache: CommentaryClipCache): void {
@@ -252,6 +264,24 @@ export async function POST(request: Request) {
     );
   }
 
+  const blockedUntil = getProviderBlockedUntil();
+  if (blockedUntil > Date.now()) {
+    const retryAfterSec = Math.max(1, Math.ceil((blockedUntil - Date.now()) / 1_000));
+    return NextResponse.json(
+      {
+        error: "Commentary is temporarily unavailable: TTS provider quota exceeded.",
+        code: "COMMENTARY_QUOTA_EXCEEDED",
+        retryAfterSeconds: retryAfterSec,
+      },
+      {
+        status: 503,
+        headers: {
+          "Retry-After": String(retryAfterSec),
+        },
+      },
+    );
+  }
+
   try {
     const body = await request.json();
     const { eventType, context, voiceId, allowedNames } = body as {
@@ -367,6 +397,25 @@ export async function POST(request: Request) {
     return clipResponse(clip, "MISS");
   } catch (err: any) {
     console.error("[Commentary] Error:", err);
+    const errText = String(err?.message ?? "");
+    if (errText.includes("quota_exceeded")) {
+      const blockedForMs = Date.now() + COMMENTARY_PROVIDER_COOLDOWN_MS;
+      blockProviderUntil(blockedForMs);
+      const retryAfterSec = Math.ceil(COMMENTARY_PROVIDER_COOLDOWN_MS / 1_000);
+      return NextResponse.json(
+        {
+          error: "Commentary is temporarily unavailable: TTS provider quota exceeded.",
+          code: "COMMENTARY_QUOTA_EXCEEDED",
+          retryAfterSeconds: retryAfterSec,
+        },
+        {
+          status: 503,
+          headers: {
+            "Retry-After": String(retryAfterSec),
+          },
+        },
+      );
+    }
     return NextResponse.json(
       {
         error: "Commentary generation failed",
