@@ -1638,15 +1638,21 @@ export class RumbleOrchestrator {
     const rumbleIdNum = parseOnchainRumbleIdNumber(slot.id);
     let deadline: Date | undefined;
     if (rumbleIdNum !== null) {
-      // Bypass read cache to get fresh mainnet betting state after creation.
+      // Try mainnet first, fall back to devnet if mainnet unavailable
       invalidateReadCache(`rumble:mainnet:${rumbleIdNum}`);
-      const onchain = await readMainnetRumbleAccountStateResilient(rumbleIdNum, {
+      let onchain = await readMainnetRumbleAccountStateResilient(rumbleIdNum, {
         maxPasses: 2,
         retryDelayMs: 100,
       }).catch(() => null);
       if (!onchain) {
-        console.warn(`[Orchestrator] armBettingWindowIfReady: mainnet on-chain state unreadable for ${slot.id} — will NOT arm deadline until confirmed`);
-        return; // Do NOT arm deadline until on-chain is confirmed readable
+        // Mainnet unavailable — fall back to devnet on-chain state
+        invalidateReadCache(`rumble:${rumbleIdNum}`);
+        onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+        if (!onchain) {
+          console.warn(`[Orchestrator] armBettingWindowIfReady: neither mainnet nor devnet on-chain state readable for ${slot.id}`);
+          return;
+        }
+        console.log(`[Orchestrator] armBettingWindowIfReady: using devnet on-chain state for ${slot.id} (mainnet unavailable)`);
       }
       if (onchain.state !== "betting") {
         console.warn(`[Orchestrator] armBettingWindowIfReady: on-chain state is "${onchain.state}" (not betting) for ${slot.id}`);
