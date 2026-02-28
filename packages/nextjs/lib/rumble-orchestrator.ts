@@ -96,6 +96,7 @@ import {
   completeRumbleMainnet,
   sweepTreasuryMainnet,
   sweepTreasury as sweepTreasuryDevnet,
+  reclaimMainnetRumbleRent,
   RUMBLE_ENGINE_ID_MAINNET,
   delegateCombatToEr,
   commitCombatFromEr,
@@ -622,6 +623,7 @@ export class RumbleOrchestrator {
   private settlingRumbleIds: Set<string> = new Set(); // rumble IDs currently attempting on-chain settlement
   private pendingFinalizations: Map<string, PendingFinalization> = new Map();
   private pendingSweeps: Map<string, PendingSweep> = new Map();
+  private lastRentReclaimAt = 0;
   private onchainRumbleCreateRetryAt: Map<string, number> = new Map();
   private onchainRumbleCreateStartedAt: Map<string, number> = new Map();
   private onchainRumbleCreateLastError: Map<string, OnchainCreateFailure> = new Map();
@@ -902,6 +904,7 @@ export class RumbleOrchestrator {
     await this.processPendingRumbleFinalizations();
     await this.processPendingSweeps();
     this.pollPendingIchorShower();
+    this.periodicRentReclaim();
   }
 
   private async getOnchainAdminHealth(): Promise<OnchainAdminHealth> {
@@ -1478,6 +1481,26 @@ export class RumbleOrchestrator {
         }
       }
     }
+  }
+
+  /** Every 30 min, batch complete+close eligible mainnet rumble accounts to reclaim rent. */
+  private periodicRentReclaim(): void {
+    const RENT_RECLAIM_INTERVAL_MS = 30 * 60_000;
+    const now = Date.now();
+    if (now - this.lastRentReclaimAt < RENT_RECLAIM_INTERVAL_MS) return;
+    this.lastRentReclaimAt = now;
+
+    reclaimMainnetRumbleRent()
+      .then(({ completed, closed, reclaimedLamports }) => {
+        if (completed > 0 || closed > 0) {
+          console.log(
+            `[RentReclaim] completed=${completed} closed=${closed} reclaimed=${(reclaimedLamports / 1e9).toFixed(6)} SOL`,
+          );
+        }
+      })
+      .catch((err) => {
+        console.warn(`[RentReclaim] batch reclaim failed:`, (err as Error).message?.slice(0, 100));
+      });
   }
 
   private pollPendingIchorShower(): void {

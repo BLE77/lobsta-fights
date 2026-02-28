@@ -2664,6 +2664,103 @@ export async function completeRumbleMainnet(
 }
 
 /**
+ * Close a completed mainnet Rumble account to reclaim rent back to admin.
+ * Requires the rumble to be in Complete state and claim window expired.
+ */
+export async function closeRumbleMainnet(
+  rumbleId: number,
+): Promise<string | null> {
+  const provider = getMainnetAdminProvider();
+  if (!provider) {
+    console.warn("[solana-programs] No mainnet admin keypair, skipping mainnet closeRumble");
+    return null;
+  }
+  const program = getRumbleEngineProgram(provider, RUMBLE_ENGINE_ID_MAINNET);
+  const admin = getMainnetAdminKeypair()!;
+
+  const [rumbleConfigPda] = deriveRumbleConfigPdaMainnet();
+  const [rumblePda] = deriveRumblePdaMainnet(rumbleId);
+
+  const method = (program.methods as any)
+    .closeRumble()
+    .accounts({
+      admin: admin.publicKey,
+      config: rumbleConfigPda,
+      rumble: rumblePda,
+    });
+
+  return await sendAdminTxFireAndForget(method, admin, getBettingConnection());
+}
+
+/**
+ * Batch reclaim rent from eligible mainnet rumble accounts.
+ * 1) complete_rumble for Payout accounts past claim window
+ * 2) close_rumble for Complete accounts past claim window
+ * Returns total lamports reclaimed.
+ */
+export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; closed: number; reclaimedLamports: number }> {
+  const provider = getMainnetAdminProvider();
+  if (!provider) return { completed: 0, closed: 0, reclaimedLamports: 0 };
+
+  const conn = getBettingConnection();
+  const programId = RUMBLE_ENGINE_ID_MAINNET;
+  const accounts = await conn.getProgramAccounts(programId);
+  const admin = getMainnetAdminKeypair()!;
+  const program = getRumbleEngineProgram(provider, programId);
+  const [configPda] = deriveRumbleConfigPdaMainnet();
+
+  let completed = 0;
+  let closed = 0;
+  let reclaimedLamports = 0;
+
+  for (const a of accounts) {
+    const data = a.account.data;
+    if (data.length < 700 || data.length > 730) continue;
+
+    const state = data[16];
+    const rumbleId = Number(data.readBigUInt64LE(8));
+    const completedAtOffset = 8 + 8 + 1 + 512 + 1 + 128 + 8 + 8 + 8 + 16 + 1 + 8 + 8;
+    const completedAt = Number(data.readBigInt64LE(completedAtOffset));
+    const now = Math.floor(Date.now() / 1000);
+    const pastClaimWindow = completedAt > 0 && (now - completedAt) > 86400;
+
+    const [rumblePda] = deriveRumblePdaMainnet(rumbleId);
+
+    // Step 1: Payout → Complete
+    if (state === 2 && pastClaimWindow) {
+      try {
+        const method = (program.methods as any).completeRumble().accounts({
+          admin: admin.publicKey, config: configPda, rumble: rumblePda,
+        });
+        const sig = await sendAdminTxFireAndForget(method, admin, conn);
+        if (sig) { completed++; console.log(`[RentReclaim] completeRumble ${rumbleId}: ${sig}`); }
+      } catch (err) {
+        console.warn(`[RentReclaim] completeRumble ${rumbleId} failed:`, (err as Error).message?.slice(0, 80));
+      }
+    }
+
+    // Step 2: Complete → Close (reclaim rent)
+    if (state === 3 && pastClaimWindow) {
+      try {
+        const method = (program.methods as any).closeRumble().accounts({
+          admin: admin.publicKey, config: configPda, rumble: rumblePda,
+        });
+        const sig = await sendAdminTxFireAndForget(method, admin, conn);
+        if (sig) {
+          closed++;
+          reclaimedLamports += a.account.lamports;
+          console.log(`[RentReclaim] closeRumble ${rumbleId}: ${sig} (${a.account.lamports} lamports)`);
+        }
+      } catch (err) {
+        console.warn(`[RentReclaim] closeRumble ${rumbleId} failed:`, (err as Error).message?.slice(0, 80));
+      }
+    }
+  }
+
+  return { completed, closed, reclaimedLamports };
+}
+
+/**
  * Read fighter public keys from an on-chain Rumble account.
  * Delegates to cached readRumbleAccountState to avoid duplicate RPC calls
  * (saves 1 credit per call — same PDA, now extracted during state read).
