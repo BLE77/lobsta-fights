@@ -43,6 +43,7 @@ interface RumbleStatus {
   queue: QueueFighter[];
   queueLength: number;
   nextRumbleIn: string | null;
+  bettingCloseGuardMs: number;
   ichorShower: {
     currentPool: number;
     rumblesSinceLastTrigger: number;
@@ -147,7 +148,7 @@ const LEGACY_EVENT_MAP: Partial<Record<SSEEvent["type"], OrchestratorSseName>> =
   turn: "turn_resolved",
   elimination: "fighter_eliminated",
 };
-const CLIENT_BET_CLOSE_GUARD_MS = 3_000;
+const DEFAULT_BET_CLOSE_GUARD_MS = 12_000;
 
 function isSlotState(value: unknown): value is SlotData["state"] {
   return value === "idle" || value === "betting" || value === "combat" || value === "payout";
@@ -325,6 +326,7 @@ function normalizeStatusPayload(raw: any): RumbleStatus {
     queue,
     queueLength: safeNumber(raw?.queueLength, queue.length),
     nextRumbleIn: typeof raw?.nextRumbleIn === "string" ? raw.nextRumbleIn : null,
+    bettingCloseGuardMs: Math.max(1_000, safeNumber(raw?.bettingCloseGuardMs, DEFAULT_BET_CLOSE_GUARD_MS)),
     ichorShower: {
       currentPool: safeNumber(raw?.ichorShower?.currentPool, 0),
       rumblesSinceLastTrigger: safeNumber(raw?.ichorShower?.rumblesSinceLastTrigger, 0),
@@ -1275,7 +1277,7 @@ export default function RumblePage() {
       const closeGuardMs =
         Number.isFinite(Number(prepared?.guard_ms)) && Number(prepared.guard_ms) > 0
           ? Number(prepared.guard_ms)
-          : CLIENT_BET_CLOSE_GUARD_MS;
+          : Math.max(1_000, status?.bettingCloseGuardMs ?? DEFAULT_BET_CLOSE_GUARD_MS);
       if (Number.isFinite(onchainDeadlineMs) && Date.now() >= onchainDeadlineMs - closeGuardMs) {
         throw new Error("Betting just closed on-chain. Wait for the next rumble.");
       }
@@ -1398,6 +1400,7 @@ export default function RumblePage() {
     fetchStatus,
     signTransaction,
     publicKey,
+    status?.bettingCloseGuardMs,
     status?.slots,
     walletConnected,
   ]);
@@ -1680,6 +1683,7 @@ export default function RumblePage() {
                     ) : featured ? (
                       <RumbleSlot
                         slot={featured}
+                        betCloseGuardMs={Math.max(1_000, status?.bettingCloseGuardMs ?? DEFAULT_BET_CLOSE_GUARD_MS)}
                         onPlaceBet={handlePlaceBet}
                         onPlaceBatchBet={handlePlaceBatchBet}
                         myBetAmounts={myBetAmountsBySlot.get(featured.slotIndex)}

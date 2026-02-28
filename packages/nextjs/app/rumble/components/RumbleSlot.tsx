@@ -96,6 +96,7 @@ function formatCountdown(secondsRemaining: number): string {
 
 interface RumbleSlotProps {
   slot: SlotData;
+  betCloseGuardMs?: number;
   onPlaceBet?: (slotIndex: number, fighterId: string, amount: number) => Promise<string | undefined> | void;
   onPlaceBatchBet?: (
     slotIndex: number,
@@ -173,6 +174,7 @@ interface ActiveElimination {
 
 export default function RumbleSlot({
   slot,
+  betCloseGuardMs = 12_000,
   onPlaceBet,
   onPlaceBatchBet,
   myBetAmounts,
@@ -336,8 +338,7 @@ export default function RumbleSlot({
       };
     }
     if (slot.state === "betting" && slot.bettingDeadline) {
-      const BET_CLOSE_GUARD_MS = 3_000;
-      const targetMs = new Date(slot.bettingDeadline).getTime() - BET_CLOSE_GUARD_MS;
+      const targetMs = new Date(slot.bettingDeadline).getTime() - Math.max(1_000, betCloseGuardMs);
       if (!Number.isFinite(targetMs)) return null;
       return {
         label: "FIRST TURN",
@@ -491,6 +492,7 @@ export default function RumbleSlot({
               fighters={slot.odds}
               totalPool={slot.totalPool}
               deadline={slot.bettingDeadline}
+              closeGuardMs={Math.max(1_000, betCloseGuardMs)}
               onPlaceBet={onPlaceBet}
               onPlaceBatchBet={onPlaceBatchBet}
               myBetAmounts={myBetAmounts}

@@ -13,15 +13,21 @@ import {
   getIchorShowerState,
   getStats,
 } from "~~/lib/rumble-persistence";
-import { readArenaConfig, readRumbleAccountState, readRumbleCombatState } from "~~/lib/solana-programs";
+import {
+  readArenaConfig,
+  readRumbleAccountState,
+  readRumbleCombatState,
+  RUMBLE_ENGINE_ID_MAINNET,
+} from "~~/lib/solana-programs";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
-import { getConnection } from "~~/lib/solana-connection";
+import { getBettingConnection, getConnection } from "~~/lib/solana-connection";
 import { getCommentaryForRumble } from "~~/lib/commentary-hook";
 import { MAX_TURNS } from "~~/lib/rumble-engine";
 import { flushRpcMetrics, runWithRpcMetrics } from "~~/lib/solana-rpc-metrics";
 
 export const dynamic = "force-dynamic";
 const SLOT_MS_ESTIMATE = Math.max(250, Number(process.env.RUMBLE_SLOT_MS_ESTIMATE ?? "400"));
+const BETTING_CLOSE_GUARD_MS = Math.max(1000, Number(process.env.RUMBLE_BETTING_CLOSE_GUARD_MS ?? "12000"));
 const ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD = 5_000_000n;
 const STATUS_MUTATION_ENABLED = (() => {
   const env = process.env.RUMBLE_PUBLIC_STATUS_MUTATION_ENABLED;
@@ -53,6 +59,17 @@ async function getCachedSlot(): Promise<number | null> {
   if (_slotCache && now - _slotCache.at < STATUS_CACHE_TTLS_MS.slot) return _slotCache.slot;
   const slot = await getConnection().getSlot("processed").catch(() => null);
   if (slot !== null) _slotCache = { slot, at: now };
+  return slot;
+}
+
+let _bettingSlotCache: { slot: number; at: number } | null = null;
+async function getCachedBettingSlot(): Promise<number | null> {
+  const now = Date.now();
+  if (_bettingSlotCache && now - _bettingSlotCache.at < STATUS_CACHE_TTLS_MS.slot) {
+    return _bettingSlotCache.slot;
+  }
+  const slot = await getBettingConnection().getSlot("processed").catch(() => null);
+  if (slot !== null) _bettingSlotCache = { slot, at: now };
   return slot;
 }
 
@@ -458,7 +475,9 @@ export async function GET(request: Request) {
         fighters,
         odds,
         totalPool,
-        bettingDeadline: slotInfo.bettingDeadline?.toISOString() ?? null,
+        // Never arm betting timer from in-memory state alone. Timer appears
+        // only after the betting program confirms on-chain betting is live.
+        bettingDeadline: slotInfo.state === "betting" ? null : slotInfo.bettingDeadline?.toISOString() ?? null,
         nextTurnAt: slotInfo.nextTurnAt?.toISOString() ?? null,
         turnIntervalMs: slotInfo.turnIntervalMs ?? null,
         currentTurn: combatState?.turns.length ?? 0,
@@ -477,13 +496,24 @@ export async function GET(request: Request) {
     // Cross-check slot state/timing against on-chain data so UI pacing is
     // anchored to chain slots (ORE-style), not backend loop cadence.
     const currentClusterSlot = await getCachedSlot();
+    const currentBettingSlot = await getCachedBettingSlot();
     const currentClusterSlotBig =
       typeof currentClusterSlot === "number" && Number.isFinite(currentClusterSlot)
         ? BigInt(currentClusterSlot)
         : null;
+    const currentBettingSlotBig =
+      typeof currentBettingSlot === "number" && Number.isFinite(currentBettingSlot)
+        ? BigInt(currentBettingSlot)
+        : null;
     const slotsToMs = (targetSlot: bigint | null): number => {
       if (!targetSlot || currentClusterSlotBig === null || targetSlot <= currentClusterSlotBig) return 0;
       const delta = targetSlot - currentClusterSlotBig;
+      const capped = delta > 1_000_000n ? 1_000_000n : delta;
+      return Number(capped) * SLOT_MS_ESTIMATE;
+    };
+    const bettingSlotsToMs = (targetSlot: bigint | null): number => {
+      if (!targetSlot || currentBettingSlotBig === null || targetSlot <= currentBettingSlotBig) return 0;
+      const delta = targetSlot - currentBettingSlotBig;
       const capped = delta > 1_000_000n ? 1_000_000n : delta;
       return Number(capped) * SLOT_MS_ESTIMATE;
     };
@@ -494,8 +524,17 @@ export async function GET(request: Request) {
         if (slot.state === "idle" || slot.state === "payout") return slot;
         const rumbleIdNum = parseOnchainRumbleIdNumber(slot.rumbleId);
         if (rumbleIdNum === null) return slot;
-        const onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
-        if (!onchain) return slot;
+        const onchain =
+          slot.state === "betting"
+            ? await readRumbleAccountState(
+                rumbleIdNum,
+                getBettingConnection(),
+                RUMBLE_ENGINE_ID_MAINNET,
+              ).catch(() => null)
+            : await readRumbleAccountState(rumbleIdNum).catch(() => null);
+        if (!onchain) {
+          return slot.state === "betting" ? { ...slot, bettingDeadline: null } : slot;
+        }
 
         // Only ADVANCE state from on-chain data, never regress it.
         // E.g. if in-memory is "combat" (deadline passed, advanceSlots ran)
@@ -519,27 +558,25 @@ export async function GET(request: Request) {
         let nextTurnAt = slot.nextTurnAt;
         let turnIntervalMs = slot.turnIntervalMs;
         let currentTurn = slot.currentTurn;
-        let bettingDeadline = slot.bettingDeadline;
+        let bettingDeadline: string | null = null;
 
         if (state === "betting") {
           const closeRaw = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
           if (closeRaw > 0n) {
             const looksLikeUnix =
-              currentClusterSlotBig !== null
-                ? closeRaw > currentClusterSlotBig + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD
+              currentBettingSlotBig !== null
+                ? closeRaw > currentBettingSlotBig + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD
                 : closeRaw > 1_000_000_000n;
             if (looksLikeUnix) {
               const unixMs = Number(closeRaw) * 1_000;
-              bettingDeadline = Number.isFinite(unixMs) ? new Date(unixMs).toISOString() : slot.bettingDeadline;
+              bettingDeadline = Number.isFinite(unixMs) ? new Date(unixMs).toISOString() : null;
             } else {
-              const etaMs = slotsToMs(closeRaw);
-              bettingDeadline = new Date(Date.now() + etaMs).toISOString();
+              const etaMs = bettingSlotsToMs(closeRaw);
+              bettingDeadline = etaMs > 0 ? new Date(Date.now() + etaMs).toISOString() : null;
             }
           } else {
             bettingDeadline = null;
           }
-        } else {
-          bettingDeadline = null;
         }
 
         // Enriched fighters/turns from on-chain + Supabase persistence
@@ -871,7 +908,11 @@ export async function GET(request: Request) {
 
         // --- Betting state: restore countdown from on-chain close slot ---
         if (slot.state === "betting") {
-          const onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+          const onchain = await readRumbleAccountState(
+            rumbleIdNum,
+            getBettingConnection(),
+            RUMBLE_ENGINE_ID_MAINNET,
+          ).catch(() => null);
 
           // Case 1: On-chain doesn't exist yet (still being created).
           // Do not synthesize a timer from server time; keep timer unarmed
@@ -895,12 +936,15 @@ export async function GET(request: Request) {
               return { ...slot, bettingDeadline: null };
             }
             const looksLikeUnix =
-              currentClusterSlotBig !== null
-                ? closeRaw > currentClusterSlotBig + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD
+              currentBettingSlotBig !== null
+                ? closeRaw > currentBettingSlotBig + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD
                 : closeRaw > 1_000_000_000n;
+            const etaMs = bettingSlotsToMs(closeRaw);
             const bettingDeadline = looksLikeUnix
               ? new Date(Number(closeRaw) * 1_000).toISOString()
-              : new Date(Date.now() + slotsToMs(closeRaw)).toISOString();
+              : etaMs > 0
+                ? new Date(Date.now() + etaMs).toISOString()
+                : null;
             return { ...slot, bettingDeadline };
           }
         }
@@ -1047,6 +1091,7 @@ export async function GET(request: Request) {
         queue,
         queueLength: queueEntries.length + activeFighterCount,
         nextRumbleIn,
+        bettingCloseGuardMs: BETTING_CLOSE_GUARD_MS,
         ichorShower: {
           currentPool:
             arenaConfig

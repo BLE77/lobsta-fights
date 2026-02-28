@@ -19,6 +19,7 @@ interface BettingPanelProps {
   fighters: FighterOdds[];
   totalPool: number;
   deadline: string | null;
+  closeGuardMs?: number;
   onPlaceBet?: (slotIndex: number, fighterId: string, amount: number) => Promise<string | undefined> | void;
   onPlaceBatchBet?: (
     slotIndex: number,
@@ -27,13 +28,15 @@ interface BettingPanelProps {
   myBetAmounts?: Map<string, number>;
 }
 
-const BET_CLOSE_GUARD_MS = 3_000;
-
-function getRemainingBetWindowMs(deadline: string | null, nowMs: number = Date.now()): number | null {
+function getRemainingBetWindowMs(
+  deadline: string | null,
+  closeGuardMs: number,
+  nowMs: number = Date.now(),
+): number | null {
   if (!deadline) return null;
   const deadlineMs = new Date(deadline).getTime();
   if (!Number.isFinite(deadlineMs)) return 0;
-  return Math.max(0, deadlineMs - BET_CLOSE_GUARD_MS - nowMs);
+  return Math.max(0, deadlineMs - Math.max(1_000, closeGuardMs) - nowMs);
 }
 
 function formatRemaining(ms: number): string {
@@ -49,23 +52,26 @@ export default function BettingPanel({
   fighters,
   totalPool,
   deadline,
+  closeGuardMs = 12_000,
   onPlaceBet,
   onPlaceBatchBet,
   myBetAmounts,
 }: BettingPanelProps) {
   const [bets, setBets] = useState<Map<string, string>>(new Map());
-  const [remainingMs, setRemainingMs] = useState<number | null>(() => getRemainingBetWindowMs(deadline));
+  const [remainingMs, setRemainingMs] = useState<number | null>(() =>
+    getRemainingBetWindowMs(deadline, closeGuardMs),
+  );
   const [deploying, setDeploying] = useState<Set<string>>(new Set());
   const [lastTxSignature, setLastTxSignature] = useState<string | null>(null);
   const [successFighterId, setSuccessFighterId] = useState<string | null>(null);
 
   useEffect(() => {
-    const update = () => setRemainingMs(getRemainingBetWindowMs(deadline));
+    const update = () => setRemainingMs(getRemainingBetWindowMs(deadline, closeGuardMs));
     update();
     if (!deadline) return;
     const interval = setInterval(update, 1000);
     return () => clearInterval(interval);
-  }, [deadline]);
+  }, [closeGuardMs, deadline]);
 
   const toggleFighter = (fighterId: string) => {
     setBets((prev) => {
