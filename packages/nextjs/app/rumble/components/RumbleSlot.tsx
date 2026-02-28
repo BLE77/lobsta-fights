@@ -596,7 +596,22 @@ export default function RumbleSlot({
                           return (
                             <div key={`pairing-${idx}`} className={`flex items-center justify-between bg-stone-900/40 p-2 sm:p-4 rounded-sm border border-stone-800 relative z-10 w-full h-full ${gridSpanClass}`}>
                               {/* Fighter A (Left aligned taking up 40%) */}
-                              <div className={`flex flex-col items-center w-[40%] ${aClass}`}>
+                              <div className={`flex flex-col items-center w-[40%] ${aClass} relative`}>
+                                {/* OVERLAYS */}
+                                {turnAnimations && turnAnimations.turnNumber === currentTurnData.turnNumber && (
+                                  <>
+                                    {["HIGH_STRIKE", "MID_STRIKE", "LOW_STRIKE", "SPECIAL"].includes(p.moveA) && (
+                                      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-30 pointer-events-none drop-shadow-2xl animate-fade-in-up">
+                                        <img src="/strike-arm-red.png" alt="Strike" className="w-32 h-auto object-contain transform -scale-x-100 opacity-90" />
+                                      </div>
+                                    )}
+                                    {p.moveA === "GRAB" && (
+                                      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-30 pointer-events-none drop-shadow-2xl animate-pulse">
+                                        <img src="/grab-hands.png" alt="Grab" className="w-32 h-auto object-contain opacity-90" />
+                                      </div>
+                                    )}
+                                  </>
+                                )}
                                 <FighterHP
                                   name={fA.name}
                                   hp={fA.hp}
@@ -616,7 +631,22 @@ export default function RumbleSlot({
                               </div>
 
                               {/* Fighter B (Right aligned taking up 40%) */}
-                              <div className={`flex flex-col items-center w-[40%] ${bClass}`}>
+                              <div className={`flex flex-col items-center w-[40%] ${bClass} relative`}>
+                                {/* OVERLAYS */}
+                                {turnAnimations && turnAnimations.turnNumber === currentTurnData.turnNumber && (
+                                  <>
+                                    {["HIGH_STRIKE", "MID_STRIKE", "LOW_STRIKE", "SPECIAL"].includes(p.moveB) && (
+                                      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-30 pointer-events-none drop-shadow-2xl animate-fade-in-up">
+                                        <img src="/strike-arm-purple.png" alt="Strike" className="w-32 h-auto object-contain opacity-90" />
+                                      </div>
+                                    )}
+                                    {p.moveB === "GRAB" && (
+                                      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-30 pointer-events-none drop-shadow-2xl animate-pulse">
+                                        <img src="/grab-hands.png" alt="Grab" className="w-32 h-auto object-contain transform scale-x-[-1] opacity-90" />
+                                      </div>
+                                    )}
+                                  </>
+                                )}
                                 <FighterHP
                                   name={fB.name}
                                   hp={fB.hp}
