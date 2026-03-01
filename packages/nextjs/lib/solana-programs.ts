@@ -76,15 +76,9 @@ export function isMainnetConfigured(): boolean {
     readEnvTrimmed("NEXT_PUBLIC_RUMBLE_ENGINE_ID_MAINNET")
   );
 
-  const hasIchorToken = Boolean(
-    readEnvTrimmed("NEXT_PUBLIC_ICHOR_TOKEN_MAINNET") ||
-    readEnvTrimmed("NEXT_PUBLIC_ICHOR_TOKEN_ID_MAINNET") ||
-    readEnvTrimmed("ICHOR_TOKEN_MAINNET_PROGRAM_ID")
-  );
-
   const hasMainnetDeployer = Boolean(readEnvTrimmed("SOLANA_MAINNET_DEPLOYER_KEYPAIR"));
 
-  return hasRumbleEngine && hasIchorToken && hasMainnetDeployer;
+  return hasRumbleEngine && hasMainnetDeployer;
 }
 
 // ---------------------------------------------------------------------------
@@ -2689,7 +2683,8 @@ export async function createRumbleMainnet(
   bettingDeadlineUnix: number,
 ): Promise<string | null> {
   if (!isMainnetConfigured()) {
-    throw new Error("Mainnet program IDs not configured");
+    console.warn("[solana-programs] Mainnet not configured, skipping");
+    return null;
   }
 
   const provider = getMainnetAdminProvider();
@@ -2733,7 +2728,8 @@ export async function reportResultMainnet(
   winnerIndex: number,
 ): Promise<string | null> {
   if (!isMainnetConfigured()) {
-    throw new Error("Mainnet program IDs not configured");
+    console.warn("[solana-programs] Mainnet not configured, skipping");
+    return null;
   }
 
   const provider = getMainnetAdminProvider();
@@ -2766,7 +2762,8 @@ export async function completeRumbleMainnet(
   rumbleId: number,
 ): Promise<string | null> {
   if (!isMainnetConfigured()) {
-    throw new Error("Mainnet program IDs not configured");
+    console.warn("[solana-programs] Mainnet not configured, skipping");
+    return null;
   }
 
   const provider = getMainnetAdminProvider();
@@ -2952,7 +2949,8 @@ export async function sweepTreasuryMainnet(
   rumbleId: number,
 ): Promise<string | null> {
   if (!isMainnetConfigured()) {
-    throw new Error("Mainnet program IDs not configured");
+    console.warn("[solana-programs] Mainnet not configured, skipping");
+    return null;
   }
 
   const provider = getMainnetAdminProvider();
