@@ -2249,7 +2249,7 @@ async function sendAdminTxWithConfirmation(
   connection?: Connection,
 ): Promise<{ signature: string; confirmed: true }> {
   const conn = connection ?? getConnection();
-  const { signature } = await sendAdminTxFireAndForget(method, admin, conn);
+  const signature = await sendAdminTxFireAndForget(method, admin, conn);
   const timeoutMs = 30_000;
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
