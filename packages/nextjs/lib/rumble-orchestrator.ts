@@ -4319,6 +4319,7 @@ export class RumbleOrchestrator {
         try {
           let showerRecipientAta = winnerAta;
           let showerRecipientWallet = winnerId;
+          let showerRecipientOwnerWallet: PublicKey | null = winnerWallet;
           const chosenBettorWallet = this.pickWeightedWinnerBettorWallet(payoutResult);
           if (chosenBettorWallet) {
             try {
@@ -4326,6 +4327,7 @@ export class RumbleOrchestrator {
               await ensureAtaOnChain(ichorMint, bettorPk);
               showerRecipientAta = getAssociatedTokenAddressSync(ichorMint, bettorPk);
               showerRecipientWallet = chosenBettorWallet;
+              showerRecipientOwnerWallet = bettorPk;
             } catch (err) {
               console.warn(`[OnChain] Failed to use bettor shower recipient "${chosenBettorWallet}":`, err);
             }
@@ -4337,8 +4339,32 @@ export class RumbleOrchestrator {
             pendingShower.recipientTokenAccount !== "11111111111111111111111111111111"
           ) {
             try {
+              const expectedRecipientAta = showerRecipientOwnerWallet
+                ? getAssociatedTokenAddressSync(ichorMint, showerRecipientOwnerWallet)
+                : null;
               showerRecipientAta = new PublicKey(pendingShower.recipientTokenAccount);
+              if (expectedRecipientAta && !showerRecipientAta.equals(expectedRecipientAta)) {
+                // If on-chain request points to a different token account, we don't
+                // reliably know its owner here. Verify existence only before VRF.
+                showerRecipientOwnerWallet = null;
+              }
             } catch {}
+          }
+
+          let showerRecipientAtaReady = false;
+          try {
+            if (showerRecipientOwnerWallet) {
+              const ensuredRecipientAta = await ensureAtaOnChain(ichorMint, showerRecipientOwnerWallet);
+              if (ensuredRecipientAta) {
+                showerRecipientAta = ensuredRecipientAta;
+                showerRecipientAtaReady = true;
+              }
+            } else {
+              const showerRecipientAccountInfo = await getConnection().getAccountInfo(showerRecipientAta);
+              showerRecipientAtaReady = !!showerRecipientAccountInfo;
+            }
+          } catch (err) {
+            console.warn("[Orchestrator] Failed to ensure shower recipient ATA:", err);
           }
 
           // Read on-chain shower pool BEFORE the call to detect trigger
@@ -4349,24 +4375,42 @@ export class RumbleOrchestrator {
           // Try MagicBlock VRF for provably-fair shower roll
           let showerHandled = false;
           try {
-            const vrfSig = await requestIchorShowerVrf(showerRecipientAta, showerVaultAta);
-            if (vrfSig) {
-              console.log(`[VRF] requestIchorShowerVrf succeeded: ${vrfSig}`);
-              persist.updateRumbleTxSignature(rumbleId, "ichorShowerVrf", vrfSig);
-              showerHandled = true;
+            if (showerRecipientAtaReady) {
+              const vrfSig = await requestIchorShowerVrf(showerRecipientAta, showerVaultAta);
+              if (vrfSig) {
+                console.log(`[VRF] requestIchorShowerVrf succeeded: ${vrfSig}`);
+                persist.updateRumbleTxSignature(rumbleId, "ichorShowerVrf", vrfSig);
+                showerHandled = true;
+              }
+            } else {
+              console.warn(
+                `[OnChain] Skipping VRF shower request, shower recipient ATA not ready: ${showerRecipientAta.toBase58()}`,
+              );
             }
           } catch (vrfErr) {
-            console.warn(`[VRF] requestIchorShowerVrf failed, falling back to checkIchorShower:`, vrfErr);
+            const showerErr = vrfErr as { logs?: unknown };
+            console.warn(`[VRF] requestIchorShowerVrf failed, falling back to checkIchorShower:`, {
+              error: showerErr,
+              logs: showerErr?.logs,
+            });
           }
 
           // Fallback to slot-hash based shower if VRF unavailable
           if (!showerHandled) {
-            const showerSig = await checkIchorShowerOnChain(showerRecipientAta, showerVaultAta);
-            if (showerSig) {
-              console.log(`[OnChain] checkIchorShower succeeded: ${showerSig}`);
-              persist.updateRumbleTxSignature(rumbleId, "checkIchorShower", showerSig);
-            } else {
-              console.warn(`[OnChain] checkIchorShower returned null — continuing off-chain`);
+            try {
+              const showerSig = await checkIchorShowerOnChain(showerRecipientAta, showerVaultAta);
+              if (showerSig) {
+                console.log(`[OnChain] checkIchorShower succeeded: ${showerSig}`);
+                persist.updateRumbleTxSignature(rumbleId, "checkIchorShower", showerSig);
+              } else {
+                console.warn(`[OnChain] checkIchorShower returned null — continuing off-chain`);
+              }
+            } catch (showerErr) {
+              const fallbackErr = showerErr as { logs?: unknown };
+              console.warn("[OnChain] checkIchorShowerOnChain failed, continuing off-chain:", {
+                error: fallbackErr,
+                logs: fallbackErr?.logs,
+              });
             }
           }
 

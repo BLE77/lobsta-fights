@@ -89,6 +89,7 @@ const MAGIC_CONTEXT_ID = new PublicKey("MagicContext1111111111111111111111111111
 // MagicBlock VRF Program
 const VRF_PROGRAM_ID = new PublicKey("Vrf1RNUjXmQGjmQrQLvJHs9SNkvDJEsRVFPkfSQUwGz");
 const VRF_DEFAULT_QUEUE = new PublicKey("Cuj97ggrhhidhbu39TijNVqE74xvKJ69gDervRUXAxGh");
+const VRF_IDENTITY_SEED = Buffer.from("identity");
 
 // ---------------------------------------------------------------------------
 // Time-based read cache — reduces RPC calls for hot on-chain reads
@@ -178,6 +179,10 @@ export function deriveRegistryConfigPda(): [PublicKey, number] {
 
 export function deriveRumbleConfigPda(): [PublicKey, number] {
   return PublicKey.findProgramAddressSync([CONFIG_SEED], RUMBLE_ENGINE_ID);
+}
+
+function deriveVrfProgramIdentityPda(programId: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync([VRF_IDENTITY_SEED], programId)[0];
 }
 
 export function deriveFighterPda(
@@ -1153,6 +1158,7 @@ function isAccountAlreadyExistsError(err: unknown): boolean {
 
   return text.includes("already in use") || text.includes("already been processed");
 }
+
 
 async function waitForSlot(
   connection: Connection,
@@ -3341,21 +3347,28 @@ export async function requestMatchupSeed(
   }
   const program = getRumbleEngineProgram(provider);
   const admin = getAdminKeypair()!;
+  const conn = connection ?? getConnection();
+
 
   const [rumbleConfigPda] = deriveRumbleConfigPda();
   const [combatStatePda] = deriveCombatStatePda(rumbleId);
   const clientSeed = randomBytes(1)[0];
+  const programIdentity = deriveVrfProgramIdentityPda(RUMBLE_ENGINE_ID);
 
   const method = (program.methods as any)
     .requestMatchupSeed(new anchor.BN(rumbleId), clientSeed)
-    .accountsPartial({
+    .accounts({
       payer: admin.publicKey,
       config: rumbleConfigPda,
       combatState: combatStatePda,
       oracleQueue: VRF_DEFAULT_QUEUE,
+      programIdentity,
+      vrfProgram: VRF_PROGRAM_ID,
+      slotHashes: SLOT_HASHES_SYSVAR_ID,
+      systemProgram: SystemProgram.programId,
     });
 
-  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+  return await sendAdminTxFireAndForget(method, admin, conn);
 }
 
 /**
@@ -3377,15 +3390,18 @@ export async function requestIchorShowerVrf(
   }
   const program = getIchorTokenProgram(provider);
   const admin = getAdminKeypair()!;
+  const conn = connection ?? getConnection();
+
 
   const [arenaConfigPda] = deriveArenaConfigPda();
   const [showerRequestPda] = deriveShowerRequestPda();
   const ichorMint = getIchorMint();
   const clientSeed = randomBytes(1)[0];
+  const programIdentity = deriveVrfProgramIdentityPda(ICHOR_TOKEN_ID);
 
   const method = (program.methods as any)
     .requestIchorShowerVrf(clientSeed)
-    .accountsPartial({
+    .accounts({
       payer: admin.publicKey,
       arenaConfig: arenaConfigPda,
       showerRequest: showerRequestPda,
@@ -3394,7 +3410,11 @@ export async function requestIchorShowerVrf(
       showerVault,
       oracleQueue: VRF_DEFAULT_QUEUE,
       tokenProgram: TOKEN_PROGRAM_ID,
+      programIdentity,
+      vrfProgram: VRF_PROGRAM_ID,
+      slotHashes: SLOT_HASHES_SYSVAR_ID,
+      systemProgram: SystemProgram.programId,
     });
 
-  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+  return await sendAdminTxFireAndForget(method, admin, conn);
 }
