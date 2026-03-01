@@ -6,6 +6,7 @@ import {
   isValidUUID,
 } from "~~/lib/request-auth";
 import { requireJsonContentType } from "~~/lib/api-middleware";
+import { validateWebhookUrl } from "~~/lib/url-validation";
 
 export const dynamic = "force-dynamic";
 
@@ -49,19 +50,10 @@ export async function PATCH(request: Request) {
     );
   }
 
-  // Validate URL format
-  let parsed: URL;
-  try {
-    parsed = new URL(webhook_url);
-  } catch {
-    return NextResponse.json({ error: "Invalid webhook URL" }, { status: 400 });
-  }
-
-  if (!["https:", "http:"].includes(parsed.protocol)) {
-    return NextResponse.json(
-      { error: "Webhook must use http or https" },
-      { status: 400 },
-    );
+  const trimmedWebhookUrl = webhook_url.trim();
+  const webhookValidationError = await validateWebhookUrl(trimmedWebhookUrl);
+  if (webhookValidationError) {
+    return NextResponse.json({ error: webhookValidationError }, { status: 400 });
   }
 
   // Authenticate fighter
@@ -81,7 +73,7 @@ export async function PATCH(request: Request) {
   // Update webhook URL
   const { error } = await freshSupabase()
     .from("ucf_fighters")
-    .update({ webhook_url: webhook_url.trim() })
+    .update({ webhook_url: trimmedWebhookUrl })
     .eq("id", fighter_id);
 
   if (error) {
@@ -93,12 +85,12 @@ export async function PATCH(request: Request) {
   }
 
   console.log(
-    `[Webhook Update] Fighter ${fighter.name} (${fighter_id}) updated webhook to ${webhook_url}`,
+    `[Webhook Update] Fighter ${fighter.name} (${fighter_id}) updated webhook to ${trimmedWebhookUrl}`,
   );
 
   return NextResponse.json({
     success: true,
     fighter_id,
-    webhook_url: webhook_url.trim(),
+    webhook_url: trimmedWebhookUrl,
   });
 }

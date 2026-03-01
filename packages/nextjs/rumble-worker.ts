@@ -25,7 +25,14 @@ import {
 import { reconcileOnchainReportResults } from "./lib/rumble-onchain-reconcile";
 import { reconcileStalePendingPayouts } from "./lib/rumble-payout-reconcile";
 import { reconcileQueueFromDb } from "./lib/rumble-queue-reconcile";
+import { retryPendingMainnetOps } from "./lib/mainnet-retry";
+import {
+  acquireWorkerLease,
+  releaseWorkerLease,
+} from "./lib/rumble-persistence";
 import { createServer } from "node:http";
+import { hostname } from "node:os";
+import { randomBytes } from "node:crypto";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -36,9 +43,16 @@ const TICK_INTERVAL_MS = Math.max(
   Number(process.env.RUMBLE_WORKER_INTERVAL_MS) || 2_000,
 );
 
+const WORKER_ID = `${hostname().replace(/[^a-zA-Z0-9._-]/g, "_")}-${process.pid}-${randomBytes(3).toString("hex")}`;
+const WORKER_LEASE_TTL_MS = Math.max(15_000, TICK_INTERVAL_MS * 3);
+
 const RECONCILE_INTERVAL_MS = Math.max(
   10_000,
   Number(process.env.RUMBLE_WORKER_RECONCILE_INTERVAL_MS) || 60_000,
+);
+const MAINNET_RETRY_INTERVAL_MS = Math.max(
+  30_000,
+  Number(process.env.RUMBLE_WORKER_MAINNET_RETRY_INTERVAL_MS) || 30_000,
 );
 const HEALTH_PORT = Math.max(1, Number(process.env.PORT) || 3001);
 const HEALTH_STALE_MS = 30_000;
@@ -47,11 +61,15 @@ const HEALTH_STALE_MS = 30_000;
 // State
 // ---------------------------------------------------------------------------
 
-let stopping = false;
+let running = true;
+let orchestratorInstance: ReturnType<typeof getOrchestrator> | null = null;
+let shutdownInProgress = false;
 let tickCount = 0;
 let consecutiveErrors = 0;
 let lastReconcileAt = 0;
+let lastMainnetRetryAt = 0;
 let lastTickAt = 0;
+const STOP_TIMEOUT_MS = 10_000;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -121,8 +139,10 @@ function startHealthServer(orchestrator: ReturnType<typeof getOrchestrator>): vo
 async function run(): Promise<void> {
   console.log(`[${ts()}] [worker] Rumble worker starting`);
   console.log(`[${ts()}] [worker] tick interval=${TICK_INTERVAL_MS}ms  reconcile interval=${RECONCILE_INTERVAL_MS}ms`);
+  console.log(`[${ts()}] [worker] workerId=${WORKER_ID} leaseTtlMs=${WORKER_LEASE_TTL_MS}`);
 
   const orchestrator = getOrchestrator();
+  orchestratorInstance = orchestrator;
   startHealthServer(orchestrator);
 
   // ---- Initial recovery ---------------------------------------------------
@@ -137,9 +157,24 @@ async function run(): Promise<void> {
   }
 
   // ---- Tick loop ----------------------------------------------------------
-  while (!stopping) {
+  while (running) {
     const tickStart = Date.now();
     lastTickAt = tickStart;
+
+    const leaseAcquired = await acquireWorkerLease(WORKER_ID, WORKER_LEASE_TTL_MS);
+    if (!leaseAcquired) {
+      if (tickCount === 0 || tickCount % 30 === 0) {
+        console.log(
+          `[${ts()}] [worker] lease unavailable for ${WORKER_ID}, skipping tick`,
+        );
+      }
+      const elapsed = Date.now() - tickStart;
+      const remaining = Math.max(0, TICK_INTERVAL_MS - elapsed);
+      if (remaining > 0 && running) {
+        await sleep(remaining);
+      }
+      continue;
+    }
 
     try {
       // Periodic reconciliation (on-chain + payout)
@@ -154,6 +189,14 @@ async function run(): Promise<void> {
           console.error(`[${ts()}] [worker] queue reconcile error:`, e),
         );
         lastReconcileAt = Date.now();
+      }
+
+      // Periodic retries for failed mainnet operations.
+      if (Date.now() - lastMainnetRetryAt > MAINNET_RETRY_INTERVAL_MS) {
+        await retryPendingMainnetOps().catch((e) =>
+          console.error(`[${ts()}] [worker] mainnet retry error:`, e),
+        );
+        lastMainnetRetryAt = Date.now();
       }
 
       // Run one tick
@@ -187,7 +230,7 @@ async function run(): Promise<void> {
     // Sleep until next tick
     const elapsed = Date.now() - tickStart;
     const remaining = Math.max(0, TICK_INTERVAL_MS - elapsed);
-    if (remaining > 0 && !stopping) {
+    if (remaining > 0 && running) {
       await sleep(remaining);
     }
   }
@@ -195,17 +238,59 @@ async function run(): Promise<void> {
   console.log(`[${ts()}] [worker] Stopped after ${tickCount} ticks`);
 }
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`Operation timed out after ${timeoutMs}ms`)),
+      timeoutMs,
+    );
+
+    promise
+      .then((result) => {
+        clearTimeout(timer);
+        resolve(result);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
+
+async function gracefulShutdown(reason: string, exitCode: 0 | 1 = 0): Promise<void> {
+  if (shutdownInProgress) return;
+  shutdownInProgress = true;
+  running = false;
+
+  console.log(`[${ts()}] [worker] Shutdown requested: ${reason}`);
+
+  try {
+    if (orchestratorInstance) {
+      await withTimeout(orchestratorInstance.stop(), STOP_TIMEOUT_MS);
+    }
+  } catch (err) {
+    console.error(`[${ts()}] [worker] Shutdown error:`, err);
+    exitCode = 1;
+  } finally {
+    try {
+      await withTimeout(releaseWorkerLease(WORKER_ID), 5_000);
+    } catch (leaseErr) {
+      console.error(`[${ts()}] [worker] Failed to release lease:`, leaseErr);
+    }
+  }
+
+  process.exit(exitCode);
+}
+
 // ---------------------------------------------------------------------------
 // Graceful shutdown
 // ---------------------------------------------------------------------------
 
 process.on("SIGINT", () => {
-  console.log(`\n[${ts()}] [worker] SIGINT received, shutting down...`);
-  stopping = true;
+  void gracefulShutdown("signal");
 });
 process.on("SIGTERM", () => {
-  console.log(`[${ts()}] [worker] SIGTERM received, shutting down...`);
-  stopping = true;
+  void gracefulShutdown("signal");
 });
 
 // ---------------------------------------------------------------------------
@@ -214,5 +299,5 @@ process.on("SIGTERM", () => {
 
 run().catch((err) => {
   console.error(`[${ts()}] [worker] Fatal:`, err);
-  process.exit(1);
+  void gracefulShutdown("fatal error", 1);
 });

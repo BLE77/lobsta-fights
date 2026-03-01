@@ -1388,3 +1388,108 @@ export async function expirePendingMoveRequest(
     logError("expirePendingMoveRequest failed", err);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Worker lease (single-writer lock for Railway workers)
+// ---------------------------------------------------------------------------
+
+const WORKER_LEASE_ROW_ID = "singleton";
+
+function parseLeaseExpiry(expiresAt: unknown): number | null {
+  if (typeof expiresAt === "number") return Number.isFinite(expiresAt) ? expiresAt : null;
+  if (typeof expiresAt === "string") {
+    const parsed = Date.parse(expiresAt);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+export async function acquireWorkerLease(
+  workerId: string,
+  ttlMs: number,
+): Promise<boolean> {
+  const normalizedWorkerId = workerId.trim();
+  if (!normalizedWorkerId || !Number.isFinite(ttlMs) || ttlMs <= 0) return false;
+
+  try {
+    const now = Date.now();
+    const expiresAtMs = now + Math.max(1_000, ttlMs);
+    const expiresAtIso = new Date(expiresAtMs).toISOString();
+    const sb = freshServiceClient();
+
+    const { data: existing, error: existingErr } = await sb
+      .from("worker_lease")
+      .select("worker_id,expires_at")
+      .eq("id", WORKER_LEASE_ROW_ID)
+      .maybeSingle();
+
+    if (existingErr) {
+      if (existingErr.code === "42P01" || existingErr.code === "PGRST205") {
+        return false;
+      }
+      throw existingErr;
+    }
+
+    if (existing) {
+      const currentOwner = existing.worker_id;
+      const leaseExpiresAt = parseLeaseExpiry(existing.expires_at);
+      const isExpired = leaseExpiresAt === null || leaseExpiresAt <= now;
+      if (currentOwner && currentOwner !== normalizedWorkerId && !isExpired) {
+        return false;
+      }
+    }
+
+    const { error: upsertErr } = await sb
+      .from("worker_lease")
+      .upsert(
+        {
+          id: WORKER_LEASE_ROW_ID,
+          worker_id: normalizedWorkerId,
+          expires_at: expiresAtIso,
+        },
+        { onConflict: "id" },
+      );
+
+    if (upsertErr) {
+      if (upsertErr.code === "42P01" || upsertErr.code === "PGRST205") return false;
+      throw upsertErr;
+    }
+
+    const { data: current, error: verifyErr } = await sb
+      .from("worker_lease")
+      .select("worker_id")
+      .eq("id", WORKER_LEASE_ROW_ID)
+      .maybeSingle();
+
+    if (verifyErr) {
+      if (verifyErr.code === "42P01" || verifyErr.code === "PGRST205") return false;
+      throw verifyErr;
+    }
+
+    return current?.worker_id === normalizedWorkerId;
+  } catch (err) {
+    logError("acquireWorkerLease failed", err);
+    return false;
+  }
+}
+
+export async function releaseWorkerLease(workerId: string): Promise<void> {
+  const normalizedWorkerId = workerId.trim();
+  if (!normalizedWorkerId) return;
+
+  try {
+    const sb = freshServiceClient();
+    const { error } = await sb
+      .from("worker_lease")
+      .delete()
+      .eq("id", WORKER_LEASE_ROW_ID)
+      .eq("worker_id", normalizedWorkerId);
+
+    if (error) {
+      if (error.code === "42P01" || error.code === "PGRST205") return;
+      throw error;
+    }
+  } catch (err) {
+    logError("releaseWorkerLease failed", err);
+  }
+}

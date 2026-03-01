@@ -6,6 +6,7 @@
  */
 
 import { freshSupabase } from "./supabase";
+import { isAllowedUrl } from "./url-validation";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const BUCKET_NAME = "images";
@@ -23,7 +24,13 @@ export async function storeImagePermanently(
 ): Promise<string | null> {
   try {
     // Validate URL before attempting to download
-    if (!tempUrl || tempUrl.length < 10 || !tempUrl.startsWith("http")) {
+    if (!tempUrl || tempUrl.length < 10) {
+      console.error(`[ImageStorage] Invalid URL received: "${tempUrl}" - skipping storage`);
+      return null;
+    }
+
+    const isAllowed = await isAllowedUrl(tempUrl);
+    if (!isAllowed) {
       console.error(`[ImageStorage] Invalid URL received: "${tempUrl}" - skipping storage`);
       return null;
     }
@@ -31,7 +38,7 @@ export async function storeImagePermanently(
     console.log(`[ImageStorage] Downloading from: ${tempUrl}`);
 
     // Download the image
-    const response = await fetch(tempUrl);
+    const response = await fetch(tempUrl, { redirect: "error" });
     if (!response.ok) {
       console.error(`[ImageStorage] Failed to download: ${response.status}`);
       return null;

@@ -1,5 +1,10 @@
 .vercel
 .env*.local
+.claude/
+**/*keypair*.json
+**/*deployer*.json
+**/id.json
+**/*-keypair.json
 
 # Serwist service worker output (generated at build time)
 public/sw.js

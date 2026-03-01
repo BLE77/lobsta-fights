@@ -46,16 +46,46 @@ export const RUMBLE_ENGINE_ID = new PublicKey(
   "2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC"
 );
 
+function readEnvTrimmed(name: string): string {
+  return process.env[name]?.trim() ?? "";
+}
+
 /**
  * Mainnet program ID for betting operations.
  * Same program deployed to mainnet-beta — only betting instructions are called there.
  * Falls back to devnet program ID if not configured (for testing).
  */
 export const RUMBLE_ENGINE_ID_MAINNET = new PublicKey(
-  process.env.NEXT_PUBLIC_RUMBLE_ENGINE_MAINNET ??
-  process.env.RUMBLE_ENGINE_MAINNET_PROGRAM_ID ??
+  readEnvTrimmed("NEXT_PUBLIC_RUMBLE_ENGINE_MAINNET") ||
+  readEnvTrimmed("RUMBLE_ENGINE_MAINNET_PROGRAM_ID") ||
+  readEnvTrimmed("NEXT_PUBLIC_RUMBLE_ENGINE_ID_MAINNET") ||
   RUMBLE_ENGINE_ID.toBase58()
 );
+
+export const ICHOR_TOKEN_ID_MAINNET = new PublicKey(
+  readEnvTrimmed("NEXT_PUBLIC_ICHOR_TOKEN_MAINNET") ||
+  readEnvTrimmed("NEXT_PUBLIC_ICHOR_TOKEN_ID_MAINNET") ||
+  readEnvTrimmed("ICHOR_TOKEN_MAINNET_PROGRAM_ID") ||
+  ICHOR_TOKEN_ID.toBase58()
+);
+
+export function isMainnetConfigured(): boolean {
+  const hasRumbleEngine = Boolean(
+    readEnvTrimmed("NEXT_PUBLIC_RUMBLE_ENGINE_MAINNET") ||
+    readEnvTrimmed("RUMBLE_ENGINE_MAINNET_PROGRAM_ID") ||
+    readEnvTrimmed("NEXT_PUBLIC_RUMBLE_ENGINE_ID_MAINNET")
+  );
+
+  const hasIchorToken = Boolean(
+    readEnvTrimmed("NEXT_PUBLIC_ICHOR_TOKEN_MAINNET") ||
+    readEnvTrimmed("NEXT_PUBLIC_ICHOR_TOKEN_ID_MAINNET") ||
+    readEnvTrimmed("ICHOR_TOKEN_MAINNET_PROGRAM_ID")
+  );
+
+  const hasMainnetDeployer = Boolean(readEnvTrimmed("SOLANA_MAINNET_DEPLOYER_KEYPAIR"));
+
+  return hasRumbleEngine && hasIchorToken && hasMainnetDeployer;
+}
 
 // ---------------------------------------------------------------------------
 // PDA Seeds
@@ -95,7 +125,10 @@ const VRF_IDENTITY_SEED = Buffer.from("identity");
 // Time-based read cache — reduces RPC calls for hot on-chain reads
 // ---------------------------------------------------------------------------
 
-const _readCache = new Map<string, { data: unknown; expiresAt: number }>();
+const _readCache = new Map<
+  string,
+  { data: unknown; expiresAt: number; lastAccessed: number },
+>();
 const _readInFlight = new Map<string, Promise<unknown>>();
 
 type CachedReadOptions = {
@@ -110,7 +143,14 @@ function cachedRead<T>(
 ): Promise<T> {
   const now = Date.now();
   const hit = _readCache.get(key);
-  if (hit && hit.expiresAt > now) return Promise.resolve(hit.data as T);
+  if (hit) {
+    if (hit.expiresAt <= now) {
+      _readCache.delete(key);
+    } else {
+      hit.lastAccessed = now;
+      return Promise.resolve(hit.data as T);
+    }
+  }
   const pending = _readInFlight.get(key);
   if (pending) return pending as Promise<T>;
 
@@ -122,11 +162,26 @@ function cachedRead<T>(
         ? Math.max(0, options?.nullTtlMs ?? ttlMs)
         : ttlMs;
       if (effectiveTtl > 0) {
-        _readCache.set(key, { data: r, expiresAt: ts + effectiveTtl });
+        _readCache.set(key, {
+          data: r,
+          expiresAt: ts + effectiveTtl,
+          lastAccessed: ts,
+        });
       }
       if (_readCache.size > 200) {
         for (const [k, v] of _readCache) {
           if (v.expiresAt <= ts) _readCache.delete(k);
+        }
+
+        if (_readCache.size > 200) {
+          const byAccess = [..._readCache.entries()].sort(
+            (a, b) => a[1].lastAccessed - b[1].lastAccessed,
+          );
+          const keep = 150;
+          const toRemove = _readCache.size - keep;
+          for (const [k] of byAccess.slice(0, toRemove)) {
+            _readCache.delete(k);
+          }
         }
       }
       return r;
@@ -1963,7 +2018,11 @@ export async function buildPlaceBetTx(
     vaultPda,
     treasury,
     fighterPubkeys,
+    fighterCount,
   } = await loadRumbleBetContext(rumbleId, conn, programId);
+  if (fighterIndex >= fighterCount) {
+    throw new Error("Invalid fighter index");
+  }
   const fighterPubkey = fighterPubkeys[fighterIndex];
   if (!fighterPubkey) {
     throw new Error(`Invalid fighter index ${fighterIndex} for rumble ${rumbleId}`);
@@ -2026,6 +2085,7 @@ export async function buildPlaceBetBatchTx(
     vaultPda,
     treasury,
     fighterPubkeys,
+    fighterCount,
   } = await loadRumbleBetContext(rumbleId, conn, programId);
   const [bettorAccountPda] = useMainnet ? deriveBettorPdaMainnet(rumbleId, bettor) : deriveBettorPda(rumbleId, bettor);
 
@@ -2034,6 +2094,9 @@ export async function buildPlaceBetBatchTx(
   for (const leg of bets) {
     if (!Number.isInteger(leg.fighterIndex) || leg.fighterIndex < 0) {
       throw new Error(`Invalid fighterIndex in batch leg: ${String(leg.fighterIndex)}`);
+    }
+    if (leg.fighterIndex >= fighterCount) {
+      throw new Error("Invalid fighter index");
     }
     if (!Number.isFinite(leg.lamports) || leg.lamports <= 0) {
       throw new Error(`Invalid lamports in batch leg for fighter ${leg.fighterIndex}`);
@@ -2083,6 +2146,7 @@ async function loadRumbleBetContext(
   vaultPda: PublicKey;
   treasury: PublicKey;
   fighterPubkeys: PublicKey[];
+  fighterCount: number;
 }> {
   const useMainnet = programId && !programId.equals(RUMBLE_ENGINE_ID);
   const [rumbleConfigPda] = useMainnet ? deriveRumbleConfigPdaMainnet() : deriveRumbleConfigPda();
@@ -2096,12 +2160,15 @@ async function loadRumbleBetContext(
   if (!rumbleInfo) throw new Error(`Rumble account not found: ${rumblePda}`);
   if (!configInfo) throw new Error("Rumble config not found");
 
-  // Rumble layout: discriminator(8) + id(8) + state(1) + fighters(32*16=512)
   const fighterOffsetBase = 8 + 8 + 1;
+  const fighterCountOffset = fighterOffsetBase + 32 * 16;
+  const fighterCount = rumbleInfo.data[fighterCountOffset] ?? 0;
   const fighterPubkeys: PublicKey[] = [];
-  for (let i = 0; i < 16; i++) {
+  for (let i = 0; i < fighterCount; i++) {
     const start = fighterOffsetBase + i * 32;
-    fighterPubkeys.push(new PublicKey(rumbleInfo.data.subarray(start, start + 32)));
+    if (start + 32 <= rumbleInfo.data.length) {
+      fighterPubkeys.push(new PublicKey(rumbleInfo.data.subarray(start, start + 32)));
+    }
   }
 
   // RumbleConfig: discriminator(8) + admin(32) + treasury(32)
@@ -2113,6 +2180,7 @@ async function loadRumbleBetContext(
     vaultPda,
     treasury,
     fighterPubkeys,
+    fighterCount,
   };
 }
 
@@ -2171,6 +2239,47 @@ async function sendAdminTxFireAndForget(
     maxRetries: 3,
   });
   return signature;
+}
+
+/**
+ * Send an admin-signed transaction and confirm it to "confirmed".
+ * Throws on timeout or on-chain error with the signature attached to aid debugging.
+ */
+async function sendAdminTxWithConfirmation(
+  method: any,
+  admin: Keypair,
+  connection?: Connection,
+): Promise<{ signature: string; confirmed: true }> {
+  const conn = connection ?? getConnection();
+  const { signature } = await sendAdminTxFireAndForget(method, admin, conn);
+  const timeoutMs = 30_000;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`Transaction confirmation timed out after ${timeoutMs}ms: ${signature}`));
+    }, timeoutMs);
+  });
+
+  let confirmation: Awaited<ReturnType<typeof conn.confirmTransaction>>;
+  try {
+    confirmation = await Promise.race([
+      conn.confirmTransaction(signature, "confirmed"),
+      timeout,
+    ]);
+  } catch (err) {
+    throw new Error(`Tx confirmation failed for ${signature}: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+
+  if (confirmation.value?.err) {
+    throw new Error(`Tx ${signature} confirmed with error: ${JSON.stringify(confirmation.value.err)}`);
+  }
+
+  return {
+    signature,
+    confirmed: true,
+  };
 }
 
 /**
@@ -2369,7 +2478,8 @@ export async function reportResult(
       rumble: rumblePda,
     });
 
-  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+  const { signature } = await sendAdminTxWithConfirmation(method, admin, connection ?? getConnection());
+  return signature;
 }
 
 /**
@@ -2563,7 +2673,8 @@ export async function completeRumble(
       rumble: rumblePda,
     });
 
-  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+  const { signature } = await sendAdminTxWithConfirmation(method, admin, connection ?? getConnection());
+  return signature;
 }
 
 // ---------------------------------------------------------------------------
@@ -2579,6 +2690,10 @@ export async function createRumbleMainnet(
   fighters: PublicKey[],
   bettingDeadlineUnix: number,
 ): Promise<string | null> {
+  if (!isMainnetConfigured()) {
+    throw new Error("Mainnet program IDs not configured");
+  }
+
   const provider = getMainnetAdminProvider();
   if (!provider) {
     console.warn("[solana-programs] No mainnet admin keypair, skipping mainnet createRumble");
@@ -2619,6 +2734,10 @@ export async function reportResultMainnet(
   placements: number[],
   winnerIndex: number,
 ): Promise<string | null> {
+  if (!isMainnetConfigured()) {
+    throw new Error("Mainnet program IDs not configured");
+  }
+
   const provider = getMainnetAdminProvider();
   if (!provider) {
     console.warn("[solana-programs] No mainnet admin keypair, skipping mainnet reportResult");
@@ -2638,7 +2757,8 @@ export async function reportResultMainnet(
       rumble: rumblePda,
     });
 
-  return await sendAdminTxFireAndForget(method, admin, getBettingConnection());
+  const { signature } = await sendAdminTxWithConfirmation(method, admin, getBettingConnection());
+  return signature;
 }
 
 /**
@@ -2647,6 +2767,10 @@ export async function reportResultMainnet(
 export async function completeRumbleMainnet(
   rumbleId: number,
 ): Promise<string | null> {
+  if (!isMainnetConfigured()) {
+    throw new Error("Mainnet program IDs not configured");
+  }
+
   const provider = getMainnetAdminProvider();
   if (!provider) {
     console.warn("[solana-programs] No mainnet admin keypair, skipping mainnet completeRumble");
@@ -2666,7 +2790,8 @@ export async function completeRumbleMainnet(
       rumble: rumblePda,
     });
 
-  return await sendAdminTxFireAndForget(method, admin, getBettingConnection());
+  const { signature } = await sendAdminTxWithConfirmation(method, admin, getBettingConnection());
+  return signature;
 }
 
 /**
@@ -2695,7 +2820,8 @@ export async function closeRumbleMainnet(
       rumble: rumblePda,
     });
 
-  return await sendAdminTxFireAndForget(method, admin, getBettingConnection());
+  const { signature } = await sendAdminTxWithConfirmation(method, admin, getBettingConnection());
+  return signature;
 }
 
 /**
@@ -2751,11 +2877,11 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
         const method = (program.methods as any).closeRumble().accounts({
           admin: admin.publicKey, config: configPda, rumble: rumblePda,
         });
-        const sig = await sendAdminTxFireAndForget(method, admin, conn);
-        if (sig) {
+        const { signature } = await sendAdminTxWithConfirmation(method, admin, conn);
+        if (signature) {
           closed++;
           reclaimedLamports += a.account.lamports;
-          console.log(`[RentReclaim] closeRumble ${rumbleId}: ${sig} (${a.account.lamports} lamports)`);
+          console.log(`[RentReclaim] closeRumble ${rumbleId}: ${signature} (${a.account.lamports} lamports)`);
         }
       } catch (err) {
         console.warn(`[RentReclaim] closeRumble ${rumbleId} failed:`, (err as Error).message?.slice(0, 80));
@@ -2816,7 +2942,8 @@ export async function sweepTreasury(
       systemProgram: SystemProgram.programId,
     });
 
-  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+  const { signature } = await sendAdminTxWithConfirmation(method, admin, connection ?? getConnection());
+  return signature;
 }
 
 /**
@@ -2826,6 +2953,10 @@ export async function sweepTreasury(
 export async function sweepTreasuryMainnet(
   rumbleId: number,
 ): Promise<string | null> {
+  if (!isMainnetConfigured()) {
+    throw new Error("Mainnet program IDs not configured");
+  }
+
   const provider = getMainnetAdminProvider();
   if (!provider) {
     console.warn("[solana-programs] No mainnet admin keypair, skipping mainnet sweepTreasury");
@@ -2855,7 +2986,8 @@ export async function sweepTreasuryMainnet(
       systemProgram: SystemProgram.programId,
     });
 
-  return await sendAdminTxFireAndForget(method, admin, conn);
+  const { signature } = await sendAdminTxWithConfirmation(method, admin, conn);
+  return signature;
 }
 
 // ---------------------------------------------------------------------------

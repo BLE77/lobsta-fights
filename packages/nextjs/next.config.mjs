@@ -14,8 +14,8 @@ const SHOULD_IGNORE_BUILD_ERRORS = ALLOW_LENIENT_BUILD && !IS_PRODUCTION;
 const isDevelopment = process.env.NODE_ENV === "development";
 const scriptSrc = [
   "'self'",
-  "'unsafe-inline'",
-  ...(isDevelopment ? ["'unsafe-eval'"] : []), // required by Next.js dev tooling
+  "'unsafe-inline'", // Required: Next.js injects inline scripts for hydration; removing without nonce setup breaks production
+  ...(isDevelopment ? ["'unsafe-eval'"] : []), // unsafe-eval only needed for dev tooling (HMR)
 ].join(" ");
 
 const nextConfig = {

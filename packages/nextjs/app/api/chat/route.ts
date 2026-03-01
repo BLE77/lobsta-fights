@@ -112,31 +112,32 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Invalid wallet address" }, { status: 400 });
     }
 
-    // Verify wallet ownership via signed message (if signature provided)
-    // Signature proves the sender actually controls this wallet
-    if (signature && timestamp) {
-      try {
-        const { verify, createPublicKey } = await import("node:crypto");
-        const expectedMsg = `UCF Chat: ${timestamp}`;
-        const msgBytes = Buffer.from(expectedMsg);
-        const sigBytes = Buffer.from(signature, "base64");
-        const pubKeyObj = createPublicKey({
-          key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), Buffer.from(walletPubkey.toBytes())]),
-          format: "der",
-          type: "spki",
-        });
-        const valid = verify(null, msgBytes, pubKeyObj, sigBytes);
-        if (!valid) {
-          return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
-        }
-        // Reject stale signatures (older than 5 minutes)
-        const ts = parseInt(timestamp, 10);
-        if (isNaN(ts) || Math.abs(Date.now() - ts) > 5 * 60 * 1000) {
-          return NextResponse.json({ error: "Signature expired" }, { status: 401 });
-        }
-      } catch {
-        return NextResponse.json({ error: "Signature verification failed" }, { status: 401 });
+    // Verify wallet ownership via signed message (required)
+    if (!signature || !timestamp) {
+      return NextResponse.json({ error: "Signature and timestamp required" }, { status: 400 });
+    }
+
+    try {
+      const { verify, createPublicKey } = await import("node:crypto");
+      const expectedMsg = `UCF Chat: ${timestamp}`;
+      const msgBytes = Buffer.from(expectedMsg);
+      const sigBytes = Buffer.from(signature, "base64");
+      const pubKeyObj = createPublicKey({
+        key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), Buffer.from(walletPubkey.toBytes())]),
+        format: "der",
+        type: "spki",
+      });
+      const valid = verify(null, msgBytes, pubKeyObj, sigBytes);
+      if (!valid) {
+        return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
       }
+      // Reject stale signatures (older than 5 minutes)
+      const ts = parseInt(timestamp, 10);
+      if (isNaN(ts) || Math.abs(Date.now() - ts) > 5 * 60 * 1000) {
+        return NextResponse.json({ error: "Signature expired" }, { status: 401 });
+      }
+    } catch {
+      return NextResponse.json({ error: "Signature verification failed" }, { status: 401 });
     }
 
     const trimmed = message.trim();

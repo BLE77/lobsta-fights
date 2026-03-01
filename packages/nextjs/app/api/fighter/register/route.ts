@@ -7,20 +7,13 @@ import { AI_FIGHTER_DESIGN_PROMPT, FIGHTER_DESIGN_HINT, REGISTRATION_EXAMPLE } f
 import { generateApiKey } from "../../../../lib/api-key";
 import { isAuthorizedAdminRequest } from "../../../../lib/request-auth";
 import { requireJsonContentType, sanitizeErrorResponse } from "../../../../lib/api-middleware";
-import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import { validateWebhookUrl } from "../../../../lib/url-validation";
 
 export const dynamic = "force-dynamic";
 
 const REGISTRATION_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 const MAX_REGISTRATIONS_PER_WINDOW = 3;
 const registrationRateLimit = new Map<string, { count: number; resetAt: number }>();
-const BLOCKED_WEBHOOK_HOSTNAMES = new Set([
-  "localhost",
-  "metadata.google.internal",
-  "metadata.google",
-  "host.docker.internal",
-]);
 
 function getRateLimitKey(request: Request): string {
   const forwardedFor = request.headers.get("x-forwarded-for");
@@ -63,37 +56,6 @@ function consumeRegistrationQuota(request: Request): { allowed: boolean; retryAf
   return { allowed: true, retryAfterSec: 0 };
 }
 
-function isPrivateIpv4(address: string): boolean {
-  const octets = address.split(".").map(part => Number.parseInt(part, 10));
-  if (octets.length !== 4 || octets.some(n => Number.isNaN(n))) return true;
-  if (octets[0] === 10) return true;
-  if (octets[0] === 127) return true;
-  if (octets[0] === 0) return true;
-  if (octets[0] === 169 && octets[1] === 254) return true;
-  if (octets[0] === 192 && octets[1] === 168) return true;
-  if (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) return true;
-  if (octets[0] >= 224) return true;
-  return false;
-}
-
-function isPrivateIpv6(address: string): boolean {
-  const normalized = address.toLowerCase();
-  return (
-    normalized === "::1" ||
-    normalized === "::" ||
-    normalized.startsWith("fc") ||
-    normalized.startsWith("fd") ||
-    normalized.startsWith("fe80:")
-  );
-}
-
-function isPrivateIpAddress(address: string): boolean {
-  const version = isIP(address);
-  if (version === 4) return isPrivateIpv4(address);
-  if (version === 6) return isPrivateIpv6(address);
-  return true;
-}
-
 function normalizeWalletAddress(rawWalletAddress: unknown): string | null {
   if (typeof rawWalletAddress !== "string") return null;
   const candidate = rawWalletAddress.trim();
@@ -104,50 +66,6 @@ function normalizeWalletAddress(rawWalletAddress: unknown): string | null {
   } catch {
     return null;
   }
-}
-
-async function validateWebhookUrl(webhookUrl: string): Promise<string | null> {
-  let parsed: URL;
-  try {
-    parsed = new URL(webhookUrl);
-  } catch {
-    return "Invalid webhook URL";
-  }
-
-  if (!["https:", "http:"].includes(parsed.protocol)) {
-    return "Webhook URL must use http or https";
-  }
-
-  if (parsed.username || parsed.password) {
-    return "Webhook URL must not include credentials";
-  }
-
-  const host = parsed.hostname.toLowerCase();
-  if (
-    BLOCKED_WEBHOOK_HOSTNAMES.has(host) ||
-    host.endsWith(".local") ||
-    host.endsWith(".internal")
-  ) {
-    return "Webhook URL cannot point to private/internal addresses";
-  }
-
-  if (isIP(host) && isPrivateIpAddress(host)) {
-    return "Webhook URL cannot point to private/internal addresses";
-  }
-
-  try {
-    const addresses = await lookup(host, { all: true });
-    if (
-      addresses.length === 0 ||
-      addresses.some(entry => isPrivateIpAddress(entry.address))
-    ) {
-      return "Webhook URL cannot resolve to private/internal IPs";
-    }
-  } catch {
-    return "Unable to resolve webhook hostname";
-  }
-
-  return null;
 }
 
 /**

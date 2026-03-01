@@ -45,18 +45,17 @@ function freshServiceClient() {
 // Auth verification
 // ---------------------------------------------------------------------------
 
-function verifyWebhookAuth(request: Request): boolean {
+function verifyWebhookAuth(request: Request): boolean | number {
   const secret = getWebhookSecret();
 
-  // Never fail open in production. In local/dev, allow missing secret so
-  // webhook testing still works without extra setup.
   if (!secret) {
-    if (process.env.NODE_ENV === "production") {
-      console.error("[HeliusWebhook] HELIUS_WEBHOOK_SECRET is missing in production");
-      return false;
+    console.warn("[HeliusWebhook] HELIUS_WEBHOOK_SECRET is missing");
+
+    if (process.env.NODE_ENV === "test") {
+      return true;
     }
-    console.warn("[HeliusWebhook] No HELIUS_WEBHOOK_SECRET configured — allowing dev request");
-    return true;
+
+    return 503;
   }
 
   const authHeader = request.headers.get("authorization") ?? "";
@@ -77,7 +76,12 @@ function verifyWebhookAuth(request: Request): boolean {
 
 export async function POST(request: Request) {
   // 1. Verify auth
-  if (!verifyWebhookAuth(request)) {
+  const auth = verifyWebhookAuth(request);
+  if (auth !== true) {
+    if (auth === 503) {
+      return NextResponse.json({ error: "Webhook secret unavailable" }, { status: 503 });
+    }
+
     console.error("[HeliusWebhook] Unauthorized webhook request");
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
