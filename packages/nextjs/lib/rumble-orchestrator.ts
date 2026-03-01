@@ -4653,7 +4653,7 @@ export class RumbleOrchestrator {
     }
   }
 
-  private async stop(): Promise<void> {
+  async stop(): Promise<void> {
     if (this.inflightCleanup.size === 0) return;
     await Promise.allSettled([...this.inflightCleanup]);
   }
