@@ -1082,10 +1082,18 @@ export async function lookupFighterWallets(
   return result;
 }
 
+export interface VoiceClipMeta {
+  text: string;
+  audio_url: string;
+  generated_at: string;
+}
+
 export interface RumbleFighterProfile {
   id: string;
   name: string;
   webhookUrl: string | null;
+  robotMetadata: Record<string, unknown> | null;
+  voiceClips: Record<string, VoiceClipMeta> | null;
 }
 
 /**
@@ -1102,13 +1110,15 @@ export async function loadRumbleFighterProfiles(
     const uniqueIds = [...new Set(fighterIds.filter(Boolean))];
     const { data, error } = await sb
       .from("ucf_fighters")
-      .select("id, name, webhook_url")
+      .select("id, name, webhook_url, robot_metadata")
       .in("id", uniqueIds);
     if (error) throw error;
 
     for (const row of data ?? []) {
       const id = String((row as any).id ?? "");
       if (!id) continue;
+      const meta = (row as any).robot_metadata as Record<string, unknown> | null;
+      const voiceClips = meta?.voice_clips as Record<string, VoiceClipMeta> | null ?? null;
       result.set(id, {
         id,
         name: String((row as any).name ?? id),
@@ -1116,6 +1126,8 @@ export async function loadRumbleFighterProfiles(
           typeof (row as any).webhook_url === "string" && (row as any).webhook_url.trim().length > 0
             ? String((row as any).webhook_url)
             : null,
+        robotMetadata: meta ?? null,
+        voiceClips: voiceClips,
       });
     }
   } catch (err) {
