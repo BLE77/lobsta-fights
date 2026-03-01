@@ -925,7 +925,8 @@ export class RumbleOrchestrator {
     await Promise.all(slotPromises);
 
     await this.processPendingRumbleFinalizations();
-    await this.processPendingSweeps();
+    // Auto-sweep disabled — admin-only via admin panel
+    // await this.processPendingSweeps();
     this.pollPendingIchorShower();
     this.periodicRentReclaim();
   }
@@ -1356,11 +1357,8 @@ export class RumbleOrchestrator {
       }
     })();
 
-    // 2b) Check if anyone bet on the winner — if not, queue immediate sweep.
-    //     If there ARE winner bets, queue a delayed sweep (24h claim window).
-    this.checkAndEnqueueSweep(entry.rumbleId, entry.rumbleIdNum).catch((err) => {
-      console.warn(`[Sweep] Failed to check/enqueue sweep for ${entry.rumbleId}:`, formatError(err));
-    });
+    // NOTE: Auto-sweep disabled — sweep_treasury is admin-only now.
+    // Users can claim payouts indefinitely; admin can sweep manually via admin panel.
 
     // 3) Reclaim rent from MoveCommitment PDAs (~1.46 SOL per rumble, fire-and-forget)
     try {
