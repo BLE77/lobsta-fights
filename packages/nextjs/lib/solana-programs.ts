@@ -125,10 +125,8 @@ const VRF_IDENTITY_SEED = Buffer.from("identity");
 // Time-based read cache — reduces RPC calls for hot on-chain reads
 // ---------------------------------------------------------------------------
 
-const _readCache = new Map<
-  string,
-  { data: unknown; expiresAt: number; lastAccessed: number },
->();
+type CacheEntry = { data: unknown; expiresAt: number; lastAccessed: number };
+const _readCache = new Map<string, CacheEntry>();
 const _readInFlight = new Map<string, Promise<unknown>>();
 
 type CachedReadOptions = {
