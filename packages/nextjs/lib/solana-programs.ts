@@ -2822,12 +2822,13 @@ export async function closeRumbleMainnet(
 /**
  * Batch reclaim rent from eligible mainnet rumble accounts.
  * 1) complete_rumble for Payout accounts past claim window
- * 2) close_rumble for Complete accounts past claim window
+ * 2) close_rumble ONLY for rumbles with no bets or no winner bets
+ *    (rumbles with unclaimed winning bets are kept alive so users can claim)
  * Returns total lamports reclaimed.
  */
-export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; closed: number; reclaimedLamports: number }> {
+export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; closed: number; skipped: number; reclaimedLamports: number }> {
   const provider = getMainnetAdminProvider();
-  if (!provider) return { completed: 0, closed: 0, reclaimedLamports: 0 };
+  if (!provider) return { completed: 0, closed: 0, skipped: 0, reclaimedLamports: 0 };
 
   const conn = getBettingConnection();
   const programId = RUMBLE_ENGINE_ID_MAINNET;
@@ -2838,6 +2839,7 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
 
   let completed = 0;
   let closed = 0;
+  let skipped = 0;
   let reclaimedLamports = 0;
 
   for (const a of accounts) {
@@ -2853,7 +2855,7 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
 
     const [rumblePda] = deriveRumblePdaMainnet(rumbleId);
 
-    // Step 1: Payout → Complete
+    // Step 1: Payout → Complete (always safe — users can still claim in Complete state)
     if (state === 2 && pastClaimWindow) {
       try {
         const method = (program.methods as any).completeRumble().accounts({
@@ -2866,8 +2868,24 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
       }
     }
 
-    // Step 2: Complete → Close (reclaim rent)
+    // Step 2: Complete → Close (reclaim rent) — ONLY if safe to close
+    // Check vault balance: if vault has SOL beyond rent-exempt, someone may still claim
     if (state === 3 && pastClaimWindow) {
+      const [vaultPda] = deriveVaultPdaMainnet(rumbleId);
+      let vaultBalance = 0;
+      try {
+        vaultBalance = await conn.getBalance(vaultPda);
+      } catch { /* vault may not exist */ }
+
+      const RENT_EXEMPT_MIN = 890_880; // ~0.00089 SOL for 0-byte account
+      const hasUnclaimedSol = vaultBalance > RENT_EXEMPT_MIN;
+
+      if (hasUnclaimedSol) {
+        skipped++;
+        console.log(`[RentReclaim] SKIP closeRumble ${rumbleId}: vault has ${(vaultBalance / 1e9).toFixed(6)} SOL (unclaimed bets)`);
+        continue;
+      }
+
       try {
         const method = (program.methods as any).closeRumble().accounts({
           admin: admin.publicKey, config: configPda, rumble: rumblePda,
@@ -2884,7 +2902,7 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
     }
   }
 
-  return { completed, closed, reclaimedLamports };
+  return { completed, closed, skipped, reclaimedLamports };
 }
 
 /**
