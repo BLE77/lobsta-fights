@@ -41,13 +41,6 @@ const MAX_ACTIVE_AGE_MS_BY_STATUS: Record<string, number> = {
   combat: 45 * 60 * 1000,
   payout: 10 * 60 * 1000,
 };
-/**
- * If a newer betting row exists for the same slot, keep showing an older combat
- * row only for a short grace window (to cover pre-created next-rumble rows).
- * Beyond this window, treat the combat row as stale and prefer the newer row.
- */
-const COMBAT_PREFER_WINDOW_MS = 8 * 60 * 1000;
-const PAYOUT_PREFER_WINDOW_MS = 75 * 1000;
 const STATUS_CACHE_TTLS_MS = {
   slot: 1_500,
   fighterLookup: 10_000,
@@ -822,28 +815,7 @@ export async function GET(request: Request) {
       );
       const newest = sorted[0];
       if (!newest) continue;
-
-      // Prefer currently active combat/payout over a newer pre-created betting
-      // row, but only while the older active row is still fresh. If the newer
-      // betting row already has turn/starter evidence, treat it as active and
-      // do NOT pin the older row.
-      const newestStatus = activeRowStatus(newest);
-      const newestIsPrecreatedBetting = newestStatus === "betting" && !rowHasCombatEvidence(newest);
-      const newestActiveOlder = sorted.find((row) => {
-        const status = activeRowStatus(row);
-        return status === "combat" || status === "payout";
-      });
-      let selected = newest;
-      if (newestActiveOlder && newestIsPrecreatedBetting) {
-        const olderStatus = activeRowStatus(newestActiveOlder);
-        const olderCreatedAtMs = new Date(newestActiveOlder.created_at).getTime();
-        const preferWindowMs = olderStatus === "payout" ? PAYOUT_PREFER_WINDOW_MS : COMBAT_PREFER_WINDOW_MS;
-        if (Number.isFinite(olderCreatedAtMs) && nowMs - olderCreatedAtMs <= preferWindowMs) {
-          selected = newestActiveOlder;
-        }
-      }
-
-      latestPersistedBySlot.set(slotIndex, selected);
+      latestPersistedBySlot.set(slotIndex, newest);
     }
 
     if (freshPersisted.length > 0) {
