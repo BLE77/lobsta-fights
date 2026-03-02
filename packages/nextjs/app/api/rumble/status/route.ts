@@ -40,6 +40,12 @@ const MAX_ACTIVE_AGE_MS_BY_STATUS: Record<string, number> = {
   combat: 45 * 60 * 1000,
   payout: 10 * 60 * 1000,
 };
+/**
+ * If a newer betting row exists for the same slot, keep showing an older combat
+ * row only for a short grace window (to cover pre-created next-rumble rows).
+ * Beyond this window, treat the combat row as stale and prefer the newer row.
+ */
+const COMBAT_PREFER_WINDOW_MS = 8 * 60 * 1000;
 const STATUS_CACHE_TTLS_MS = {
   slot: 1_500,
   fighterLookup: 10_000,
@@ -778,36 +784,36 @@ export async function GET(request: Request) {
       if (!Number.isFinite(createdAtMs)) return false;
       return nowMs - createdAtMs <= maxAge;
     });
-    const latestPersistedBySlot = new Map<number, (typeof persistedActive)[number]>();
-    const persistedSlotDisplayPriority = (row: (typeof persistedActive)[number]): number => {
-      const status = String(row.status ?? "").toLowerCase();
-      // Prefer currently-running combat over pre-created betting rows.
-      // Betting should still beat stale payout rows when both exist.
-      if (status === "combat") return 3;
-      if (status === "betting") return 2;
-      if (status === "payout") return 1;
-      return 0;
-    };
+    const persistedBySlot = new Map<number, Array<(typeof persistedActive)[number]>>();
     for (const row of freshPersisted) {
       const slotIndex = Number(row.slot_index);
       if (!Number.isInteger(slotIndex)) continue;
-      const existing = latestPersistedBySlot.get(slotIndex);
-      if (!existing) {
-        latestPersistedBySlot.set(slotIndex, row);
-        continue;
+      const list = persistedBySlot.get(slotIndex) ?? [];
+      list.push(row);
+      persistedBySlot.set(slotIndex, list);
+    }
+
+    const latestPersistedBySlot = new Map<number, (typeof persistedActive)[number]>();
+    for (const [slotIndex, rows] of persistedBySlot.entries()) {
+      const sorted = [...rows].sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+      );
+      const newest = sorted[0];
+      if (!newest) continue;
+
+      // Prefer active combat over a newer pre-created betting row, but only
+      // while the combat row is still fresh. This prevents stale ghost combat
+      // rows from freezing the UI indefinitely.
+      const newestCombat = sorted.find((row) => String(row.status ?? "").toLowerCase() === "combat");
+      let selected = newest;
+      if (newestCombat && String(newest.status ?? "").toLowerCase() === "betting") {
+        const combatCreatedAtMs = new Date(newestCombat.created_at).getTime();
+        if (Number.isFinite(combatCreatedAtMs) && Date.now() - combatCreatedAtMs <= COMBAT_PREFER_WINDOW_MS) {
+          selected = newestCombat;
+        }
       }
 
-      const rowPriority = persistedSlotDisplayPriority(row);
-      const existingPriority = persistedSlotDisplayPriority(existing);
-      if (rowPriority > existingPriority) {
-        latestPersistedBySlot.set(slotIndex, row);
-        continue;
-      }
-      if (rowPriority < existingPriority) continue;
-
-      if (new Date(row.created_at).getTime() > new Date(existing.created_at).getTime()) {
-        latestPersistedBySlot.set(slotIndex, row);
-      }
+      latestPersistedBySlot.set(slotIndex, selected);
     }
 
     if (freshPersisted.length > 0) {
