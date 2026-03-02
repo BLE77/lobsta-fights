@@ -2209,8 +2209,16 @@ export class RumbleOrchestrator {
             `updateRumbleTxSignature:startCombat:${rumbleId}`,
           );
         }
-      } catch (err) {
-        console.warn(`[OnChain] startCombat (recovery) failed for ${rumbleId}: ${formatError(err)}`);
+      } catch (err: any) {
+        const errMsg = err?.message ?? String(err);
+        if (errMsg.includes("AccountOwnedByWrongProgram") && await isCombatStateDelegated(rumbleIdNum)) {
+          console.warn(`[OnChain] startCombat (recovery) blocked by stale delegation, undelegating...`);
+          await undelegateCombatFromEr(rumbleIdNum).catch(() => {});
+          await new Promise(r => setTimeout(r, 3000));
+          try { await startCombatOnChain(rumbleIdNum); } catch { /* will retry next tick */ }
+        } else {
+          console.warn(`[OnChain] startCombat (recovery) failed for ${rumbleId}: ${formatError(err)}`);
+        }
       }
       invalidateReadCache(`rumble:${rumbleIdNum}`);
       state = await readRumbleAccountState(rumbleIdNum).catch(() => null);
@@ -2250,8 +2258,28 @@ export class RumbleOrchestrator {
       } else {
         console.warn(`[OnChain] startCombat returned null — continuing off-chain`);
       }
-    } catch (err) {
-      console.error(`[OnChain] startCombat error:`, err);
+    } catch (err: any) {
+      // If combat_state is stuck delegated from a previous run, undelegate and retry
+      const errMsg = err?.message ?? String(err);
+      if (errMsg.includes("AccountOwnedByWrongProgram") || errMsg.includes("owned by a different program")) {
+        const stillDelegated = await isCombatStateDelegated(rumbleIdNum);
+        if (stillDelegated) {
+          console.warn(`[OnChain] startCombat failed — combat_state delegated from previous run, undelegating...`);
+          try {
+            await undelegateCombatFromEr(rumbleIdNum);
+            // Wait for L1 propagation then retry
+            await new Promise(r => setTimeout(r, 3000));
+            const retrySig = await startCombatOnChain(rumbleIdNum);
+            if (retrySig) console.log(`[OnChain] startCombat retry succeeded: ${retrySig}`);
+          } catch (retryErr) {
+            console.error(`[OnChain] startCombat retry after undelegate failed:`, retryErr);
+          }
+        } else {
+          console.error(`[OnChain] startCombat error:`, err);
+        }
+      } else {
+        console.error(`[OnChain] startCombat error:`, err);
+      }
     }
   }
 
