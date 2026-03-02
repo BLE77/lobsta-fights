@@ -192,8 +192,9 @@ export async function POST(request: Request) {
     let signature: string;
     try {
       signature = await connection.sendRawTransaction(rawTx, {
-        skipPreflight: false,
-        preflightCommitment: "processed",
+        // ER validator rejects preflight for writable non-delegated system accounts
+        skipPreflight: erEnabled,
+        preflightCommitment: erEnabled ? undefined : "processed",
         maxRetries: 3,
       });
     } catch (err: any) {

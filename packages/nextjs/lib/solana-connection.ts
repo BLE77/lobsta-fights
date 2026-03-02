@@ -220,7 +220,7 @@ export function getBettingReadConnections(): Connection[] {
 export function getErRpcEndpoint(): string {
   const explicit = process.env.MAGICBLOCK_ER_RPC_URL?.trim();
   if (explicit) return explicit;
-  return "https://devnet-us.magicblock.app/";
+  return "https://devnet.magicblock.app";
 }
 
 let _erConnection: Connection | null = null;

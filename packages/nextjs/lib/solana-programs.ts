@@ -23,6 +23,7 @@ import {
   getBettingConnection,
   getBettingReadConnections,
   getErConnection,
+  getErRpcEndpoint,
 } from "./solana-connection";
 import { createHash, randomBytes } from "node:crypto";
 import { keccak_256 } from "@noble/hashes/sha3";
@@ -109,6 +110,22 @@ const SLOT_HASHES_SYSVAR_ID = new PublicKey(
 const DELEGATION_PROGRAM_ID = new PublicKey("DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh");
 const MAGIC_PROGRAM_ID = new PublicKey("Magic11111111111111111111111111111111111111");
 const MAGIC_CONTEXT_ID = new PublicKey("MagicContext1111111111111111111111111111111");
+
+/**
+ * Check if a combat state PDA is currently delegated to ER.
+ * Detects delegation by checking if the L1 account owner is the Delegation Program.
+ */
+export async function isCombatStateDelegated(rumbleId: number): Promise<boolean> {
+  const [combatStatePda] = deriveCombatStatePda(rumbleId);
+  const conn = getConnection(); // Always check L1
+  try {
+    const info = await conn.getAccountInfo(combatStatePda);
+    if (!info) return false;
+    return info.owner.equals(DELEGATION_PROGRAM_ID);
+  } catch {
+    return false;
+  }
+}
 
 // MagicBlock VRF Program
 const VRF_PROGRAM_ID = new PublicKey("Vrf1RNUjXmQGjmQrQLvJHs9SNkvDJEsRVFPkfSQUwGz");
@@ -2219,15 +2236,22 @@ async function sendAdminTxFireAndForget(
   connection?: Connection,
 ): Promise<string> {
   const conn = connection ?? getConnection();
+  const erEndpoint = getErRpcEndpoint();
+  const isEr = (conn as any)._rpcEndpoint?.includes("magicblock") ||
+    conn.rpcEndpoint?.includes("magicblock");
   const tx: Transaction = await method.transaction();
   tx.feePayer = admin.publicKey;
   const { blockhash } = await conn.getLatestBlockhash("processed");
   tx.recentBlockhash = blockhash;
-  tx.instructions.unshift(getComputeUnitPriceIx());
+  // ER transactions are feeless — skip compute unit price
+  if (!isEr) {
+    tx.instructions.unshift(getComputeUnitPriceIx());
+  }
   tx.sign(admin);
   const signature = await conn.sendRawTransaction(tx.serialize(), {
-    skipPreflight: false,
-    preflightCommitment: "processed",
+    // ER validator rejects preflight for magic_context writable checks — skip it
+    skipPreflight: isEr,
+    preflightCommitment: isEr ? undefined : "processed",
     maxRetries: 3,
   });
   return signature;
@@ -3437,6 +3461,8 @@ export async function commitCombatFromEr(
     .accounts({
       authority: admin.publicKey,
       combatState: combatStatePda,
+      magicProgram: MAGIC_PROGRAM_ID,
+      magicContext: MAGIC_CONTEXT_ID,
     });
 
   // Commit is called on the ER
@@ -3465,6 +3491,8 @@ export async function undelegateCombatFromEr(
     .accounts({
       authority: admin.publicKey,
       combatState: combatStatePda,
+      magicProgram: MAGIC_PROGRAM_ID,
+      magicContext: MAGIC_CONTEXT_ID,
     });
 
   // Undelegate is called on the ER

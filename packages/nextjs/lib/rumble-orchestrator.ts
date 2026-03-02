@@ -101,6 +101,7 @@ import {
   delegateCombatToEr,
   commitCombatFromEr,
   undelegateCombatFromEr,
+  isCombatStateDelegated,
   requestMatchupSeed,
   requestIchorShowerVrf,
 } from "./solana-programs";
@@ -2545,8 +2546,17 @@ export class RumbleOrchestrator {
             console.warn(`[ER] delegateCombat returned null for rumble ${rumbleIdNum} — falling back to L1`);
           }
         } catch (err) {
-          if (state) state.erDelegated = false;
-          console.warn(`[ER] delegateCombat failed for rumble ${rumbleIdNum}, falling back to L1:`, err);
+          // Check if delegation failed because account is ALREADY delegated (cold-start recovery)
+          if (state) {
+            const alreadyDelegated = await isCombatStateDelegated(rumbleIdNum);
+            if (alreadyDelegated) {
+              state.erDelegated = true;
+              console.log(`[ER] delegateCombat failed but account already delegated for rumble ${rumbleIdNum} — using ER`);
+            } else {
+              state.erDelegated = false;
+              console.warn(`[ER] delegateCombat failed for rumble ${rumbleIdNum}, falling back to L1:`, err);
+            }
+          }
         }
       }
 
@@ -3006,9 +3016,10 @@ export class RumbleOrchestrator {
   private async sendFighterSignedTx(tx: Transaction, signer: Keypair, connection?: Connection): Promise<string> {
     tx.partialSign(signer);
     const conn = connection ?? this.getCombatConnection();
+    const isEr = conn.rpcEndpoint?.includes("magicblock");
     const signature = await conn.sendRawTransaction(tx.serialize(), {
-      skipPreflight: false,
-      preflightCommitment: "processed",
+      skipPreflight: isEr,
+      preflightCommitment: isEr ? undefined : "processed",
       maxRetries: 3,
     });
     // Best-effort confirmation: check status once after a short delay.
@@ -3113,9 +3124,10 @@ export class RumbleOrchestrator {
       if (typeof response.signed_tx === "string" && response.signed_tx.length > 0) {
         const signedTx = Transaction.from(Buffer.from(response.signed_tx, "base64"));
         const conn = combatConnection ?? this.getCombatConnection();
+        const isEr = conn.rpcEndpoint?.includes("magicblock");
         const signature = await conn.sendRawTransaction(signedTx.serialize(), {
-          skipPreflight: false,
-          preflightCommitment: "processed",
+          skipPreflight: isEr,
+          preflightCommitment: isEr ? undefined : "processed",
           maxRetries: 3,
         });
         console.log(
