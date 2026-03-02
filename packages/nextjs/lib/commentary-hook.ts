@@ -355,8 +355,7 @@ function fireAndPersist(
 
 export function registerCommentaryHook(orchestrator: RumbleOrchestrator): void {
   if (!process.env.ELEVENLABS_API_KEY) {
-    console.log("[commentary-hook] No ELEVENLABS_API_KEY, skipping registration");
-    return;
+    console.log("[commentary-hook] No ELEVENLABS_API_KEY; running in text-only commentary mode");
   }
 
   console.log("[commentary-hook] Registering shared commentary listeners");

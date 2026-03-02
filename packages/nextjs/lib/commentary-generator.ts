@@ -208,17 +208,20 @@ export async function generateAndUploadCommentary(
   context: string,
   allowedNames: string[] = [],
 ): Promise<CommentaryClipResult | null> {
-  // Guard: need at least ElevenLabs key
-  if (!process.env.ELEVENLABS_API_KEY) {
-    return null;
-  }
-
   try {
     const text = await generateCommentaryText(eventType, context, allowedNames);
     if (!text) return null;
 
-    const audio = await generateTtsAudio(text);
-    const audioUrl = await uploadCommentaryClip(rumbleId, clipKey, audio);
+    let audioUrl: string | null = null;
+    if (process.env.ELEVENLABS_API_KEY) {
+      try {
+        const audio = await generateTtsAudio(text);
+        audioUrl = await uploadCommentaryClip(rumbleId, clipKey, audio);
+      } catch (err) {
+        // Keep text-only commentary flowing even when TTS quota is exhausted.
+        console.warn("[commentary-generator] TTS unavailable; emitting text-only commentary:", err);
+      }
+    }
 
     return { text, audioUrl };
   } catch (err) {
