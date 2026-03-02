@@ -11,6 +11,7 @@ import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 const RUMBLE_ENGINE_ID = new PublicKey(
   process.env.NEXT_PUBLIC_RUMBLE_ENGINE_MAINNET?.trim() ||
   process.env.NEXT_PUBLIC_RUMBLE_ENGINE_ID_MAINNET?.trim() ||
+  process.env.NEXT_PUBLIC_RUMBLE_ENGINE_PROGRAM?.trim() ||
   "638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU"
 );
 const RUMBLE_SEED = Buffer.from("rumble");
@@ -32,10 +33,11 @@ function deriveRumblePda(rumbleId: number): [PublicKey, number] {
 }
 
 // ---------------------------------------------------------------------------
-// Singleton WebSocket Connection (module-level, shared across all slots)
+// Singleton WebSocket Connections (module-level, shared across all slots)
 // ---------------------------------------------------------------------------
 
-let _wssConnection: Connection | null = null;
+let _mainnetWssConnection: Connection | null = null;
+let _devnetWssConnection: Connection | null = null;
 
 function toWsEndpoint(httpEndpoint: string): string {
   if (httpEndpoint.startsWith("https://")) {
@@ -47,21 +49,37 @@ function toWsEndpoint(httpEndpoint: string): string {
   return httpEndpoint;
 }
 
-function getWssConnection(): Connection | null {
-  if (_wssConnection) return _wssConnection;
+function getMainnetWssConnection(): Connection | null {
+  if (_mainnetWssConnection) return _mainnetWssConnection;
   const explicitRpc = process.env.NEXT_PUBLIC_BETTING_RPC_URL?.trim();
   const explicitWs = process.env.NEXT_PUBLIC_BETTING_WS_URL?.trim();
   const heliusMainnetKey = process.env.NEXT_PUBLIC_HELIUS_MAINNET_API_KEY?.trim();
   const httpsUrl =
     explicitRpc ||
-    (heliusMainnetKey ? `https://mainnet.helius-rpc.com/?api-key=${heliusMainnetKey}` : "https://api.mainnet-beta.solana.com");
+    (heliusMainnetKey ? `https://mainnet.helius-rpc.com/?api-key=${heliusMainnetKey}` : null);
+  if (!httpsUrl) return null;
   const wssUrl = explicitWs || toWsEndpoint(httpsUrl);
-  _wssConnection = new Connection(httpsUrl, {
+  _mainnetWssConnection = new Connection(httpsUrl, {
     wsEndpoint: wssUrl,
     commitment: "processed",
   });
-  console.log("[OnChainBettingState] Mainnet WS connection created");
-  return _wssConnection;
+  return _mainnetWssConnection;
+}
+
+function getDevnetWssConnection(): Connection | null {
+  if (_devnetWssConnection) return _devnetWssConnection;
+  const heliusKey =
+    process.env.NEXT_PUBLIC_HELIUS_API_KEY?.trim() ||
+    process.env.NEXT_PUBLIC_HELIUS_DEVNET_API_KEY?.trim();
+  const httpsUrl = heliusKey
+    ? `https://devnet.helius-rpc.com/?api-key=${heliusKey}`
+    : "https://api.devnet.solana.com";
+  const wssUrl = toWsEndpoint(httpsUrl);
+  _devnetWssConnection = new Connection(httpsUrl, {
+    wsEndpoint: wssUrl,
+    commitment: "processed",
+  });
+  return _devnetWssConnection;
 }
 
 // ---------------------------------------------------------------------------
@@ -90,8 +108,7 @@ export function useOnChainBettingState(
 ): OnChainBettingState {
   const [onchainState, setOnchainState] = useState<OnchainState | null>(null);
   const [connected, setConnected] = useState(false);
-  const subIdRef = useRef<number | null>(null);
-  const connectionRef = useRef<Connection | null>(null);
+  const subIdsRef = useRef<Array<{ conn: Connection; id: number }>>([]);
 
   useEffect(() => {
     // Only subscribe during betting state
@@ -108,56 +125,56 @@ export function useOnChainBettingState(
       parseOnchainRumbleIdNumber(rumbleId);
     if (rumbleIdNum === null) return;
 
-    const conn = getWssConnection();
-    if (!conn) {
-      console.log("[OnChainBettingState] No mainnet WS endpoint — WS disabled");
-      return;
+    const [rumblePda] = deriveRumblePda(rumbleIdNum);
+    let cancelled = false;
+    const subs: Array<{ conn: Connection; id: number }> = [];
+
+    const handleAccountChange = (data: Buffer) => {
+      if (cancelled) return;
+      if (!data || data.length < 17) return;
+      const rawState = data[16];
+      const state = ONCHAIN_STATES[rawState];
+      if (state) {
+        setOnchainState(state);
+      }
+    };
+
+    // Subscribe to both mainnet AND devnet to catch state changes on
+    // whichever network the program is actually deployed to.
+    const connections: Array<{ conn: Connection; label: string }> = [];
+
+    const mainnetConn = getMainnetWssConnection();
+    if (mainnetConn) connections.push({ conn: mainnetConn, label: "mainnet" });
+
+    const devnetConn = getDevnetWssConnection();
+    if (devnetConn) connections.push({ conn: devnetConn, label: "devnet" });
+
+    for (const { conn, label } of connections) {
+      try {
+        const subId = conn.onAccountChange(
+          rumblePda,
+          (accountInfo) => handleAccountChange(accountInfo.data),
+          "processed"
+        );
+        subs.push({ conn, id: subId });
+        console.log(
+          `[OnChainBettingState] ${label} subscription active for ${rumblePda.toBase58()} (id=${subId})`
+        );
+      } catch (err) {
+        console.warn(`[OnChainBettingState] ${label} subscription failed`, err);
+      }
     }
 
-    connectionRef.current = conn;
-    const [rumblePda] = deriveRumblePda(rumbleIdNum);
-
-    console.log(
-      `[OnChainBettingState] Subscribing to ${rumblePda.toBase58()} (rumble ${rumbleId})`
-    );
-
-    let cancelled = false;
-
-    const subscriptionId = conn.onAccountChange(
-      rumblePda,
-      (accountInfo) => {
-        if (cancelled) return;
-        const data = accountInfo.data;
-        if (!data || data.length < 17) return;
-
-        const rawState = data[16];
-        const state = ONCHAIN_STATES[rawState];
-        if (state) {
-          console.log(`[OnChainBettingState] On-chain state: ${state}`);
-          setOnchainState(state);
-        }
-      },
-      "processed"
-    );
-
-    subIdRef.current = subscriptionId;
-    setConnected(true);
-    console.log(
-      `[OnChainBettingState] Subscription active (id=${subscriptionId})`
-    );
+    subIdsRef.current = subs;
+    setConnected(subs.length > 0);
 
     return () => {
       cancelled = true;
       setConnected(false);
-      if (subIdRef.current !== null && connectionRef.current) {
-        console.log(
-          `[OnChainBettingState] Unsubscribing (id=${subIdRef.current})`
-        );
-        connectionRef.current
-          .removeAccountChangeListener(subIdRef.current)
-          .catch(() => {});
-        subIdRef.current = null;
+      for (const { conn, id } of subIdsRef.current) {
+        conn.removeAccountChangeListener(id).catch(() => {});
       }
+      subIdsRef.current = [];
     };
   }, [rumbleId, slotState, rumbleNumber]);
 

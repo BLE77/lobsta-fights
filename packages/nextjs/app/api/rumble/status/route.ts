@@ -634,11 +634,13 @@ export async function GET(request: Request) {
           } else {
             bettingDeadline = null;
           }
-          // Validate computed deadline: discard if unreasonable
+          // Validate computed deadline: discard if unreasonable.
+          // Allow up to 5 minutes in the past so expired deadlines still
+          // show as "Betting Closed" instead of "Initializing On-Chain...".
           if (bettingDeadline) {
             const deadlineMs = new Date(bettingDeadline).getTime();
             const nowMs = Date.now();
-            if (!Number.isFinite(deadlineMs) || deadlineMs < nowMs - 60_000 || deadlineMs > nowMs + 10 * 60 * 1000) {
+            if (!Number.isFinite(deadlineMs) || deadlineMs < nowMs - 5 * 60 * 1000 || deadlineMs > nowMs + 10 * 60 * 1000) {
               bettingDeadline = slot.bettingDeadline ?? null;
             }
           }
@@ -958,7 +960,18 @@ export async function GET(request: Request) {
           totalPool: sameRumble ? existing.totalPool : 0,
           bettingDeadline:
             mergedState === "betting"
-              ? (sameRumble ? existing.bettingDeadline : null)
+              ? (sameRumble
+                  ? existing.bettingDeadline
+                  // For non-same-rumble betting slots (Vercel cold start), compute
+                  // a synthetic deadline from created_at so the BettingPanel shows
+                  // a countdown instead of "Initializing On-Chain...".
+                  : (() => {
+                      const createdMs = new Date(row.created_at).getTime();
+                      if (!Number.isFinite(createdMs)) return null;
+                      // Assume ~60s betting window from creation
+                      const syntheticDeadline = new Date(createdMs + 60_000).toISOString();
+                      return syntheticDeadline;
+                    })())
               : null,
           nextTurnAt:
             mergedState === "combat"
@@ -1040,8 +1053,10 @@ export async function GET(request: Request) {
             // Case 3: On-chain is in betting state with a valid close slot/timestamp.
             const closeRaw = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
             if (!(closeRaw > 0n)) {
-              // On-chain betting but deadline not armed yet.
-              return { ...slot, bettingDeadline: null };
+              // On-chain betting but deadline not armed yet. Keep any
+              // existing synthetic deadline from the DB overlay so the
+              // BettingPanel shows "Betting Open" instead of null.
+              return slot;
             }
             const effectiveCurrentSlot = useDevnetSlotContext ? currentClusterSlotBig : currentBettingSlotBig;
             const looksLikeUnix =
@@ -1054,11 +1069,13 @@ export async function GET(request: Request) {
               : etaMs > 0
                 ? new Date(Date.now() + etaMs).toISOString()
                 : null;
-            // Validate computed deadline: discard if unreasonable
+            // Validate computed deadline: discard if unreasonable.
+            // Allow up to 5 minutes in the past so expired deadlines still
+            // show as "Betting Closed" instead of "Initializing On-Chain...".
             if (bettingDeadline) {
               const deadlineMs = new Date(bettingDeadline).getTime();
               const nowMs = Date.now();
-              if (!Number.isFinite(deadlineMs) || deadlineMs < nowMs - 60_000 || deadlineMs > nowMs + 10 * 60 * 1000) {
+              if (!Number.isFinite(deadlineMs) || deadlineMs < nowMs - 5 * 60 * 1000 || deadlineMs > nowMs + 10 * 60 * 1000) {
                 bettingDeadline = slot.bettingDeadline ?? null;
               }
             }
