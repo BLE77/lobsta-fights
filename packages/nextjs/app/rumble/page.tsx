@@ -600,6 +600,21 @@ export default function RumblePage() {
             slot.fighters.length >= previous.fighters.length ? slot.fighters : previous.fighters;
           const state =
             stateRank[slot.state] >= stateRank[previous.state] ? slot.state : previous.state;
+          const bettingDeadline =
+            state === "betting"
+              ? (() => {
+                  if (previous.state !== "betting" || !slot.bettingDeadline) return slot.bettingDeadline;
+                  const previousDeadlineMs = previous.bettingDeadline
+                    ? Date.parse(previous.bettingDeadline)
+                    : Number.NaN;
+                  const nextDeadlineMs = Date.parse(slot.bettingDeadline);
+                  if (!Number.isFinite(nextDeadlineMs)) return previous.bettingDeadline;
+                  if (!Number.isFinite(previousDeadlineMs) || nextDeadlineMs < previousDeadlineMs) {
+                    return slot.bettingDeadline;
+                  }
+                  return previous.bettingDeadline;
+                })()
+              : slot.bettingDeadline;
 
           return {
             ...slot,
@@ -607,6 +622,7 @@ export default function RumblePage() {
             turns,
             fighters,
             currentTurn: Math.max(slot.currentTurn ?? 0, previous.currentTurn ?? 0, turns.length),
+            bettingDeadline,
           };
         });
 

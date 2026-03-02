@@ -901,7 +901,7 @@ export class RumbleOrchestrator {
   async tick(): Promise<void> {
     // Only the Railway worker should run ticks. Vercel serverless functions
     // must NEVER create rumbles or advance combat — that causes ghost rumbles.
-    if (!process.env.RUMBLE_WORKER_MODE && process.env.VERCEL) {
+    if (process.env.RUMBLE_WORKER_MODE !== "true" && process.env.VERCEL) {
       return;
     }
 
@@ -985,8 +985,7 @@ export class RumbleOrchestrator {
     await Promise.all(slotPromises);
 
     await this.processPendingRumbleFinalizations();
-    // Auto-sweep disabled — admin-only via admin panel
-    // await this.processPendingSweeps();
+    await this.processPendingSweeps();
     this.pollPendingIchorShower();
     this.periodicRentReclaim();
   }
@@ -1592,16 +1591,16 @@ export class RumbleOrchestrator {
 
   /** Every 30 min, batch complete+close eligible mainnet rumble accounts to reclaim rent. */
   private periodicRentReclaim(): void {
-    const RENT_RECLAIM_INTERVAL_MS = 30 * 60_000;
+    const RENT_RECLAIM_INTERVAL_MS = 5 * 60_000;
     const now = Date.now();
     if (now - this.lastRentReclaimAt < RENT_RECLAIM_INTERVAL_MS) return;
     this.lastRentReclaimAt = now;
 
     reclaimMainnetRumbleRent()
-      .then(({ completed, closed, reclaimedLamports }) => {
-        if (completed > 0 || closed > 0) {
+      .then(({ completed, closed, swept, reclaimedLamports }) => {
+        if (completed > 0 || closed > 0 || swept > 0) {
           console.log(
-            `[RentReclaim] completed=${completed} closed=${closed} reclaimed=${(reclaimedLamports / 1e9).toFixed(6)} SOL`,
+            `[RentReclaim] completed=${completed} swept=${swept} closed=${closed} reclaimed=${(reclaimedLamports / 1e9).toFixed(6)} SOL`,
           );
         }
       })

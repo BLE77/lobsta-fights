@@ -81,6 +81,7 @@ async function getCachedBettingSlot(): Promise<number | null> {
 // for the same on-chain state, instead of recomputing Date.now()+eta each call.
 // ---------------------------------------------------------------------------
 const _nextTurnAtCache = new Map<string, { iso: string; expiresAt: number }>();
+const _bettingDeadlineCache = new Map<string, { iso: string; expiresAt: number }>();
 
 function getStableNextTurnAt(
   rumbleIdNum: number,
@@ -101,6 +102,25 @@ function getStableNextTurnAt(
   }
   const iso = computeIso();
   _nextTurnAtCache.set(key, { iso, expiresAt: now + 20_000 });
+  return iso;
+}
+
+function getStableBettingDeadline(
+  rumbleIdNum: number,
+  closeSlot: bigint,
+  computeIso: () => string,
+): string {
+  const key = `${rumbleIdNum}:${closeSlot.toString()}`;
+  const now = Date.now();
+  const cached = _bettingDeadlineCache.get(key);
+  if (cached && cached.expiresAt > now) return cached.iso;
+  if (_bettingDeadlineCache.size > 50) {
+    for (const [k, v] of _bettingDeadlineCache) {
+      if (v.expiresAt <= now) _bettingDeadlineCache.delete(k);
+    }
+  }
+  const iso = computeIso();
+  _bettingDeadlineCache.set(key, { iso, expiresAt: now + 60_000 });
   return iso;
 }
 
@@ -629,7 +649,15 @@ export async function GET(request: Request) {
               bettingDeadline = Number.isFinite(unixMs) ? new Date(unixMs).toISOString() : null;
             } else {
               const etaMs = useDevnetSlotContext ? slotsToMs(closeRaw) : bettingSlotsToMs(closeRaw);
-              bettingDeadline = etaMs > 0 ? new Date(Date.now() + etaMs).toISOString() : null;
+              if (etaMs > 0) {
+                bettingDeadline = getStableBettingDeadline(
+                  rumbleIdNum,
+                  closeRaw,
+                  () => new Date(Date.now() + etaMs).toISOString(),
+                );
+              } else {
+                bettingDeadline = null;
+              }
             }
           } else {
             bettingDeadline = null;
@@ -1064,11 +1092,16 @@ export async function GET(request: Request) {
                 ? closeRaw > effectiveCurrentSlot + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD
                 : closeRaw > 1_000_000_000n;
             const etaMs = useDevnetSlotContext ? slotsToMs(closeRaw) : bettingSlotsToMs(closeRaw);
-            let bettingDeadline: string | null = looksLikeUnix
-              ? new Date(Number(closeRaw) * 1_000).toISOString()
-              : etaMs > 0
-                ? new Date(Date.now() + etaMs).toISOString()
-                : null;
+            let bettingDeadline: string | null = null;
+            if (looksLikeUnix) {
+              bettingDeadline = Number(closeRaw) > 0 ? new Date(Number(closeRaw) * 1_000).toISOString() : null;
+            } else if (etaMs > 0) {
+              bettingDeadline = getStableBettingDeadline(
+                rumbleIdNum,
+                closeRaw,
+                () => new Date(Date.now() + etaMs).toISOString(),
+              );
+            }
             // Validate computed deadline: discard if unreasonable.
             // Allow up to 5 minutes in the past so expired deadlines still
             // show as "Betting Closed" instead of "Initializing On-Chain...".
