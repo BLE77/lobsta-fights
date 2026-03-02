@@ -2965,6 +2965,18 @@ export class RumbleOrchestrator {
       placement: 0,
     }));
 
+    // On cold-start, detect if combat_state is already delegated to ER
+    let erDelegated = false;
+    if (this.erEnabled) {
+      const rumbleIdNum = parseOnchainRumbleIdNumber(slot.id);
+      if (rumbleIdNum !== null) {
+        erDelegated = await isCombatStateDelegated(rumbleIdNum);
+        if (erDelegated) {
+          console.log(`[ER] Cold-start: detected already-delegated combat_state for rumble ${slot.id}`);
+        }
+      }
+    }
+
     this.combatStates.set(slot.slotIndex, {
       rumbleId: slot.id,
       fighters,
@@ -2977,7 +2989,7 @@ export class RumbleOrchestrator {
       lastOnchainTurnResolved: 0,
       previousDamageTaken: new Map(),
       lastTickAt: Date.now(),
-      erDelegated: false,
+      erDelegated,
     });
   }
 
