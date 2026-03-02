@@ -46,6 +46,7 @@ const MAX_ACTIVE_AGE_MS_BY_STATUS: Record<string, number> = {
  * Beyond this window, treat the combat row as stale and prefer the newer row.
  */
 const COMBAT_PREFER_WINDOW_MS = 8 * 60 * 1000;
+const PAYOUT_PREFER_WINDOW_MS = 75 * 1000;
 const STATUS_CACHE_TTLS_MS = {
   slot: 1_500,
   fighterLookup: 10_000,
@@ -123,6 +124,26 @@ function resolveOnchainRumbleIdNumberForSlot(
   const rumbleId = String(slot.rumbleId ?? "").trim();
   if (!rumbleId) return null;
   return parseOnchainRumbleIdNumber(rumbleId);
+}
+
+function activeRowStatus(row: { status?: unknown }): "idle" | "betting" | "combat" | "payout" {
+  const status = String(row.status ?? "").toLowerCase();
+  if (status === "betting" || status === "combat" || status === "payout") return status;
+  return "idle";
+}
+
+function rowHasCombatEvidence(row: { started_at?: unknown; total_turns?: unknown; turn_log?: unknown }): boolean {
+  const startedAtMs =
+    typeof row.started_at === "string" && row.started_at.length > 0
+      ? new Date(row.started_at).getTime()
+      : Number.NaN;
+  if (Number.isFinite(startedAtMs) && startedAtMs > 0) return true;
+  const totalTurns = Number((row as { total_turns?: unknown }).total_turns ?? 0);
+  if (Number.isFinite(totalTurns) && totalTurns > 0) return true;
+  if (Array.isArray((row as { turn_log?: unknown }).turn_log) && (row as { turn_log?: unknown[] }).turn_log!.length > 0) {
+    return true;
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -801,15 +822,23 @@ export async function GET(request: Request) {
       const newest = sorted[0];
       if (!newest) continue;
 
-      // Prefer active combat over a newer pre-created betting row, but only
-      // while the combat row is still fresh. This prevents stale ghost combat
-      // rows from freezing the UI indefinitely.
-      const newestCombat = sorted.find((row) => String(row.status ?? "").toLowerCase() === "combat");
+      // Prefer currently active combat/payout over a newer pre-created betting
+      // row, but only while the older active row is still fresh. If the newer
+      // betting row already has turn/starter evidence, treat it as active and
+      // do NOT pin the older row.
+      const newestStatus = activeRowStatus(newest);
+      const newestIsPrecreatedBetting = newestStatus === "betting" && !rowHasCombatEvidence(newest);
+      const newestActiveOlder = sorted.find((row) => {
+        const status = activeRowStatus(row);
+        return status === "combat" || status === "payout";
+      });
       let selected = newest;
-      if (newestCombat && String(newest.status ?? "").toLowerCase() === "betting") {
-        const combatCreatedAtMs = new Date(newestCombat.created_at).getTime();
-        if (Number.isFinite(combatCreatedAtMs) && Date.now() - combatCreatedAtMs <= COMBAT_PREFER_WINDOW_MS) {
-          selected = newestCombat;
+      if (newestActiveOlder && newestIsPrecreatedBetting) {
+        const olderStatus = activeRowStatus(newestActiveOlder);
+        const olderCreatedAtMs = new Date(newestActiveOlder.created_at).getTime();
+        const preferWindowMs = olderStatus === "payout" ? PAYOUT_PREFER_WINDOW_MS : COMBAT_PREFER_WINDOW_MS;
+        if (Number.isFinite(olderCreatedAtMs) && nowMs - olderCreatedAtMs <= preferWindowMs) {
+          selected = newestActiveOlder;
         }
       }
 
@@ -871,26 +900,33 @@ export async function GET(request: Request) {
         const existing = base.get(slotIndex);
         if (!existing) continue;
         const sameRumble = existing.rumbleId === row.id;
-        const persistedState = (row.status as "idle" | "betting" | "combat" | "payout") ?? "idle";
+        const persistedState = activeRowStatus(row);
+        const persistedHasCombatEvidence = rowHasCombatEvidence(row);
+        const inferredPersistedState: "idle" | "betting" | "combat" | "payout" =
+          persistedState === "betting" && persistedHasCombatEvidence ? "combat" : persistedState;
         const stateRank: Record<"idle" | "betting" | "combat" | "payout", number> = {
           idle: 0,
           betting: 1,
           combat: 2,
           payout: 3,
         };
-        let mergedState: "idle" | "betting" | "combat" | "payout" = sameRumble ? existing.state : persistedState;
+        let mergedState: "idle" | "betting" | "combat" | "payout" = sameRumble
+          ? existing.state
+          : inferredPersistedState;
         if (sameRumble) {
           const existingRank = stateRank[existing.state] ?? 0;
-          const persistedRank = stateRank[persistedState] ?? 0;
+          const persistedRank = stateRank[inferredPersistedState] ?? 0;
           // Prefer persisted DB state when it is strictly ahead of stale in-memory state.
           if (persistedRank > existingRank) {
-            mergedState = persistedState;
+            mergedState = inferredPersistedState;
           }
         }
         const shouldOverlay =
           sameRumble ||
           existing.state === "idle" ||
-          (existing.state === "betting" && !existing.bettingDeadline);
+          (existing.state === "betting" && !existing.bettingDeadline) ||
+          inferredPersistedState !== "betting" ||
+          persistedHasCombatEvidence;
         if (!shouldOverlay) continue;
         // When sameRumble, prefer existing fighters (enriched from on-chain)
         // over turn-log replay which may be stale

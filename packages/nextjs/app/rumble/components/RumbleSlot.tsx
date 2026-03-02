@@ -226,7 +226,17 @@ export default function RumbleSlot({
         setHoldingFinalTurn(false);
         setHeldTurns([]);
         setHeldFighters([]);
+        setHeldCurrentTurn(0);
       }, FINAL_TURN_HOLD_MS);
+    } else if (slot.state !== "payout" && holdingFinalTurn) {
+      // If the slot leaves payout before the hold timer ends, clear held state
+      // immediately so stale final-turn UI never bleeds into the next rumble.
+      if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = null;
+      setHoldingFinalTurn(false);
+      setHeldTurns([]);
+      setHeldFighters([]);
+      setHeldCurrentTurn(0);
     }
     prevStateRef.current = slot.state;
     return () => {
