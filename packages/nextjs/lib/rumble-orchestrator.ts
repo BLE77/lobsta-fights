@@ -1597,10 +1597,10 @@ export class RumbleOrchestrator {
     this.lastRentReclaimAt = now;
 
     reclaimMainnetRumbleRent()
-      .then(({ completed, closed, swept, reclaimedLamports }) => {
-        if (completed > 0 || closed > 0 || swept > 0) {
+      .then(({ completed, closed, skipped, reclaimedLamports }) => {
+        if (completed > 0 || closed > 0) {
           console.log(
-            `[RentReclaim] completed=${completed} swept=${swept} closed=${closed} reclaimed=${(reclaimedLamports / 1e9).toFixed(6)} SOL`,
+            `[RentReclaim] completed=${completed} closed=${closed} skipped=${skipped} reclaimed=${(reclaimedLamports / 1e9).toFixed(6)} SOL`,
           );
         }
       })
