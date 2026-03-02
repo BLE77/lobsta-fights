@@ -33,7 +33,8 @@ const ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD = 5_000_000n;
 const STATUS_MUTATION_ENABLED = (() => {
   const env = process.env.RUMBLE_PUBLIC_STATUS_MUTATION_ENABLED;
   if (typeof env === "string" && env.length > 0) return env === "true";
-  return process.env.NODE_ENV !== "production";
+  // Default to read-only mode. Mutation should be an explicit opt-in.
+  return false;
 })();
 const MAX_ACTIVE_AGE_MS_BY_STATUS: Record<string, number> = {
   betting: 10 * 60 * 1000,
