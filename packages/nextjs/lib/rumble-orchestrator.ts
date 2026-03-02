@@ -2504,6 +2504,17 @@ export class RumbleOrchestrator {
     const BUDGET_RESERVE_MS = 2_000; // stop 2s before maxDuration
     const budgetDeadline = this.tickStartedAt + (MAX_DURATION_MS - BUDGET_RESERVE_MS);
     let turnsThisInvocation = 0;
+    const aliveAtStart = state.fighters.filter((f) => f.hp > 0).length;
+    if (aliveAtStart <= 1) {
+      // Cold-start recovery edge case: if a previous instance resolved the
+      // last elimination but died before calling finishCombat, resume logic
+      // replays turns to <=1 alive and would otherwise loop forever.
+      console.log(
+        `[Orchestrator] Slot ${idx} recovered with ${aliveAtStart} fighter alive; finalizing rumble ${slot.id}`,
+      );
+      await this.finishCombat(slot, state);
+      return;
+    }
 
     while (state.fighters.filter(f => f.hp > 0).length > 1) {
       if (Date.now() > budgetDeadline) {
