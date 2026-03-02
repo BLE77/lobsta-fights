@@ -989,9 +989,9 @@ export default function RumblePage() {
   }, [connectSSE]);
 
   // Poll frequency is state-aware:
-  // - Combat: 5s (turns happen every ~10-15s, need to catch each one)
-  // - Betting: 10s (odds updates, new bets)
-  // - Idle/Payout: 30s (nothing time-critical)
+  // - Combat: 2s (turns can resolve quickly; avoid "skipping" visuals)
+  // - Betting: 4s (keep odds/deadline responsive)
+  // - Idle/Payout: 15s (lower priority, but still keep UI fresh)
   // NOTE: SSE events only work when orchestrator runs in-process (local dev).
   // On production (Vercel + Railway worker), SSE connects but delivers no events,
   // so polling is the primary update mechanism.
@@ -1002,11 +1002,11 @@ export default function RumblePage() {
     fetchStatus();
     let intervalMs: number;
     if (hasActiveCombat) {
-      intervalMs = 5_000;
+      intervalMs = 2_000;
     } else if (hasActiveBetting) {
-      intervalMs = 10_000;
+      intervalMs = 4_000;
     } else {
-      intervalMs = 30_000;
+      intervalMs = 15_000;
     }
     const pollInterval = setInterval(fetchStatus, intervalMs);
     return () => clearInterval(pollInterval);
