@@ -37,19 +37,43 @@ import rumbleEngineIdl from "./idl/rumble_engine.json";
 // Program IDs
 // ---------------------------------------------------------------------------
 
-export const FIGHTER_REGISTRY_ID = new PublicKey(
-  "2hA6Jvj1yjP2Uj3qrJcsBeYA2R9xPM95mDKw1ncKVExa"
-);
-export const ICHOR_TOKEN_ID = new PublicKey(
-  "925GAeqjKMX4B5MDANB91SZCvrx8HpEgmPJwHJzxKJx1"
-);
-export const RUMBLE_ENGINE_ID = new PublicKey(
-  "2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC"
-);
+const DEFAULT_FIGHTER_REGISTRY_ID = "2hA6Jvj1yjP2Uj3qrJcsBeYA2R9xPM95mDKw1ncKVExa";
+const DEFAULT_ICHOR_TOKEN_ID = "925GAeqjKMX4B5MDANB91SZCvrx8HpEgmPJwHJzxKJx1";
+const DEFAULT_RUMBLE_ENGINE_ID = "638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU";
 
 function readEnvTrimmed(name: string): string {
   return process.env[name]?.trim() ?? "";
 }
+
+function readFirstEnv(names: string[]): string {
+  for (const name of names) {
+    const value = readEnvTrimmed(name);
+    if (value) return value;
+  }
+  return "";
+}
+
+export const FIGHTER_REGISTRY_ID = new PublicKey(
+  readFirstEnv([
+    "NEXT_PUBLIC_FIGHTER_REGISTRY_PROGRAM",
+    "FIGHTER_REGISTRY_PROGRAM_ID",
+    "NEXT_PUBLIC_FIGHTER_REGISTRY_ID",
+  ]) || DEFAULT_FIGHTER_REGISTRY_ID,
+);
+export const ICHOR_TOKEN_ID = new PublicKey(
+  readFirstEnv([
+    "NEXT_PUBLIC_ICHOR_TOKEN_PROGRAM",
+    "ICHOR_TOKEN_PROGRAM_ID",
+    "NEXT_PUBLIC_ICHOR_TOKEN_ID",
+  ]) || DEFAULT_ICHOR_TOKEN_ID,
+);
+export const RUMBLE_ENGINE_ID = new PublicKey(
+  readFirstEnv([
+    "NEXT_PUBLIC_RUMBLE_ENGINE_PROGRAM",
+    "RUMBLE_ENGINE_PROGRAM_ID",
+    "NEXT_PUBLIC_RUMBLE_ENGINE_ID",
+  ]) || DEFAULT_RUMBLE_ENGINE_ID,
+);
 
 /**
  * Mainnet program ID for betting operations.
@@ -3476,8 +3500,10 @@ export async function commitCombatFromEr(
  */
 export async function undelegateCombatFromEr(
   rumbleId: number,
+  connection?: Connection,
 ): Promise<string | null> {
-  const provider = getAdminProvider(getErConnection());
+  const conn = connection ?? getErConnection();
+  const provider = getAdminProvider(conn);
   if (!provider) {
     console.warn("[solana-programs] No admin keypair, skipping undelegateCombatFromEr");
     return null;
@@ -3495,8 +3521,8 @@ export async function undelegateCombatFromEr(
       magicContext: MAGIC_CONTEXT_ID,
     });
 
-  // Undelegate is called on the ER
-  return await sendAdminTxFireAndForget(method, admin, getErConnection());
+  // Undelegate is normally called on ER; optional override allows manual recovery probes.
+  return await sendAdminTxFireAndForget(method, admin, conn);
 }
 
 // ---------------------------------------------------------------------------

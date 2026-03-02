@@ -2,7 +2,7 @@ import { Connection, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { utils as anchorUtils } from "@coral-xyz/anchor";
 import { createHash } from "node:crypto";
 
-const RUMBLE_ENGINE_ID = new PublicKey("2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC");
+const RUMBLE_ENGINE_ID = new PublicKey("638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU");
 const BETTOR_SEED = Buffer.from("bettor");
 const BETTOR_DISCRIMINATOR = createHash("sha256")
   .update("account:BettorAccount")

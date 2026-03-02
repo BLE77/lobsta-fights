@@ -19,7 +19,7 @@ import { createHash } from "crypto";
 
 // ─── Program & Network ──────────────────────────────────────────────────────
 
-const PROGRAM_ID = new PublicKey("2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC");
+const PROGRAM_ID = new PublicKey("638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU");
 
 const DEFAULT_RPC = process.env.HELIUS_API_KEY
   ? `https://devnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`

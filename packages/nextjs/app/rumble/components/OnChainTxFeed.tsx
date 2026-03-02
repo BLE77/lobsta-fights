@@ -3,7 +3,12 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Connection, PublicKey } from "@solana/web3.js";
 
-const PROGRAM_ID = "2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC";
+const PROGRAM_ID =
+  process.env.NEXT_PUBLIC_RUMBLE_ENGINE_PROGRAM?.trim() ||
+  process.env.NEXT_PUBLIC_RUMBLE_ENGINE_ID?.trim() ||
+  process.env.NEXT_PUBLIC_RUMBLE_ENGINE_MAINNET?.trim() ||
+  process.env.NEXT_PUBLIC_RUMBLE_ENGINE_ID_MAINNET?.trim() ||
+  "638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU";
 const DEVNET_RPC = process.env.NEXT_PUBLIC_SOLANA_RPC_URL?.trim() || "https://api.devnet.solana.com";
 const EXPLORER_TX = "https://explorer.solana.com/tx";
 const TX_LIMIT = 20;

@@ -2,7 +2,7 @@ import { Connection, PublicKey, SystemProgram } from "@solana/web3.js";
 import * as anchor from "@coral-xyz/anchor";
 import { Keypair } from "@solana/web3.js";
 
-const RUMBLE_ENGINE_ID = new PublicKey("2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC");
+const RUMBLE_ENGINE_ID = new PublicKey("638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU");
 const RUMBLE_SEED = Buffer.from("rumble");
 const VAULT_SEED = Buffer.from("vault");
 const BETTOR_SEED = Buffer.from("bettor");

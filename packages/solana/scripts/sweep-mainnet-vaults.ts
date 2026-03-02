@@ -24,7 +24,7 @@ const RPC_URL = HELIUS_KEY
 const PROGRAM_ID = new PublicKey(
   process.env.NEXT_PUBLIC_RUMBLE_ENGINE_MAINNET ??
   process.env.RUMBLE_ENGINE_MAINNET_PROGRAM_ID ??
-  "2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC"
+  "638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU"
 );
 
 const SEND_TO_ADDRESS = process.argv[2]; // optional: forward swept SOL to this address

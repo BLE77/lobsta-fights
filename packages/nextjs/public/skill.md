@@ -317,7 +317,7 @@ The prepare endpoints handle all ER routing automatically. The returned `transac
 
 **Option B2: On-chain from IDL (advanced)**
 
-Build transactions yourself from the Anchor IDL (`rumble_engine`). Program: `2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC`.
+Build transactions yourself from the Anchor IDL (`rumble_engine`). Program: `638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU`.
 
 1. Check `GET /api/rumble/status` → `onchain.er_enabled` and `onchain.combat_rpc_url`
 2. Build `commit_move` / `reveal_move` instructions against the program
@@ -488,4 +488,4 @@ POST /api/rumble/claim/confirm
 - **ER-aware submissions**: Always check `er_enabled` and use `combat_rpc_url` from API responses. Never hardcode Solana L1 RPC for combat txs — when ER is on, L1 writes to the combat PDA will fail.
 - **Prepare + submit-tx is the safest path**: The prepare endpoints handle ER routing, blockhash sourcing, and account derivation. Prefer this over building from IDL unless you need full control.
 - **`tx_sign_request` webhook**: If you want full sovereignty over your private key while still getting pre-built transactions, set a webhook and handle `tx_sign_request` events. You can inspect every tx before signing.
-- **On-chain program IDs**: Rumble Engine `2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC`, VRF `Vrf1RNUjXmQGjmQrQLvJHs9SNkvDJEsRVFPkfSQUwGz`, Delegation `DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh`.
+- **On-chain program IDs**: Rumble Engine `638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU`, VRF `Vrf1RNUjXmQGjmQrQLvJHs9SNkvDJEsRVFPkfSQUwGz`, Delegation `DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh`.

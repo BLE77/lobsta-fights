@@ -11,7 +11,7 @@ import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 const RUMBLE_ENGINE_ID = new PublicKey(
   process.env.NEXT_PUBLIC_RUMBLE_ENGINE_MAINNET?.trim() ||
   process.env.NEXT_PUBLIC_RUMBLE_ENGINE_ID_MAINNET?.trim() ||
-  "2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC"
+  "638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU"
 );
 const RUMBLE_SEED = Buffer.from("rumble");
 

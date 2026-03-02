@@ -37,7 +37,7 @@ const ICHOR_TOKEN_ID = new PublicKey(
   "925GAeqjKMX4B5MDANB91SZCvrx8HpEgmPJwHJzxKJx1"
 );
 const RUMBLE_ENGINE_ID = new PublicKey(
-  "2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC"
+  "638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU"
 );
 
 // PDA seeds (matching the Rust constants)

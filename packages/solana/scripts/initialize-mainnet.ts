@@ -25,7 +25,7 @@ const DEPLOYER_KEYPAIR_PATH = path.join(
 
 // Mainnet program ID (same as devnet since same keypair was used)
 const RUMBLE_ENGINE_ID = new PublicKey(
-  "2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC"
+  "638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU"
 );
 
 // PDA seed (must match Rust constant)

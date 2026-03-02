@@ -653,6 +653,7 @@ export class RumbleOrchestrator {
   private onchainRumbleCreateRetryAt: Map<string, number> = new Map();
   private onchainRumbleCreateStartedAt: Map<string, number> = new Map();
   private onchainRumbleCreateLastError: Map<string, OnchainCreateFailure> = new Map();
+  private onchainRumbleNumberById: Map<string, number> = new Map();
   private warnedInvalidHouseBotIds: Set<string> = new Set();
   private onchainAdminHealth: OnchainAdminHealth = {
     checkedAt: 0,
@@ -692,6 +693,40 @@ export class RumbleOrchestrator {
   /** Get the combat connection based on per-rumble delegation state. */
   private getConnectionForState(state: SlotCombatState): Connection {
     return state.erDelegated ? getErConnection() : getConnection();
+  }
+
+  /**
+   * Cache the DB-backed on-chain rumble number for a local rumble id.
+   * This prevents accidental parsing of queue-manager ids like
+   * "rumble_<timestamp>_<counter>" into bogus on-chain u64 values.
+   */
+  setRumbleNumber(rumbleId: string, rumbleNumber: number | null): void {
+    if (rumbleNumber === null || rumbleNumber === undefined) {
+      this.onchainRumbleNumberById.delete(rumbleId);
+      return;
+    }
+    if (!Number.isFinite(Number(rumbleNumber))) {
+      this.onchainRumbleNumberById.delete(rumbleId);
+      return;
+    }
+    const value = Number(rumbleNumber);
+    if (!Number.isSafeInteger(value) || value < 0) {
+      this.onchainRumbleNumberById.delete(rumbleId);
+      return;
+    }
+    this.onchainRumbleNumberById.set(rumbleId, value);
+  }
+
+  private resolveOnchainRumbleIdNumber(rumbleId: string): number | null {
+    const cached = this.onchainRumbleNumberById.get(rumbleId);
+    if (typeof cached === "number" && Number.isSafeInteger(cached) && cached >= 0) {
+      return cached;
+    }
+    const parsed = parseOnchainRumbleIdNumber(rumbleId);
+    if (parsed !== null) {
+      this.onchainRumbleNumberById.set(rumbleId, parsed);
+    }
+    return parsed;
   }
 
   constructor(queueManager: RumbleQueueManager) {
@@ -1652,11 +1687,12 @@ export class RumbleOrchestrator {
 
       // Persist: create rumble record BEFORE betting window opens (FK constraint)
       // Must be awaited so the ucf_rumbles row exists before any bet can reference it.
-      await persist.createRumbleRecord({
+      const rumbleNumber = await persist.createRumbleRecord({
         id: slot.id,
         slotIndex: idx,
         fighters: slot.fighters.map((id) => ({ id, name: id })),
       });
+      this.setRumbleNumber(slot.id, rumbleNumber);
       for (const fid of slot.fighters) {
         persist.saveQueueFighter(fid, "in_combat");
       }
@@ -1724,7 +1760,7 @@ export class RumbleOrchestrator {
 
   private async armBettingWindowIfReady(slot: RumbleSlot): Promise<void> {
     if (slot.state !== "betting" || slot.bettingDeadline) return;
-    const rumbleIdNum = parseOnchainRumbleIdNumber(slot.id);
+    const rumbleIdNum = this.resolveOnchainRumbleIdNumber(slot.id);
     let deadline: Date | undefined;
     if (rumbleIdNum !== null) {
       // Try mainnet first, fall back to devnet if mainnet unavailable
@@ -1914,7 +1950,7 @@ export class RumbleOrchestrator {
     bettingDeadlineUnix: number,
   ): Promise<boolean> {
     const slotIndex = this.resolveSlotIndexForRumble(rumbleId);
-    const rumbleIdNum = parseOnchainRumbleIdNumber(rumbleId);
+    const rumbleIdNum = this.resolveOnchainRumbleIdNumber(rumbleId);
     if (rumbleIdNum === null) {
       console.warn(`[OnChain] Cannot parse rumbleId "${rumbleId}" for createRumble`);
       this.recordOnchainCreateFailure(
@@ -2021,7 +2057,7 @@ export class RumbleOrchestrator {
     bettingDeadlineUnix: number,
   ): Promise<boolean> {
     const slotIndex = this.resolveSlotIndexForRumble(rumbleId);
-    const rumbleIdNum = parseOnchainRumbleIdNumber(rumbleId);
+    const rumbleIdNum = this.resolveOnchainRumbleIdNumber(rumbleId);
     if (rumbleIdNum === null) {
       this.recordOnchainCreateFailure(
         rumbleId,
@@ -2075,7 +2111,7 @@ export class RumbleOrchestrator {
     bettingDeadlineUnix: number,
   ): Promise<boolean> {
     const slotIndex = this.resolveSlotIndexForRumble(rumbleId);
-    const rumbleIdNum = parseOnchainRumbleIdNumber(rumbleId);
+    const rumbleIdNum = this.resolveOnchainRumbleIdNumber(rumbleId);
     if (rumbleIdNum === null) {
       this.recordOnchainCreateFailure(
         rumbleId,
@@ -2190,7 +2226,7 @@ export class RumbleOrchestrator {
     fighterIds: string[],
     bettingDeadlineUnix: number,
   ): Promise<Awaited<ReturnType<typeof readRumbleAccountState>>> {
-    const rumbleIdNum = parseOnchainRumbleIdNumber(rumbleId);
+    const rumbleIdNum = this.resolveOnchainRumbleIdNumber(rumbleId);
     if (rumbleIdNum === null) return null;
 
     const exists = await this.ensureOnchainRumbleExists(rumbleId, fighterIds, bettingDeadlineUnix);
@@ -2231,7 +2267,7 @@ export class RumbleOrchestrator {
    * Awaited but failures do not block the off-chain game loop.
    */
   private async startCombatOnChain(slot: RumbleSlot): Promise<void> {
-    const rumbleIdNum = parseOnchainRumbleIdNumber(slot.id);
+    const rumbleIdNum = this.resolveOnchainRumbleIdNumber(slot.id);
     if (rumbleIdNum === null) return;
 
     const onchainState = await this.ensureOnchainRumbleIsCombatReady(
@@ -2441,7 +2477,7 @@ export class RumbleOrchestrator {
         }
 
         // Request VRF matchup seed (fire-and-forget for fairness audit trail)
-        const rumbleIdNumOffchain = parseOnchainRumbleIdNumber(slot.id);
+        const rumbleIdNumOffchain = this.resolveOnchainRumbleIdNumber(slot.id);
         if (rumbleIdNumOffchain !== null) {
           requestMatchupSeed(rumbleIdNumOffchain).catch((err) => {
             console.warn(`[VRF] requestMatchupSeed failed for rumble ${slot.id}:`, err);
@@ -2534,7 +2570,7 @@ export class RumbleOrchestrator {
   private async handleCombatPhaseOnchain(slot: RumbleSlot): Promise<void> {
     const idx = slot.slotIndex;
     const now = Date.now();
-    const rumbleIdNum = parseOnchainRumbleIdNumber(slot.id);
+    const rumbleIdNum = this.resolveOnchainRumbleIdNumber(slot.id);
     if (rumbleIdNum === null) return;
 
     // Initialize local state and start on-chain combat if needed.
@@ -2996,7 +3032,7 @@ export class RumbleOrchestrator {
     // On cold-start, detect if combat_state is already delegated to ER
     let erDelegated = false;
     if (this.erEnabled) {
-      const rumbleIdNum = parseOnchainRumbleIdNumber(slot.id);
+      const rumbleIdNum = this.resolveOnchainRumbleIdNumber(slot.id);
       if (rumbleIdNum !== null) {
         erDelegated = await isCombatStateDelegated(rumbleIdNum);
         if (erDelegated) {
@@ -4301,7 +4337,7 @@ export class RumbleOrchestrator {
     payoutResult: PayoutResult,
     fighterOrder: string[],
   ): Promise<void> {
-    const rumbleIdNum = parseOnchainRumbleIdNumber(rumbleId);
+    const rumbleIdNum = this.resolveOnchainRumbleIdNumber(rumbleId);
     if (rumbleIdNum === null) {
       console.warn(`[Orchestrator] Cannot parse rumbleId "${rumbleId}" as number, skipping on-chain`);
       return;
@@ -4820,7 +4856,7 @@ export class RumbleOrchestrator {
     const LAMPORTS = 1_000_000_000;
     const TREASURY_CUT_BPS = 1_000; // 10% — matches on-chain constant
 
-    const rumbleIdNum = parseOnchainRumbleIdNumber(slot.id);
+    const rumbleIdNum = this.resolveOnchainRumbleIdNumber(slot.id);
     let onchainTotalPool = 0;
     let onchainWinnerBettorsPayout = 0;
     let onchainTreasuryVault = 0;
@@ -5073,6 +5109,7 @@ export class RumbleOrchestrator {
       this.payoutProcessed.delete(previousRumbleId);
       this.onchainRumbleCreateRetryAt.delete(previousRumbleId);
       this.onchainRumbleCreateStartedAt.delete(previousRumbleId);
+      this.onchainRumbleNumberById.delete(previousRumbleId);
       this.clearOnchainCreateFailure(previousRumbleId);
       this.combatStates.delete(slotIndex);
       this.payoutResults.delete(slotIndex);

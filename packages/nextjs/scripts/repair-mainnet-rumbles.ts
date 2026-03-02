@@ -24,7 +24,7 @@ import * as fs from "fs";
 // Config
 // ---------------------------------------------------------------------------
 
-const PROGRAM_ID = new PublicKey("2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC");
+const PROGRAM_ID = new PublicKey("638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU");
 
 const MAINNET_RPC = `https://mainnet.helius-rpc.com/?api-key=3e5c5b12-216f-46b2-bbd6-2546d3eab793`;
 const DEVNET_RPC = `https://devnet.helius-rpc.com/?api-key=f531d309-f3ed-4e05-b15b-a192810be1ca`;
