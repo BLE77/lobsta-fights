@@ -545,7 +545,41 @@ export default function RumblePage() {
       if (seq !== pollSeqRef.current) return; // stale response, discard
       const data = normalizeStatusPayload(raw);
 
-      setStatus(data);
+      setStatus((prev) => {
+        if (!prev) return data;
+
+        const stateRank: Record<SlotData["state"], number> = {
+          idle: 0,
+          betting: 1,
+          combat: 2,
+          payout: 3,
+        };
+        const prevBySlot = new Map(prev.slots.map((slot) => [slot.slotIndex, slot]));
+
+        const slots = data.slots.map((slot) => {
+          const previous = prevBySlot.get(slot.slotIndex);
+          if (!previous) return slot;
+          if (previous.rumbleId !== slot.rumbleId) return slot;
+
+          // Same rumble: keep UI monotonic to avoid visual regressions when
+          // serverless snapshots arrive slightly out of order.
+          const turns = slot.turns.length >= previous.turns.length ? slot.turns : previous.turns;
+          const fighters =
+            slot.fighters.length >= previous.fighters.length ? slot.fighters : previous.fighters;
+          const state =
+            stateRank[slot.state] >= stateRank[previous.state] ? slot.state : previous.state;
+
+          return {
+            ...slot,
+            state,
+            turns,
+            fighters,
+            currentTurn: Math.max(slot.currentTurn ?? 0, previous.currentTurn ?? 0, turns.length),
+          };
+        });
+
+        return { ...data, slots };
+      });
       setError(null);
 
       // Keep the latest completed payout visible while slots wait for the next fighters.
