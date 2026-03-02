@@ -811,7 +811,16 @@ export async function GET(request: Request) {
     const latestPersistedBySlot = new Map<number, (typeof persistedActive)[number]>();
     for (const [slotIndex, rows] of persistedBySlot.entries()) {
       const sorted = [...rows].sort(
-        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+        (a, b) => {
+          const aNum = normalizeRumbleNumber((a as any).rumble_number);
+          const bNum = normalizeRumbleNumber((b as any).rumble_number);
+          if (aNum !== null || bNum !== null) {
+            if (aNum === null) return 1;
+            if (bNum === null) return -1;
+            if (bNum !== aNum) return bNum - aNum;
+          }
+          return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+        },
       );
       const newest = sorted[0];
       if (!newest) continue;
