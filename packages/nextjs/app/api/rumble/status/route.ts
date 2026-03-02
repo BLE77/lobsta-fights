@@ -922,13 +922,6 @@ export async function GET(request: Request) {
             mergedState = inferredPersistedState;
           }
         }
-        const shouldOverlay =
-          sameRumble ||
-          existing.state === "idle" ||
-          (existing.state === "betting" && !existing.bettingDeadline) ||
-          inferredPersistedState !== "betting" ||
-          persistedHasCombatEvidence;
-        if (!shouldOverlay) continue;
         // When sameRumble, prefer existing fighters (enriched from on-chain)
         // over turn-log replay which may be stale
         const useFighters = sameRumble && existing.fighters.length > 0
