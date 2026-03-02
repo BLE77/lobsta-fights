@@ -302,13 +302,64 @@ export async function verifyRumblePlaceBetBatchTransaction(
 
 function extractRumblePlaceBetInstructions(tx: any): ParsedPlaceBetInstruction[] {
   const out: ParsedPlaceBetInstruction[] = [];
-  for (const ix of tx.transaction.message.instructions) {
+  const expectedProgramId = RUMBLE_ENGINE_ID_MAINNET.toBase58();
+  const accountKeys = Array.isArray(tx?.transaction?.message?.accountKeys)
+    ? tx.transaction.message.accountKeys
+    : [];
+
+  function toBase58(value: unknown): string | null {
+    if (!value) return null;
+    if (typeof value === "string") return value;
+    if (typeof (value as { toBase58?: unknown }).toBase58 === "function") {
+      try {
+        return (value as { toBase58: () => string }).toBase58();
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  function resolveProgramId(ix: any): string | null {
+    const direct = toBase58(ix?.programId);
+    if (direct) return direct;
+    if (!Number.isInteger(ix?.programIdIndex)) return null;
+    const indexed = accountKeys[ix.programIdIndex];
+    if (!indexed) return null;
+    return toBase58(indexed?.pubkey ?? indexed);
+  }
+
+  function decodeData(ix: any): Uint8Array | null {
+    const data = ix?.data;
+    if (!data) return null;
+    if (data instanceof Uint8Array) return data;
+    if (Array.isArray(data)) {
+      try {
+        return Uint8Array.from(data.map((v) => Number(v)));
+      } catch {
+        return null;
+      }
+    }
+    if (typeof data === "string") {
+      try {
+        return anchorUtils.bytes.bs58.decode(data);
+      } catch {
+        try {
+          return Uint8Array.from(Buffer.from(data, "base64"));
+        } catch {
+          return null;
+        }
+      }
+    }
+    return null;
+  }
+
+  function scanInstruction(ix: any): void {
     try {
-      if (ix.programId.toBase58() !== RUMBLE_ENGINE_ID_MAINNET.toBase58()) continue;
-      if (!("data" in ix) || typeof ix.data !== "string") continue;
-      const raw = anchorUtils.bytes.bs58.decode(ix.data);
-      if (raw.length < 25) continue;
-      if (!Buffer.from(raw.subarray(0, 8)).equals(PLACE_BET_DISCRIMINATOR)) continue;
+      if (resolveProgramId(ix) !== expectedProgramId) return;
+      const raw = decodeData(ix);
+      if (!raw || raw.length < 25) return;
+      if (!Buffer.from(raw.subarray(0, 8)).equals(PLACE_BET_DISCRIMINATOR)) return;
 
       const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
       const rumbleId = Number(view.getBigUint64(8, true));
@@ -317,6 +368,15 @@ function extractRumblePlaceBetInstructions(tx: any): ParsedPlaceBetInstruction[]
       out.push({ rumbleId, fighterIndex, amountLamports });
     } catch {
       // keep scanning
+    }
+  }
+
+  for (const ix of tx?.transaction?.message?.instructions ?? []) {
+    scanInstruction(ix);
+  }
+  for (const inner of tx?.meta?.innerInstructions ?? []) {
+    for (const ix of inner?.instructions ?? []) {
+      scanInstruction(ix);
     }
   }
   return out;

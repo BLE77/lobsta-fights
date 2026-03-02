@@ -307,7 +307,12 @@ export async function POST(request: Request) {
           };
         }
 
-        const rumbleIdNum = await resolveOnchainRumbleIdForSlot(parsedSlotIndex, slotRumbleId);
+        const requestedRumbleIdNum = normalizeRumbleNumber(
+          body.rumble_id_num ?? body.rumbleIdNum,
+        );
+        const rumbleIdNum =
+          requestedRumbleIdNum ??
+          await resolveOnchainRumbleIdForSlot(parsedSlotIndex, slotRumbleId);
         if (rumbleIdNum === null) {
           return {
             valid: false,

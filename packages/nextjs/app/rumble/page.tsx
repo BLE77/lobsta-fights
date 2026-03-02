@@ -1342,6 +1342,7 @@ export default function RumblePage() {
           tx_signature: txSig,
           tx_kind: prepared.tx_kind ?? "rumble_place_bet",
           rumble_id: prepared.rumble_id,
+          rumble_id_num: prepared.rumble_id_num,
           fighter_index: preparedLegs[0]?.fighter_index ?? prepared.fighter_index,
         }),
       });
