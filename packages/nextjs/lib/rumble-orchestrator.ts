@@ -223,6 +223,8 @@ interface SlotCombatState {
   lastOnchainTurnResolved: number;
   previousDamageTaken: Map<string, number>;
   lastTickAt: number;
+  /** Whether ER delegation succeeded for this specific rumble. */
+  erDelegated: boolean;
 }
 
 interface OnchainTurnDecision {
@@ -673,6 +675,22 @@ export class RumbleOrchestrator {
   /** Get the connection to use for combat transactions (ER or L1). */
   private getCombatConnection(): Connection {
     return getCombatConnectionAuto();
+  }
+
+  /**
+   * Get the combat connection for a specific rumble slot.
+   * Uses ER only if both globally enabled AND delegation succeeded for this rumble.
+   * Falls back to L1 if delegation failed or wasn't attempted.
+   */
+  private getSlotCombatConnection(slotIndex: number): Connection {
+    const state = this.combatStates.get(slotIndex);
+    if (state?.erDelegated) return getErConnection();
+    return getConnection();
+  }
+
+  /** Get the combat connection based on per-rumble delegation state. */
+  private getConnectionForState(state: SlotCombatState): Connection {
+    return state.erDelegated ? getErConnection() : getConnection();
   }
 
   constructor(queueManager: RumbleQueueManager) {
@@ -2517,12 +2535,17 @@ export class RumbleOrchestrator {
 
       // Delegate combat state to Ephemeral Rollup for real-time execution
       if (this.erEnabled) {
+        const state = this.combatStates.get(idx);
         try {
           const sig = await delegateCombatToEr(rumbleIdNum);
-          if (sig) {
+          if (sig && state) {
+            state.erDelegated = true;
             console.log(`[ER] delegateCombat succeeded for rumble ${rumbleIdNum}: ${sig}`);
+          } else {
+            console.warn(`[ER] delegateCombat returned null for rumble ${rumbleIdNum} — falling back to L1`);
           }
         } catch (err) {
+          if (state) state.erDelegated = false;
           console.warn(`[ER] delegateCombat failed for rumble ${rumbleIdNum}, falling back to L1:`, err);
         }
       }
@@ -2567,7 +2590,8 @@ export class RumbleOrchestrator {
       return;
     }
 
-    let combat = await readRumbleCombatState(rumbleIdNum, this.getCombatConnection()).catch(() => null);
+    const slotConn = this.getConnectionForState(state);
+    let combat = await readRumbleCombatState(rumbleIdNum, slotConn).catch(() => null);
     if (!combat) return;
 
     const sync = this.syncLocalFightersFromOnchain(slot, state, combat);
@@ -2634,7 +2658,7 @@ export class RumbleOrchestrator {
       });
 
       // Sync ER state to L1 for spectators
-      if (this.erEnabled && combat.turnResolved) {
+      if (state.erDelegated && combat.turnResolved) {
         commitCombatFromEr(rumbleIdNum).catch((err) =>
           console.warn(`[ER] commitCombat failed for rumble ${rumbleIdNum}:`, err)
         );
@@ -2645,7 +2669,7 @@ export class RumbleOrchestrator {
       for (const fid of slot.fighters) {
         const wallet = state.fighterWallets.get(fid);
         if (!wallet) continue;
-        closeMoveCommitmentOnChain(rumbleIdNum, wallet, turnNum, wallet, this.getCombatConnection()).catch(() => {});
+        closeMoveCommitmentOnChain(rumbleIdNum, wallet, turnNum, wallet, slotConn).catch(() => {});
       }
 
       for (const eliminatedId of sync.newEliminations) {
@@ -2664,7 +2688,7 @@ export class RumbleOrchestrator {
     // can deadlock the match at "Waiting for combat to begin...".
     if (combat.currentTurn === 0 && combat.remainingFighters > 1) {
       try {
-        const sig = await openTurnOnChain(rumbleIdNum, this.getCombatConnection());
+        const sig = await openTurnOnChain(rumbleIdNum, slotConn);
         if (sig) {
           console.log(`[OnChain] openTurn succeeded: ${sig}`);
           void persistWithRetry(
@@ -2705,11 +2729,11 @@ export class RumbleOrchestrator {
       // Re-read combat state after open_turn so we can proceed to
       // commit/reveal/resolve in the same tick cycle.
       invalidateReadCache(`combat:${rumbleIdNum}`);
-      combat = await readRumbleCombatState(rumbleIdNum, this.getCombatConnection()).catch(() => null);
+      combat = await readRumbleCombatState(rumbleIdNum, slotConn).catch(() => null);
       if (!combat || combat.currentTurn === 0) return;
     }
 
-    const currentSlot = await this.getCombatConnection().getSlot("processed");
+    const currentSlot = await slotConn.getSlot("processed");
     const currentSlotBig = BigInt(currentSlot);
 
     // --- Missed-window recovery ---
@@ -2729,7 +2753,7 @@ export class RumbleOrchestrator {
             rumbleIdNum,
             combat.currentTurn,
           );
-          const sig = await resolveTurnOnChain(rumbleIdNum, commitmentAccounts, this.getCombatConnection());
+          const sig = await resolveTurnOnChain(rumbleIdNum, commitmentAccounts, slotConn);
           if (sig) {
             console.log(`[OnChain] resolveTurn succeeded: ${sig}`);
             void persistWithRetry(
@@ -2751,7 +2775,7 @@ export class RumbleOrchestrator {
       }
       // Re-read to check if resolve succeeded so we can advance in same tick.
       invalidateReadCache(`combat:${rumbleIdNum}`);
-      combat = await readRumbleCombatState(rumbleIdNum, this.getCombatConnection()).catch(() => null);
+      combat = await readRumbleCombatState(rumbleIdNum, slotConn).catch(() => null);
       if (!combat) return;
 
       // Record the just-resolved turn BEFORE checking remainingFighters.
@@ -2821,7 +2845,7 @@ export class RumbleOrchestrator {
         for (const fid of slot.fighters) {
           const wallet = state.fighterWallets.get(fid);
           if (!wallet) continue;
-          closeMoveCommitmentOnChain(rumbleIdNum, wallet, turnNumPost, wallet, this.getCombatConnection()).catch(() => {});
+          closeMoveCommitmentOnChain(rumbleIdNum, wallet, turnNumPost, wallet, slotConn).catch(() => {});
         }
 
         for (const eliminatedId of syncAfterResolve.newEliminations) {
@@ -2846,10 +2870,11 @@ export class RumbleOrchestrator {
 
     if (combat.remainingFighters <= 1) {
       // Undelegate combat state FIRST so both rumble + combat_state are writable on L1
-      if (this.erEnabled) {
+      if (state.erDelegated) {
         try {
           const undelegateSig = await undelegateCombatFromEr(rumbleIdNum);
           if (undelegateSig) {
+            state.erDelegated = false;
             console.log(`[ER] undelegateCombat succeeded for rumble ${rumbleIdNum}: ${undelegateSig}`);
           }
         } catch (err) {
@@ -2881,7 +2906,7 @@ export class RumbleOrchestrator {
     // More than 1 fighter remains and turn is resolved — advance to next turn.
     if (currentSlotBig >= combat.revealCloseSlot) {
       try {
-        const sig = await advanceTurnOnChain(rumbleIdNum, this.getCombatConnection());
+        const sig = await advanceTurnOnChain(rumbleIdNum, slotConn);
         if (sig) {
           console.log(`[OnChain] advanceTurn succeeded: ${sig}`);
           void persistWithRetry(
@@ -2942,6 +2967,7 @@ export class RumbleOrchestrator {
       lastOnchainTurnResolved: 0,
       previousDamageTaken: new Map(),
       lastTickAt: Date.now(),
+      erDelegated: false,
     });
   }
 
@@ -2977,9 +3003,9 @@ export class RumbleOrchestrator {
     return this.fighterSignerByWallet.get(wallet.toBase58()) ?? null;
   }
 
-  private async sendFighterSignedTx(tx: Transaction, signer: Keypair): Promise<string> {
+  private async sendFighterSignedTx(tx: Transaction, signer: Keypair, connection?: Connection): Promise<string> {
     tx.partialSign(signer);
-    const conn = this.getCombatConnection();
+    const conn = connection ?? this.getCombatConnection();
     const signature = await conn.sendRawTransaction(tx.serialize(), {
       skipPreflight: false,
       preflightCommitment: "processed",
@@ -3021,6 +3047,7 @@ export class RumbleOrchestrator {
     turn: number,
     fighterId: string,
     fighterWallet: string,
+    combatConnection?: Connection,
   ): Promise<string | null> {
     try {
       const unsignedBytes = tx.serialize({
@@ -3063,7 +3090,7 @@ export class RumbleOrchestrator {
         const claimedSig = response.signature;
         // Verify the claimed signature actually landed on-chain
         try {
-          const conn = this.getCombatConnection();
+          const conn = combatConnection ?? this.getCombatConnection();
           await new Promise(resolve => setTimeout(resolve, 1_500));
           const status = await conn.getSignatureStatus(claimedSig);
           if (!status?.value || status.value.err) {
@@ -3085,7 +3112,7 @@ export class RumbleOrchestrator {
       // Case 2: Fighter returned a signed transaction for us to submit
       if (typeof response.signed_tx === "string" && response.signed_tx.length > 0) {
         const signedTx = Transaction.from(Buffer.from(response.signed_tx, "base64"));
-        const conn = this.getCombatConnection();
+        const conn = combatConnection ?? this.getCombatConnection();
         const signature = await conn.sendRawTransaction(signedTx.serialize(), {
           skipPreflight: false,
           preflightCommitment: "processed",
@@ -3269,6 +3296,7 @@ export class RumbleOrchestrator {
     if (combat.currentTurn <= 0) return;
 
     const turn = combat.currentTurn;
+    const combatConn = this.getConnectionForState(state);
     const pairings = this.deriveOnchainPairings(slot, state, combat, rumbleIdNum);
     for (const [fighterA, fighterB] of pairings) {
       await Promise.all([
@@ -3304,13 +3332,13 @@ export class RumbleOrchestrator {
             rumbleIdNum,
             turn,
             Uint8Array.from(Buffer.from(decision.commitmentHex, "hex")),
-            this.getCombatConnection(),
+            combatConn,
           );
 
           let sig: string | null = null;
           if (signer) {
             // Case A: Local signer — sign and submit directly
-            sig = await this.sendFighterSignedTx(tx, signer);
+            sig = await this.sendFighterSignedTx(tx, signer, combatConn);
           } else {
             // Case B: External signer — request signing via webhook
             sig = await this.requestExternalSign(
@@ -3321,6 +3349,7 @@ export class RumbleOrchestrator {
               turn,
               fighterId,
               fighterWallet.toBase58(),
+              combatConn,
             );
           }
 
@@ -3359,13 +3388,13 @@ export class RumbleOrchestrator {
             turn,
             decision.moveCode,
             Uint8Array.from(Buffer.from(decision.salt32Hex, "hex")),
-            this.getCombatConnection(),
+            combatConn,
           );
 
           let sig: string | null = null;
           if (signer) {
             // Case A: Local signer — sign and submit directly
-            sig = await this.sendFighterSignedTx(tx, signer);
+            sig = await this.sendFighterSignedTx(tx, signer, combatConn);
           } else {
             // Case B: External signer — request signing via webhook
             sig = await this.requestExternalSign(
@@ -3376,6 +3405,7 @@ export class RumbleOrchestrator {
               turn,
               fighterId,
               fighterWallet.toBase58(),
+              combatConn,
             );
           }
 
@@ -3409,7 +3439,7 @@ export class RumbleOrchestrator {
     const wallets = [...state.fighterWallets.values()];
     if (wallets.length === 0) return [];
     const pdas = wallets.map((wallet) => deriveMoveCommitmentPda(rumbleIdNum, wallet, turn)[0]);
-    const infos = await this.getCombatConnection().getMultipleAccountsInfo(pdas, "processed");
+    const infos = await this.getConnectionForState(state).getMultipleAccountsInfo(pdas, "processed");
     const resolved: PublicKey[] = [];
     for (let i = 0; i < pdas.length; i++) {
       const info = infos[i];
@@ -3573,7 +3603,7 @@ export class RumbleOrchestrator {
       rumbleIdNum,
       duelResults,
       byeIdx,
-      this.getCombatConnection(),
+      this.getConnectionForState(state),
     );
     if (sig) {
       console.log(`[Hybrid] postTurnResult succeeded: ${sig}`);
@@ -3593,7 +3623,7 @@ export class RumbleOrchestrator {
 
     const [rumble, combat] = await Promise.all([
       readRumbleAccountState(rumbleIdNum).catch(() => null),
-      readRumbleCombatState(rumbleIdNum, this.getCombatConnection()).catch(() => null),
+      readRumbleCombatState(rumbleIdNum, this.getConnectionForState(state)).catch(() => null),
     ]);
     if (!rumble || !combat) return;
 
