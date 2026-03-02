@@ -18,6 +18,7 @@ import {
   readRumbleAccountState,
   readMainnetRumbleAccountStateResilient,
   readRumbleCombatState,
+  RUMBLE_ENGINE_ID,
 } from "~~/lib/solana-programs";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 import { getBettingConnection, getConnection, getErStatusInfo } from "~~/lib/solana-connection";
@@ -826,6 +827,22 @@ export async function GET(request: Request) {
         const existing = base.get(slotIndex);
         if (!existing) continue;
         const sameRumble = existing.rumbleId === row.id;
+        const persistedState = (row.status as "idle" | "betting" | "combat" | "payout") ?? "idle";
+        const stateRank: Record<"idle" | "betting" | "combat" | "payout", number> = {
+          idle: 0,
+          betting: 1,
+          combat: 2,
+          payout: 3,
+        };
+        let mergedState: "idle" | "betting" | "combat" | "payout" = sameRumble ? existing.state : persistedState;
+        if (sameRumble) {
+          const existingRank = stateRank[existing.state] ?? 0;
+          const persistedRank = stateRank[persistedState] ?? 0;
+          // Prefer persisted DB state when it is strictly ahead of stale in-memory state.
+          if (persistedRank > existingRank) {
+            mergedState = persistedState;
+          }
+        }
         const shouldOverlay =
           sameRumble ||
           existing.state === "idle" ||
@@ -836,6 +853,31 @@ export async function GET(request: Request) {
         const useFighters = sameRumble && existing.fighters.length > 0
           ? existing.fighters
           : fighters;
+        const persistedTurns = turnLog.length > 0
+          ? (turnLog as Array<any>).map((t: any) => ({
+              turnNumber: t.turnNumber ?? 0,
+              pairings: (t.pairings ?? []).map((p: any) => ({
+                fighterA: p.fighterA ?? "",
+                fighterB: p.fighterB ?? "",
+                fighterAName: fighterName(lookup, p.fighterA ?? ""),
+                fighterBName: fighterName(lookup, p.fighterB ?? ""),
+                moveA: p.moveA ?? "",
+                moveB: p.moveB ?? "",
+                damageToA: p.damageToA ?? 0,
+                damageToB: p.damageToB ?? 0,
+              })),
+              eliminations: t.eliminations ?? [],
+              bye: t.bye,
+            }))
+          : [];
+        const mergedTurns = sameRumble
+          ? (existing.turns.length >= persistedTurns.length ? existing.turns : persistedTurns)
+          : persistedTurns;
+        const mergedCurrentTurn = sameRumble
+          ? Math.max(existing.currentTurn ?? 0, persistedTurns.length)
+          : persistedTurns.length > 0
+            ? persistedTurns.length
+            : 0;
         base.set(slotIndex, {
           ...existing,
           // CRITICAL: Reset remainingFighters when overlaying a different rumble.
@@ -844,7 +886,7 @@ export async function GET(request: Request) {
           remainingFighters: sameRumble ? existing.remainingFighters : null,
           rumbleId: row.id,
           rumbleNumber: (row as any).rumble_number ?? existing.rumbleNumber ?? null,
-          state: sameRumble ? existing.state : (row.status as "idle" | "betting" | "combat" | "payout") ?? "idle",
+          state: mergedState,
           fighters: useFighters,
           odds: sameRumble
             ? existing.odds
@@ -859,33 +901,17 @@ export async function GET(request: Request) {
                 potentialReturn: fighterIds.length || 1,
               })),
           totalPool: sameRumble ? existing.totalPool : 0,
-          bettingDeadline: sameRumble ? existing.bettingDeadline : null,
-          nextTurnAt: sameRumble ? existing.nextTurnAt : null,
+          bettingDeadline:
+            mergedState === "betting"
+              ? (sameRumble ? existing.bettingDeadline : null)
+              : null,
+          nextTurnAt:
+            mergedState === "combat"
+              ? (sameRumble ? existing.nextTurnAt : null)
+              : null,
           turnIntervalMs: sameRumble ? existing.turnIntervalMs : null,
-          currentTurn: sameRumble
-            ? existing.currentTurn
-            : turnLog.length > 0
-              ? turnLog.length
-              : 0,
-          turns: sameRumble
-            ? existing.turns
-            : turnLog.length > 0
-              ? (turnLog as Array<any>).map((t: any) => ({
-                  turnNumber: t.turnNumber ?? 0,
-                  pairings: (t.pairings ?? []).map((p: any) => ({
-                    fighterA: p.fighterA ?? "",
-                    fighterB: p.fighterB ?? "",
-                    fighterAName: fighterName(lookup, p.fighterA ?? ""),
-                    fighterBName: fighterName(lookup, p.fighterB ?? ""),
-                    moveA: p.moveA ?? "",
-                    moveB: p.moveB ?? "",
-                    damageToA: p.damageToA ?? 0,
-                    damageToB: p.damageToB ?? 0,
-                  })),
-                  eliminations: t.eliminations ?? [],
-                  bye: t.bye,
-                }))
-              : [],
+          currentTurn: mergedCurrentTurn,
+          turns: mergedTurns,
           payout: sameRumble
             ? (existing.payout ?? (row as any).payout_result ?? null)
             : (row as any).payout_result ?? null,
@@ -1138,7 +1164,7 @@ export async function GET(request: Request) {
         },
         onchain: {
           ...erInfo,
-          program_id: "2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC",
+          program_id: RUMBLE_ENGINE_ID.toBase58(),
           vrf_program_id: "Vrf1RNUjXmQGjmQrQLvJHs9SNkvDJEsRVFPkfSQUwGz",
           network: process.env.NEXT_PUBLIC_SOLANA_NETWORK ?? "devnet",
         },
