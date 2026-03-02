@@ -29,8 +29,14 @@ function readEnvInt(
 // Number of ticks to run per invocation and spacing between ticks.
 // Production-safe defaults are non-bursty (1 tick/call). Override via env
 // only when you intentionally want burst catch-up behavior.
-const TICKS_PER_INVOCATION = readEnvInt("RUMBLE_TICKS_PER_INVOCATION", 8, 1, 60);
+const TICKS_PER_INVOCATION = readEnvInt("RUMBLE_TICKS_PER_INVOCATION", 1, 1, 60);
 const TICK_INTERVAL_MS = readEnvInt("RUMBLE_TICK_BURST_INTERVAL_MS", 1_000, 250, 10_000);
+const TICK_ROUTE_MUTATION_ENABLED = (() => {
+  const env = process.env.RUMBLE_TICK_ROUTE_MUTATION_ENABLED;
+  if (typeof env === "string" && env.length > 0) return env === "true";
+  // Production should use the dedicated Railway worker as the single writer.
+  return process.env.NODE_ENV !== "production";
+})();
 
 // ---------------------------------------------------------------------------
 // Auth helper — matches existing cron pattern
@@ -77,6 +83,16 @@ export async function POST(req: NextRequest) {
 // ---------------------------------------------------------------------------
 
 async function runTickBurst(): Promise<NextResponse> {
+  if (!TICK_ROUTE_MUTATION_ENABLED) {
+    return NextResponse.json({
+      success: true,
+      disabled: true,
+      reason: "Tick route mutation disabled in production; Railway worker is the single writer.",
+      ticksRun: 0,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   const startTime = Date.now();
   const orchestrator = getOrchestrator();
   let ticksRun = 0;
