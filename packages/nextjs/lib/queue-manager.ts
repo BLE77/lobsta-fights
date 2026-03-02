@@ -477,13 +477,17 @@ export class RumbleQueueManager implements QueueManager {
 
   /** Reset a slot to idle and auto-requeue fighters that opted in. */
   private recycleSlot(slot: RumbleSlot): void {
-    // Auto-requeue fighters
+    // Auto-requeue all fighters from the finished rumble so the next
+    // rumble can fill up to FIGHTERS_PER_RUMBLE without waiting for
+    // external re-join calls.
     for (const fighterId of slot.fighters) {
-      // Check if this fighter had autoRequeue set.
-      // Since we already pulled them from the queue, we store that info
-      // separately. For now, re-add everyone. In production, we'd check a
-      // fighter config table. This simple approach re-adds them to the back.
-      // Callers should set autoRequeue via addToQueue when they re-enter.
+      if (!this.fighterSet.has(fighterId)) {
+        try {
+          this.addToQueue(fighterId, true);
+        } catch {
+          // Already queued or otherwise invalid — safe to skip
+        }
+      }
     }
 
     // Clean up payout tracking
