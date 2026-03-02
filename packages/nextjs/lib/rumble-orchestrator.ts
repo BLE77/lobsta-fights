@@ -2494,6 +2494,30 @@ export class RumbleOrchestrator {
 
     const state = this.combatStates.get(idx)!;
 
+    // Legacy combat must never outpace on-chain state transitions.
+    // If startCombat has not landed yet (on-chain still betting), skip
+    // local turn simulation and retry next tick.
+    const rumbleIdNum = this.resolveOnchainRumbleIdNumber(slot.id);
+    if (rumbleIdNum !== null) {
+      let onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+      if (!onchain || onchain.state === "betting") {
+        await this.startCombatOnChain(slot).catch(() => {});
+        invalidateReadCache(`rumble:${rumbleIdNum}`);
+        onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+      }
+      if (!onchain || onchain.state === "betting") {
+        console.log(
+          `[Orchestrator] Slot ${idx} waiting for on-chain combat transition for ${slot.id}; skipping legacy turn tick`,
+        );
+        return;
+      }
+    }
+
+    // Pace legacy turns so UI can render each turn and avoid fast-forwarding.
+    if (Date.now() - state.lastTickAt < LEGACY_COMBAT_TICK_INTERVAL_MS) {
+      return;
+    }
+
     // -----------------------------------------------------------------------
     // Run as many turns as the serverless budget allows.
     // Each turn still goes through requestFighterMove (webhooks / commit-
@@ -2524,8 +2548,10 @@ export class RumbleOrchestrator {
         break;
       }
       await this.runCombatTurn(slot, state);
+      state.lastTickAt = Date.now();
       turnsThisInvocation++;
       // runCombatTurn calls finishCombat when remaining <= 1
+      break;
     }
   }
 
