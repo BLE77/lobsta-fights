@@ -899,6 +899,12 @@ export class RumbleOrchestrator {
    * awaited on-chain calls) completes for this tick.
    */
   async tick(): Promise<void> {
+    // Only the Railway worker should run ticks. Vercel serverless functions
+    // must NEVER create rumbles or advance combat — that causes ghost rumbles.
+    if (!process.env.RUMBLE_WORKER_MODE && process.env.VERCEL) {
+      return;
+    }
+
     // Atomic guard: if a tick is already running, return the existing promise
     // instead of starting a concurrent one (prevents TOCTOU race).
     const existing = this.tickInFlight;
