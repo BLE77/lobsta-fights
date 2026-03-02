@@ -5078,27 +5078,15 @@ export class RumbleOrchestrator {
 
     this.totalRumblesCompleted++;
 
-    // Requeue fighters with autoRequeue.
-    // Check both the in-memory map AND the DB flag — the in-memory map may
-    // be empty after a cold restart (recovery doesn't populate it).
-    let requeueSet = this.autoRequeueFighters.get(slotIndex);
-    if (!requeueSet || requeueSet.size === 0) {
-      // Fallback: check the DB for auto_requeue flags
-      const dbFlags = await persist.loadAutoRequeueFlags(slot.fighters);
-      if (dbFlags.size > 0) requeueSet = dbFlags;
-    }
+    // Auto-requeue ALL fighters back into the queue so the next rumble
+    // fills to FIGHTERS_PER_RUMBLE. Without this, fighters silently drop
+    // out and rumbles start with fewer fighters than configured.
     for (const fighterId of slot.fighters) {
-      if (requeueSet?.has(fighterId)) {
-        try {
-          this.queueManager.addToQueue(fighterId, true);
-          // Persist: re-add to queue as waiting
-          persist.saveQueueFighter(fighterId, "waiting", true);
-        } catch {
-          // Fighter might already be in queue or another slot; ignore
-        }
-      } else {
-        // Persist: remove from queue
-        persist.removeQueueFighter(fighterId);
+      try {
+        this.queueManager.addToQueue(fighterId, true);
+        persist.saveQueueFighter(fighterId, "waiting", true);
+      } catch {
+        // Fighter might already be in queue or another slot; ignore
       }
     }
 
