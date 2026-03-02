@@ -32,8 +32,8 @@ function readEnvInt(
 const TICKS_PER_INVOCATION = readEnvInt("RUMBLE_TICKS_PER_INVOCATION", 1, 1, 60);
 const TICK_INTERVAL_MS = readEnvInt("RUMBLE_TICK_BURST_INTERVAL_MS", 1_000, 250, 10_000);
 const TICK_ROUTE_MUTATION_ENABLED = (() => {
-  const env = process.env.RUMBLE_TICK_ROUTE_MUTATION_ENABLED;
-  if (typeof env === "string" && env.length > 0) return env === "true";
+  const forceEnable = process.env.RUMBLE_TICK_ROUTE_FORCE_ENABLE;
+  if (typeof forceEnable === "string" && forceEnable.length > 0) return forceEnable === "true";
   // Production should use the dedicated Railway worker as the single writer.
   return process.env.NODE_ENV !== "production";
 })();
@@ -87,7 +87,8 @@ async function runTickBurst(): Promise<NextResponse> {
     return NextResponse.json({
       success: true,
       disabled: true,
-      reason: "Tick route mutation disabled in production; Railway worker is the single writer.",
+      reason:
+        "Tick route mutation disabled in production; Railway worker is the single writer. Set RUMBLE_TICK_ROUTE_FORCE_ENABLE=true only for emergency/manual recovery.",
       ticksRun: 0,
       timestamp: new Date().toISOString(),
     });
