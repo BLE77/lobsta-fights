@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { PublicKey } from "@solana/web3.js";
 import { buildRevealMoveTx } from "~~/lib/solana-programs";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
+import { getCombatConnectionAuto, getErStatusInfo } from "~~/lib/solana-connection";
 
 export const dynamic = "force-dynamic";
 
@@ -84,11 +85,13 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invalid rumble_id" }, { status: 400 });
     }
 
-    const tx = await buildRevealMoveTx(fighter, rumbleId, turn, moveCode, salt32);
+    const combatConn = getCombatConnectionAuto();
+    const tx = await buildRevealMoveTx(fighter, rumbleId, turn, moveCode, salt32, combatConn);
     const txBase64 = tx
       .serialize({ requireAllSignatures: false, verifySignatures: false })
       .toString("base64");
 
+    const erInfo = getErStatusInfo();
     return NextResponse.json({
       success: true,
       transaction_base64: txBase64,
@@ -98,6 +101,8 @@ export async function POST(req: Request) {
       turn,
       move_code: moveCode,
       salt_hex: Buffer.from(salt32).toString("hex"),
+      er_enabled: erInfo.er_enabled,
+      combat_rpc_url: erInfo.combat_rpc_url,
     });
   } catch (err: any) {
     console.error("[Reveal Prepare] Error:", err);

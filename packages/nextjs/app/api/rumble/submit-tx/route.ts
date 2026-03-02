@@ -5,7 +5,7 @@ import { getApiKeyFromHeaders } from "~~/lib/request-auth";
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 import { requireJsonContentType, sanitizeErrorResponse } from "~~/lib/api-middleware";
 import { hashApiKey } from "~~/lib/api-key";
-import { getConnection } from "~~/lib/solana-connection";
+import { getCombatConnectionAuto, isErEnabled, getErStatusInfo } from "~~/lib/solana-connection";
 
 export const dynamic = "force-dynamic";
 
@@ -52,6 +52,7 @@ export async function GET(request: Request) {
   const rl = checkRateLimit("PUBLIC_READ", rlKey);
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
 
+  const erInfo = getErStatusInfo();
   return NextResponse.json({
     endpoint: "POST /api/rumble/submit-tx",
     description:
@@ -67,7 +68,11 @@ export async function GET(request: Request) {
       "Sign with your fighter's wallet keypair",
       "The orchestrator will detect the on-chain state change automatically",
       "Use the tx_sign_request webhook event to receive pre-built unsigned transactions",
+      erInfo.er_enabled
+        ? `Ephemeral Rollups are ON — transactions are routed to ${erInfo.er_rpc_url}. Use the prepare endpoints to get a correctly-addressed tx.`
+        : "Ephemeral Rollups are OFF — transactions are sent to Solana L1.",
     ],
+    ...erInfo,
   });
 }
 
@@ -178,10 +183,11 @@ export async function POST(request: Request) {
       );
     }
 
-    // --- Submit to Solana RPC (fire-and-forget, no confirmation wait) ---
+    // --- Submit to combat RPC (ER when enabled, L1 otherwise) ---
 
     const rawTx = transaction.serialize();
-    const connection = getConnection();
+    const erEnabled = isErEnabled();
+    const connection = getCombatConnectionAuto();
 
     let signature: string;
     try {
@@ -198,15 +204,19 @@ export async function POST(request: Request) {
       );
     }
 
+    const submittedTo = erEnabled ? "ephemeral_rollup" : "solana_l1";
     console.log(
-      `[submit-tx] Submitted ${txType} for fighter=${fighterId} sig=${signature}`,
+      `[submit-tx] Submitted ${txType} for fighter=${fighterId} to=${submittedTo} sig=${signature}`,
     );
 
     return NextResponse.json({
       status: "submitted",
       signature,
-      explorer_url: `https://explorer.solana.com/tx/${signature}?cluster=devnet`,
-      message: "Transaction submitted. The orchestrator will detect it via on-chain polling.",
+      submitted_to: submittedTo,
+      explorer_url: erEnabled
+        ? null
+        : `https://explorer.solana.com/tx/${signature}?cluster=devnet`,
+      message: `Transaction submitted to ${submittedTo}. The orchestrator will detect it via on-chain polling.`,
     });
   } catch (error: any) {
     console.error("[submit-tx] Unexpected error:", error);

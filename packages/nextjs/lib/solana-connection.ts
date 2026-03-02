@@ -250,6 +250,38 @@ export function createFreshConnection(commitment: Commitment = "confirmed"): Con
 }
 
 // ---------------------------------------------------------------------------
+// Ephemeral Rollup Helpers — shared across orchestrator + API routes
+// ---------------------------------------------------------------------------
+
+/** Whether MagicBlock Ephemeral Rollups are enabled for combat. */
+export function isErEnabled(): boolean {
+  return process.env.MAGICBLOCK_ER_ENABLED === "true";
+}
+
+/**
+ * Get the appropriate connection for combat transactions.
+ * Returns the ER connection when ER is enabled, otherwise the L1 connection.
+ */
+export function getCombatConnectionAuto(): Connection {
+  return isErEnabled() ? getErConnection() : getConnection();
+}
+
+const DELEGATION_PROGRAM_ID = "DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh";
+
+/**
+ * Returns ER status info suitable for API JSON responses.
+ */
+export function getErStatusInfo() {
+  const erEnabled = isErEnabled();
+  return {
+    er_enabled: erEnabled,
+    er_rpc_url: erEnabled ? getErRpcEndpoint() : null,
+    combat_rpc_url: erEnabled ? getErRpcEndpoint() : getRpcEndpoint(),
+    delegation_program: erEnabled ? DELEGATION_PROGRAM_ID : null,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Transaction Helpers
 // ---------------------------------------------------------------------------
 

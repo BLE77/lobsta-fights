@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { PublicKey } from "@solana/web3.js";
 import { buildCommitMoveTx } from "~~/lib/solana-programs";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
+import { getCombatConnectionAuto, getErStatusInfo } from "~~/lib/solana-connection";
 
 export const dynamic = "force-dynamic";
 
@@ -51,11 +52,13 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invalid rumble_id" }, { status: 400 });
     }
 
-    const tx = await buildCommitMoveTx(fighter, rumbleId, turn, moveHashBytes);
+    const combatConn = getCombatConnectionAuto();
+    const tx = await buildCommitMoveTx(fighter, rumbleId, turn, moveHashBytes, combatConn);
     const txBase64 = tx
       .serialize({ requireAllSignatures: false, verifySignatures: false })
       .toString("base64");
 
+    const erInfo = getErStatusInfo();
     return NextResponse.json({
       success: true,
       transaction_base64: txBase64,
@@ -64,6 +67,8 @@ export async function POST(req: Request) {
       onchain_rumble_id: rumbleId,
       turn,
       move_hash_hex: Buffer.from(moveHashBytes).toString("hex"),
+      er_enabled: erInfo.er_enabled,
+      combat_rpc_url: erInfo.combat_rpc_url,
     });
   } catch (err: any) {
     return NextResponse.json(

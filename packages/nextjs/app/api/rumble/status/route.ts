@@ -20,7 +20,7 @@ import {
   readRumbleCombatState,
 } from "~~/lib/solana-programs";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
-import { getBettingConnection, getConnection } from "~~/lib/solana-connection";
+import { getBettingConnection, getConnection, getErStatusInfo } from "~~/lib/solana-connection";
 import { getCommentaryForRumble } from "~~/lib/commentary-hook";
 import { MAX_TURNS } from "~~/lib/rumble-engine";
 import { flushRpcMetrics, runWithRpcMetrics } from "~~/lib/solana-rpc-metrics";
@@ -1122,6 +1122,7 @@ export async function GET(request: Request) {
     }
 
 
+      const erInfo = getErStatusInfo();
       return NextResponse.json({
         slots,
         queue,
@@ -1134,6 +1135,12 @@ export async function GET(request: Request) {
               ? Number(arenaConfig.ichorShowerPool) / 1_000_000_000
               : Number(showerState?.pool_amount ?? 0),
           rumblesSinceLastTrigger,
+        },
+        onchain: {
+          ...erInfo,
+          program_id: "2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC",
+          vrf_program_id: "Vrf1RNUjXmQGjmQrQLvJHs9SNkvDJEsRVFPkfSQUwGz",
+          network: process.env.NEXT_PUBLIC_SOLANA_NETWORK ?? "devnet",
         },
         runtimeHealth,
         systemWarnings,

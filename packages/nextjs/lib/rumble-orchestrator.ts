@@ -107,7 +107,7 @@ import {
 import { markOpComplete, markOpFailed, persistMainnetOp } from "./mainnet-retry";
 import { Keypair, PublicKey, Transaction, Connection } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
-import { getConnection, getErConnection, getBettingConnection } from "./solana-connection";
+import { getConnection, getErConnection, getBettingConnection, isErEnabled, getCombatConnectionAuto, getErStatusInfo } from "./solana-connection";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -667,12 +667,12 @@ export class RumbleOrchestrator {
 
   /** Whether MagicBlock Ephemeral Rollups are enabled for combat. */
   private get erEnabled(): boolean {
-    return process.env.MAGICBLOCK_ER_ENABLED === "true";
+    return isErEnabled();
   }
 
   /** Get the connection to use for combat transactions (ER or L1). */
   private getCombatConnection(): Connection {
-    return this.erEnabled ? getErConnection() : getConnection();
+    return getCombatConnectionAuto();
   }
 
   constructor(queueManager: RumbleQueueManager) {
@@ -3029,6 +3029,7 @@ export class RumbleOrchestrator {
       });
       const unsignedBase64 = unsignedBytes.toString("base64");
 
+      const erInfo = getErStatusInfo();
       const response = await this.requestWebhookWithTimeout(webhookUrl, "tx_sign_request", {
         tx_type: txType,
         unsigned_tx: unsignedBase64,
@@ -3036,9 +3037,14 @@ export class RumbleOrchestrator {
         turn,
         fighter_id: fighterId,
         fighter_wallet: fighterWallet,
+        er_enabled: erInfo.er_enabled,
+        combat_rpc_url: erInfo.combat_rpc_url,
         instructions:
           "Sign this transaction with your wallet and return { signed_tx: '<base64>' }. " +
-          "You can also submit the transaction directly to Solana and return { submitted: true, signature: '<sig>' }.",
+          "You can also submit the transaction directly and return { submitted: true, signature: '<sig>' }. " +
+          (erInfo.er_enabled
+            ? `ER is ON — submit to ${erInfo.combat_rpc_url} (not L1). The blockhash is already from ER.`
+            : "Submit to Solana L1 (ER is off)."),
       });
 
       if (!response) {
@@ -3298,6 +3304,7 @@ export class RumbleOrchestrator {
             rumbleIdNum,
             turn,
             Uint8Array.from(Buffer.from(decision.commitmentHex, "hex")),
+            this.getCombatConnection(),
           );
 
           let sig: string | null = null;
@@ -3352,6 +3359,7 @@ export class RumbleOrchestrator {
             turn,
             decision.moveCode,
             Uint8Array.from(Buffer.from(decision.salt32Hex, "hex")),
+            this.getCombatConnection(),
           );
 
           let sig: string | null = null;
