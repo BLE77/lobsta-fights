@@ -180,7 +180,11 @@ export default function RumbleSlot({
   myBetAmounts,
   lastCompletedResult,
 }: RumbleSlotProps) {
-  const { bettingClosedOnChain } = useOnChainBettingState(slot.rumbleId, slot.state);
+  const { bettingClosedOnChain } = useOnChainBettingState(
+    slot.rumbleId,
+    slot.state,
+    slot.rumbleNumber ?? null,
+  );
   const effectiveState: SlotData["state"] =
     slot.state === "betting" && bettingClosedOnChain ? "combat" : slot.state;
   const label = getStateLabel(effectiveState);

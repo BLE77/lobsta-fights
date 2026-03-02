@@ -103,6 +103,22 @@ function getStableNextTurnAt(
   return iso;
 }
 
+function normalizeRumbleNumber(value: unknown): number | null {
+  const num = typeof value === "number" ? value : Number(value);
+  if (!Number.isSafeInteger(num) || num < 0) return null;
+  return num;
+}
+
+function resolveOnchainRumbleIdNumberForSlot(
+  slot: { rumbleId?: string | null; rumbleNumber?: number | null },
+): number | null {
+  const fromDb = normalizeRumbleNumber(slot.rumbleNumber);
+  if (fromDb !== null) return fromDb;
+  const rumbleId = String(slot.rumbleId ?? "").trim();
+  if (!rumbleId) return null;
+  return parseOnchainRumbleIdNumber(rumbleId);
+}
+
 // ---------------------------------------------------------------------------
 // Fresh Supabase client (no-store cache)
 // ---------------------------------------------------------------------------
@@ -538,7 +554,7 @@ export async function GET(request: Request) {
       slots.map(async slot => {
         if (!slot.rumbleId) return slot;
         if (slot.state === "idle" || slot.state === "payout") return slot;
-        const rumbleIdNum = parseOnchainRumbleIdNumber(slot.rumbleId);
+        const rumbleIdNum = resolveOnchainRumbleIdNumberForSlot(slot);
         if (rumbleIdNum === null) return slot;
         let onchain =
           slot.state === "betting"
@@ -956,7 +972,7 @@ export async function GET(request: Request) {
         if (slot.state === "idle" || slot.state === "payout") return slot;
         // Skip if already enriched (has on-chain timing data from first pass)
         if (slot.remainingFighters !== null && slot.remainingFighters !== undefined) return slot;
-        const rumbleIdNum = parseOnchainRumbleIdNumber(slot.rumbleId);
+        const rumbleIdNum = resolveOnchainRumbleIdNumberForSlot(slot);
         if (rumbleIdNum === null) return slot;
 
         // --- Betting state: restore countdown from on-chain close slot ---

@@ -17,6 +17,7 @@ import { hashApiKey } from "~~/lib/api-key";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 import { hasRecovered, recoverOrchestratorState } from "~~/lib/rumble-state-recovery";
 import { ensureRumblePublicHeartbeat } from "~~/lib/rumble-public-heartbeat";
+import { loadActiveRumbles } from "~~/lib/rumble-persistence";
 
 export const dynamic = "force-dynamic";
 const ALLOW_OFFCHAIN_BETS = String(process.env.RUMBLE_ALLOW_OFFCHAIN_BETS ?? "false").toLowerCase() === "true";
@@ -24,6 +25,27 @@ const ALLOW_OFFCHAIN_BETS = String(process.env.RUMBLE_ALLOW_OFFCHAIN_BETS ?? "fa
 async function ensureRecovered(): Promise<void> {
   if (hasRecovered()) return;
   await recoverOrchestratorState();
+}
+
+function normalizeRumbleNumber(value: unknown): number | null {
+  const num = typeof value === "number" ? value : Number(value);
+  if (!Number.isSafeInteger(num) || num < 0) return null;
+  return num;
+}
+
+async function resolveOnchainRumbleIdForSlot(
+  slotIndex: number,
+  slotRumbleId: string,
+): Promise<number | null> {
+  const parsed = parseOnchainRumbleIdNumber(slotRumbleId);
+  if (parsed !== null) return parsed;
+
+  const active = await loadActiveRumbles();
+  const match = active.find(
+    (row) => Number(row.slot_index) === slotIndex && String(row.id) === slotRumbleId,
+  );
+  if (!match) return null;
+  return normalizeRumbleNumber((match as any).rumble_number);
 }
 
 function isMissingTxSignatureTableError(err: unknown): boolean {
@@ -285,7 +307,7 @@ export async function POST(request: Request) {
           };
         }
 
-        const rumbleIdNum = parseOnchainRumbleIdNumber(slotRumbleId);
+        const rumbleIdNum = await resolveOnchainRumbleIdForSlot(parsedSlotIndex, slotRumbleId);
         if (rumbleIdNum === null) {
           return {
             valid: false,

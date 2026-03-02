@@ -35,10 +35,17 @@ function sleep(ms: number): Promise<void> {
 
 async function loadLatestBettingRumbleForSlot(slotIndex: number): Promise<{
   rumbleId: string;
+  rumbleNumber: number | null;
   fighterIds: string[];
 } | null> {
   const active = await loadActiveRumbles();
-  let best: { id: string; createdAtMs: number; fighters: unknown; status: string } | null = null;
+  let best: {
+    id: string;
+    createdAtMs: number;
+    fighters: unknown;
+    status: string;
+    rumbleNumber: number | null;
+  } | null = null;
   for (const row of active) {
     if (Number(row.slot_index) !== slotIndex) continue;
     if (String(row.status ?? "").toLowerCase() !== "betting") continue;
@@ -51,6 +58,10 @@ async function loadLatestBettingRumbleForSlot(slotIndex: number): Promise<{
         createdAtMs,
         fighters: row.fighters,
         status: row.status,
+        rumbleNumber:
+          Number.isSafeInteger(Number((row as any).rumble_number)) && Number((row as any).rumble_number) >= 0
+            ? Number((row as any).rumble_number)
+            : null,
       };
     }
   }
@@ -66,6 +77,7 @@ async function loadLatestBettingRumbleForSlot(slotIndex: number): Promise<{
 
   return {
     rumbleId: best.id,
+    rumbleNumber: best.rumbleNumber,
     fighterIds,
   };
 }
@@ -218,7 +230,9 @@ export async function POST(request: Request) {
       });
     }
 
-    const rumbleIdNum = parseOnchainRumbleIdNumber(slotRumbleId);
+    const rumbleIdNum =
+      persistedBetting?.rumbleNumber ??
+      parseOnchainRumbleIdNumber(slotRumbleId);
     if (rumbleIdNum === null) {
       return NextResponse.json(
         { error: `Could not derive numeric rumble id from ${slotRumbleId}` },

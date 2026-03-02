@@ -77,9 +77,16 @@ interface OnChainBettingState {
   connected: boolean;
 }
 
+function normalizeRumbleNumber(value: unknown): number | null {
+  const num = typeof value === "number" ? value : Number(value);
+  if (!Number.isSafeInteger(num) || num <= 0) return null;
+  return num;
+}
+
 export function useOnChainBettingState(
   rumbleId: string | undefined,
-  slotState: "idle" | "betting" | "combat" | "payout"
+  slotState: "idle" | "betting" | "combat" | "payout",
+  rumbleNumber?: number | null,
 ): OnChainBettingState {
   const [onchainState, setOnchainState] = useState<OnchainState | null>(null);
   const [connected, setConnected] = useState(false);
@@ -96,7 +103,9 @@ export function useOnChainBettingState(
 
     if (!rumbleId) return;
 
-    const rumbleIdNum = parseOnchainRumbleIdNumber(rumbleId);
+    const rumbleIdNum =
+      normalizeRumbleNumber(rumbleNumber) ??
+      parseOnchainRumbleIdNumber(rumbleId);
     if (rumbleIdNum === null) return;
 
     const conn = getWssConnection();
@@ -150,7 +159,7 @@ export function useOnChainBettingState(
         subIdRef.current = null;
       }
     };
-  }, [rumbleId, slotState]);
+  }, [rumbleId, slotState, rumbleNumber]);
 
   const bettingClosedOnChain =
     onchainState !== null && onchainState !== "betting";
