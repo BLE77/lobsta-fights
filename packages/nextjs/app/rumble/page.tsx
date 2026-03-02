@@ -149,6 +149,8 @@ const LEGACY_EVENT_MAP: Partial<Record<SSEEvent["type"], OrchestratorSseName>> =
   elimination: "fighter_eliminated",
 };
 const DEFAULT_BET_CLOSE_GUARD_MS = 12_000;
+const INTRO_OVERLAY_STORAGE_KEY = "ucf_rumble_intro_overlay_seen_v1";
+const INTRO_OVERLAY_VIDEO_SRC = "/rumble-intro-overlay.mp4";
 
 function isSlotState(value: unknown): value is SlotData["state"] {
   return value === "idle" || value === "betting" || value === "combat" || value === "payout";
@@ -351,7 +353,9 @@ export default function RumblePage() {
   const [claimLoading, setClaimLoading] = useState(false);
   const [claimPending, setClaimPending] = useState(false);
   const [claimError, setClaimError] = useState<string | null>(null);
+  const [showIntroOverlay, setShowIntroOverlay] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const introVideoRef = useRef<HTMLVideoElement | null>(null);
   // Grace period: after an optimistic bet update, prevent fetchMyBets from overwriting for 10s
   const optimisticBetUntilRef = useRef<number>(0);
   // Track rumbleId per slot to detect rumble transitions and clear stale bets
@@ -433,6 +437,34 @@ export default function RumblePage() {
   })();
   const connectionRef = useRef(new Connection(rpcEndpoint, "confirmed"));
   const connection = connectionRef.current;
+
+  const dismissIntroOverlay = useCallback(() => {
+    setShowIntroOverlay(false);
+    try {
+      localStorage.setItem(INTRO_OVERLAY_STORAGE_KEY, "1");
+    } catch {
+      // Ignore storage errors and continue.
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      const seen = localStorage.getItem(INTRO_OVERLAY_STORAGE_KEY);
+      if (seen === "1") return;
+    } catch {
+      // Ignore storage read errors and show overlay.
+    }
+    setShowIntroOverlay(true);
+  }, []);
+
+  useEffect(() => {
+    if (!showIntroOverlay) return;
+    const video = introVideoRef.current;
+    if (!video) return;
+    void video.play().catch(() => {
+      // Autoplay can be blocked on some clients.
+    });
+  }, [showIntroOverlay]);
 
   const disconnectWallet = useCallback(async () => {
     await walletDisconnect();
@@ -1834,6 +1866,31 @@ export default function RumblePage() {
           solWon={winnerPopup.solWon}
           onDismiss={() => setWinnerPopup(null)}
         />
+      )}
+
+      {/* First-visit intro video overlay */}
+      {showIntroOverlay && (
+        <div className="fixed inset-0 z-[130] bg-black/90 backdrop-blur-sm flex items-center justify-center px-4">
+          <div className="relative w-full max-w-5xl">
+            <button
+              type="button"
+              onClick={dismissIntroOverlay}
+              className="absolute -top-12 right-0 rounded-sm border border-stone-700 bg-stone-950/90 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-stone-300 hover:text-amber-400 transition-colors"
+            >
+              Skip
+            </button>
+            <video
+              ref={introVideoRef}
+              src={INTRO_OVERLAY_VIDEO_SRC}
+              className="w-full max-h-[85vh] rounded-md border border-stone-700 bg-black object-contain shadow-2xl"
+              autoPlay
+              muted
+              playsInline
+              controls
+              onEnded={dismissIntroOverlay}
+            />
+          </div>
+        </div>
       )}
     </main>
   );
