@@ -779,11 +779,33 @@ export async function GET(request: Request) {
       return nowMs - createdAtMs <= maxAge;
     });
     const latestPersistedBySlot = new Map<number, (typeof persistedActive)[number]>();
+    const persistedSlotDisplayPriority = (row: (typeof persistedActive)[number]): number => {
+      const status = String(row.status ?? "").toLowerCase();
+      // Prefer currently-running combat over pre-created betting rows.
+      // Betting should still beat stale payout rows when both exist.
+      if (status === "combat") return 3;
+      if (status === "betting") return 2;
+      if (status === "payout") return 1;
+      return 0;
+    };
     for (const row of freshPersisted) {
       const slotIndex = Number(row.slot_index);
       if (!Number.isInteger(slotIndex)) continue;
       const existing = latestPersistedBySlot.get(slotIndex);
-      if (!existing || new Date(row.created_at).getTime() > new Date(existing.created_at).getTime()) {
+      if (!existing) {
+        latestPersistedBySlot.set(slotIndex, row);
+        continue;
+      }
+
+      const rowPriority = persistedSlotDisplayPriority(row);
+      const existingPriority = persistedSlotDisplayPriority(existing);
+      if (rowPriority > existingPriority) {
+        latestPersistedBySlot.set(slotIndex, row);
+        continue;
+      }
+      if (rowPriority < existingPriority) continue;
+
+      if (new Date(row.created_at).getTime() > new Date(existing.created_at).getTime()) {
         latestPersistedBySlot.set(slotIndex, row);
       }
     }
