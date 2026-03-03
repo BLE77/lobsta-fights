@@ -2674,7 +2674,10 @@ export class RumbleOrchestrator {
       }
       await this.startCombatOnChain(slot);
 
-      // Delegate combat state to Ephemeral Rollup for real-time execution
+      // Delegate combat state to Ephemeral Rollup for real-time execution.
+      // Also handles cold-start: if on-chain is already "combat" (startCombatOnChain
+      // returned early), check if already delegated or delegate now.
+      console.log(`[ER] erEnabled=${this.erEnabled} — attempting delegation for rumble ${rumbleIdNum}`);
       if (this.erEnabled) {
         const state = this.combatStates.get(idx);
         try {
