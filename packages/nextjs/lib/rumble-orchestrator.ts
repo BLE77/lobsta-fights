@@ -1910,7 +1910,19 @@ export class RumbleOrchestrator {
   ): Promise<void> {
     const rumbleId = slot.id;
     const slotIndex = slot.slotIndex;
+    const rumbleIdNum = this.resolveOnchainRumbleIdNumber(rumbleId);
     const fighterIds = slot.fighters.slice();
+
+    // If combat was delegated to ER, undelegate before cleanup
+    if (state.erDelegated && rumbleIdNum !== null) {
+      try {
+        await undelegateCombatFromEr(rumbleIdNum);
+        state.erDelegated = false;
+        console.log(`[ER] undelegateCombat on abort for rumble ${rumbleIdNum}`);
+      } catch (err) {
+        console.warn(`[ER] undelegateCombat on abort failed for rumble ${rumbleIdNum}:`, err);
+      }
+    }
 
     // Report a no-contest result so the slot transitions normally through payout→idle
     this.queueManager.reportResult(slotIndex, {
@@ -2706,8 +2718,19 @@ export class RumbleOrchestrator {
       return;
     }
 
-    const slotConn = this.getConnectionForState(state);
+    let slotConn = this.getConnectionForState(state);
     let combat = await readRumbleCombatState(rumbleIdNum, slotConn).catch(() => null);
+    // If ER read failed, fall back to L1 — ER might be down or delegation expired
+    if (!combat && state.erDelegated) {
+      console.warn(`[ER] Combat state read failed on ER for rumble ${rumbleIdNum}, trying L1 fallback`);
+      combat = await readRumbleCombatState(rumbleIdNum, getConnection()).catch(() => null);
+      if (combat) {
+        // L1 has the data — delegation may have expired. Switch back to L1 mode.
+        state.erDelegated = false;
+        slotConn = getConnection();
+        console.log(`[ER] Switched rumble ${rumbleIdNum} back to L1 mode (ER read failed, L1 succeeded)`);
+      }
+    }
     if (!combat) return;
 
     const sync = this.syncLocalFightersFromOnchain(slot, state, combat);
@@ -2985,16 +3008,27 @@ export class RumbleOrchestrator {
     // --- Turn is resolved: finalize or advance ---
 
     if (combat.remainingFighters <= 1) {
-      // Undelegate combat state FIRST so both rumble + combat_state are writable on L1
+      // Undelegate combat state FIRST so both rumble + combat_state are writable on L1.
+      // Retry up to 3 times — if undelegation fails, finalize will also fail and
+      // the slot would wedge until the next tick retries.
       if (state.erDelegated) {
-        try {
-          const undelegateSig = await undelegateCombatFromEr(rumbleIdNum);
-          if (undelegateSig) {
-            state.erDelegated = false;
-            console.log(`[ER] undelegateCombat succeeded for rumble ${rumbleIdNum}: ${undelegateSig}`);
+        let undelegated = false;
+        for (let attempt = 0; attempt < 3 && !undelegated; attempt++) {
+          try {
+            const undelegateSig = await undelegateCombatFromEr(rumbleIdNum);
+            if (undelegateSig) {
+              state.erDelegated = false;
+              undelegated = true;
+              console.log(`[ER] undelegateCombat succeeded for rumble ${rumbleIdNum}: ${undelegateSig}`);
+            }
+          } catch (err) {
+            console.warn(`[ER] undelegateCombat attempt ${attempt + 1}/3 failed for rumble ${rumbleIdNum}:`, err);
+            if (attempt < 2) await new Promise(r => setTimeout(r, 2000));
           }
-        } catch (err) {
-          console.warn(`[ER] undelegateCombat failed for rumble ${rumbleIdNum}:`, err);
+        }
+        if (!undelegated) {
+          console.error(`[ER] undelegateCombat exhausted retries for rumble ${rumbleIdNum} — will retry next tick`);
+          return; // Don't try to finalize while still delegated
         }
       }
 
