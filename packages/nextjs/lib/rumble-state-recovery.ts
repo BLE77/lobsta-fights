@@ -17,6 +17,9 @@
 import * as persist from "./rumble-persistence";
 import { getOrchestrator } from "./rumble-orchestrator";
 import { getQueueManager } from "./queue-manager";
+import { isErEnabled } from "./solana-connection";
+import { isCombatStateDelegated, delegateCombatToEr } from "./solana-programs";
+import { parseOnchainRumbleIdNumber } from "./rumble-id";
 
 // ---------------------------------------------------------------------------
 // Recovery flag — uses globalThis to survive Next.js HMR reloads in dev mode.
@@ -133,6 +136,7 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
 
     for (const rumble of activeRumbles) {
       try {
+        orchestrator.setRumbleNumber(rumble.id, rumble.rumble_number ?? null);
         const fighters = rumble.fighters as Array<{ id: string; name: string }>;
 
         if (rumble.status === "combat") {
@@ -185,6 +189,32 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
             `[StateRecovery] RESTORED combat rumble ${rumble.id} in slot ${slotIndex} ` +
               `with ${fighterIds.length} fighters, ${existingBets.length} bets`,
           );
+
+          // If ER is enabled, check delegation state and delegate if needed
+          if (isErEnabled()) {
+            const rumbleIdNum = (rumble as any).rumble_number ?? parseOnchainRumbleIdNumber(rumble.id);
+            if (rumbleIdNum !== null) {
+              try {
+                const alreadyDelegated = await isCombatStateDelegated(rumbleIdNum);
+                const state = orchestrator.getCombatState(slotIndex);
+                if (alreadyDelegated && state) {
+                  state.erDelegated = true;
+                  console.log(`[StateRecovery] ER: combat already delegated for rumble ${rumbleIdNum}`);
+                } else if (state) {
+                  const sig = await delegateCombatToEr(rumbleIdNum);
+                  if (sig) {
+                    state.erDelegated = true;
+                    console.log(`[StateRecovery] ER: delegated combat for rumble ${rumbleIdNum}: ${sig}`);
+                  } else {
+                    console.warn(`[StateRecovery] ER: delegation returned null for rumble ${rumbleIdNum}, using L1`);
+                  }
+                }
+              } catch (err) {
+                console.warn(`[StateRecovery] ER: delegation failed for rumble ${rumble.id}, using L1:`, err);
+              }
+            }
+          }
+
           result.restoredCombat++;
           continue;
 
