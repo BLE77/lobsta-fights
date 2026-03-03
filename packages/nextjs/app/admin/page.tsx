@@ -89,6 +89,14 @@ interface Fighter {
   robot_metadata: FighterRobotMeta | null;
 }
 
+interface StuckRumble extends Rumble {
+  ageMs: number;
+  phaseAgeMs: number;
+  maxAgeMs: number;
+  health: "green" | "amber" | "red";
+  healthRatio: number;
+}
+
 interface DashboardData {
   queue: QueueEntry[];
   stats: Stats | null;
@@ -111,6 +119,12 @@ interface DashboardData {
     }>;
   };
   systemWarnings?: string[];
+  stuckRumbles?: StuckRumble[];
+  onchainHealth?: {
+    erEnabled: boolean;
+    erRpcUrl: string | null;
+    programId: string;
+  };
   timestamp: string;
 }
 
@@ -1108,6 +1122,9 @@ export default function AdminPage() {
             shower={shower}
             activeRumbles={dedupedActiveRumbles}
             recentRumbles={recentRumbles}
+            stuckRumbles={dashboard?.stuckRumbles}
+            onchainCreateFailures={dashboard?.runtimeHealth?.onchainCreateFailures}
+            onchainHealth={dashboard?.onchainHealth}
           />
         )}
         {tab === "rumbles" && <RumblesTab rumbles={allRumbles} />}
@@ -1123,22 +1140,62 @@ export default function AdminPage() {
 // Overview Tab
 // ---------------------------------------------------------------------------
 
+function formatDuration(ms: number): string {
+  if (ms < 60_000) return `${Math.floor(ms / 1000)}s`;
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ${Math.floor((ms % 60_000) / 1000)}s`;
+  return `${Math.floor(ms / 3_600_000)}h ${Math.floor((ms % 3_600_000) / 60_000)}m`;
+}
+
+function HealthDot({ health }: { health: string }) {
+  const colors: Record<string, string> = {
+    green: "bg-green-500",
+    amber: "bg-amber-500 animate-pulse",
+    red: "bg-red-500 animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.6)]",
+  };
+  return <span className={`inline-block w-2.5 h-2.5 rounded-full ${colors[health] ?? colors.green}`} />;
+}
+
 function OverviewTab({
   stats,
   queue,
   shower,
   activeRumbles,
   recentRumbles,
+  stuckRumbles,
+  onchainCreateFailures,
+  onchainHealth,
 }: {
   stats: Stats | null;
   queue: QueueEntry[];
   shower: IchorShower | null;
   activeRumbles: Rumble[];
   recentRumbles: Rumble[];
+  stuckRumbles?: StuckRumble[];
+  onchainCreateFailures?: DashboardData["runtimeHealth"] extends { onchainCreateFailures?: infer T } ? T : never;
+  onchainHealth?: DashboardData["onchainHealth"];
 }) {
   const activeSlots = activeRumbles.filter((r) =>
     ["betting", "combat", "payout"].includes(r.status),
   ).length;
+
+  // Compute health for ALL active rumbles (stuck ones come from server,
+  // but we also want green/amber ones for the health table)
+  const THRESHOLDS: Record<string, number> = {
+    betting: 600_000,
+    combat: 2_700_000,
+    payout: 600_000,
+  };
+  const now = Date.now();
+  const rumbleHealthRows = activeRumbles.map((r) => {
+    const createdMs = new Date(r.created_at).getTime();
+    const phaseStartMs = r.started_at ? new Date(r.started_at).getTime() : createdMs;
+    const ageMs = now - createdMs;
+    const phaseAgeMs = now - phaseStartMs;
+    const maxAgeMs = THRESHOLDS[r.status] ?? 600_000;
+    const healthRatio = phaseAgeMs / maxAgeMs;
+    const health = healthRatio < 0.5 ? "green" : healthRatio < 1.0 ? "amber" : "red";
+    return { ...r, ageMs, phaseAgeMs, maxAgeMs, health, healthRatio };
+  });
 
   return (
     <div className="space-y-6">
@@ -1197,6 +1254,120 @@ function OverviewTab({
           </div>
         )}
       </Section>
+
+      {/* Rumble Health */}
+      <Section title="Rumble Health">
+        {rumbleHealthRows.length === 0 ? (
+          <p className="font-mono text-sm text-stone-600">No active rumbles to monitor</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full font-mono text-xs">
+              <thead>
+                <tr className="text-stone-500 border-b border-stone-800">
+                  <th className="text-left py-2 px-2">Health</th>
+                  <th className="text-left py-2 px-2">Slot</th>
+                  <th className="text-left py-2 px-2">Rumble ID</th>
+                  <th className="text-left py-2 px-2">Status</th>
+                  <th className="text-left py-2 px-2">Age</th>
+                  <th className="text-left py-2 px-2">Phase Age</th>
+                  <th className="text-left py-2 px-2">Max</th>
+                  <th className="text-left py-2 px-2">Pipeline</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rumbleHealthRows.map((r) => (
+                  <tr
+                    key={r.id}
+                    className={`border-b border-stone-800/50 ${
+                      r.health === "red"
+                        ? "bg-red-950/30"
+                        : r.health === "amber"
+                          ? "bg-amber-950/20"
+                          : "hover:bg-stone-900/40"
+                    }`}
+                  >
+                    <td className="py-2 px-2">
+                      <HealthDot health={r.health} />
+                    </td>
+                    <td className="py-2 px-2 text-stone-400">{r.slot_index}</td>
+                    <td className="py-2 px-2 text-stone-400" title={r.id}>
+                      {truncate(r.id, 6)}
+                    </td>
+                    <td className="py-2 px-2">
+                      <StatusBadge status={r.status} />
+                    </td>
+                    <td className="py-2 px-2 text-stone-300">{formatDuration(r.ageMs)}</td>
+                    <td className={`py-2 px-2 ${
+                      r.health === "red" ? "text-red-400 font-bold" : r.health === "amber" ? "text-amber-400" : "text-stone-300"
+                    }`}>
+                      {formatDuration(r.phaseAgeMs)}
+                    </td>
+                    <td className="py-2 px-2 text-stone-500">{formatDuration(r.maxAgeMs)}</td>
+                    <td className="py-2 px-2">
+                      <PipelineView txSigs={r.tx_signatures} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {(stuckRumbles?.length ?? 0) > 0 && (
+          <div className="mt-3 px-3 py-2 bg-red-950/40 border border-red-800/50 rounded">
+            <p className="font-mono text-[11px] text-red-400 font-bold">
+              {stuckRumbles!.length} stuck rumble(s) detected (exceeded max phase age)
+            </p>
+          </div>
+        )}
+        {onchainHealth && (
+          <div className="mt-3 flex gap-4 font-mono text-[10px] text-stone-500">
+            <span>Program: {truncate(onchainHealth.programId, 6)}</span>
+            <span>ER: {onchainHealth.erEnabled ? "ON" : "OFF"}</span>
+            {onchainHealth.erRpcUrl && <span>ER RPC: {onchainHealth.erRpcUrl}</span>}
+          </div>
+        )}
+      </Section>
+
+      {/* On-Chain Create Failures */}
+      {(onchainCreateFailures?.length ?? 0) > 0 && (
+        <Section title="On-Chain Create Failures">
+          <div className="overflow-x-auto">
+            <table className="w-full font-mono text-xs">
+              <thead>
+                <tr className="text-stone-500 border-b border-stone-800">
+                  <th className="text-left py-2 px-2">Rumble ID</th>
+                  <th className="text-left py-2 px-2">Slot</th>
+                  <th className="text-left py-2 px-2">Reason</th>
+                  <th className="text-left py-2 px-2">Attempts</th>
+                  <th className="text-left py-2 px-2">Last Seen</th>
+                </tr>
+              </thead>
+              <tbody>
+                {onchainCreateFailures!.map((f, idx) => (
+                  <tr
+                    key={`${f.rumbleId}-${idx}`}
+                    className={`border-b border-stone-800/50 ${
+                      f.attempts > 3 ? "bg-red-950/30" : "hover:bg-stone-900/40"
+                    }`}
+                  >
+                    <td className="py-2 px-2 text-stone-400">{f.rumbleId}</td>
+                    <td className="py-2 px-2">{f.slotIndex ?? "-"}</td>
+                    <td className="py-2 px-2 text-red-400 max-w-[300px] truncate" title={f.reason}>
+                      {f.reason}
+                    </td>
+                    <td className={`py-2 px-2 ${f.attempts > 3 ? "text-red-400 font-bold" : "text-stone-300"}`}>
+                      {f.attempts}
+                    </td>
+                    <td className="py-2 px-2 text-stone-500">
+                      {f.lastSeenAt ? formatTime(f.lastSeenAt) : "-"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Section>
+      )}
 
       {/* Queue */}
       <Section title={`Queue (${queue.length})`}>

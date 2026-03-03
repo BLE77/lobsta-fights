@@ -17,7 +17,7 @@ use ephemeral_vrf_sdk::instructions::create_request_randomness_ix;
 #[cfg(feature = "combat")]
 use ephemeral_vrf_sdk::types::SerializableAccountMeta;
 
-declare_id!("2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC");
+declare_id!("638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU");
 
 /// Maximum fighters per rumble
 const MAX_FIGHTERS: usize = 16;
@@ -1888,15 +1888,20 @@ pub mod rumble_engine {
             RumbleError::InvalidStateTransition
         );
 
-        let clock = Clock::get()?;
-        let claim_window_end = rumble
-            .completed_at
-            .checked_add(PAYOUT_CLAIM_WINDOW_SECONDS)
-            .ok_or(RumbleError::MathOverflow)?;
-        require!(
-            clock.unix_timestamp >= claim_window_end,
-            RumbleError::ClaimWindowActive
-        );
+        // If winners exist, enforce the 24hr claim window before sweeping.
+        // If no winning bets, sweep immediately (it's all house money).
+        let winner_pool = rumble.betting_pools[rumble.winner_index as usize];
+        if winner_pool > 0 {
+            let clock = Clock::get()?;
+            let claim_window_end = rumble
+                .completed_at
+                .checked_add(PAYOUT_CLAIM_WINDOW_SECONDS)
+                .ok_or(RumbleError::MathOverflow)?;
+            require!(
+                clock.unix_timestamp >= claim_window_end,
+                RumbleError::ClaimWindowActive
+            );
+        }
 
         let vault_info = ctx.accounts.vault.to_account_info();
         let treasury_info = ctx.accounts.treasury.to_account_info();
@@ -1992,7 +1997,11 @@ pub mod rumble_engine {
     }
 
     /// Close a completed Rumble PDA to reclaim rent. Admin-only.
-    /// Requires Complete state and claim window expired.
+    /// Requires Complete state. Closable when:
+    /// - No bets were placed (total_deployed == 0), OR
+    /// - No one bet on the winner (losers-only → house money already swept), OR
+    /// - Vault is empty (all winners have claimed)
+    /// If winners exist and vault still has SOL, close is blocked.
     pub fn close_rumble(ctx: Context<CloseRumble>) -> Result<()> {
         let rumble = &ctx.accounts.rumble;
         require!(
@@ -2000,17 +2009,30 @@ pub mod rumble_engine {
             RumbleError::InvalidStateTransition
         );
 
-        let clock = Clock::get()?;
-        let claim_window_end = rumble
-            .completed_at
-            .checked_add(PAYOUT_CLAIM_WINDOW_SECONDS)
-            .ok_or(RumbleError::MathOverflow)?;
+        let total_bets: u64 = rumble.betting_pools.iter().sum();
+        if total_bets == 0 {
+            // No bets placed at all → close immediately
+            msg!("Rumble {} closed (no bets placed)", rumble.id);
+            return Ok(());
+        }
+
+        let winner_pool = rumble.betting_pools[rumble.winner_index as usize];
+        if winner_pool == 0 {
+            // No one bet on the winner → no valid claims, close immediately
+            msg!("Rumble {} closed (no winning bets)", rumble.id);
+            return Ok(());
+        }
+
+        // Winners exist — only close if vault is drained (everyone claimed)
+        let vault_balance = ctx.accounts.vault.lamports();
+        let rent = Rent::get()?;
+        let min_balance = rent.minimum_balance(0);
         require!(
-            clock.unix_timestamp >= claim_window_end,
+            vault_balance <= min_balance,
             RumbleError::ClaimWindowActive
         );
 
-        msg!("Rumble {} account closed, rent reclaimed", rumble.id);
+        msg!("Rumble {} closed (all winners claimed)", rumble.id);
         Ok(())
     }
 
@@ -2690,6 +2712,13 @@ pub struct CloseRumble<'info> {
         bump = rumble.bump,
     )]
     pub rumble: Account<'info, Rumble>,
+
+    /// CHECK: Vault PDA — checked to see if winners have claimed.
+    #[account(
+        seeds = [VAULT_SEED, rumble.id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub vault: SystemAccount<'info>,
 }
 
 #[cfg(feature = "combat")]

@@ -177,7 +177,7 @@ describe("POST /api/rumble/bet — Multi-fighter bet tx verify/register", () => 
     const { status, json } = await post("/api/rumble/bet", {
       slot_index: 0,
       fighter_id: FAKE_FIGHTER_ID,
-      sol_amount: 0.01,
+      sol_amount: 0.02,
     });
     expect(status).toBe(400);
     expect(json.error).toMatch(/auth/i);
@@ -238,7 +238,7 @@ describe("POST /api/rumble/bet — Multi-fighter bet tx verify/register", () => 
       wallet_address: FAKE_WALLET,
       tx_signature: fakeTxSignature(),
       bets: [
-        { fighter_id: FAKE_FIGHTER_ID, sol_amount: 0.01 },
+        { fighter_id: FAKE_FIGHTER_ID, sol_amount: 0.02 },
         { sol_amount: 0.02 }, // missing fighter_id
       ],
     });
@@ -282,7 +282,7 @@ describe("POST /api/rumble/bet — Multi-fighter bet tx verify/register", () => 
       wallet_address: FAKE_WALLET,
       tx_signature: fakeTxSignature(),
       fighter_id: FAKE_FIGHTER_ID,
-      sol_amount: 0.01,
+      sol_amount: 0.02,
     });
     // The fake tx won't exist on-chain, so verification should fail.
     // 400 = verification failure, 500 = RPC/DB error during verification
@@ -318,7 +318,7 @@ describe("POST /api/rumble/bet — Multi-fighter bet tx verify/register", () => 
       api_key: "fake-api-key-12345",
       bettor_id: FAKE_FIGHTER_ID,
       fighter_id: FAKE_FIGHTER_ID,
-      sol_amount: 0.01,
+      sol_amount: 0.02,
     });
     // 409 = off-chain bets disabled, 401 = invalid creds (if off-chain enabled)
     expect([401, 409]).toContain(status);

@@ -3,8 +3,12 @@
  * Accepted formats:
  * - "1234567890"
  * - "rumble_1234567890"
- * - "rumble_1234567890_7" (legacy queue-manager id; maps to 12345678907)
  * - same with "-" separators
+ *
+ * NOTE:
+ * Queue-manager IDs like "rumble_<timestamp>_<counter>" are *not* on-chain
+ * rumble numbers and must return null. On-chain numeric IDs should come from
+ * `ucf_rumbles.rumble_number`.
  */
 export function parseOnchainRumbleIdNumber(rumbleId: string): number | null {
   const normalized = String(rumbleId ?? "").trim();
@@ -14,9 +18,9 @@ export function parseOnchainRumbleIdNumber(rumbleId: string): number | null {
   if (/^\d+$/.test(normalized)) {
     numeric = normalized;
   } else {
-    const prefixed = normalized.match(/^rumble[_-](\d+)(?:[_-](\d+))?$/i);
+    const prefixed = normalized.match(/^rumble[_-](\d+)$/i);
     if (!prefixed) return null;
-    numeric = `${prefixed[1]}${prefixed[2] ?? ""}`;
+    numeric = prefixed[1];
   }
 
   const parsed = Number(numeric);

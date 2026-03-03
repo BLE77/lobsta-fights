@@ -8,6 +8,8 @@ import {
 } from "~~/lib/rumble-persistence";
 import { getOrchestrator } from "~~/lib/rumble-orchestrator";
 import { isAuthorizedAdminRequest } from "~~/lib/request-auth";
+import { RUMBLE_ENGINE_ID } from "~~/lib/solana-programs";
+import { isErEnabled, getErRpcEndpoint } from "~~/lib/solana-connection";
 
 export const dynamic = "force-dynamic";
 
@@ -103,6 +105,32 @@ export async function GET(request: Request) {
       }
     }
 
+    // Stuck rumble detection — server-side so UI just renders
+    const STUCK_THRESHOLDS_MS: Record<string, number> = {
+      betting: 600_000,    // 10 minutes
+      combat: 2_700_000,   // 45 minutes
+      payout: 600_000,     // 10 minutes
+    };
+    const now = Date.now();
+    const stuckRumbles = activeRumbles
+      .map((r: any) => {
+        const createdMs = new Date(r.created_at).getTime();
+        const phaseStartMs = r.started_at ? new Date(r.started_at).getTime() : createdMs;
+        const ageMs = now - createdMs;
+        const phaseAgeMs = now - phaseStartMs;
+        const maxAgeMs = STUCK_THRESHOLDS_MS[r.status] ?? 600_000;
+        const healthRatio = phaseAgeMs / maxAgeMs;
+        const health = healthRatio < 0.5 ? "green" : healthRatio < 1.0 ? "amber" : "red";
+        return { ...r, ageMs, phaseAgeMs, maxAgeMs, health, healthRatio };
+      })
+      .filter((r: any) => r.health === "red");
+
+    const onchainHealth = {
+      erEnabled: isErEnabled(),
+      erRpcUrl: isErEnabled() ? getErRpcEndpoint() : null,
+      programId: RUMBLE_ENGINE_ID.toBase58(),
+    };
+
     return NextResponse.json({
       queue,
       stats,
@@ -113,6 +141,8 @@ export async function GET(request: Request) {
       fighters,
       runtimeHealth,
       systemWarnings,
+      stuckRumbles,
+      onchainHealth,
       timestamp: new Date().toISOString(),
     });
   } catch (error: any) {

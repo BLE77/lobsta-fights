@@ -316,6 +316,7 @@
           "writable": true
         },
         {
+          "address": "4amdLk5Ue4pbM1CXRZeUn3ZBAf8QTXXGu4HqH5dQv3qM",
           "name": "ichor_mint",
           "optional": true,
           "writable": true
@@ -433,6 +434,7 @@
           "writable": true
         },
         {
+          "address": "4amdLk5Ue4pbM1CXRZeUn3ZBAf8QTXXGu4HqH5dQv3qM",
           "name": "ichor_mint",
           "writable": true
         },

@@ -10,6 +10,10 @@
     "backfill:rumble-claims": "node scripts/backfill-rumble-claims.mjs",
     "provision:house-bots": "node scripts/provision-house-bots.mjs",
     "test:rumble-claim": "node scripts/test-rumble-claim-flow.mjs",
+    "debug:er-undelegate": "tsx scripts/debug-er-undelegate.ts",
+    "reset:hard-rumble": "tsx scripts/hard-reset-rumble.ts",
+    "sweep:devnet": "tsx scripts/sweep-devnet-accounts.ts",
+    "sweep:mainnet": "tsx scripts/sweep-mainnet-accounts.ts",
     "worker": "tsx rumble-worker.ts",
     "test": "vitest run",
     "test:integration": "vitest run __tests__/rumble-integration.test.ts"

@@ -48,6 +48,7 @@ export interface PersistMainnetOpInput {
 const MAX_MAINNET_RETRY_ATTEMPTS = 5;
 const MAX_PENDING_OPS_FETCH = 200;
 const RETRY_BACKOFF_MS = [2_000, 4_000, 8_000, 16_000, 32_000];
+const STALE_CREATE_RUMBLE_MS = 3_600_000; // 1 hour — battle is finished, creating PDA now wastes SOL
 const TABLE_NAME = "mainnet_pending_ops";
 
 interface MainnetOpRow {
@@ -298,6 +299,29 @@ export async function markOpFailed(
   }
 }
 
+/** Immediately mark an op as failed (bypasses attempt counter). Used for stale ops. */
+async function markStaleOp(
+  rumbleId: string,
+  opType: MainnetOpType,
+  reason: string,
+): Promise<void> {
+  try {
+    const sb = freshServiceClient();
+    await sb
+      .from(TABLE_NAME)
+      .update({
+        status: "failed" as MainnetOpStatus,
+        last_error: reason,
+        updated_at: nowIso(),
+      })
+      .eq("rumble_id", rumbleId)
+      .eq("op_type", opType)
+      .eq("status", "pending");
+  } catch {
+    // intentionally non-fatal
+  }
+}
+
 async function execute(op: MainnetPendingOp): Promise<void> {
   switch (op.op_type) {
     case "completeRumble": {
@@ -363,6 +387,16 @@ export async function retryPendingMainnetOps(): Promise<void> {
 
       const delayMs = getRetryDelayMs(row.attempts);
       if (row.attempts > 0 && now - updatedAt < delayMs) continue;
+
+      // Staleness guard: don't create PDAs for battles that already finished
+      if (row.op_type === "createRumble") {
+        const createdAt = new Date(row.created_at).getTime();
+        if (!Number.isNaN(createdAt) && now - createdAt > STALE_CREATE_RUMBLE_MS) {
+          console.log(`[MainnetRetry] Stale createRumble for ${row.rumble_id} (age ${Math.round((now - createdAt) / 60_000)}min) — marking failed`);
+          await markStaleOp(row.rumble_id, row.op_type, "Stale — battle already finished");
+          continue;
+        }
+      }
 
       try {
         await execute(row);

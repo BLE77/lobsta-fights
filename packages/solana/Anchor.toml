@@ -8,7 +8,7 @@ skip-lint = false
 [programs.devnet]
 fighter_registry = "2hA6Jvj1yjP2Uj3qrJcsBeYA2R9xPM95mDKw1ncKVExa"
 ichor_token = "925GAeqjKMX4B5MDANB91SZCvrx8HpEgmPJwHJzxKJx1"
-rumble_engine = "2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC"
+rumble_engine = "638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU"
 
 [registry]
 url = "https://api.apr.dev"
