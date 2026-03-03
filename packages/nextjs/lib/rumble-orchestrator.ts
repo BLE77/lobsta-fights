@@ -3808,7 +3808,13 @@ export class RumbleOrchestrator {
       .filter((f): f is RumbleFighter => !!f)
       .sort((a, b) => a.placement - b.placement);
 
-    if (rankedFighters.length < 2) return;
+    if (rankedFighters.length < 2) {
+      console.warn(
+        `[Orchestrator] On-chain result had <2 ranked fighters for ${slot.id}; forcing legacy completion flow.`,
+      );
+      await this.finishCombat(slot, state);
+      return;
+    }
     const winner = rankedFighters[0].id;
 
     const result: RumbleResult = {
@@ -4864,9 +4870,12 @@ export class RumbleOrchestrator {
       placements = ranked.map((f, i) => ({ id: f.id, placement: i + 1 }));
     }
 
-    if (placements.length < 3) {
+    if (placements.length < 2) {
       console.warn(`[Orchestrator] Not enough fighters for payout in slot ${slotIndex}`);
       this.cleanupSlot(slotIndex, slot.id);
+      this.combatStates.delete(slotIndex);
+      this.autoRequeueFighters.delete(slotIndex);
+      this.payoutProcessed.delete(slot.id);
       return;
     }
 

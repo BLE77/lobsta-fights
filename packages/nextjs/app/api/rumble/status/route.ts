@@ -108,9 +108,10 @@ function getStableNextTurnAt(
 function getStableBettingDeadline(
   rumbleIdNum: number,
   closeSlot: bigint,
+  networkContext: "mainnet" | "devnet",
   computeIso: () => string,
 ): string {
-  const key = `${rumbleIdNum}:${closeSlot.toString()}`;
+  const key = `${rumbleIdNum}:${closeSlot.toString()}:${networkContext}`;
   const now = Date.now();
   const cached = _bettingDeadlineCache.get(key);
   if (cached && cached.expiresAt > now) return cached.iso;
@@ -599,12 +600,37 @@ export async function GET(request: Request) {
         if (rumbleIdNum === null) return slot;
         let onchain =
           slot.state === "betting"
-            ? await getMainnetRumbleState(rumbleIdNum).catch(() => null)
-            : await readRumbleAccountState(rumbleIdNum).catch(() => null);
+            ? await getMainnetRumbleState(rumbleIdNum).catch((err) => {
+                console.warn("[StatusAPI] getMainnetRumbleState failed", {
+                  rumbleIdNum,
+                  state: slot.state,
+                  slotIndex: slot.slotIndex,
+                  error: String(err),
+                });
+                return null;
+              })
+            : await readRumbleAccountState(rumbleIdNum).catch((err) => {
+                console.warn("[StatusAPI] readRumbleAccountState failed", {
+                  rumbleIdNum,
+                  state: slot.state,
+                  slotIndex: slot.slotIndex,
+                  error: String(err),
+                });
+                return null;
+              });
         let useDevnetSlotContext = slot.state !== "betting"; // non-betting reads already use devnet
         // Fallback: if mainnet read failed during betting, try devnet
         if (!onchain && slot.state === "betting") {
-          onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+          onchain = await readRumbleAccountState(rumbleIdNum).catch((err) => {
+            console.warn("[StatusAPI] readRumbleAccountState fallback failed", {
+              rumbleIdNum,
+              state: slot.state,
+              slotIndex: slot.slotIndex,
+              useDevnetFallback: true,
+              error: String(err),
+            });
+            return null;
+          });
           useDevnetSlotContext = true;
         }
         if (!onchain) {
@@ -653,6 +679,7 @@ export async function GET(request: Request) {
                 bettingDeadline = getStableBettingDeadline(
                   rumbleIdNum,
                   closeRaw,
+                  useDevnetSlotContext ? "devnet" : "mainnet",
                   () => new Date(Date.now() + etaMs).toISOString(),
                 );
               } else {
@@ -681,7 +708,15 @@ export async function GET(request: Request) {
         let turnPhase = slot.turnPhase;
 
         if (state === "combat") {
-          const onchainCombat = await readRumbleCombatState(rumbleIdNum).catch(() => null);
+          const onchainCombat = await readRumbleCombatState(rumbleIdNum).catch((err) => {
+            console.warn("[StatusAPI] readRumbleCombatState failed", {
+              rumbleIdNum,
+              state: slot.state,
+              slotIndex: slot.slotIndex,
+              error: String(err),
+            });
+            return null;
+          });
           if (onchainCombat) {
             currentTurn = Math.max(currentTurn ?? 0, onchainCombat.currentTurn ?? 0);
             remainingFighters = onchainCombat.remainingFighters;
@@ -866,6 +901,8 @@ export async function GET(request: Request) {
         const fighterIds = fighterRows
           .map((f) => String(f?.id ?? "").trim())
           .filter(Boolean);
+        if (fighterIds.length === 0) continue;
+
         // Build fighter state — replay turn_log if available to show actual HP
         const turnLog = Array.isArray(row.turn_log) ? row.turn_log : [];
         const fighters = fighterIds.map((fid) => ({
@@ -1057,11 +1094,27 @@ export async function GET(request: Request) {
 
         // --- Betting state: restore countdown from on-chain close slot ---
         if (slot.state === "betting") {
-          let onchain = await getMainnetRumbleState(rumbleIdNum).catch(() => null);
+          let onchain = await getMainnetRumbleState(rumbleIdNum).catch((err) => {
+            console.warn("[StatusAPI] getMainnetRumbleState failed", {
+              rumbleIdNum,
+              slotIndex: slot.slotIndex,
+              state: slot.state,
+              error: String(err),
+            });
+            return null;
+          });
           let useDevnetSlotContext = false;
           // Fallback: if mainnet failed, try devnet
           if (!onchain) {
-            onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+            onchain = await readRumbleAccountState(rumbleIdNum).catch((err) => {
+              console.warn("[StatusAPI] readRumbleAccountState failed", {
+                rumbleIdNum,
+                slotIndex: slot.slotIndex,
+                state: slot.state,
+                error: String(err),
+              });
+              return null;
+            });
             useDevnetSlotContext = true;
           }
 
@@ -1099,6 +1152,7 @@ export async function GET(request: Request) {
               bettingDeadline = getStableBettingDeadline(
                 rumbleIdNum,
                 closeRaw,
+                useDevnetSlotContext ? "devnet" : "mainnet",
                 () => new Date(Date.now() + etaMs).toISOString(),
               );
             }
@@ -1118,7 +1172,14 @@ export async function GET(request: Request) {
 
         // --- Combat state: enrich from on-chain CombatState PDA ---
         if (slot.state !== "combat") return slot;
-        const onchainCombat = await readRumbleCombatState(rumbleIdNum).catch(() => null);
+        const onchainCombat = await readRumbleCombatState(rumbleIdNum).catch((err) => {
+          console.warn("[StatusAPI] readRumbleCombatState failed", {
+            rumbleIdNum,
+            slotIndex: slot.slotIndex,
+            error: String(err),
+          });
+          return null;
+        });
         if (!onchainCombat) return slot;
 
         const currentTurn = Math.max(slot.currentTurn ?? 0, onchainCombat.currentTurn ?? 0);

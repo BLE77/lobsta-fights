@@ -497,9 +497,10 @@ export async function readRumbleAccountState(
   const key = `rumble:${useMainnet ? "mainnet:" : ""}${rumbleId}:${endpointKey}`;
   return cachedRead(key, 3000, async () => {
     const [rumblePda] = useMainnet ? deriveRumblePdaMainnet(rumbleId) : deriveRumblePda(rumbleId);
+    const MIN_RUMBLE_ACCOUNT_LEN = 724;
     // Use processed commitment to minimize stale reads around betting close.
     const info = await conn.getAccountInfo(rumblePda, "processed");
-    if (!info || info.data.length < 17) return null;
+    if (!info || info.data.length < MIN_RUMBLE_ACCOUNT_LEN) return null;
 
     const data = info.data;
     const parsedRumbleId = readU64LE(data, 8);
@@ -509,7 +510,7 @@ export async function readRumbleAccountState(
 
     const fightersOffset = 8 + 8 + 1;
     const fighterCountOffset = fightersOffset + 32 * 16;
-    const fighterCount = data[fighterCountOffset] ?? 0;
+    const fighterCount = Math.min(data[fighterCountOffset] ?? 0, 16);
     const bettingPoolsOffset = fighterCountOffset + 1;
     const totalDeployedOffset = bettingPoolsOffset + 8 * 16;
     const adminFeeCollectedOffset = totalDeployedOffset + 8;
@@ -635,67 +636,70 @@ export async function readRumbleCombatState(
   rumbleId: bigint | number,
   connection?: Connection,
 ): Promise<RumbleCombatAccountState | null> {
-  const key = `combat:${rumbleId}`;
+  const conn = connection ?? getConnection();
+  const endpointKey = getConnectionCacheKey(conn);
+  const key = `combat:${rumbleId}:${endpointKey}`;
   return cachedRead(key, 2000, async () => {
-    const conn = connection ?? getConnection();
     const [combatStatePda] = deriveCombatStatePda(rumbleId);
+    const MIN_COMBAT_ACCOUNT_LEN = 401;
     const info = await conn.getAccountInfo(combatStatePda, "processed");
-    if (!info || info.data.length < 8 + 8 + 1 + 4 + 8 + 8 + 8 + 1 + 1 + 1) return null;
+    if (!info || info.data.length < MIN_COMBAT_ACCOUNT_LEN) return null;
 
     const data = info.data;
     const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-    let offset = 8; // discriminator
 
-    const parsedRumbleId = view.getBigUint64(offset, true);
-    offset += 8;
-    const fighterCount = data[offset] ?? 0;
-    offset += 1;
-    const currentTurn = view.getUint32(offset, true);
-    offset += 4;
-    const turnOpenSlot = view.getBigUint64(offset, true);
-    offset += 8;
-    const commitCloseSlot = view.getBigUint64(offset, true);
-    offset += 8;
-    const revealCloseSlot = view.getBigUint64(offset, true);
-    offset += 8;
-    const turnResolved = data[offset] === 1;
-    offset += 1;
-    const remainingFighters = data[offset] ?? 0;
-    offset += 1;
-    const winnerIndexRaw = data[offset] ?? 255;
-    offset += 1;
+    const fighterCountOffset = 8 + 8;
+    const currentTurnOffset = fighterCountOffset + 1;
+    const turnOpenSlotOffset = currentTurnOffset + 4;
+    const commitCloseSlotOffset = turnOpenSlotOffset + 8;
+    const revealCloseSlotOffset = commitCloseSlotOffset + 8;
+    const turnResolvedOffset = revealCloseSlotOffset + 8;
+    const remainingFightersOffset = turnResolvedOffset + 1;
+    const winnerIndexOffset = remainingFightersOffset + 1;
+    const hpOffset = winnerIndexOffset + 1;
+    const meterOffset = hpOffset + 16 * 2;
+    const eliminationRankOffset = meterOffset + 16;
+    const totalDamageDealtOffset = eliminationRankOffset + 16;
+    const totalDamageTakenOffset = totalDamageDealtOffset + 16 * 8;
+    const vrfSeedOffset = totalDamageTakenOffset + 16 * 8;
+    const bumpOffset = vrfSeedOffset + 32;
+
+    const parsedRumbleId = view.getBigUint64(8, true);
+    const fighterCount = data[fighterCountOffset] ?? 0;
+    const currentTurn = view.getUint32(currentTurnOffset, true);
+    const turnOpenSlot = view.getBigUint64(turnOpenSlotOffset, true);
+    const commitCloseSlot = view.getBigUint64(commitCloseSlotOffset, true);
+    const revealCloseSlot = view.getBigUint64(revealCloseSlotOffset, true);
+    const turnResolved = data[turnResolvedOffset] === 1;
+    const remainingFighters = data[remainingFightersOffset] ?? 0;
+    const winnerIndexRaw = data[winnerIndexOffset] ?? 255;
 
     const hp: number[] = [];
     for (let i = 0; i < 16; i++) {
-      hp.push(view.getUint16(offset, true));
-      offset += 2;
+      hp.push(view.getUint16(hpOffset + i * 2, true));
     }
 
     const meter: number[] = [];
     for (let i = 0; i < 16; i++) {
-      meter.push(data[offset] ?? 0);
-      offset += 1;
+      meter.push(data[meterOffset + i] ?? 0);
     }
 
     const eliminationRank: number[] = [];
     for (let i = 0; i < 16; i++) {
-      eliminationRank.push(data[offset] ?? 0);
-      offset += 1;
+      eliminationRank.push(data[eliminationRankOffset + i] ?? 0);
     }
 
     const totalDamageDealt: bigint[] = [];
     for (let i = 0; i < 16; i++) {
-      totalDamageDealt.push(view.getBigUint64(offset, true));
-      offset += 8;
+      totalDamageDealt.push(view.getBigUint64(totalDamageDealtOffset + i * 8, true));
     }
 
     const totalDamageTaken: bigint[] = [];
     for (let i = 0; i < 16; i++) {
-      totalDamageTaken.push(view.getBigUint64(offset, true));
-      offset += 8;
+      totalDamageTaken.push(view.getBigUint64(totalDamageTakenOffset + i * 8, true));
     }
 
-    const bump = data[offset] ?? 0;
+    const bump = data[bumpOffset] ?? 0;
     const winnerIndex = winnerIndexRaw < 16 ? winnerIndexRaw : null;
 
     return {
@@ -2874,9 +2878,9 @@ export async function closeRumbleMainnet(
  *    (rumbles with unclaimed winning bets are kept alive so users can claim)
  * Returns total lamports reclaimed.
  */
-export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; closed: number; skipped: number; reclaimedLamports: number }> {
+export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; closed: number; swept: number; skipped: number; reclaimedLamports: number }> {
   const provider = getMainnetAdminProvider();
-  if (!provider) return { completed: 0, closed: 0, skipped: 0, reclaimedLamports: 0 };
+  if (!provider) return { completed: 0, closed: 0, swept: 0, skipped: 0, reclaimedLamports: 0 };
 
   const conn = getBettingConnection();
   const programId = RUMBLE_ENGINE_ID_MAINNET;
@@ -2885,10 +2889,31 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
   const program = getRumbleEngineProgram(provider, programId);
   const [configPda] = deriveRumbleConfigPdaMainnet();
 
+  // Read treasury address once for sweep calls
+  let treasury: PublicKey | null = null;
+  try {
+    const configInfo = await conn.getAccountInfo(configPda);
+    if (configInfo) treasury = new PublicKey(configInfo.data.subarray(8 + 32, 8 + 32 + 32));
+  } catch { /* will skip sweeps if treasury unavailable */ }
+
   let completed = 0;
   let closed = 0;
+  let swept = 0;
   let skipped = 0;
   let reclaimedLamports = 0;
+
+  const now = Math.floor(Date.now() / 1000);
+  const BETTING_STALE_SECONDS = 3600; // 1 hour
+  const RENT_EXEMPT_MIN = 890_880; // ~0.00089 SOL for 0-byte account
+
+  // Byte offsets for Rumble account fields (Anchor discriminator = 8 bytes)
+  // id(u64) state(u8) fighters([Pubkey;16]) fighter_count(u8) betting_pools([u64;16])
+  // total_deployed(u64) admin_fee(u64) sponsorship(u64) placements([u8;16]) winner_index(u8)
+  // betting_deadline(i64) combat_started_at(i64) completed_at(i64) bump(u8)
+  const BETTING_POOLS_OFFSET = 8 + 8 + 1 + 512 + 1; // 530
+  const WINNER_INDEX_OFFSET = BETTING_POOLS_OFFSET + 128 + 8 + 8 + 8 + 16; // 698
+  const BETTING_DEADLINE_OFFSET = WINNER_INDEX_OFFSET + 1; // 699
+  const COMPLETED_AT_OFFSET = BETTING_DEADLINE_OFFSET + 8 + 8; // 715
 
   for (const a of accounts) {
     const data = a.account.data;
@@ -2896,14 +2921,48 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
 
     const state = data[16];
     const rumbleId = Number(data.readBigUInt64LE(8));
-    const completedAtOffset = 8 + 8 + 1 + 512 + 1 + 128 + 8 + 8 + 8 + 16 + 1 + 8 + 8;
-    const completedAt = Number(data.readBigInt64LE(completedAtOffset));
-    const now = Math.floor(Date.now() / 1000);
-    const pastClaimWindow = completedAt > 0 && (now - completedAt) > 86400;
-
     const [rumblePda] = deriveRumblePdaMainnet(rumbleId);
 
-    // Step 1: Payout → Complete (always safe — users can still claim in Complete state)
+    // --- State 0: Betting (stuck) ---
+    // Only auto-close if no bets were placed (vault empty).
+    // If people bet but fight never started, skip — needs admin review.
+    if (state === 0) {
+      const bettingDeadline = Number(data.readBigInt64LE(BETTING_DEADLINE_OFFSET));
+      const staleBetting = bettingDeadline > 0 && (now - bettingDeadline) > BETTING_STALE_SECONDS;
+      if (!staleBetting) { skipped++; continue; }
+
+      // Check vault — if anyone bet, don't auto-close
+      const [vaultPda] = deriveVaultPdaMainnet(rumbleId);
+      let vaultBalance = 0;
+      try { vaultBalance = await conn.getBalance(vaultPda); } catch { /* ok */ }
+
+      if (vaultBalance > RENT_EXEMPT_MIN) {
+        skipped++;
+        console.log(`[RentReclaim] SKIP stale betting ${rumbleId}: vault has ${(vaultBalance / 1e9).toFixed(6)} SOL (bets placed, needs admin review)`);
+        continue;
+      }
+
+      // No bets — safe to force-complete and close over next cycles
+      try {
+        const dummyPlacements = Buffer.from(Array.from({ length: 16 }, (_, i) => i));
+        const method = (program.methods as any)
+          .adminSetResult(dummyPlacements, 0)
+          .accounts({ admin: admin.publicKey, config: configPda, rumble: rumblePda });
+        const sig = await sendAdminTxFireAndForget(method, admin, conn);
+        if (sig) {
+          completed++;
+          console.log(`[RentReclaim] adminSetResult (stale betting, no bets) ${rumbleId}: ${sig}`);
+        }
+      } catch (err) {
+        console.warn(`[RentReclaim] adminSetResult ${rumbleId} failed:`, (err as Error).message?.slice(0, 80));
+      }
+      continue;
+    }
+
+    const completedAt = Number(data.readBigInt64LE(COMPLETED_AT_OFFSET));
+    const pastClaimWindow = completedAt > 0 && (now - completedAt) > 86400;
+
+    // --- State 2: Payout → Complete (safe — winners can still claim in Complete state) ---
     if (state === 2 && pastClaimWindow) {
       try {
         const method = (program.methods as any).completeRumble().accounts({
@@ -2914,43 +2973,78 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
       } catch (err) {
         console.warn(`[RentReclaim] completeRumble ${rumbleId} failed:`, (err as Error).message?.slice(0, 80));
       }
+      continue; // Next cycle handles sweep + close
     }
 
-    // Step 2: Complete → Close (reclaim rent) — ONLY if safe to close
-    // Check vault balance: if vault has SOL beyond rent-exempt, someone may still claim
+    // --- State 3: Complete → Check winners → Sweep/Close ---
     if (state === 3 && pastClaimWindow) {
+      // Read winner_index and check if anyone bet on the winner
+      const winnerIndex = data[WINNER_INDEX_OFFSET];
+      const winnerPoolLamports = Number(data.readBigUInt64LE(BETTING_POOLS_OFFSET + winnerIndex * 8));
+      const hasWinningBets = winnerPoolLamports > 0;
+
       const [vaultPda] = deriveVaultPdaMainnet(rumbleId);
       let vaultBalance = 0;
-      try {
-        vaultBalance = await conn.getBalance(vaultPda);
-      } catch { /* vault may not exist */ }
-
-      const RENT_EXEMPT_MIN = 890_880; // ~0.00089 SOL for 0-byte account
+      try { vaultBalance = await conn.getBalance(vaultPda); } catch { /* ok */ }
       const hasUnclaimedSol = vaultBalance > RENT_EXEMPT_MIN;
 
-      if (hasUnclaimedSol) {
+      // If someone bet on the winner and vault still has SOL → leave it alone.
+      // Winners can claim whenever they want.
+      if (hasWinningBets && hasUnclaimedSol) {
         skipped++;
-        console.log(`[RentReclaim] SKIP closeRumble ${rumbleId}: vault has ${(vaultBalance / 1e9).toFixed(6)} SOL (unclaimed bets)`);
+        console.log(`[RentReclaim] SKIP ${rumbleId}: winners exist, vault has ${(vaultBalance / 1e9).toFixed(6)} SOL (claimable)`);
         continue;
       }
 
-      try {
-        const method = (program.methods as any).closeRumble().accounts({
-          admin: admin.publicKey, config: configPda, rumble: rumblePda,
-        });
-        const { signature } = await sendAdminTxWithConfirmation(method, admin, conn);
-        if (signature) {
-          closed++;
-          reclaimedLamports += a.account.lamports;
-          console.log(`[RentReclaim] closeRumble ${rumbleId}: ${signature} (${a.account.lamports} lamports)`);
+      // No winning bets but vault has SOL → sweep house money to treasury
+      if (!hasWinningBets && hasUnclaimedSol) {
+        if (!treasury) {
+          skipped++;
+          console.log(`[RentReclaim] SKIP sweep ${rumbleId}: treasury address unavailable`);
+          continue;
         }
-      } catch (err) {
-        console.warn(`[RentReclaim] closeRumble ${rumbleId} failed:`, (err as Error).message?.slice(0, 80));
+        try {
+          const method = (program.methods as any)
+            .sweepTreasury()
+            .accounts({
+              admin: admin.publicKey,
+              config: configPda,
+              rumble: rumblePda,
+              vault: vaultPda,
+              treasury,
+              systemProgram: SystemProgram.programId,
+            });
+          const sig = await sendAdminTxFireAndForget(method, admin, conn);
+          if (sig) {
+            swept++;
+            console.log(`[RentReclaim] sweepTreasury ${rumbleId} (no winners): ${sig} (${(vaultBalance / 1e9).toFixed(6)} SOL)`);
+          }
+        } catch (err) {
+          console.warn(`[RentReclaim] sweepTreasury ${rumbleId} failed:`, (err as Error).message?.slice(0, 80));
+        }
+        continue; // Next cycle closes once vault is empty
+      }
+
+      // Vault empty (or winning bets already claimed) — close PDA and reclaim rent
+      if (!hasUnclaimedSol) {
+        try {
+          const method = (program.methods as any).closeRumble().accounts({
+            admin: admin.publicKey, config: configPda, rumble: rumblePda,
+          });
+          const { signature } = await sendAdminTxWithConfirmation(method, admin, conn);
+          if (signature) {
+            closed++;
+            reclaimedLamports += a.account.lamports;
+            console.log(`[RentReclaim] closeRumble ${rumbleId}: ${signature} (${a.account.lamports} lamports)`);
+          }
+        } catch (err) {
+          console.warn(`[RentReclaim] closeRumble ${rumbleId} failed:`, (err as Error).message?.slice(0, 80));
+        }
       }
     }
   }
 
-  return { completed, closed, skipped, reclaimedLamports };
+  return { completed, closed, swept, skipped, reclaimedLamports };
 }
 
 /**
