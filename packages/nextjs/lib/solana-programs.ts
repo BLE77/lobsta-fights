@@ -126,6 +126,9 @@ const BETTOR_SEED = Buffer.from("bettor");
 const SPONSORSHIP_SEED = Buffer.from("sponsorship");
 const MOVE_COMMIT_SEED = Buffer.from("move_commit");
 const COMBAT_STATE_SEED = Buffer.from("combat_state");
+const DELEGATION_BUFFER_SEED = Buffer.from("buffer");
+const DELEGATION_RECORD_SEED = Buffer.from("delegation");
+const DELEGATION_METADATA_SEED = Buffer.from("delegation-metadata");
 const SLOT_HASHES_SYSVAR_ID = new PublicKey(
   "SysvarS1otHashes111111111111111111111111111"
 );
@@ -344,12 +347,36 @@ export function deriveMoveCommitmentPda(
   );
 }
 
-export function deriveCombatStatePda(rumbleId: bigint | number): [PublicKey, number] {
+export function deriveCombatStatePda(
+  rumbleId: bigint | number,
+  programId: PublicKey = RUMBLE_ENGINE_ID,
+): [PublicKey, number] {
   const buf = Buffer.alloc(8);
   buf.writeBigUInt64LE(BigInt(rumbleId));
   return PublicKey.findProgramAddressSync(
     [COMBAT_STATE_SEED, buf],
-    RUMBLE_ENGINE_ID,
+    programId,
+  );
+}
+
+function deriveDelegationBufferPda(combatStatePda: PublicKey): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [DELEGATION_BUFFER_SEED, combatStatePda.toBuffer()],
+    DELEGATION_PROGRAM_ID,
+  );
+}
+
+function deriveDelegationRecordPda(combatStatePda: PublicKey): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [DELEGATION_RECORD_SEED, combatStatePda.toBuffer()],
+    DELEGATION_PROGRAM_ID,
+  );
+}
+
+function deriveDelegationMetadataPda(combatStatePda: PublicKey): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [DELEGATION_METADATA_SEED, combatStatePda.toBuffer()],
+    DELEGATION_PROGRAM_ID,
   );
 }
 
@@ -2859,12 +2886,14 @@ export async function closeRumbleMainnet(
   const [rumbleConfigPda] = deriveRumbleConfigPdaMainnet();
   const [rumblePda] = deriveRumblePdaMainnet(rumbleId);
 
+  const [vaultPda] = deriveVaultPdaMainnet(rumbleId);
   const method = (program.methods as any)
     .closeRumble()
     .accounts({
       admin: admin.publicKey,
       config: rumbleConfigPda,
       rumble: rumblePda,
+      vault: vaultPda,
     });
 
   const { signature } = await sendAdminTxWithConfirmation(method, admin, getBettingConnection());
@@ -3029,7 +3058,7 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
       if (!hasUnclaimedSol) {
         try {
           const method = (program.methods as any).closeRumble().accounts({
-            admin: admin.publicKey, config: configPda, rumble: rumblePda,
+            admin: admin.publicKey, config: configPda, rumble: rumblePda, vault: vaultPda,
           });
           const { signature } = await sendAdminTxWithConfirmation(method, admin, conn);
           if (signature) {
@@ -3544,14 +3573,23 @@ export async function delegateCombatToEr(
   const program = getRumbleEngineProgram(provider);
   const admin = getAdminKeypair()!;
   const [rumbleConfigPda] = deriveRumbleConfigPda();
-  const [combatStatePda] = deriveCombatStatePda(rumbleId);
+  const [combatStatePda] = deriveCombatStatePda(rumbleId, program.programId);
+  const [bufferPda] = deriveDelegationBufferPda(combatStatePda);
+  const [delegationRecordPda] = deriveDelegationRecordPda(combatStatePda);
+  const [delegationMetadataPda] = deriveDelegationMetadataPda(combatStatePda);
 
   const method = (program.methods as any)
     .delegateCombat(new anchor.BN(rumbleId))
     .accounts({
       authority: admin.publicKey,
       config: rumbleConfigPda,
+      bufferPda,
+      delegationRecordPda,
+      delegationMetadataPda,
       pda: combatStatePda,
+      ownerProgram: program.programId,
+      delegationProgram: DELEGATION_PROGRAM_ID,
+      systemProgram: SystemProgram.programId,
     });
 
   // Delegate on L1 (devnet), NOT on ER
