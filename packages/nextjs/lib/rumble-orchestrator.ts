@@ -2467,6 +2467,28 @@ export class RumbleOrchestrator {
           `[Orchestrator] Slot ${idx} resumed combat from turn ${state.turns.length} ` +
             `(${state.fighters.filter(f => f.hp > 0).length} alive)`,
         );
+
+        // On cold-start, check if we should delegate to ER (or detect existing delegation)
+        if (this.erEnabled && !state.erDelegated) {
+          const coldRumbleIdNum = this.resolveOnchainRumbleIdNumber(slot.id);
+          if (coldRumbleIdNum !== null) {
+            const alreadyDelegated = await isCombatStateDelegated(coldRumbleIdNum).catch(() => false);
+            if (alreadyDelegated) {
+              state.erDelegated = true;
+              console.log(`[ER] Cold-start: combat already delegated for rumble ${coldRumbleIdNum}`);
+            } else {
+              try {
+                const sig = await delegateCombatToEr(coldRumbleIdNum);
+                if (sig) {
+                  state.erDelegated = true;
+                  console.log(`[ER] Cold-start: delegated combat for rumble ${coldRumbleIdNum}: ${sig}`);
+                }
+              } catch (err) {
+                console.warn(`[ER] Cold-start delegation failed for rumble ${coldRumbleIdNum}, using L1:`, err);
+              }
+            }
+          }
+        }
       } else {
         // FRESH COMBAT: First time entering combat for this rumble
         const pool = this.bettingPools.get(idx);
