@@ -359,10 +359,13 @@ export function deriveCombatStatePda(
   );
 }
 
-function deriveDelegationBufferPda(combatStatePda: PublicKey): [PublicKey, number] {
+function deriveDelegationBufferPda(
+  combatStatePda: PublicKey,
+  ownerProgramId: PublicKey,
+): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
     [DELEGATION_BUFFER_SEED, combatStatePda.toBuffer()],
-    DELEGATION_PROGRAM_ID,
+    ownerProgramId,
   );
 }
 
@@ -3574,7 +3577,7 @@ export async function delegateCombatToEr(
   const admin = getAdminKeypair()!;
   const [rumbleConfigPda] = deriveRumbleConfigPda();
   const [combatStatePda] = deriveCombatStatePda(rumbleId, program.programId);
-  const [bufferPda] = deriveDelegationBufferPda(combatStatePda);
+  const [bufferPda] = deriveDelegationBufferPda(combatStatePda, program.programId);
   const [delegationRecordPda] = deriveDelegationRecordPda(combatStatePda);
   const [delegationMetadataPda] = deriveDelegationMetadataPda(combatStatePda);
 
