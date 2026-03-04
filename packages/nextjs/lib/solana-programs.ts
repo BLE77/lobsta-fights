@@ -525,7 +525,9 @@ export async function readRumbleAccountState(
   const conn = connection ?? (useMainnet ? getBettingConnection() : getConnection());
   const endpointKey = getConnectionCacheKey(conn);
   const key = `rumble:${useMainnet ? "mainnet:" : ""}${rumbleId}:${endpointKey}`;
-  return cachedRead(key, 3000, async () => {
+  // 10s cache — rumble state (betting/combat/payout) doesn't change faster than this.
+  // Saves ~70% of getAccountInfo calls vs the previous 3s cache.
+  return cachedRead(key, 10_000, async () => {
     const [rumblePda] = useMainnet ? deriveRumblePdaMainnet(rumbleId) : deriveRumblePda(rumbleId);
     const MIN_RUMBLE_ACCOUNT_LEN = 724;
     // Use processed commitment to minimize stale reads around betting close.
@@ -669,7 +671,9 @@ export async function readRumbleCombatState(
   const conn = connection ?? getConnection();
   const endpointKey = getConnectionCacheKey(conn);
   const key = `combat:${rumbleId}:${endpointKey}`;
-  return cachedRead(key, 2000, async () => {
+  // 5s cache — combat state changes once per turn (~20-30s). 5s is a good
+  // balance between freshness and RPC cost savings (~60% reduction).
+  return cachedRead(key, 5_000, async () => {
     const [combatStatePda] = deriveCombatStatePda(rumbleId);
     const MIN_COMBAT_ACCOUNT_LEN = 401;
     const info = await conn.getAccountInfo(combatStatePda, "processed");

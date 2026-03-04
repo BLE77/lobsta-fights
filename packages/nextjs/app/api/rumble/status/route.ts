@@ -41,15 +41,18 @@ const MAX_ACTIVE_AGE_MS_BY_STATUS: Record<string, number> = {
   combat: 45 * 60 * 1000,
   payout: 10 * 60 * 1000,
 };
+// Cache TTLs for status API data sources. Longer TTLs = fewer Helius RPC
+// credits burned. These were bumped from 1.5-3s to 5-15s to reduce
+// getAccountInfo calls from ~200K/day to ~50K/day.
 const STATUS_CACHE_TTLS_MS = {
-  slot: 1_500,
-  fighterLookup: 10_000,
-  commentary: 2_500,
-  turnLog: 2_500,
-  activeRumbles: 2_500,
-  showerState: 3_000,
-  arenaConfig: 3_000,
-  stats: 3_000,
+  slot: 5_000,           // was 1.5s — slot number changes every 400ms but we don't need sub-second precision
+  fighterLookup: 30_000, // was 10s — fighter metadata rarely changes
+  commentary: 10_000,    // was 2.5s — commentary updates per turn (~20s)
+  turnLog: 5_000,        // was 2.5s — turn log updates per turn (~20s)
+  activeRumbles: 5_000,  // was 2.5s — rumble status changes every ~30s
+  showerState: 15_000,   // was 3s — shower is rare event
+  arenaConfig: 60_000,   // was 3s — config almost never changes
+  stats: 30_000,         // was 3s — stats update per completed rumble
 };
 
 // ---------------------------------------------------------------------------
