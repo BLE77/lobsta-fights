@@ -3153,46 +3153,81 @@ export class RumbleOrchestrator {
     // --- Turn is resolved: finalize or advance ---
 
     if (combat.remainingFighters <= 1) {
-      // Undelegate combat state FIRST so both rumble + combat_state are writable on L1.
-      // Retry up to 3 times — if undelegation fails, finalize will also fail and
-      // the slot would wedge until the next tick retries.
+      // If ER delegated, fire-and-forget the undelegate request and complete
+      // off-chain immediately.  MagicBlock's ScheduleCommitAndUndelegate is
+      // async — the ER validator confirms the request instantly but the actual
+      // L1 ownership revert happens in a background worker that can take
+      // seconds to minutes (or fail entirely on devnet).  We NEVER block on
+      // undelegation.  Instead we kick off a background task that retries the
+      // on-chain finalize for up to 60s in case the undelegate eventually
+      // lands.
       if (state.erDelegated) {
+        // Fire the undelegate request — don't await the L1 result
+        undelegateCombatFromEr(rumbleIdNum).catch((err) =>
+          console.warn(`[ER-UNDELEGATE] fire-and-forget failed for rumble ${rumbleIdNum}:`, err),
+        );
+        state.erDelegated = false;
+        state.erAbandoned = true;
+        console.log(`[ER-UNDELEGATE] Sent undelegate for rumble ${rumbleIdNum} — completing off-chain, will retry on-chain finalize in background`);
+
+        // Background: poll for undelegation and attempt on-chain finalize
+        const capturedRumbleId = slot.id;
+        const capturedRumbleIdNum = rumbleIdNum;
+        void (async () => {
+          const maxRetries = 12; // 12 × 5s = 60s window
+          for (let i = 0; i < maxRetries; i++) {
+            await new Promise((r) => setTimeout(r, 5000));
+            const stillDelegated = await isCombatStateDelegated(capturedRumbleIdNum).catch(() => true);
+            if (stillDelegated) {
+              if (i % 3 === 2) {
+                // Re-send undelegate every 15s in case first one was lost
+                undelegateCombatFromEr(capturedRumbleIdNum).catch(() => {});
+              }
+              continue;
+            }
+            console.log(`[ER-UNDELEGATE-BG] Undelegation confirmed for rumble ${capturedRumbleIdNum} after ${(i + 1) * 5}s — attempting on-chain finalize`);
+            try {
+              const sig = await finalizeRumbleOnChainTx(capturedRumbleIdNum, getConnection());
+              if (sig) {
+                console.log(`[ONCHAIN-FINALIZE-BG] finalizeRumble succeeded for rumble ${capturedRumbleId}: ${sig}`);
+                void persistWithRetry(
+                  () => persist.updateRumbleTxSignature(capturedRumbleId, "reportResult", sig),
+                  `updateRumbleTxSignature:reportResult:${capturedRumbleId}`,
+                );
+              }
+            } catch (err) {
+              console.warn(`[ONCHAIN-FINALIZE-BG] finalizeRumble failed for rumble ${capturedRumbleId}:`, formatError(err));
+            }
+            return; // done
+          }
+          console.warn(`[ER-UNDELEGATE-BG] Gave up on undelegation for rumble ${capturedRumbleIdNum} after 60s — PDA abandoned`);
+        })();
+      } else {
+        // Not delegated — try on-chain finalize directly
         try {
-          const undelegateSig = await undelegateCombatFromEr(rumbleIdNum);
-          if (undelegateSig) {
-            console.log(`[ER-UNDELEGATE] undelegateCombat sent for rumble ${rumbleIdNum}: ${undelegateSig}`);
+          const sig = await finalizeRumbleOnChainTx(rumbleIdNum, getConnection());
+          if (sig) {
+            console.log(`[ONCHAIN-FINALIZE] finalizeRumble succeeded for rumble ${slot.id}: ${sig}`);
+            await persistWithRetry(
+              () => persist.updateRumbleTxSignature(slot.id, "reportResult", sig),
+              `updateRumbleTxSignature:reportResult:${slot.id}`,
+            );
           }
         } catch (err) {
-          console.warn(`[ER-UNDELEGATE] undelegateCombat tx failed for rumble ${rumbleIdNum}:`, err);
+          console.warn(`[ONCHAIN-FINALIZE] finalizeRumble failed for rumble ${slot.id}: ${formatError(err)}`);
         }
-        const confirmed = await waitForUndelegation(rumbleIdNum);
-        if (confirmed) {
-          state.erDelegated = false;
-          console.log(`[ER-UNDELEGATE] Undelegation confirmed on L1 for rumble ${rumbleIdNum}`);
-        } else {
-          console.error(`[ER-WAIT-UNDELEGATE] Timed out for rumble ${rumbleIdNum} — will retry next tick`);
-          return; // Don't try to finalize while still delegated
+        invalidateReadCache(`rumble:${rumbleIdNum}`);
+        onchainState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+        if (onchainState?.state === "payout" || onchainState?.state === "complete") {
+          await this.finishCombatFromOnchain(slot, state, rumbleIdNum);
+          return;
         }
       }
 
-      // Finalize on L1 (rumble PDA is never delegated, needs mut access)
-      try {
-        const sig = await finalizeRumbleOnChainTx(rumbleIdNum, getConnection());
-        if (sig) {
-          console.log(`[ONCHAIN-FINALIZE] finalizeRumble succeeded for rumble ${slot.id}: ${sig}`);
-          await persistWithRetry(
-            () => persist.updateRumbleTxSignature(slot.id, "reportResult", sig),
-            `updateRumbleTxSignature:reportResult:${slot.id}`,
-          );
-        }
-      } catch (err) {
-        console.warn(`[ONCHAIN-FINALIZE] finalizeRumble failed for rumble ${slot.id}: ${formatError(err)}`);
-      }
-      invalidateReadCache(`rumble:${rumbleIdNum}`);
-      onchainState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
-      if (onchainState?.state === "payout" || onchainState?.state === "complete") {
-        await this.finishCombatFromOnchain(slot, state, rumbleIdNum);
-      }
+      // Complete from local state — works regardless of on-chain status.
+      // If the background finalize lands later, it's just a bonus.
+      console.log(`[Orchestrator] Completing rumble ${slot.id} via off-chain path`);
+      await this.finishCombat(slot, state);
       return;
     }
 
@@ -4632,10 +4667,13 @@ export class RumbleOrchestrator {
           // Wait for L1 ownership to revert before finalizing
           const undelegated = await waitForUndelegation(rumbleIdNum);
           if (!undelegated) {
-            console.error(`[ER-WAIT-UNDELEGATE] Timed out in settleOnChain for rumble ${rumbleIdNum} — will retry next tick`);
-            return;
+            console.warn(`[ER-WAIT-UNDELEGATE] Timed out in settleOnChain for rumble ${rumbleIdNum} — skipping on-chain finalize (off-chain result already persisted)`);
+            // Don't block — the off-chain result is already in the DB.
+            // On-chain finalize is best-effort. The stuck PDA will be
+            // abandoned and the next rumble gets a fresh PDA.
+          } else {
+            console.log(`[ER-UNDELEGATE] Undelegation confirmed on L1 for rumble ${rumbleIdNum}, proceeding to finalize`);
           }
-          console.log(`[ER-UNDELEGATE] Undelegation confirmed on L1 for rumble ${rumbleIdNum}, proceeding to finalize`);
         }
 
         // Finalize on L1 (rumble PDA is never delegated, needs mut access)

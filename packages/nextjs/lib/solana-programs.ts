@@ -3702,6 +3702,9 @@ export async function commitCombatFromEr(
  * Undelegate combat state from ER back to L1.
  * Commits final state and returns ownership to the rumble_engine program on L1.
  * Called after combat ends (finalize).
+ *
+ * Uses MagicBlock's GetCommitmentSignature to properly await the L1 commit
+ * instead of blindly polling the account owner.
  */
 export async function undelegateCombatFromEr(
   rumbleId: number,
@@ -3729,9 +3732,25 @@ export async function undelegateCombatFromEr(
       magicContext: MAGIC_CONTEXT_ID,
     });
 
-  // Undelegate is normally called on ER; optional override allows manual recovery probes.
+  // Send undelegateCombat to ER
   const sig = await sendAdminTxFireAndForget(method, admin, conn);
-  console.log(`[ER-UNDELEGATE] undelegateCombat confirmed for rumble ${rumbleId}: ${sig}`);
+  console.log(`[ER-UNDELEGATE] undelegateCombat confirmed on ER for rumble ${rumbleId}: ${sig}`);
+
+  // Use GetCommitmentSignature to await the actual L1 commit.
+  // The ER tx logs contain "ScheduledCommitSent signature: <L1_SIG>" which
+  // this SDK function parses and waits for.  This is how other ER projects
+  // (timebent-arena, craft) properly confirm undelegation instead of polling.
+  if (sig) {
+    try {
+      const { GetCommitmentSignature } = await import("@magicblock-labs/ephemeral-rollups-sdk");
+      const l1Sig = await GetCommitmentSignature(sig, conn);
+      console.log(`[ER-UNDELEGATE] L1 commitment confirmed for rumble ${rumbleId}: ${l1Sig}`);
+      return l1Sig;
+    } catch (err) {
+      console.warn(`[ER-UNDELEGATE] GetCommitmentSignature failed for rumble ${rumbleId} (will fall back to polling):`, err);
+    }
+  }
+
   return sig;
 }
 
