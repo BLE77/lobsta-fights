@@ -11,6 +11,7 @@ name = "rumble_engine"
 [features]
 default = []
 combat = ["dep:sha2", "dep:ephemeral-rollups-sdk", "dep:ephemeral-vrf-sdk"]
+mainnet = []
 no-entrypoint = []
 no-idl = []
 no-log-ix-name = []

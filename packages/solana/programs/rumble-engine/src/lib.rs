@@ -17,7 +17,10 @@ use ephemeral_vrf_sdk::instructions::create_request_randomness_ix;
 #[cfg(feature = "combat")]
 use ephemeral_vrf_sdk::types::SerializableAccountMeta;
 
+#[cfg(not(feature = "mainnet"))]
 declare_id!("638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU");
+#[cfg(feature = "mainnet")]
+declare_id!("2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC");
 
 /// Maximum fighters per rumble
 const MAX_FIGHTERS: usize = 16;
