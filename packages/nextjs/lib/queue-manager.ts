@@ -549,6 +549,12 @@ export class RumbleQueueManager implements QueueManager {
   ): boolean {
     const slot = this.slots[slotIndex];
     if (!slot) return false;
+    if (fighters.length < MIN_FIGHTERS_TO_START) {
+      console.warn(
+        `[QM] Refusing to restore underfilled rumble ${rumbleId} in slot ${slotIndex}: fighters=${fighters.length}, min=${MIN_FIGHTERS_TO_START}`,
+      );
+      return false;
+    }
 
     slot.id = rumbleId;
     slot.state = state;

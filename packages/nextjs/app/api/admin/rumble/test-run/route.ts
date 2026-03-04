@@ -19,7 +19,7 @@ function sleep(ms: number): Promise<void> {
  * POST /api/admin/rumble/test-run
  *
  * Manually queues house bots and bursts ticks to start a rumble.
- * Body: { fighter_count?: number }  (default 8, min 4, max 16)
+ * Body: { fighter_count?: number }  (default 12, min 12, max 16)
  */
 export async function POST(request: Request) {
   if (process.env.VERCEL) {
@@ -37,7 +37,18 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json().catch(() => ({}));
-    const fighterCount = clampInt(body?.fighter_count, 8, 4, 16);
+    const requestedCountRaw = body?.fighter_count;
+    const requestedCount = Number(requestedCountRaw);
+    if (
+      requestedCountRaw !== undefined &&
+      (!Number.isFinite(requestedCount) || Math.floor(requestedCount) < 12)
+    ) {
+      return NextResponse.json(
+        { error: "fighter_count must be at least 12" },
+        { status: 400 },
+      );
+    }
+    const fighterCount = clampInt(requestedCountRaw, 12, 12, 16);
 
     const orchestrator = getOrchestrator();
 

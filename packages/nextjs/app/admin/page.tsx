@@ -287,7 +287,7 @@ export default function AdminPage() {
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [onChain, setOnChain] = useState<OnChainData | null>(null);
   const [houseBotStatus, setHouseBotStatus] = useState<HouseBotControlStatus | null>(null);
-  const [houseBotTargetInput, setHouseBotTargetInput] = useState("8");
+  const [houseBotTargetInput, setHouseBotTargetInput] = useState("12");
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState("");
   const [loading, setLoading] = useState(false);
@@ -296,7 +296,7 @@ export default function AdminPage() {
   const [autoTickRuns, setAutoTickRuns] = useState(0);
   const [autoTickLastAt, setAutoTickLastAt] = useState<string | null>(null);
   const [autoTickError, setAutoTickError] = useState("");
-  const [testRunCountInput, setTestRunCountInput] = useState("8");
+  const [testRunCountInput, setTestRunCountInput] = useState("12");
   const [onchainRumbleIdInput, setOnchainRumbleIdInput] = useState("");
   const [onchainActionInput, setOnchainActionInput] = useState("open_turn");
   const [onchainFighterWalletsInput, setOnchainFighterWalletsInput] = useState("");
@@ -549,7 +549,10 @@ export default function AdminPage() {
   }, [headers, runAdminAction]);
 
   const runTestRun = useCallback(async () => {
-    const count = Number(testRunCountInput) || 8;
+    const parsed = Number(testRunCountInput);
+    const count = Number.isFinite(parsed)
+      ? Math.min(16, Math.max(12, Math.floor(parsed)))
+      : 12;
     await runAdminAction("Test Run", () =>
       fetch("/api/admin/rumble/test-run", {
         method: "POST",
@@ -955,12 +958,12 @@ export default function AdminPage() {
               </button>
               <input
                 type="number"
-                min={4}
+                min={12}
                 max={16}
                 value={testRunCountInput}
                 onChange={(e) => setTestRunCountInput(e.target.value)}
                 className="w-16 bg-stone-800 border border-stone-700 rounded px-2 py-2 font-mono text-xs"
-                title="Fighter count for test run (4-16)"
+                title="Fighter count for test run (12-16)"
               />
               <button
                 onClick={runFundBots}

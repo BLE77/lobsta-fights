@@ -50,6 +50,7 @@ const MAX_COMBAT_STUCK_AGE_MS = (() => {
   if (!Number.isFinite(raw)) return 5 * 60 * 1000;
   return Math.max(60 * 1000, Math.min(60 * 60 * 1000, Math.floor(raw)));
 })();
+const MIN_FIGHTERS_PER_RUMBLE = Math.max(12, Math.min(64, Number(process.env.FIGHTERS_PER_RUMBLE) || 12));
 
 // ---------------------------------------------------------------------------
 // Main recovery function
@@ -59,6 +60,7 @@ export interface RecoveryResult {
   activeRumbles: number;
   restoredBetting: number;
   restoredCombat: number;
+  discardedUnderfilled: number;
   queueFighters: number;
   staleMidCombat: number;
   errors: string[];
@@ -86,6 +88,7 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
       activeRumbles: 0,
       restoredBetting: 0,
       restoredCombat: 0,
+      discardedUnderfilled: 0,
       queueFighters: 0,
       staleMidCombat: 0,
       errors: [],
@@ -96,6 +99,7 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
     activeRumbles: 0,
     restoredBetting: 0,
     restoredCombat: 0,
+    discardedUnderfilled: 0,
     queueFighters: 0,
     staleMidCombat: 0,
     errors: [],
@@ -107,6 +111,17 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
     // ---- Step 1: Recover queue ------------------------------------------------
     const queueEntries = await persist.loadQueueState();
     const qm = getQueueManager();
+    const requeueFighters = async (fighterIds: string[]): Promise<void> => {
+      for (const fighterId of fighterIds) {
+        try {
+          qm.addToQueue(fighterId, false);
+          await persist.saveQueueFighter(fighterId, "waiting", false);
+          result.queueFighters++;
+        } catch {
+          // Already in queue/slot — safe to ignore while recovering.
+        }
+      }
+    };
 
     for (const entry of queueEntries) {
       try {
@@ -138,6 +153,17 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
       try {
         orchestrator.setRumbleNumber(rumble.id, rumble.rumble_number ?? null);
         const fighters = rumble.fighters as Array<{ id: string; name: string }>;
+        const fighterIds = fighters.map((f) => f.id);
+        if (fighterIds.length < MIN_FIGHTERS_PER_RUMBLE) {
+          console.warn(
+            `[StateRecovery] Discarding underfilled active rumble ${rumble.id} ` +
+              `(status=${rumble.status}, fighters=${fighterIds.length}, min=${MIN_FIGHTERS_PER_RUMBLE})`,
+          );
+          await persist.updateRumbleStatus(rumble.id, "complete");
+          await requeueFighters(fighterIds);
+          result.discardedUnderfilled++;
+          continue;
+        }
 
         if (rumble.status === "combat") {
           const createdAtMs = new Date(rumble.created_at).getTime();
@@ -181,8 +207,15 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
           // Restore combat rumble into queue/orchestrator memory so cold-start
           // instances do not treat slots as idle and spawn overlapping rumbles.
           const slotIndex = Number(rumble.slot_index);
-          const fighterIds = fighters.map((f) => f.id);
-          qm.restoreSlot(slotIndex, rumble.id, fighterIds, "combat", null);
+          const restored = qm.restoreSlot(slotIndex, rumble.id, fighterIds, "combat", null);
+          if (!restored) {
+            const msg = `[StateRecovery] Failed to restore combat rumble ${rumble.id}; recycling instead.`;
+            console.warn(msg);
+            result.errors.push(msg);
+            await persist.updateRumbleStatus(rumble.id, "complete");
+            await requeueFighters(fighterIds);
+            continue;
+          }
           const existingBets = await persist.loadBetsForRumble(rumble.id);
           orchestrator.restoreBettingPool(slotIndex, rumble.id, existingBets);
           console.log(
@@ -222,6 +255,7 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
           // ---- RESTORE betting rumble in-memory instead of nuking it ----
           const createdAt = new Date(rumble.created_at).getTime();
           const age = Date.now() - createdAt;
+          const fighterIds = fighters.map((f) => f.id);
 
           if (age > MAX_BETTING_AGE_MS) {
             // Too old — something went wrong. Mark stale and re-queue.
@@ -229,19 +263,12 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
               `[StateRecovery] Rumble ${rumble.id} betting is ${Math.round(age / 1000)}s old (stale) — marking complete`
             );
             await persist.updateRumbleStatus(rumble.id, "complete");
-            for (const f of fighters) {
-              try {
-                qm.addToQueue(f.id, false);
-                await persist.saveQueueFighter(f.id, "waiting", false);
-                result.queueFighters++;
-              } catch { /* already in queue */ }
-            }
+            await requeueFighters(fighterIds);
             continue;
           }
 
           // Restore this betting rumble into the correct slot
           const slotIndex = rumble.slot_index;
-          const fighterIds = fighters.map((f) => f.id);
 
           // Load any existing bets from Supabase and restore the betting pool
           const existingBets = await persist.loadBetsForRumble(rumble.id);
@@ -253,7 +280,15 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
           // and costs an extra tick cycle — fatal on serverless cold starts).
           const recoveryDeadline = existingBets.length > 0 ? new Date() : null;
 
-          qm.restoreSlot(slotIndex, rumble.id, fighterIds, "betting", recoveryDeadline);
+          const restored = qm.restoreSlot(slotIndex, rumble.id, fighterIds, "betting", recoveryDeadline);
+          if (!restored) {
+            const msg = `[StateRecovery] Failed to restore betting rumble ${rumble.id}; recycling instead.`;
+            console.warn(msg);
+            result.errors.push(msg);
+            await persist.updateRumbleStatus(rumble.id, "complete");
+            await requeueFighters(fighterIds);
+            continue;
+          }
           orchestrator.restoreBettingPool(slotIndex, rumble.id, existingBets);
 
           console.log(
@@ -280,6 +315,7 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
       `[StateRecovery] Recovery complete: ${result.activeRumbles} active rumbles, ` +
       `${result.restoredBetting} betting restored, ` +
         `${result.restoredCombat} combat restored, ` +
+        `${result.discardedUnderfilled} underfilled discarded, ` +
         `${result.staleMidCombat} stale mid-combat, ${result.queueFighters} queue fighters`
     );
     g.__rumbleRecovered = true;
