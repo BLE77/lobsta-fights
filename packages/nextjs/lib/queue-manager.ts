@@ -477,25 +477,17 @@ export class RumbleQueueManager implements QueueManager {
 
   /** Reset a slot to idle and auto-requeue fighters that opted in. */
   private recycleSlot(slot: RumbleSlot): void {
-    // Auto-requeue all fighters from the finished rumble so the next
-    // rumble can fill up to FIGHTERS_PER_RUMBLE without waiting for
-    // external re-join calls.
-    for (const fighterId of slot.fighters) {
-      if (!this.fighterSet.has(fighterId)) {
-        try {
-          this.addToQueue(fighterId, true);
-        } catch {
-          // Already queued or otherwise invalid — safe to skip
-        }
-      }
-    }
-
     // Clean up payout tracking
     this.payoutStartTimes.delete(slot.slotIndex);
 
-    // Reset slot to idle
-    const oldFighters = slot.fighters;
+    // Save fighter list before clearing slot state
+    const oldFighters = [...slot.fighters];
     const oldRumbleId = slot.id;
+
+    // Reset slot to idle BEFORE re-queuing — addToQueue() checks
+    // slot.state !== "idle" and throws if the fighter is in an active slot.
+    // The old code re-queued while the slot was still in payout state,
+    // causing every addToQueue() to throw silently → 0 fighters re-queued.
     slot.id = `idle_slot_${slot.slotIndex}`;
     slot.state = "idle";
     slot.fighters = [];
@@ -505,8 +497,21 @@ export class RumbleQueueManager implements QueueManager {
     slot.combatStartedAt = null;
     slot.rumbleResult = null;
 
+    // Now auto-requeue all fighters from the finished rumble
+    let requeued = 0;
+    for (const fighterId of oldFighters) {
+      if (!this.fighterSet.has(fighterId)) {
+        try {
+          this.addToQueue(fighterId, true);
+          requeued++;
+        } catch (err) {
+          console.warn(`[QM] recycleSlot: failed to requeue ${fighterId}: ${err}`);
+        }
+      }
+    }
+    console.log(`[QM] recycleSlot: requeued ${requeued}/${oldFighters.length} fighters from ${oldRumbleId}`);
+
     // Emit event so external systems can handle auto-requeue.
-    // Kept as a no-op for now; will hook into Supabase later.
     this.onSlotRecycled(slot.slotIndex, oldFighters, oldRumbleId);
   }
 

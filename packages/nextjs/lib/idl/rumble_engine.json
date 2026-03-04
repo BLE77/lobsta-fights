@@ -796,7 +796,8 @@
     {
       "name": "commit_combat",
       "docs": [
-        "Commit combat state from ER back to Solana L1 (periodic sync for spectators)."
+        "Commit combat state from ER back to Solana L1 (periodic sync for spectators).",
+        "Admin-only to prevent unauthorized commits."
       ],
       "discriminator": [
         248,
@@ -813,6 +814,31 @@
           "name": "authority",
           "writable": true,
           "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "combat_state",
@@ -2570,7 +2596,8 @@
     {
       "name": "undelegate_combat",
       "docs": [
-        "Commit final combat state and undelegate back to Solana L1."
+        "Commit final combat state and undelegate back to Solana L1.",
+        "Admin-only to prevent adversaries from yanking accounts mid-combat."
       ],
       "discriminator": [
         134,
@@ -2587,6 +2614,31 @@
           "name": "authority",
           "writable": true,
           "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "combat_state",
