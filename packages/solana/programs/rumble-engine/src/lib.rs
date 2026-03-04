@@ -2080,8 +2080,13 @@ pub mod rumble_engine {
     }
 
     /// Commit combat state from ER back to Solana L1 (periodic sync for spectators).
+    /// Admin-only to prevent unauthorized commits.
     #[cfg(feature = "combat")]
-    pub fn commit_combat(ctx: Context<CommitCombat>) -> Result<()> {
+    pub fn commit_combat(ctx: Context<CommitCombatSecure>) -> Result<()> {
+        require!(
+            ctx.accounts.authority.key() == ctx.accounts.config.admin,
+            RumbleError::Unauthorized
+        );
         commit_accounts(
             &ctx.accounts.authority,
             vec![&ctx.accounts.combat_state.to_account_info()],
@@ -2093,8 +2098,13 @@ pub mod rumble_engine {
     }
 
     /// Commit final combat state and undelegate back to Solana L1.
+    /// Admin-only to prevent adversaries from yanking accounts mid-combat.
     #[cfg(feature = "combat")]
-    pub fn undelegate_combat(ctx: Context<CommitCombat>) -> Result<()> {
+    pub fn undelegate_combat(ctx: Context<UndelegateCombat>) -> Result<()> {
+        require!(
+            ctx.accounts.authority.key() == ctx.accounts.config.admin,
+            RumbleError::Unauthorized
+        );
         ctx.accounts.combat_state.exit(&crate::ID)?;
 
         commit_and_undelegate_accounts(
@@ -2773,9 +2783,32 @@ pub struct DelegateCombat<'info> {
 #[cfg(feature = "combat")]
 #[commit]
 #[derive(Accounts)]
-pub struct CommitCombat<'info> {
+pub struct CommitCombatSecure<'info> {
     #[account(mut)]
     pub authority: Signer<'info>,
+
+    #[account(
+        seeds = [CONFIG_SEED],
+        bump = config.bump,
+    )]
+    pub config: Account<'info, RumbleConfig>,
+
+    #[account(mut)]
+    pub combat_state: Account<'info, RumbleCombatState>,
+}
+
+#[cfg(feature = "combat")]
+#[commit]
+#[derive(Accounts)]
+pub struct UndelegateCombat<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        seeds = [CONFIG_SEED],
+        bump = config.bump,
+    )]
+    pub config: Account<'info, RumbleConfig>,
 
     #[account(mut)]
     pub combat_state: Account<'info, RumbleCombatState>,

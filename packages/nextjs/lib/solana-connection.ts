@@ -215,7 +215,8 @@ export function getBettingReadConnections(): Connection[] {
 
 /**
  * Get the MagicBlock ER RPC endpoint.
- * Uses MAGICBLOCK_ER_RPC_URL env var, defaults to devnet US endpoint.
+ * Uses MAGICBLOCK_ER_RPC_URL env var, defaults to devnet ER endpoint.
+ * NOTE: devnet-us.magicblock.app is DEPRECATED — use devnet.magicblock.app
  */
 export function getErRpcEndpoint(): string {
   const explicit = process.env.MAGICBLOCK_ER_RPC_URL?.trim();

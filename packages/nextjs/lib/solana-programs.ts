@@ -145,13 +145,38 @@ const MAGIC_CONTEXT_ID = new PublicKey("MagicContext1111111111111111111111111111
 export async function isCombatStateDelegated(rumbleId: number): Promise<boolean> {
   const [combatStatePda] = deriveCombatStatePda(rumbleId);
   const conn = getConnection(); // Always check L1
-  try {
-    const info = await conn.getAccountInfo(combatStatePda);
-    if (!info) return false;
-    return info.owner.equals(DELEGATION_PROGRAM_ID);
-  } catch {
-    return false;
+  const info = await conn.getAccountInfo(combatStatePda);
+  if (!info) return false;
+  return info.owner.equals(DELEGATION_PROGRAM_ID);
+}
+
+/**
+ * Poll L1 until combat state is no longer delegated (owner reverts from
+ * Delegation Program back to rumble_engine). Returns true if undelegation
+ * confirmed within the timeout, false if still delegated after maxWaitMs.
+ */
+export async function waitForUndelegation(
+  rumbleId: number,
+  maxWaitMs: number = 15000,
+): Promise<boolean> {
+  console.log(`[ER-WAIT-UNDELEGATE] Polling L1 for undelegation of rumble ${rumbleId} (maxWait=${maxWaitMs}ms)...`);
+  const pollIntervalMs = 2000;
+  const startTime = Date.now();
+  while (Date.now() - startTime < maxWaitMs) {
+    try {
+      const stillDelegated = await isCombatStateDelegated(rumbleId);
+      if (!stillDelegated) {
+        console.log(`[ER-WAIT-UNDELEGATE] Undelegation confirmed for rumble ${rumbleId} (${Date.now() - startTime}ms elapsed)`);
+        return true;
+      }
+    } catch (err) {
+      // RPC error — treat as "still delegated" and keep polling
+      console.warn(`[ER-WAIT-UNDELEGATE] RPC error for rumble ${rumbleId} (will retry):`, err);
+    }
+    await new Promise(r => setTimeout(r, pollIntervalMs));
   }
+  console.warn(`[ER-WAIT-UNDELEGATE] Timed out for rumble ${rumbleId} after ${maxWaitMs}ms — still delegated`);
+  return false; // Timed out, still delegated
 }
 
 // MagicBlock VRF Program
@@ -1867,6 +1892,7 @@ export async function createRumble(
   );
   const bettingCloseUnix = BigInt(Math.max(bettingDeadlineUnix, nowUnix + minCloseSeconds));
 
+  console.log(`[ONCHAIN-CREATE] Sending createRumble for rumble ${rumbleId} (${fighters.length} fighters)...`);
   const createWithDeadline = async (
     closeValue: bigint,
     effectiveMode: "slot" | "unix",
@@ -1886,7 +1912,9 @@ export async function createRumble(
 ;
 
     try {
-      return await sendAdminTxFireAndForget(method, admin, provider.connection);
+      const sig = await sendAdminTxFireAndForget(method, admin, provider.connection);
+      console.log(`[ONCHAIN-CREATE] createRumble confirmed for rumble ${rumbleId}: ${sig}`);
+      return sig;
     } catch (err: unknown) {
       const context =
         `[solana-programs] createRumble failed` +
@@ -2275,6 +2303,7 @@ export async function startCombat(
   const [rumblePda] = deriveRumblePda(rumbleId);
   const [combatStatePda] = deriveCombatStatePda(rumbleId);
 
+  console.log(`[ONCHAIN-START] Sending startCombat for rumble ${rumbleId}...`);
   const method = (program.methods as any)
     .startCombat()
     .accounts({
@@ -2285,7 +2314,9 @@ export async function startCombat(
       systemProgram: SystemProgram.programId,
     });
 
-  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+  const sig = await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+  console.log(`[ONCHAIN-START] startCombat confirmed for rumble ${rumbleId}: ${sig}`);
+  return sig;
 }
 
 /**
@@ -2377,6 +2408,7 @@ export async function openTurn(
   const [rumblePda] = deriveRumblePda(rumbleId);
   const [combatStatePda] = deriveCombatStatePda(rumbleId);
 
+  console.log(`[ONCHAIN-OPEN-TURN] Sending openTurn for rumble ${rumbleId}...`);
   const method = (program.methods as any)
     .openTurn()
     .accounts({
@@ -2385,7 +2417,9 @@ export async function openTurn(
       combatState: combatStatePda,
     });
 
-  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+  const sig = await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+  console.log(`[ONCHAIN-OPEN-TURN] openTurn confirmed for rumble ${rumbleId}: ${sig}`);
+  return sig;
 }
 
 /**
@@ -2407,6 +2441,7 @@ export async function resolveTurnOnChain(
   const [rumblePda] = deriveRumblePda(rumbleId);
   const [combatStatePda] = deriveCombatStatePda(rumbleId);
 
+  console.log(`[ONCHAIN-RESOLVE] Sending resolveTurn for rumble ${rumbleId} (${moveCommitmentAccounts.length} move commitments)...`);
   let method = (program.methods as any).resolveTurn();
   if (moveCommitmentAccounts.length > 0) {
     method = method.remainingAccounts(
@@ -2428,7 +2463,9 @@ export async function resolveTurnOnChain(
       ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }),
     ]);
 
-  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+  const sig = await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+  console.log(`[ONCHAIN-RESOLVE] resolveTurn confirmed for rumble ${rumbleId}: ${sig}`);
+  return sig;
 }
 
 /**
@@ -2448,6 +2485,7 @@ export async function advanceTurnOnChain(
   const [rumblePda] = deriveRumblePda(rumbleId);
   const [combatStatePda] = deriveCombatStatePda(rumbleId);
 
+  console.log(`[ONCHAIN-ADVANCE] Sending advanceTurn for rumble ${rumbleId}...`);
   const method = (program.methods as any)
     .advanceTurn()
     .accounts({
@@ -2456,7 +2494,9 @@ export async function advanceTurnOnChain(
       combatState: combatStatePda,
     });
 
-  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+  const sig = await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+  console.log(`[ONCHAIN-ADVANCE] advanceTurn confirmed for rumble ${rumbleId}: ${sig}`);
+  return sig;
 }
 
 /**
@@ -2476,6 +2516,7 @@ export async function finalizeRumbleOnChain(
   const [rumblePda] = deriveRumblePda(rumbleId);
   const [combatStatePda] = deriveCombatStatePda(rumbleId);
 
+  console.log(`[ONCHAIN-FINALIZE] Sending finalizeRumble for rumble ${rumbleId}...`);
   const method = (program.methods as any)
     .finalizeRumble()
     .accounts({
@@ -2487,7 +2528,9 @@ export async function finalizeRumbleOnChain(
       ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }),
     ]);
 
-  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+  const sig = await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+  console.log(`[ONCHAIN-FINALIZE] finalizeRumble confirmed for rumble ${rumbleId}: ${sig}`);
+  return sig;
 }
 
 /**
@@ -2513,6 +2556,7 @@ export async function closeMoveCommitmentOnChain(
   const [moveCommitmentPda] = deriveMoveCommitmentPda(rumbleId, fighter, turn);
   const dest = destination ?? admin.publicKey;
 
+  console.log(`[ONCHAIN-CLOSE-MOVE] Sending closeMoveCommitment for rumble ${rumbleId} fighter ${fighter.toBase58().slice(0, 8)}... turn ${turn}...`);
   const method = (program.methods as any)
     .closeMoveCommitment(new anchor.BN(rumbleId), turn)
     .accounts({
@@ -2524,7 +2568,9 @@ export async function closeMoveCommitmentOnChain(
       destination: dest,
     });
 
-  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+  const sig = await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+  console.log(`[ONCHAIN-CLOSE-MOVE] closeMoveCommitment confirmed for rumble ${rumbleId} turn ${turn}: ${sig}`);
+  return sig;
 }
 
 /**
@@ -2548,6 +2594,7 @@ export async function reportResult(
   const [rumbleConfigPda] = deriveRumbleConfigPda();
   const [rumblePda] = deriveRumblePda(rumbleId);
 
+  console.log(`[ONCHAIN-REPORT] Sending reportResult for rumble ${rumbleId} (winnerIndex=${winnerIndex})...`);
   const method = (program.methods as any)
     .reportResult(Buffer.from(placements), winnerIndex)
     .accounts({
@@ -2557,6 +2604,7 @@ export async function reportResult(
     });
 
   const { signature } = await sendAdminTxWithConfirmation(method, admin, connection ?? getConnection());
+  console.log(`[ONCHAIN-REPORT] reportResult confirmed for rumble ${rumbleId}: ${signature}`);
   return signature;
 }
 
@@ -2743,6 +2791,7 @@ export async function completeRumble(
   const [rumbleConfigPda] = deriveRumbleConfigPda();
   const [rumblePda] = deriveRumblePda(rumbleId);
 
+  console.log(`[ONCHAIN-COMPLETE] Sending completeRumble for rumble ${rumbleId}...`);
   const method = (program.methods as any)
     .completeRumble()
     .accounts({
@@ -2752,6 +2801,7 @@ export async function completeRumble(
     });
 
   const { signature } = await sendAdminTxWithConfirmation(method, admin, connection ?? getConnection());
+  console.log(`[ONCHAIN-COMPLETE] completeRumble confirmed for rumble ${rumbleId}: ${signature}`);
   return signature;
 }
 
@@ -3533,6 +3583,7 @@ export async function postTurnResultOnChain(
   const [combatStatePda] = deriveCombatStatePda(rumbleId);
   const [rumbleConfigPda] = deriveRumbleConfigPda();
 
+  console.log(`[ONCHAIN-POST-TURN] Sending postTurnResult for rumble ${rumbleId} (${duelResults.length} duels, bye=${byeFighterIdx})...`);
   const method = (program.methods as any)
     .postTurnResult(
       duelResults.map(d => ({
@@ -3555,7 +3606,9 @@ export async function postTurnResultOnChain(
       ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
     ]);
 
-  return await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+  const sig = await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+  console.log(`[ONCHAIN-POST-TURN] postTurnResult confirmed for rumble ${rumbleId}: ${sig}`);
+  return sig;
 }
 
 // ---------------------------------------------------------------------------
@@ -3585,6 +3638,7 @@ export async function delegateCombatToEr(
   const [delegationRecordPda] = deriveDelegationRecordPda(combatStatePda);
   const [delegationMetadataPda] = deriveDelegationMetadataPda(combatStatePda);
 
+  console.log(`[ER-DELEGATE] Sending delegateCombat for rumble ${rumbleId}...`);
   const method = (program.methods as any)
     .delegateCombat(new anchor.BN(rumbleId))
     .accounts({
@@ -3599,8 +3653,15 @@ export async function delegateCombatToEr(
       systemProgram: SystemProgram.programId,
     });
 
-  // Delegate on L1 (devnet), NOT on ER
-  return await sendAdminTxFireAndForget(method, admin, getConnection());
+  // Delegate on L1 (devnet), NOT on ER.
+  // MUST wait for confirmation before returning — fire-and-forget caused a race
+  // condition where the orchestrator set erDelegated=true before the tx landed.
+  const conn = getConnection();
+  const { signature } = await sendAdminTxWithConfirmation(method, admin, conn);
+  console.log(`[ER-DELEGATE] delegateCombat confirmed for rumble ${rumbleId}: ${signature}`);
+  // Allow ER validator time to sync the newly-delegated account
+  await new Promise(r => setTimeout(r, 3000));
+  return signature;
 }
 
 /**
@@ -3618,18 +3679,23 @@ export async function commitCombatFromEr(
   const program = getRumbleEngineProgram(provider);
   const admin = getAdminKeypair()!;
   const [combatStatePda] = deriveCombatStatePda(rumbleId);
+  const [rumbleConfigPda] = deriveRumbleConfigPda();
 
+  console.log(`[ER-COMMIT] Sending commitCombat for rumble ${rumbleId}...`);
   const method = (program.methods as any)
     .commitCombat()
     .accounts({
       authority: admin.publicKey,
+      config: rumbleConfigPda,
       combatState: combatStatePda,
       magicProgram: MAGIC_PROGRAM_ID,
       magicContext: MAGIC_CONTEXT_ID,
     });
 
   // Commit is called on the ER
-  return await sendAdminTxFireAndForget(method, admin, getErConnection());
+  const sig = await sendAdminTxFireAndForget(method, admin, getErConnection());
+  console.log(`[ER-COMMIT] commitCombat confirmed for rumble ${rumbleId}: ${sig}`);
+  return sig;
 }
 
 /**
@@ -3650,18 +3716,23 @@ export async function undelegateCombatFromEr(
   const program = getRumbleEngineProgram(provider);
   const admin = getAdminKeypair()!;
   const [combatStatePda] = deriveCombatStatePda(rumbleId);
+  const [rumbleConfigPda] = deriveRumbleConfigPda();
 
+  console.log(`[ER-UNDELEGATE] Sending undelegateCombat for rumble ${rumbleId}...`);
   const method = (program.methods as any)
     .undelegateCombat()
     .accounts({
       authority: admin.publicKey,
+      config: rumbleConfigPda,
       combatState: combatStatePda,
       magicProgram: MAGIC_PROGRAM_ID,
       magicContext: MAGIC_CONTEXT_ID,
     });
 
   // Undelegate is normally called on ER; optional override allows manual recovery probes.
-  return await sendAdminTxFireAndForget(method, admin, conn);
+  const sig = await sendAdminTxFireAndForget(method, admin, conn);
+  console.log(`[ER-UNDELEGATE] undelegateCombat confirmed for rumble ${rumbleId}: ${sig}`);
+  return sig;
 }
 
 // ---------------------------------------------------------------------------

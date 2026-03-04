@@ -102,6 +102,7 @@ import {
   commitCombatFromEr,
   undelegateCombatFromEr,
   isCombatStateDelegated,
+  waitForUndelegation,
   requestMatchupSeed,
   requestIchorShowerVrf,
 } from "./solana-programs";
@@ -227,6 +228,14 @@ interface SlotCombatState {
   lastTickAt: number;
   /** Whether ER delegation succeeded for this specific rumble. */
   erDelegated: boolean;
+  /** Timestamp when erDelegated was set to true (for max-age safety valve). */
+  erDelegatedAt?: number;
+  /** Number of consecutive failed undelegation attempts (for abandoned escape). */
+  erUndelegateFailCount?: number;
+  /** Tick counter for periodic health checks. */
+  erHealthCheckTick?: number;
+  /** If true, slot is abandoned due to stuck delegation — skip further ER work. */
+  erAbandoned?: boolean;
 }
 
 interface OnchainTurnDecision {
@@ -1376,7 +1385,7 @@ export class RumbleOrchestrator {
       try {
         const completeSig = await completeRumbleOnChain(entry.rumbleIdNum);
         if (completeSig) {
-          console.log(`[OnChain] completeRumble succeeded: ${completeSig}`);
+          console.log(`[ONCHAIN-COMPLETE] completeRumble succeeded for rumble ${entry.rumbleId}: ${completeSig}`);
           void persistWithRetry(
             () => persist.updateRumbleTxSignature(entry.rumbleId, "completeRumble", completeSig),
             `updateRumbleTxSignature:completeRumble:${entry.rumbleId}`,
@@ -1390,17 +1399,17 @@ export class RumbleOrchestrator {
         if (onchainState?.state === "complete") {
           entry.completeDone = true;
           console.log(
-            `[OnChain] completeRumble already finalized for ${entry.rumbleId}; skipping duplicate complete call`
+            `[ONCHAIN-COMPLETE] completeRumble already finalized for rumble ${entry.rumbleId}; skipping duplicate complete call`
           );
         } else {
           if (entry.attempts >= MAX_FINALIZATION_ATTEMPTS) {
             this.pendingFinalizations.delete(entry.rumbleId);
-            console.error(`[OnChain] completeRumble failed permanently for ${entry.rumbleId}:`, err);
+            console.error(`[ONCHAIN-COMPLETE] completeRumble failed permanently for rumble ${entry.rumbleId}:`, err);
             return;
           }
           entry.nextAttemptAt = Date.now() + ONCHAIN_FINALIZATION_RETRY_MS;
           console.warn(
-            `[OnChain] completeRumble retry ${entry.attempts}/${MAX_FINALIZATION_ATTEMPTS} for ${entry.rumbleId} (${formatError(err)})`
+            `[ONCHAIN-COMPLETE] completeRumble retry ${entry.attempts}/${MAX_FINALIZATION_ATTEMPTS} for rumble ${entry.rumbleId} (${formatError(err)})`
           );
           return;
         }
@@ -1449,15 +1458,15 @@ export class RumbleOrchestrator {
           }
         }
         console.log(
-          `[OnChain] queued ${fighters.length * totalTurns} MoveCommitment closures for rumble ${entry.rumbleId} (rent → fighters)`,
+          `[ONCHAIN-CLOSE-MOVE] Queued ${fighters.length * totalTurns} MoveCommitment closures for rumble ${entry.rumbleId} (rent → fighters)`,
         );
       }
     } catch (e) {
-      console.warn(`[OnChain] failed to queue MoveCommitment closures: ${e}`);
+      console.warn(`[ONCHAIN-CLOSE-MOVE] Failed to queue MoveCommitment closures for rumble ${entry.rumbleId}: ${e}`);
     }
 
     this.pendingFinalizations.delete(entry.rumbleId);
-    console.log(`[OnChain] finalization complete for ${entry.rumbleId}`);
+    console.log(`[ONCHAIN-COMPLETE] Finalization complete for rumble ${entry.rumbleId}`);
   }
 
   // ---------------------------------------------------------------------------
@@ -1933,9 +1942,9 @@ export class RumbleOrchestrator {
       try {
         await undelegateCombatFromEr(rumbleIdNum);
         state.erDelegated = false;
-        console.log(`[ER] undelegateCombat on abort for rumble ${rumbleIdNum}`);
+        console.log(`[ER-UNDELEGATE] undelegateCombat on abort for rumble ${rumbleIdNum}`);
       } catch (err) {
-        console.warn(`[ER] undelegateCombat on abort failed for rumble ${rumbleIdNum}:`, err);
+        console.warn(`[ER-UNDELEGATE] undelegateCombat on abort failed for rumble ${rumbleIdNum}:`, err);
       }
     }
 
@@ -1984,7 +1993,7 @@ export class RumbleOrchestrator {
     const slotIndex = this.resolveSlotIndexForRumble(rumbleId);
     const rumbleIdNum = this.resolveOnchainRumbleIdNumber(rumbleId);
     if (rumbleIdNum === null) {
-      console.warn(`[OnChain] Cannot parse rumbleId "${rumbleId}" for createRumble`);
+      console.warn(`[ONCHAIN-CREATE] Cannot parse rumbleId "${rumbleId}" for createRumble`);
       this.recordOnchainCreateFailure(
         rumbleId,
         "Could not parse numeric rumble id",
@@ -2003,7 +2012,7 @@ export class RumbleOrchestrator {
         try {
           fighterPubkeys.push(new PublicKey(walletAddr));
         } catch {
-          console.warn(`[OnChain] Invalid wallet for "${fid}": ${walletAddr}`);
+          console.warn(`[ONCHAIN-CREATE] Invalid wallet for "${fid}": ${walletAddr}`);
           this.recordOnchainCreateFailure(
             rumbleId,
             `Invalid fighter wallet for ${fid}`,
@@ -2013,7 +2022,7 @@ export class RumbleOrchestrator {
           return false;
         }
       } else {
-        console.log(`[OnChain] No wallet for "${fid}", skipping createRumble`);
+        console.log(`[ONCHAIN-CREATE] No wallet for "${fid}", skipping createRumble`);
         this.recordOnchainCreateFailure(
           rumbleId,
           `Missing fighter wallet for ${fid}`,
@@ -2027,7 +2036,7 @@ export class RumbleOrchestrator {
     try {
       const sig = await createRumbleOnChain(rumbleIdNum, fighterPubkeys, bettingDeadlineUnix);
       if (sig) {
-        console.log(`[OnChain] createRumble succeeded: ${sig}`);
+        console.log(`[ONCHAIN-CREATE] createRumble succeeded for rumble ${rumbleId}: ${sig}`);
         void persistWithRetry(
           () => persist.updateRumbleTxSignature(rumbleId, "createRumble", sig),
           `updateRumbleTxSignature:createRumble:${rumbleId}`,
@@ -2062,7 +2071,7 @@ export class RumbleOrchestrator {
 
         return true;
       } else {
-        console.warn(`[OnChain] createRumble returned null — continuing off-chain`);
+        console.warn(`[ONCHAIN-CREATE] createRumble returned null for rumble ${rumbleId} — continuing off-chain`);
         this.recordOnchainCreateFailure(
           rumbleId,
           "createRumble RPC returned null signature",
@@ -2072,7 +2081,7 @@ export class RumbleOrchestrator {
         return false;
       }
     } catch (err) {
-      console.error(`[OnChain] createRumble error:`, err);
+      console.error(`[ONCHAIN-CREATE] createRumble error for rumble ${rumbleId}:`, err);
       this.recordOnchainCreateFailure(
         rumbleId,
         formatError(err),
@@ -2271,7 +2280,7 @@ export class RumbleOrchestrator {
       try {
         const sig = await startCombatOnChain(rumbleIdNum);
         if (sig) {
-          console.log(`[OnChain] startCombat (recovery) succeeded: ${sig}`);
+          console.log(`[ONCHAIN-START] startCombat (recovery) succeeded for rumble ${rumbleId}: ${sig}`);
           void persistWithRetry(
             () => persist.updateRumbleTxSignature(rumbleId, "startCombat", sig),
             `updateRumbleTxSignature:startCombat:${rumbleId}`,
@@ -2280,12 +2289,16 @@ export class RumbleOrchestrator {
       } catch (err: any) {
         const errMsg = err?.message ?? String(err);
         if (errMsg.includes("AccountOwnedByWrongProgram") && await isCombatStateDelegated(rumbleIdNum)) {
-          console.warn(`[OnChain] startCombat (recovery) blocked by stale delegation, undelegating...`);
+          console.warn(`[ONCHAIN-START] startCombat (recovery) blocked by stale delegation for rumble ${rumbleId}, undelegating...`);
           await undelegateCombatFromEr(rumbleIdNum).catch(() => {});
-          await new Promise(r => setTimeout(r, 3000));
-          try { await startCombatOnChain(rumbleIdNum); } catch { /* will retry next tick */ }
+          const undelegated = await waitForUndelegation(rumbleIdNum);
+          if (undelegated) {
+            try { await startCombatOnChain(rumbleIdNum); } catch { /* will retry next tick */ }
+          } else {
+            console.warn(`[ER-WAIT-UNDELEGATE] Timed out for rumble ${rumbleIdNum} — will retry next tick`);
+          }
         } else {
-          console.warn(`[OnChain] startCombat (recovery) failed for ${rumbleId}: ${formatError(err)}`);
+          console.warn(`[ONCHAIN-START] startCombat (recovery) failed for rumble ${rumbleId}: ${formatError(err)}`);
         }
       }
       invalidateReadCache(`rumble:${rumbleIdNum}`);
@@ -2308,7 +2321,7 @@ export class RumbleOrchestrator {
       Math.floor((Date.now() + ONCHAIN_BETTING_DURATION_MS) / 1000),
     );
     if (!onchainState) {
-      console.warn(`[OnChain] startCombat skipped: rumble ${slot.id} does not exist on-chain yet`);
+      console.warn(`[ONCHAIN-START] startCombat skipped: rumble ${slot.id} does not exist on-chain yet`);
       return;
     }
     if (onchainState.state === "combat" || onchainState.state === "payout" || onchainState.state === "complete") {
@@ -2318,13 +2331,13 @@ export class RumbleOrchestrator {
     try {
       const sig = await startCombatOnChain(rumbleIdNum);
       if (sig) {
-        console.log(`[OnChain] startCombat succeeded: ${sig}`);
+        console.log(`[ONCHAIN-START] startCombat succeeded for rumble ${slot.id}: ${sig}`);
         void persistWithRetry(
           () => persist.updateRumbleTxSignature(slot.id, "startCombat", sig),
           `updateRumbleTxSignature:startCombat:${slot.id}`,
         );
       } else {
-        console.warn(`[OnChain] startCombat returned null — continuing off-chain`);
+        console.warn(`[ONCHAIN-START] startCombat returned null for rumble ${slot.id} — continuing off-chain`);
       }
     } catch (err: any) {
       // If combat_state is stuck delegated from a previous run, undelegate and retry
@@ -2332,21 +2345,24 @@ export class RumbleOrchestrator {
       if (errMsg.includes("AccountOwnedByWrongProgram") || errMsg.includes("owned by a different program")) {
         const stillDelegated = await isCombatStateDelegated(rumbleIdNum);
         if (stillDelegated) {
-          console.warn(`[OnChain] startCombat failed — combat_state delegated from previous run, undelegating...`);
+          console.warn(`[ONCHAIN-START] startCombat failed for rumble ${slot.id} — combat_state delegated from previous run, undelegating...`);
           try {
             await undelegateCombatFromEr(rumbleIdNum);
-            // Wait for L1 propagation then retry
-            await new Promise(r => setTimeout(r, 3000));
-            const retrySig = await startCombatOnChain(rumbleIdNum);
-            if (retrySig) console.log(`[OnChain] startCombat retry succeeded: ${retrySig}`);
+            const undelegated = await waitForUndelegation(rumbleIdNum);
+            if (undelegated) {
+              const retrySig = await startCombatOnChain(rumbleIdNum);
+              if (retrySig) console.log(`[ONCHAIN-START] startCombat retry succeeded for rumble ${slot.id}: ${retrySig}`);
+            } else {
+              console.warn(`[ER-WAIT-UNDELEGATE] Timed out for rumble ${rumbleIdNum} — will retry next tick`);
+            }
           } catch (retryErr) {
-            console.error(`[OnChain] startCombat retry after undelegate failed:`, retryErr);
+            console.error(`[ONCHAIN-START] startCombat retry after undelegate failed for rumble ${slot.id}:`, retryErr);
           }
         } else {
-          console.error(`[OnChain] startCombat error:`, err);
+          console.error(`[ONCHAIN-START] startCombat error for rumble ${slot.id}:`, err);
         }
       } else {
-        console.error(`[OnChain] startCombat error:`, err);
+        console.error(`[ONCHAIN-START] startCombat error for rumble ${slot.id}:`, err);
       }
     }
   }
@@ -2490,16 +2506,18 @@ export class RumbleOrchestrator {
             const alreadyDelegated = await isCombatStateDelegated(coldRumbleIdNum).catch(() => false);
             if (alreadyDelegated) {
               state.erDelegated = true;
-              console.log(`[ER] Cold-start: combat already delegated for rumble ${coldRumbleIdNum}`);
+              state.erDelegatedAt = Date.now();
+              console.log(`[ER-DELEGATE] Cold-start: combat already delegated for rumble ${coldRumbleIdNum}`);
             } else {
               try {
                 const sig = await delegateCombatToEr(coldRumbleIdNum);
                 if (sig) {
                   state.erDelegated = true;
-                  console.log(`[ER] Cold-start: delegated combat for rumble ${coldRumbleIdNum}: ${sig}`);
+                  state.erDelegatedAt = Date.now();
+                  console.log(`[ER-DELEGATE] Cold-start: delegated combat for rumble ${coldRumbleIdNum}: ${sig}`);
                 }
               } catch (err) {
-                console.warn(`[ER] Cold-start delegation failed for rumble ${coldRumbleIdNum}, using L1:`, err);
+                console.warn(`[ER-DELEGATE] Cold-start delegation failed for rumble ${coldRumbleIdNum}, using L1:`, err);
               }
             }
           }
@@ -2526,7 +2544,7 @@ export class RumbleOrchestrator {
             new Promise<void>((_, reject) => setTimeout(() => reject(new Error("startCombat timeout")), 4_000)),
           ]);
         } catch (err) {
-          console.warn(`[OnChain] startCombat initial attempt failed for ${slot.id}, will retry on next tick:`, err);
+          console.warn(`[ONCHAIN-START] startCombat initial attempt failed for rumble ${slot.id}, will retry on next tick:`, err);
           // Not fatal — the on-chain tick loop self-heals by detecting betting state
         }
 
@@ -2692,16 +2710,17 @@ export class RumbleOrchestrator {
       // Delegate combat state to Ephemeral Rollup for real-time execution.
       // Also handles cold-start: if on-chain is already "combat" (startCombatOnChain
       // returned early), check if already delegated or delegate now.
-      console.log(`[ER] erEnabled=${this.erEnabled} — attempting delegation for rumble ${rumbleIdNum}`);
+      console.log(`[ER-DELEGATE] erEnabled=${this.erEnabled} — attempting delegation for rumble ${rumbleIdNum}`);
       if (this.erEnabled) {
         const state = this.combatStates.get(idx);
         try {
           const sig = await delegateCombatToEr(rumbleIdNum);
           if (sig && state) {
             state.erDelegated = true;
-            console.log(`[ER] delegateCombat succeeded for rumble ${rumbleIdNum}: ${sig}`);
+            state.erDelegatedAt = Date.now();
+            console.log(`[ER-DELEGATE] delegateCombat succeeded for rumble ${rumbleIdNum}: ${sig}`);
           } else {
-            console.warn(`[ER] delegateCombat returned null for rumble ${rumbleIdNum} — falling back to L1`);
+            console.warn(`[ER-DELEGATE] delegateCombat returned null for rumble ${rumbleIdNum} — falling back to L1`);
           }
         } catch (err) {
           // Check if delegation failed because account is ALREADY delegated (cold-start recovery)
@@ -2709,10 +2728,11 @@ export class RumbleOrchestrator {
             const alreadyDelegated = await isCombatStateDelegated(rumbleIdNum);
             if (alreadyDelegated) {
               state.erDelegated = true;
-              console.log(`[ER] delegateCombat failed but account already delegated for rumble ${rumbleIdNum} — using ER`);
+              state.erDelegatedAt = Date.now();
+              console.log(`[ER-DELEGATE] delegateCombat failed but account already delegated for rumble ${rumbleIdNum} — using ER`);
             } else {
               state.erDelegated = false;
-              console.warn(`[ER] delegateCombat failed for rumble ${rumbleIdNum}, falling back to L1:`, err);
+              console.warn(`[ER-DELEGATE] delegateCombat failed for rumble ${rumbleIdNum}, falling back to L1:`, err);
             }
           }
         }
@@ -2745,6 +2765,47 @@ export class RumbleOrchestrator {
     }
     state.lastTickAt = now;
 
+    // --- ER delegation health monitoring ---
+    if (this.erEnabled && state.erDelegated && !state.erAbandoned) {
+      state.erHealthCheckTick = (state.erHealthCheckTick ?? 0) + 1;
+
+      // 1. Max delegation age safety valve (5 minutes)
+      const MAX_DELEGATION_AGE_MS = 300_000;
+      if (state.erDelegatedAt && (now - state.erDelegatedAt > MAX_DELEGATION_AGE_MS)) {
+        console.warn(`[ER-UNDELEGATE] Delegation for rumble ${rumbleIdNum} exceeded max age (${MAX_DELEGATION_AGE_MS}ms) — force-undelegating`);
+        try {
+          await undelegateCombatFromEr(rumbleIdNum);
+          const undelegated = await waitForUndelegation(rumbleIdNum);
+          if (undelegated) {
+            state.erDelegated = false;
+            state.erDelegatedAt = undefined;
+            console.log(`[ER-UNDELEGATE] Force-undelegate succeeded for rumble ${rumbleIdNum}`);
+          } else {
+            state.erUndelegateFailCount = (state.erUndelegateFailCount ?? 0) + 1;
+          }
+        } catch {
+          state.erUndelegateFailCount = (state.erUndelegateFailCount ?? 0) + 1;
+        }
+      }
+
+      // 2. Periodic health check every 10 ticks (~20s)
+      if ((state.erHealthCheckTick % 10) === 0) {
+        const onchainDelegated = await isCombatStateDelegated(rumbleIdNum).catch(() => state.erDelegated);
+        if (onchainDelegated !== state.erDelegated) {
+          console.warn(`[ER-DELEGATE] Health check mismatch for rumble ${rumbleIdNum}: local=${state.erDelegated}, onchain=${onchainDelegated} — trusting on-chain`);
+          state.erDelegated = onchainDelegated;
+          state.erDelegatedAt = onchainDelegated ? (state.erDelegatedAt ?? now) : undefined;
+        }
+      }
+
+      // 3. Abandoned delegation escape hatch (5+ consecutive failures)
+      if ((state.erUndelegateFailCount ?? 0) >= 5) {
+        console.error(`[ER-UNDELEGATE] Rumble ${rumbleIdNum} undelegation failed 5+ times — marking slot as abandoned, falling back to L1`);
+        state.erAbandoned = true;
+        state.erDelegated = false;
+      }
+    }
+
     let onchainState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
     if (!onchainState) return;
 
@@ -2762,13 +2823,13 @@ export class RumbleOrchestrator {
     let combat = await readRumbleCombatState(rumbleIdNum, slotConn).catch(() => null);
     // If ER read failed, fall back to L1 — ER might be down or delegation expired
     if (!combat && state.erDelegated) {
-      console.warn(`[ER] Combat state read failed on ER for rumble ${rumbleIdNum}, trying L1 fallback`);
+      console.warn(`[ER-COMMIT] Combat state read failed on ER for rumble ${rumbleIdNum}, trying L1 fallback`);
       combat = await readRumbleCombatState(rumbleIdNum, getConnection()).catch(() => null);
       if (combat) {
         // L1 has the data — delegation may have expired. Switch back to L1 mode.
         state.erDelegated = false;
         slotConn = getConnection();
-        console.log(`[ER] Switched rumble ${rumbleIdNum} back to L1 mode (ER read failed, L1 succeeded)`);
+        console.log(`[ER-COMMIT] Switched rumble ${rumbleIdNum} back to L1 mode (ER read failed, L1 succeeded)`);
       }
     }
     if (!combat) return;
@@ -2839,7 +2900,7 @@ export class RumbleOrchestrator {
       // Sync ER state to L1 for spectators
       if (state.erDelegated && combat.turnResolved) {
         commitCombatFromEr(rumbleIdNum).catch((err) =>
-          console.warn(`[ER] commitCombat failed for rumble ${rumbleIdNum}:`, err)
+          console.warn(`[ER-COMMIT] commitCombat failed for rumble ${rumbleIdNum}:`, err)
         );
       }
 
@@ -2869,7 +2930,7 @@ export class RumbleOrchestrator {
       try {
         const sig = await openTurnOnChain(rumbleIdNum, slotConn);
         if (sig) {
-          console.log(`[OnChain] openTurn succeeded: ${sig}`);
+          console.log(`[ONCHAIN-OPEN-TURN] openTurn succeeded for rumble ${slot.id}: ${sig}`);
           void persistWithRetry(
             () => persist.updateRumbleTxSignature(slot.id, "openTurn", sig),
             `updateRumbleTxSignature:openTurn:${slot.id}`,
@@ -2891,7 +2952,7 @@ export class RumbleOrchestrator {
             await this.abortStuckCombat(slot, state, "on-chain account discriminator mismatch (program redeployed)");
             return;
           }
-          console.warn(`[OnChain] openTurn fatal failure ${count}/3 for ${slot.id}: ${formatError(err)}`);
+          console.warn(`[ONCHAIN-OPEN-TURN] openTurn fatal failure ${count}/3 for rumble ${slot.id}: ${formatError(err)}`);
         } else if (
           // Idempotent/open-race failures are expected when multiple keepers
           // hit the same turn boundary.
@@ -2902,7 +2963,7 @@ export class RumbleOrchestrator {
             "custom program error: 0x177b",
           ])
         ) {
-          console.warn(`[OnChain] openTurn failed for ${slot.id}: ${formatError(err)}`);
+          console.warn(`[ONCHAIN-OPEN-TURN] openTurn failed for rumble ${slot.id}: ${formatError(err)}`);
         }
       }
       // Re-read combat state after open_turn so we can proceed to
@@ -2934,7 +2995,7 @@ export class RumbleOrchestrator {
           );
           const sig = await resolveTurnOnChain(rumbleIdNum, commitmentAccounts, slotConn);
           if (sig) {
-            console.log(`[OnChain] resolveTurn succeeded: ${sig}`);
+            console.log(`[ONCHAIN-RESOLVE] resolveTurn succeeded for rumble ${slot.id}: ${sig}`);
             void persistWithRetry(
               () => persist.updateRumbleTxSignature(slot.id, "resolveTurn", sig),
               `updateRumbleTxSignature:resolveTurn:${slot.id}`,
@@ -2949,7 +3010,7 @@ export class RumbleOrchestrator {
             "custom program error: 0x177d",
           ])
         ) {
-          console.warn(`[OnChain] resolveTurn failed for ${slot.id}: ${formatError(err)}`);
+          console.warn(`[ONCHAIN-RESOLVE] resolveTurn failed for rumble ${slot.id}: ${formatError(err)}`);
         }
       }
       // Re-read to check if resolve succeeded so we can advance in same tick.
@@ -3052,22 +3113,20 @@ export class RumbleOrchestrator {
       // Retry up to 3 times — if undelegation fails, finalize will also fail and
       // the slot would wedge until the next tick retries.
       if (state.erDelegated) {
-        let undelegated = false;
-        for (let attempt = 0; attempt < 3 && !undelegated; attempt++) {
-          try {
-            const undelegateSig = await undelegateCombatFromEr(rumbleIdNum);
-            if (undelegateSig) {
-              state.erDelegated = false;
-              undelegated = true;
-              console.log(`[ER] undelegateCombat succeeded for rumble ${rumbleIdNum}: ${undelegateSig}`);
-            }
-          } catch (err) {
-            console.warn(`[ER] undelegateCombat attempt ${attempt + 1}/3 failed for rumble ${rumbleIdNum}:`, err);
-            if (attempt < 2) await new Promise(r => setTimeout(r, 2000));
+        try {
+          const undelegateSig = await undelegateCombatFromEr(rumbleIdNum);
+          if (undelegateSig) {
+            console.log(`[ER-UNDELEGATE] undelegateCombat sent for rumble ${rumbleIdNum}: ${undelegateSig}`);
           }
+        } catch (err) {
+          console.warn(`[ER-UNDELEGATE] undelegateCombat tx failed for rumble ${rumbleIdNum}:`, err);
         }
-        if (!undelegated) {
-          console.error(`[ER] undelegateCombat exhausted retries for rumble ${rumbleIdNum} — will retry next tick`);
+        const confirmed = await waitForUndelegation(rumbleIdNum);
+        if (confirmed) {
+          state.erDelegated = false;
+          console.log(`[ER-UNDELEGATE] Undelegation confirmed on L1 for rumble ${rumbleIdNum}`);
+        } else {
+          console.error(`[ER-WAIT-UNDELEGATE] Timed out for rumble ${rumbleIdNum} — will retry next tick`);
           return; // Don't try to finalize while still delegated
         }
       }
@@ -3076,14 +3135,14 @@ export class RumbleOrchestrator {
       try {
         const sig = await finalizeRumbleOnChainTx(rumbleIdNum, getConnection());
         if (sig) {
-          console.log(`[OnChain] finalizeRumble succeeded: ${sig}`);
+          console.log(`[ONCHAIN-FINALIZE] finalizeRumble succeeded for rumble ${slot.id}: ${sig}`);
           await persistWithRetry(
             () => persist.updateRumbleTxSignature(slot.id, "reportResult", sig),
             `updateRumbleTxSignature:reportResult:${slot.id}`,
           );
         }
       } catch (err) {
-        console.warn(`[OnChain] finalizeRumble failed for ${slot.id}: ${formatError(err)}`);
+        console.warn(`[ONCHAIN-FINALIZE] finalizeRumble failed for rumble ${slot.id}: ${formatError(err)}`);
       }
       invalidateReadCache(`rumble:${rumbleIdNum}`);
       onchainState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
@@ -3098,7 +3157,7 @@ export class RumbleOrchestrator {
       try {
         const sig = await advanceTurnOnChain(rumbleIdNum, slotConn);
         if (sig) {
-          console.log(`[OnChain] advanceTurn succeeded: ${sig}`);
+          console.log(`[ONCHAIN-ADVANCE] advanceTurn succeeded for rumble ${slot.id}: ${sig}`);
           void persistWithRetry(
             () => persist.updateRumbleTxSignature(slot.id, "advanceTurn", sig),
             `updateRumbleTxSignature:advanceTurn:${slot.id}`,
@@ -3112,7 +3171,7 @@ export class RumbleOrchestrator {
             "custom program error: 0x177b",
           ])
         ) {
-          console.warn(`[OnChain] advanceTurn failed for ${slot.id}: ${formatError(err)}`);
+          console.warn(`[ONCHAIN-ADVANCE] advanceTurn failed for rumble ${slot.id}: ${formatError(err)}`);
         }
       }
     }
@@ -3147,12 +3206,32 @@ export class RumbleOrchestrator {
 
     // On cold-start, detect if combat_state is already delegated to ER
     let erDelegated = false;
+    let erDelegatedAt: number | undefined;
     if (this.erEnabled) {
       const rumbleIdNum = this.resolveOnchainRumbleIdNumber(slot.id);
       if (rumbleIdNum !== null) {
-        erDelegated = await isCombatStateDelegated(rumbleIdNum);
+        erDelegated = await isCombatStateDelegated(rumbleIdNum).catch(() => false);
         if (erDelegated) {
-          console.log(`[ER] Cold-start: detected already-delegated combat_state for rumble ${slot.id}`);
+          console.log(`[ER-DELEGATE] Cold-start: detected already-delegated combat_state for rumble ${slot.id}`);
+          // Verify ER is actually readable — if not, delegation may be stale
+          try {
+            const erConn = getErConnection();
+            const erState = await readRumbleCombatState(rumbleIdNum, erConn);
+            if (erState) {
+              console.log(`[ER-DELEGATE] Cold-start: ER readability confirmed for rumble ${slot.id}`);
+              erDelegatedAt = Date.now();
+            } else {
+              console.warn(`[ER-UNDELEGATE] Cold-start: ER read returned null for rumble ${slot.id} — attempting undelegate`);
+              await undelegateCombatFromEr(rumbleIdNum).catch(() => {});
+              const undelegated = await waitForUndelegation(rumbleIdNum, 10000);
+              erDelegated = !undelegated ? await isCombatStateDelegated(rumbleIdNum) : false;
+            }
+          } catch {
+            console.warn(`[ER-UNDELEGATE] Cold-start: ER read failed for rumble ${slot.id} — attempting undelegate`);
+            await undelegateCombatFromEr(rumbleIdNum).catch(() => {});
+            const undelegated = await waitForUndelegation(rumbleIdNum, 10000);
+            erDelegated = !undelegated ? await isCombatStateDelegated(rumbleIdNum) : false;
+          }
         }
       }
     }
@@ -3170,6 +3249,10 @@ export class RumbleOrchestrator {
       previousDamageTaken: new Map(),
       lastTickAt: Date.now(),
       erDelegated,
+      erDelegatedAt,
+      erUndelegateFailCount: 0,
+      erHealthCheckTick: 0,
+      erAbandoned: false,
     });
   }
 
@@ -3810,7 +3893,7 @@ export class RumbleOrchestrator {
       this.getConnectionForState(state),
     );
     if (sig) {
-      console.log(`[Hybrid] postTurnResult succeeded: ${sig}`);
+      console.log(`[ONCHAIN-POST-TURN] postTurnResult succeeded for rumble ${slot.id}: ${sig}`);
       void persistWithRetry(
         () => persist.updateRumbleTxSignature(slot.id, "postTurnResult", sig),
         `updateRumbleTxSignature:postTurnResult:${slot.id}`,
@@ -4488,7 +4571,7 @@ export class RumbleOrchestrator {
         Math.floor(Date.now() / 1000) - ONCHAIN_CREATE_RECOVERY_DEADLINE_SKEW_SEC,
       );
       if (!onchainState) {
-        throw new Error(`[OnChain] finalize skipped for ${rumbleId}: on-chain rumble unavailable`);
+        throw new Error(`[ONCHAIN-FINALIZE] finalize skipped for rumble ${rumbleId}: on-chain rumble unavailable`);
       }
 
       if (onchainState.state === "combat") {
@@ -4497,17 +4580,24 @@ export class RumbleOrchestrator {
           try {
             const undelegateSig = await undelegateCombatFromEr(rumbleIdNum);
             if (undelegateSig) {
-              console.log(`[ER] undelegateCombat succeeded for rumble ${rumbleIdNum}: ${undelegateSig}`);
+              console.log(`[ER-UNDELEGATE] undelegateCombat sent for rumble ${rumbleIdNum}: ${undelegateSig}`);
             }
           } catch (err) {
-            console.warn(`[ER] undelegateCombat failed for rumble ${rumbleIdNum}:`, err);
+            console.warn(`[ER-UNDELEGATE] undelegateCombat failed for rumble ${rumbleIdNum}:`, err);
           }
+          // Wait for L1 ownership to revert before finalizing
+          const undelegated = await waitForUndelegation(rumbleIdNum);
+          if (!undelegated) {
+            console.error(`[ER-WAIT-UNDELEGATE] Timed out in settleOnChain for rumble ${rumbleIdNum} — will retry next tick`);
+            return;
+          }
+          console.log(`[ER-UNDELEGATE] Undelegation confirmed on L1 for rumble ${rumbleIdNum}, proceeding to finalize`);
         }
 
         // Finalize on L1 (rumble PDA is never delegated, needs mut access)
         const finalizeSig = await finalizeRumbleOnChainTx(rumbleIdNum, getConnection()).catch(() => null);
         if (finalizeSig) {
-          console.log(`[OnChain] finalizeRumble succeeded: ${finalizeSig}`);
+          console.log(`[ONCHAIN-FINALIZE] finalizeRumble succeeded for rumble ${rumbleId}: ${finalizeSig}`);
           void persistWithRetry(
             () => persist.updateRumbleTxSignature(rumbleId, "reportResult", finalizeSig),
             `updateRumbleTxSignature:reportResult:${rumbleId}`,
@@ -4518,7 +4608,7 @@ export class RumbleOrchestrator {
 
       if (onchainState?.state !== "payout" && onchainState?.state !== "complete") {
         console.warn(
-          `[OnChain] rumble ${rumbleId} not payout-ready yet (state=${onchainState?.state ?? "unknown"})`,
+          `[ONCHAIN-FINALIZE] rumble ${rumbleId} not payout-ready yet (state=${onchainState?.state ?? "unknown"})`,
         );
         return;
       }
@@ -4555,7 +4645,7 @@ export class RumbleOrchestrator {
         })();
       }
     } catch (err) {
-      console.error(`[OnChain] finalizeRumble error:`, err);
+      console.error(`[ONCHAIN-FINALIZE] finalizeRumble error for rumble ${rumbleId}:`, err);
       return;
     }
 
