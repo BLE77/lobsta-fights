@@ -1711,6 +1711,26 @@ export class RumbleOrchestrator {
 
     // Create betting pool if we don't have one for this rumble
     if (!this.bettingPools.has(idx) || this.bettingPools.get(idx)!.rumbleId !== slot.id) {
+      // Guard: check Supabase for any active rumbles in this slot before creating.
+      // Prevents duplicate rumble creation during Railway deploy overlap where
+      // two worker instances briefly coexist despite the worker lease.
+      try {
+        const existingActive = await persist.loadActiveRumbles();
+        const slotConflict = existingActive.find(
+          (r) => Number(r.slot_index) === idx && r.id !== slot.id &&
+            (r.status === "betting" || r.status === "combat"),
+        );
+        if (slotConflict) {
+          console.warn(
+            `[Orchestrator] BLOCKED duplicate rumble creation: slot ${idx} already has active rumble ${slotConflict.id} (status=${slotConflict.status}). Aborting this slot.`,
+          );
+          this.queueManager.abortBettingSlot(idx);
+          return;
+        }
+      } catch (err) {
+        console.warn(`[Orchestrator] Active rumble check failed, proceeding:`, err);
+      }
+
       const pool = createBettingPool(slot.id);
       this.bettingPools.set(idx, pool);
 
