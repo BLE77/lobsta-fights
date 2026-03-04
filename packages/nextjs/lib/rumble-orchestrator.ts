@@ -993,12 +993,16 @@ export class RumbleOrchestrator {
   }
 
   /** Pick up admin commands from Supabase worker_commands table. */
+  private workerCommandsInFlight = false;
   private processWorkerCommands(): void {
-    // Only Railway worker processes commands
     if (process.env.RUMBLE_WORKER_MODE !== "true") return;
-    processPendingWorkerCommands(this).catch((err) => {
-      console.warn("[WorkerCommands] Error processing commands:", (err as Error).message?.slice(0, 100));
-    });
+    if (this.workerCommandsInFlight) return;
+    this.workerCommandsInFlight = true;
+    processPendingWorkerCommands(this)
+      .catch((err) => {
+        console.warn("[WorkerCommands] Error processing commands:", (err as Error).message?.slice(0, 100));
+      })
+      .finally(() => { this.workerCommandsInFlight = false; });
   }
 
   private async getOnchainAdminHealth(): Promise<OnchainAdminHealth> {

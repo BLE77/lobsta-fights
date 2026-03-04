@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { isAuthorizedAdminRequest } from "~~/lib/request-auth";
 import { getOrchestrator } from "~~/lib/rumble-orchestrator";
 import { queueWorkerCommand, type WorkerCommand } from "~~/lib/worker-commands";
+import { getAdminConfig } from "~~/lib/rumble-persistence";
 
 export const dynamic = "force-dynamic";
 
@@ -20,12 +21,25 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // GET is read-only — safe on both Vercel and Railway
-  const orchestrator = getOrchestrator();
-  const status = orchestrator.getHouseBotControlStatus();
+  // On Railway: read live orchestrator state
+  if (process.env.RUMBLE_WORKER_MODE === "true") {
+    const orchestrator = getOrchestrator();
+    const status = orchestrator.getHouseBotControlStatus();
+    return NextResponse.json({ success: true, ...status, timestamp: new Date().toISOString() });
+  }
+
+  // On Vercel: read persisted state from Supabase (actual Railway state)
+  const paused = (await getAdminConfig("house_bots_paused")) === true;
+  const configuredCount = Number(process.env.HOUSE_BOT_COUNT) || 0;
+  const targetPop = Number(process.env.HOUSE_BOT_TARGET_POPULATION) || 0;
   return NextResponse.json({
     success: true,
-    ...status,
+    configuredEnabled: configuredCount > 0,
+    configuredHouseBotCount: configuredCount,
+    paused,
+    targetPopulation: targetPop,
+    targetPopulationSource: "persisted",
+    source: "supabase",
     timestamp: new Date().toISOString(),
   });
 }
