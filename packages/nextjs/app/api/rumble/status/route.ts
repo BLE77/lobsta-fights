@@ -29,6 +29,7 @@ import { flushRpcMetrics, runWithRpcMetrics } from "~~/lib/solana-rpc-metrics";
 export const dynamic = "force-dynamic";
 const SLOT_MS_ESTIMATE = Math.max(250, Number(process.env.RUMBLE_SLOT_MS_ESTIMATE ?? "400"));
 const BETTING_CLOSE_GUARD_MS = Math.max(1000, Number(process.env.RUMBLE_BETTING_CLOSE_GUARD_MS ?? "12000"));
+const FIGHTERS_PER_RUMBLE = Math.max(12, Math.min(64, Number(process.env.FIGHTERS_PER_RUMBLE) || 12));
 const ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD = 5_000_000n;
 const STATUS_MUTATION_ENABLED = (() => {
   const env = process.env.RUMBLE_PUBLIC_STATUS_MUTATION_ENABLED;
@@ -401,7 +402,7 @@ export async function GET(request: Request) {
       const allSlotsIdle = inMemorySlots.every(
         (slot) => slot.state === "idle" && slot.fighters.length === 0,
       );
-      if (allSlotsIdle && qm.getQueueLength() >= 8) {
+      if (allSlotsIdle && qm.getQueueLength() >= FIGHTERS_PER_RUMBLE) {
         await orchestrator.tick().catch((err) => {
           console.warn("[StatusAPI] deadlock kick tick failed", err);
         });
@@ -721,8 +722,20 @@ export async function GET(request: Request) {
             return null;
           });
           if (onchainCombat) {
-            currentTurn = Math.max(currentTurn ?? 0, onchainCombat.currentTurn ?? 0);
-            remainingFighters = onchainCombat.remainingFighters;
+            // When ER (Ephemeral Rollups) is active, the combat PDA is
+            // delegated to the ER validator — L1 devnet still has the
+            // pre-delegation snapshot (all HP=100, turn=0).  Detect this
+            // by comparing on-chain turn count to the in-memory turn count.
+            // If on-chain is behind, the data is stale and we must NOT
+            // override the turn-log-derived HP values.
+            const onchainTurn = onchainCombat.currentTurn ?? 0;
+            const inMemoryTurn = slot.currentTurn ?? 0;
+            const onchainIsStale = onchainTurn < inMemoryTurn && inMemoryTurn > 0;
+
+            currentTurn = Math.max(currentTurn ?? 0, onchainTurn);
+            if (!onchainIsStale) {
+              remainingFighters = onchainCombat.remainingFighters;
+            }
 
             const slotSpan =
               onchainCombat.revealCloseSlot > onchainCombat.turnOpenSlot
@@ -733,7 +746,7 @@ export async function GET(request: Request) {
             // On-chain turn timing: COMMIT_WINDOW=30 slots + REVEAL_WINDOW=30 slots
             const ONCHAIN_TURN_MS = 60 * SLOT_MS_ESTIMATE; // ~24s
 
-            if (!onchainCombat.turnResolved) {
+            if (!onchainIsStale && !onchainCombat.turnResolved) {
               // Turn is active — always countdown to revealCloseSlot (when
               // the turn actually resolves). Previously we showed separate
               // commit and reveal countdowns, which looked like the timer
@@ -759,7 +772,7 @@ export async function GET(request: Request) {
                   ? new Date(Date.now() + etaMs).toISOString()
                   : new Date(Date.now() + 3_000).toISOString(),
               );
-            } else if (onchainCombat.remainingFighters > 1) {
+            } else if (!onchainIsStale && onchainCombat.remainingFighters > 1) {
               // Turn resolved, waiting for worker to open next turn (~2s tick)
               turnPhase = "resolved";
               slot.nextTurnTargetSlot = null;
@@ -768,8 +781,8 @@ export async function GET(request: Request) {
                 new Date(Date.now() + 3_000).toISOString(),
               );
             } else {
-              turnPhase = "resolved";
-              nextTurnAt = null; // combat over
+              turnPhase = onchainIsStale ? null : "resolved";
+              nextTurnAt = onchainIsStale ? null : null; // combat over or ER-delegated
             }
 
             if (!turnIntervalMs || turnIntervalMs <= 0) {
@@ -777,19 +790,23 @@ export async function GET(request: Request) {
             }
 
             // Update fighter HP/damage/meter from on-chain CombatState
-            enrichedFighters = slot.fighters.map((f, i) => {
-              if (i >= onchainCombat.fighterCount) return f;
-              return {
-                ...f,
-                hp: onchainCombat.hp[i],
-                meter: onchainCombat.meter[i],
-                totalDamageDealt: Number(onchainCombat.totalDamageDealt[i]),
-                totalDamageTaken: Number(onchainCombat.totalDamageTaken[i]),
-                eliminatedOnTurn: onchainCombat.eliminationRank[i] > 0
-                  ? onchainCombat.eliminationRank[i]
-                  : f.eliminatedOnTurn,
-              };
-            });
+            // SKIP when on-chain is stale (ER delegation) to preserve
+            // accurate HP from turn-log replay or in-memory combat state.
+            if (!onchainIsStale) {
+              enrichedFighters = slot.fighters.map((f, i) => {
+                if (i >= onchainCombat.fighterCount) return f;
+                return {
+                  ...f,
+                  hp: onchainCombat.hp[i],
+                  meter: onchainCombat.meter[i],
+                  totalDamageDealt: Number(onchainCombat.totalDamageDealt[i]),
+                  totalDamageTaken: Number(onchainCombat.totalDamageTaken[i]),
+                  eliminatedOnTurn: onchainCombat.eliminationRank[i] > 0
+                    ? onchainCombat.eliminationRank[i]
+                    : f.eliminatedOnTurn,
+                };
+              });
+            }
           }
         } else {
           nextTurnAt = null;
@@ -1185,8 +1202,15 @@ export async function GET(request: Request) {
         });
         if (!onchainCombat) return slot;
 
-        const currentTurn = Math.max(slot.currentTurn ?? 0, onchainCombat.currentTurn ?? 0);
-        const remainingFighters = onchainCombat.remainingFighters;
+        // ER staleness check: when combat PDA is delegated to ER, L1
+        // returns the pre-delegation snapshot (HP=100, turn=0).  Detect
+        // by comparing on-chain turn to turn_log count from Supabase.
+        const onchainTurn = onchainCombat.currentTurn ?? 0;
+        const turnLogTurn = slot.currentTurn ?? 0;
+        const onchainIsStale = onchainTurn < turnLogTurn && turnLogTurn > 0;
+
+        const currentTurn = Math.max(slot.currentTurn ?? 0, onchainTurn);
+        const remainingFighters = onchainIsStale ? null : onchainCombat.remainingFighters;
         const ONCHAIN_TURN_MS = 60 * SLOT_MS_ESTIMATE;
 
         const slotSpan =
@@ -1201,7 +1225,7 @@ export async function GET(request: Request) {
         let nextTurnTargetSlot: number | null = null;
         const currentSlotVal = currentClusterSlotBig !== null ? Number(currentClusterSlotBig) : null;
 
-        if (!onchainCombat.turnResolved) {
+        if (!onchainIsStale && !onchainCombat.turnResolved) {
           const inCommitPhase =
             currentClusterSlotBig !== null &&
             currentClusterSlotBig <= onchainCombat.commitCloseSlot;
@@ -1215,18 +1239,19 @@ export async function GET(request: Request) {
               ? new Date(Date.now() + etaMs).toISOString()
               : new Date(Date.now() + 3_000).toISOString(),
           );
-        } else if (onchainCombat.remainingFighters > 1) {
+        } else if (!onchainIsStale && onchainCombat.remainingFighters > 1) {
           turnPhase = "resolved";
           nextTurnAt = getStableNextTurnAt(rumbleIdNum, currentTurn, "resolved", () =>
             new Date(Date.now() + 3_000).toISOString(),
           );
         } else {
-          turnPhase = "resolved";
+          turnPhase = onchainIsStale ? null : "resolved";
           nextTurnAt = null;
         }
 
         // Enrich fighters from on-chain CombatState (accurate HP, damage, elimination)
-        const enrichedFighters = slot.fighters.map((f, i) => {
+        // SKIP when on-chain is stale (ER delegation) to preserve turn-log HP.
+        const enrichedFighters = onchainIsStale ? slot.fighters : slot.fighters.map((f, i) => {
           if (i >= onchainCombat.fighterCount) return f;
           return {
             ...f,
@@ -1272,7 +1297,7 @@ export async function GET(request: Request) {
     // ---- nextRumbleIn estimate ---------------------------------------------
     const effectiveQueueLen = queueEntries.length;
     let nextRumbleIn: string | null = null;
-    const fightersNeeded = Number(process.env.FIGHTERS_PER_RUMBLE) || 12;
+    const fightersNeeded = FIGHTERS_PER_RUMBLE;
     if (effectiveQueueLen > 0 && effectiveQueueLen < fightersNeeded) {
       nextRumbleIn = `Need ${fightersNeeded - effectiveQueueLen} more fighters`;
     } else if (effectiveQueueLen >= fightersNeeded) {
