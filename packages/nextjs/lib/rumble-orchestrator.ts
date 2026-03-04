@@ -4689,10 +4689,9 @@ export class RumbleOrchestrator {
       }
 
       if (onchainState?.state !== "payout" && onchainState?.state !== "complete") {
-        console.warn(
+        throw new Error(
           `[ONCHAIN-FINALIZE] rumble ${rumbleId} not payout-ready yet (state=${onchainState?.state ?? "unknown"})`,
         );
-        return;
       }
 
       // Post result to mainnet so bettors can claim real SOL payouts.
