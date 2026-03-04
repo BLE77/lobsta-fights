@@ -106,6 +106,7 @@ import {
   requestIchorShowerVrf,
 } from "./solana-programs";
 import { markOpComplete, markOpFailed, persistMainnetOp } from "./mainnet-retry";
+import { processPendingWorkerCommands } from "./worker-commands";
 import { Keypair, PublicKey, Transaction, Connection } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { getConnection, getErConnection, getBettingConnection, isErEnabled, getCombatConnectionAuto, getErStatusInfo } from "./solana-connection";
@@ -988,6 +989,16 @@ export class RumbleOrchestrator {
     await this.processPendingSweeps();
     this.pollPendingIchorShower();
     this.periodicRentReclaim();
+    this.processWorkerCommands();
+  }
+
+  /** Pick up admin commands from Supabase worker_commands table. */
+  private processWorkerCommands(): void {
+    // Only Railway worker processes commands
+    if (process.env.RUMBLE_WORKER_MODE !== "true") return;
+    processPendingWorkerCommands(this).catch((err) => {
+      console.warn("[WorkerCommands] Error processing commands:", (err as Error).message?.slice(0, 100));
+    });
   }
 
   private async getOnchainAdminHealth(): Promise<OnchainAdminHealth> {
