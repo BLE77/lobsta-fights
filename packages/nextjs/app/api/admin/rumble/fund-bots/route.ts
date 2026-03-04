@@ -16,6 +16,9 @@ const AIRDROP_AMOUNT_SOL = 1;
  * Airdrops 1 SOL to any wallet below 0.1 SOL.
  */
 export async function POST(request: Request) {
+  if (process.env.VERCEL) {
+    return NextResponse.json({ error: "Fund bots disabled on Vercel. Use Railway worker." }, { status: 403 });
+  }
   if (!isAuthorizedAdminRequest(request.headers)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }

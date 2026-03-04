@@ -16,6 +16,11 @@ function sleep(ms: number): Promise<void> {
 }
 
 export async function POST(request: Request) {
+  // NEVER run ticks on Vercel — only Railway worker should create/advance rumbles
+  if (process.env.VERCEL) {
+    return NextResponse.json({ error: "Ticks disabled on Vercel. Use Railway worker." }, { status: 403 });
+  }
+
   if (!isAuthorizedAdminRequest(request.headers)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }

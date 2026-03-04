@@ -134,6 +134,9 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  if (process.env.VERCEL) {
+    return jsonResponse({ error: "On-chain actions disabled on Vercel. Use Railway worker." }, 403);
+  }
   if (!isAuthorizedAdminRequest(request.headers)) {
     return jsonResponse({ error: "Unauthorized" }, 401);
   }

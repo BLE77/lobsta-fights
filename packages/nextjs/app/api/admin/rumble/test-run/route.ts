@@ -22,6 +22,9 @@ function sleep(ms: number): Promise<void> {
  * Body: { fighter_count?: number }  (default 8, min 4, max 16)
  */
 export async function POST(request: Request) {
+  if (process.env.VERCEL) {
+    return NextResponse.json({ error: "Test runs disabled on Vercel. Use Railway worker." }, { status: 403 });
+  }
   if (!isAuthorizedAdminRequest(request.headers)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }

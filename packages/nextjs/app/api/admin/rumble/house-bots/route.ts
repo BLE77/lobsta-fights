@@ -21,6 +21,11 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  // NEVER control house bots from Vercel — only Railway worker manages bots
+  if (process.env.VERCEL) {
+    return NextResponse.json({ error: "House bot control disabled on Vercel. Use Railway worker." }, { status: 403 });
+  }
+
   if (!isAuthorizedAdminRequest(request.headers)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
