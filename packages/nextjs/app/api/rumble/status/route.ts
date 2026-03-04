@@ -1272,7 +1272,7 @@ export async function GET(request: Request) {
     // ---- nextRumbleIn estimate ---------------------------------------------
     const effectiveQueueLen = queueEntries.length;
     let nextRumbleIn: string | null = null;
-    const fightersNeeded = Number(process.env.FIGHTERS_PER_RUMBLE) || 8;
+    const fightersNeeded = Number(process.env.FIGHTERS_PER_RUMBLE) || 12;
     if (effectiveQueueLen > 0 && effectiveQueueLen < fightersNeeded) {
       nextRumbleIn = `Need ${fightersNeeded - effectiveQueueLen} more fighters`;
     } else if (effectiveQueueLen >= fightersNeeded) {

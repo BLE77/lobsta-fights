@@ -49,7 +49,7 @@ export interface QueueManager {
 // ---------------------------------------------------------------------------
 
 const NUM_SLOTS = 1;
-const FIGHTERS_PER_RUMBLE = Math.max(2, Math.min(64, Number(process.env.FIGHTERS_PER_RUMBLE) || 8));
+const FIGHTERS_PER_RUMBLE = Math.max(2, Math.min(64, Number(process.env.FIGHTERS_PER_RUMBLE) || 12));
 const MIN_FIGHTERS_TO_START = Math.max(2, Math.min(FIGHTERS_PER_RUMBLE, Number(process.env.MIN_FIGHTERS_TO_START) || FIGHTERS_PER_RUMBLE));
 
 function readDurationMs(
