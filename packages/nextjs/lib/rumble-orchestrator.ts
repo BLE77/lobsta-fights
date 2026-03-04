@@ -342,7 +342,7 @@ const HOUSE_BOTS_ENABLED = process.env.RUMBLE_HOUSE_BOTS_ENABLED === "true" && H
 const HOUSE_BOTS_AUTO_FILL = (process.env.RUMBLE_HOUSE_BOTS_AUTO_FILL ?? "true") !== "false";
 const HOUSE_BOT_TARGET_POPULATION = readInt(
   "RUMBLE_HOUSE_BOT_TARGET_POPULATION",
-  8,
+  12,
   0,
   64,
 );
@@ -2599,19 +2599,33 @@ export class RumbleOrchestrator {
     // Legacy combat must never outpace on-chain state transitions.
     // If startCombat has not landed yet (on-chain still betting), skip
     // local turn simulation and retry next tick.
+    // EXCEPTION: if combat_state PDA is delegated to ER, the L1 read
+    // will always fail/return stale data.  In that case, let off-chain
+    // combat proceed rather than blocking forever.
     const rumbleIdNum = this.resolveOnchainRumbleIdNumber(slot.id);
     if (rumbleIdNum !== null) {
       let onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
       if (!onchain || onchain.state === "betting") {
-        await this.startCombatOnChain(slot).catch(() => {});
-        invalidateReadCache(`rumble:${rumbleIdNum}`);
-        onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
-      }
-      if (!onchain || onchain.state === "betting") {
-        console.log(
-          `[Orchestrator] Slot ${idx} waiting for on-chain combat transition for ${slot.id}; skipping legacy turn tick`,
-        );
-        return;
+        // Check if the account is delegated (stuck in ER) — if so, skip
+        // the on-chain gate entirely and let off-chain combat run.
+        const delegated = await isCombatStateDelegated(rumbleIdNum).catch(() => false);
+        if (delegated) {
+          console.log(
+            `[Orchestrator] Slot ${idx} combat_state PDA is delegated for ${slot.id}; proceeding with off-chain combat`,
+          );
+          // Fire-and-forget undelegate attempt for future ticks
+          undelegateCombatFromEr(rumbleIdNum).catch(() => {});
+        } else {
+          await this.startCombatOnChain(slot).catch(() => {});
+          invalidateReadCache(`rumble:${rumbleIdNum}`);
+          onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+          if (!onchain || onchain.state === "betting") {
+            console.log(
+              `[Orchestrator] Slot ${idx} waiting for on-chain combat transition for ${slot.id}; skipping legacy turn tick`,
+            );
+            return;
+          }
+        }
       }
     }
 
