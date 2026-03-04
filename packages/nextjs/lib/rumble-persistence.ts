@@ -216,7 +216,17 @@ export async function createRumbleRecord(input: CreateRumbleInput): Promise<numb
       })
       .select("rumble_number")
       .single();
-    if (error) throw error;
+    if (error) {
+      // Unique constraint on (slot_index) WHERE status IN ('betting','combat')
+      // means another instance already created a rumble for this slot.
+      if (error.code === "23505") {
+        console.warn(
+          `[RumblePersistence] BLOCKED duplicate: slot ${input.slotIndex} already has an active rumble. Skipping ${input.id}.`,
+        );
+        return null;
+      }
+      throw error;
+    }
     const num = data?.rumble_number ?? null;
     log("Created rumble record", input.id, `#${num}`);
     return num;

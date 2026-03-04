@@ -1741,6 +1741,16 @@ export class RumbleOrchestrator {
         slotIndex: idx,
         fighters: slot.fighters.map((id) => ({ id, name: id })),
       });
+      // createRumbleRecord returns null if DB unique constraint blocks it
+      // (another instance already created a rumble for this slot)
+      if (rumbleNumber === null) {
+        console.warn(
+          `[Orchestrator] createRumbleRecord returned null for slot ${idx} — aborting duplicate.`,
+        );
+        this.bettingPools.delete(idx);
+        this.queueManager.abortBettingSlot(idx);
+        return;
+      }
       this.setRumbleNumber(slot.id, rumbleNumber);
       for (const fid of slot.fighters) {
         persist.saveQueueFighter(fid, "in_combat");
