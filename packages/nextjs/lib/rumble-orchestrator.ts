@@ -1795,8 +1795,12 @@ export class RumbleOrchestrator {
           return status === "betting" || status === "combat";
         });
 
+        const minActiveFighters = persist.MIN_ACTIVE_RUMBLE_FIGHTERS;
+        const hasMinimumFighters = (fighters: unknown): boolean =>
+          persist.extractRumbleFighterIds(fighters).length >= minActiveFighters;
+
         const underfilledRows = slotRows.filter(
-          (row) => !persist.hasMinimumRumbleFighters(row.fighters),
+          (row) => !hasMinimumFighters(row.fighters),
         );
         for (const row of underfilledRows) {
           if (this.handledUnderfilledActiveRumbles.has(row.id)) continue;
@@ -1811,7 +1815,7 @@ export class RumbleOrchestrator {
         }
 
         const slotConflict = slotRows.find((row) =>
-          persist.hasMinimumRumbleFighters(row.fighters),
+          hasMinimumFighters(row.fighters),
         );
         if (slotConflict) {
           console.warn(

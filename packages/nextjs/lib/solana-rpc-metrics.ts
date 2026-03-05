@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import type { Connection } from "@solana/web3.js";
 
 type RpcMethodStats = {
@@ -13,7 +12,37 @@ type RpcMetricsContext = {
   methods: Map<string, RpcMethodStats>;
 };
 
-const _als = new AsyncLocalStorage<RpcMetricsContext>();
+type AsyncLocalStorageLike<T> = {
+  run<R>(store: T, callback: () => R): R;
+  getStore(): T | undefined;
+};
+
+function createNoopAsyncLocalStorage<T>(): AsyncLocalStorageLike<T> {
+  return {
+    run<R>(_store: T, callback: () => R): R {
+      return callback();
+    },
+    getStore(): T | undefined {
+      return undefined;
+    },
+  };
+}
+
+function createAsyncLocalStorage(): AsyncLocalStorageLike<RpcMetricsContext> {
+  if (typeof window !== "undefined") {
+    return createNoopAsyncLocalStorage<RpcMetricsContext>();
+  }
+
+  try {
+    const runtimeRequire = Function("return require")() as NodeRequire;
+    const asyncHooks = runtimeRequire("node:async_hooks") as typeof import("node:async_hooks");
+    return new asyncHooks.AsyncLocalStorage<RpcMetricsContext>();
+  } catch {
+    return createNoopAsyncLocalStorage<RpcMetricsContext>();
+  }
+}
+
+const _als = createAsyncLocalStorage();
 
 const SAMPLE_RATE = (() => {
   const raw = Number(process.env.RUMBLE_RPC_METRICS_SAMPLE_RATE ?? "1");
