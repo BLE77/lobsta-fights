@@ -3175,7 +3175,7 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
   let swept = 0;
   let skipped = 0;
   let reclaimedLamports = 0;
-  let mutationsIssued = 0;
+  let mutationAttempts = 0;
 
   const now = Math.floor(Date.now() / 1000);
   const BETTING_STALE_SECONDS = 3600; // 1 hour
@@ -3192,9 +3192,9 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
 
   pruneRentReclaimRetryMap(Date.now());
 
-  const canMutate = () => mutationsIssued < RENT_RECLAIM_MAX_MUTATIONS_PER_RUN;
-  const noteMutation = async () => {
-    mutationsIssued += 1;
+  const canMutate = () => mutationAttempts < RENT_RECLAIM_MAX_MUTATIONS_PER_RUN;
+  const noteMutationAttempt = async () => {
+    mutationAttempts += 1;
     if (RENT_RECLAIM_TX_SPACING_MS > 0) {
       await sleep(RENT_RECLAIM_TX_SPACING_MS);
     }
@@ -3257,6 +3257,7 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
 
       // No bets — safe to force-complete and close over next cycles
       try {
+        await noteMutationAttempt();
         const dummyPlacements = Buffer.from(Array.from({ length: 16 }, (_, i) => i));
         const method = (program.methods as any)
           .adminSetResult(dummyPlacements, 0)
@@ -3266,7 +3267,6 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
           completed++;
           _rentReclaimRetryAfterByRumble.delete(rumbleId);
           console.log(`[RentReclaim] adminSetResult (stale betting, no bets) ${rumbleId}: ${sig}`);
-          await noteMutation();
         }
       } catch (err) {
         deferRentReclaim(rumbleId, err);
@@ -3282,6 +3282,7 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
     if (state === 2 && pastClaimWindow) {
       if (!canMutate()) break;
       try {
+        await noteMutationAttempt();
         const method = (program.methods as any).completeRumble().accounts({
           admin: admin.publicKey, config: configPda, rumble: rumblePda,
         });
@@ -3290,7 +3291,6 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
           completed++;
           _rentReclaimRetryAfterByRumble.delete(rumbleId);
           console.log(`[RentReclaim] completeRumble ${rumbleId}: ${sig}`);
-          await noteMutation();
         }
       } catch (err) {
         deferRentReclaim(rumbleId, err);
@@ -3334,6 +3334,7 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
         }
         if (!canMutate()) break;
         try {
+          await noteMutationAttempt();
           const method = (program.methods as any)
             .sweepTreasury()
             .accounts({
@@ -3349,7 +3350,6 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
             swept++;
             _rentReclaimRetryAfterByRumble.delete(rumbleId);
             console.log(`[RentReclaim] sweepTreasury ${rumbleId} (no winners): ${sig} (${(vaultBalance / 1e9).toFixed(6)} SOL)`);
-            await noteMutation();
           }
         } catch (err) {
           deferRentReclaim(rumbleId, err);
@@ -3362,6 +3362,7 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
       if (!hasUnclaimedSol) {
         if (!canMutate()) break;
         try {
+          await noteMutationAttempt();
           const method = (program.methods as any).closeRumble().accounts({
             admin: admin.publicKey, config: configPda, rumble: rumblePda, vault: vaultPda,
           });
@@ -3371,7 +3372,6 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
             reclaimedLamports += a.account.lamports;
             _rentReclaimRetryAfterByRumble.delete(rumbleId);
             console.log(`[RentReclaim] closeRumble ${rumbleId}: ${signature} (${a.account.lamports} lamports)`);
-            await noteMutation();
           }
         } catch (err) {
           deferRentReclaim(rumbleId, err);
@@ -3381,9 +3381,9 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
     }
   }
 
-  if (mutationsIssued >= RENT_RECLAIM_MAX_MUTATIONS_PER_RUN) {
+  if (mutationAttempts >= RENT_RECLAIM_MAX_MUTATIONS_PER_RUN) {
     console.log(
-      `[RentReclaim] mutation cap reached (${mutationsIssued}/${RENT_RECLAIM_MAX_MUTATIONS_PER_RUN})`,
+      `[RentReclaim] mutation cap reached (${mutationAttempts}/${RENT_RECLAIM_MAX_MUTATIONS_PER_RUN})`,
     );
   }
 
