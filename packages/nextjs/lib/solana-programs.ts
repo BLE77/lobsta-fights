@@ -12,6 +12,7 @@ import {
   ComputeBudgetProgram,
   Connection,
   Keypair,
+  LAMPORTS_PER_SOL,
   PublicKey,
   SystemProgram,
   TransactionInstruction,
@@ -19,11 +20,15 @@ import {
 } from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import {
+  GetCommitmentSignature,
+  createTopUpEscrowInstruction,
+  escrowPdaFromEscrowAuthority,
+} from "@magicblock-labs/ephemeral-rollups-sdk";
+import {
   getConnection,
   getBettingConnection,
   getBettingReadConnections,
   getErConnection,
-  getErRpcEndpoint,
 } from "./solana-connection";
 import { createHash, randomBytes } from "node:crypto";
 import { keccak_256 } from "@noble/hashes/sha3";
@@ -137,6 +142,98 @@ const SLOT_HASHES_SYSVAR_ID = new PublicKey(
 const DELEGATION_PROGRAM_ID = new PublicKey("DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh");
 const MAGIC_PROGRAM_ID = new PublicKey("Magic11111111111111111111111111111111111111");
 const MAGIC_CONTEXT_ID = new PublicKey("MagicContext1111111111111111111111111111111");
+const ER_VALIDATOR_CACHE_TTL_MS = Math.max(
+  5_000,
+  Number(process.env.MAGICBLOCK_ER_VALIDATOR_CACHE_TTL_MS ?? "60000"),
+);
+const ER_ESCROW_MIN_SOL = Math.max(
+  0,
+  Number(process.env.MAGICBLOCK_ER_ESCROW_MIN_SOL ?? "0.02"),
+);
+const ER_ESCROW_TOPUP_MAX_SOL = Math.max(
+  0,
+  Number(process.env.MAGICBLOCK_ER_ESCROW_TOPUP_MAX_SOL ?? "0.05"),
+);
+
+type ErClosestValidator = { identity: string; fqdn?: string };
+type ErRouterLikeConnection = Connection & {
+  getClosestValidator?: () => Promise<ErClosestValidator>;
+  getLatestBlockhashForTransaction?: (
+    transaction: Transaction,
+    options?: { commitment?: anchor.web3.Commitment },
+  ) => Promise<{ blockhash: string; lastValidBlockHeight: number }>;
+};
+
+const _erValidatorConnectionCache = new Map<string, Connection>();
+let _erClosestValidatorCache:
+  | { at: number; endpoint: string; value: ErClosestValidator | null }
+  | null = null;
+
+function normalizeErValidatorEndpoint(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return trimmed.replace(/\/+$/, "");
+  }
+  return `https://${trimmed.replace(/\/+$/, "")}`;
+}
+
+function getOrCreateErValidatorConnection(endpoint: string): Connection {
+  const normalized = normalizeErValidatorEndpoint(endpoint);
+  const existing = _erValidatorConnectionCache.get(normalized);
+  if (existing) return existing;
+  const conn = new Connection(normalized, {
+    commitment: "confirmed",
+    wsEndpoint: normalized.replace("https://", "wss://"),
+  });
+  _erValidatorConnectionCache.set(normalized, conn);
+  return conn;
+}
+
+async function getErClosestValidatorCached(conn: Connection): Promise<ErClosestValidator | null> {
+  const routerConn = conn as ErRouterLikeConnection;
+  if (typeof routerConn.getClosestValidator !== "function") return null;
+
+  const endpoint = String((conn as any).rpcEndpoint ?? (conn as any)._rpcEndpoint ?? "");
+  const now = Date.now();
+  if (
+    _erClosestValidatorCache &&
+    _erClosestValidatorCache.endpoint === endpoint &&
+    now - _erClosestValidatorCache.at < ER_VALIDATOR_CACHE_TTL_MS
+  ) {
+    return _erClosestValidatorCache.value;
+  }
+
+  try {
+    const validator = await routerConn.getClosestValidator();
+    _erClosestValidatorCache = { at: now, endpoint, value: validator ?? null };
+    return validator ?? null;
+  } catch (error) {
+    console.warn("[ER] getClosestValidator failed; using router connection for log parsing.", error);
+    _erClosestValidatorCache = { at: now, endpoint, value: null };
+    return null;
+  }
+}
+
+async function resolveErRoutingConnections(
+  preferredConnection?: Connection,
+): Promise<{ txConnection: Connection; logConnection: Connection; validatorEndpoint: string | null }> {
+  const txConnection = preferredConnection ?? getErConnection();
+  const validator = await getErClosestValidatorCached(txConnection);
+  const validatorEndpoint = normalizeErValidatorEndpoint(String(validator?.fqdn ?? ""));
+  if (!validatorEndpoint) {
+    return {
+      txConnection,
+      logConnection: txConnection,
+      validatorEndpoint: null,
+    };
+  }
+  return {
+    txConnection,
+    logConnection: getOrCreateErValidatorConnection(validatorEndpoint),
+    validatorEndpoint,
+  };
+}
 
 /**
  * Check if a combat state PDA is currently delegated to ER.
@@ -2329,25 +2426,63 @@ async function sendAdminTxFireAndForget(
   connection?: Connection,
 ): Promise<string> {
   const conn = connection ?? getConnection();
-  const erEndpoint = getErRpcEndpoint();
   const isEr = (conn as any)._rpcEndpoint?.includes("magicblock") ||
     conn.rpcEndpoint?.includes("magicblock");
-  const tx: Transaction = await method.transaction();
-  tx.feePayer = admin.publicKey;
-  const { blockhash } = await conn.getLatestBlockhash("processed");
-  tx.recentBlockhash = blockhash;
-  // ER transactions are feeless — skip compute unit price
-  if (!isEr) {
-    tx.instructions.unshift(getComputeUnitPriceIx());
+  const routerConn = conn as ErRouterLikeConnection;
+  const shouldRetryBlockhash = (err: unknown): boolean => {
+    const msg = err instanceof Error ? err.message : String(err);
+    return /blockhash not found/i.test(msg);
+  };
+
+  const assignBlockhash = async (tx: Transaction): Promise<void> => {
+    if (isEr && typeof routerConn.getLatestBlockhashForTransaction === "function") {
+      try {
+        const { blockhash, lastValidBlockHeight } = await routerConn.getLatestBlockhashForTransaction(tx, {
+          commitment: "processed",
+        });
+        tx.recentBlockhash = blockhash;
+        tx.lastValidBlockHeight = lastValidBlockHeight;
+        return;
+      } catch (error) {
+        console.warn("[ER] getLatestBlockhashForTransaction failed; falling back to getLatestBlockhash:", error);
+      }
+    }
+    const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("processed");
+    tx.recentBlockhash = blockhash;
+    tx.lastValidBlockHeight = lastValidBlockHeight;
+  };
+
+  const maxAttempts = isEr ? 3 : 2;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const tx: Transaction = await method.transaction();
+    tx.feePayer = admin.publicKey;
+    // ER transactions are feeless — skip compute unit price
+    if (!isEr) {
+      tx.instructions.unshift(getComputeUnitPriceIx());
+    }
+
+    await assignBlockhash(tx);
+    tx.sign(admin);
+    try {
+      return await conn.sendRawTransaction(tx.serialize(), {
+        // ER validator rejects preflight for magic_context writable checks — skip it
+        skipPreflight: isEr,
+        preflightCommitment: isEr ? undefined : "processed",
+        maxRetries: 3,
+      });
+    } catch (error) {
+      const retryable = shouldRetryBlockhash(error) && attempt < maxAttempts;
+      if (!retryable) throw error;
+      const waitMs = 150 * attempt;
+      console.warn(
+        `[TxSend] Retrying admin tx after blockhash error (attempt ${attempt}/${maxAttempts}):`,
+        error,
+      );
+      await new Promise(resolve => setTimeout(resolve, waitMs));
+    }
   }
-  tx.sign(admin);
-  const signature = await conn.sendRawTransaction(tx.serialize(), {
-    // ER validator rejects preflight for magic_context writable checks — skip it
-    skipPreflight: isEr,
-    preflightCommitment: isEr ? undefined : "processed",
-    maxRetries: 3,
-  });
-  return signature;
+
+  throw new Error("Failed to send admin transaction after blockhash retries");
 }
 
 /**
@@ -2957,6 +3092,59 @@ export async function closeRumbleMainnet(
   return signature;
 }
 
+const RENT_RECLAIM_MAX_MUTATIONS_PER_RUN = Math.max(
+  1,
+  Number(process.env.RENT_RECLAIM_MAX_MUTATIONS_PER_RUN ?? "8"),
+);
+const RENT_RECLAIM_TX_SPACING_MS = Math.max(
+  0,
+  Number(process.env.RENT_RECLAIM_TX_SPACING_MS ?? "400"),
+);
+const RENT_RECLAIM_MAX_SCAN_PER_RUN = Math.max(
+  100,
+  Number(process.env.RENT_RECLAIM_MAX_SCAN_PER_RUN ?? "1200"),
+);
+const RENT_RECLAIM_FAILURE_COOLDOWN_MS = Math.max(
+  60_000,
+  Number(process.env.RENT_RECLAIM_FAILURE_COOLDOWN_MS ?? String(6 * 60 * 60_000)),
+);
+const RENT_RECLAIM_RATE_LIMIT_COOLDOWN_MS = Math.max(
+  60_000,
+  Number(process.env.RENT_RECLAIM_RATE_LIMIT_COOLDOWN_MS ?? String(30 * 60_000)),
+);
+const _rentReclaimRetryAfterByRumble = new Map<number, number>();
+
+function isRpcRateLimitError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /429|too many requests|rate limit|rate-limited/i.test(msg);
+}
+
+function pruneRentReclaimRetryMap(nowMs: number): void {
+  if (_rentReclaimRetryAfterByRumble.size === 0) return;
+  for (const [rumbleId, retryAfter] of _rentReclaimRetryAfterByRumble.entries()) {
+    if (retryAfter <= nowMs) {
+      _rentReclaimRetryAfterByRumble.delete(rumbleId);
+    }
+  }
+  if (_rentReclaimRetryAfterByRumble.size > 5000) {
+    const sorted = [..._rentReclaimRetryAfterByRumble.entries()].sort((a, b) => a[1] - b[1]);
+    const toRemove = _rentReclaimRetryAfterByRumble.size - 3000;
+    for (const [rumbleId] of sorted.slice(0, toRemove)) {
+      _rentReclaimRetryAfterByRumble.delete(rumbleId);
+    }
+  }
+}
+
+function deferRentReclaim(
+  rumbleId: number,
+  err: unknown,
+): void {
+  const cooldownMs = isRpcRateLimitError(err)
+    ? RENT_RECLAIM_RATE_LIMIT_COOLDOWN_MS
+    : RENT_RECLAIM_FAILURE_COOLDOWN_MS;
+  _rentReclaimRetryAfterByRumble.set(rumbleId, Date.now() + cooldownMs);
+}
+
 /**
  * Batch reclaim rent from eligible mainnet rumble accounts.
  * 1) complete_rumble for Payout accounts past claim window
@@ -2987,6 +3175,7 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
   let swept = 0;
   let skipped = 0;
   let reclaimedLamports = 0;
+  let mutationsIssued = 0;
 
   const now = Math.floor(Date.now() / 1000);
   const BETTING_STALE_SECONDS = 3600; // 1 hour
@@ -3001,12 +3190,42 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
   const BETTING_DEADLINE_OFFSET = WINNER_INDEX_OFFSET + 1; // 699
   const COMPLETED_AT_OFFSET = BETTING_DEADLINE_OFFSET + 8 + 8; // 715
 
-  for (const a of accounts) {
-    const data = a.account.data;
-    if (data.length < 700 || data.length > 730) continue;
+  pruneRentReclaimRetryMap(Date.now());
+
+  const canMutate = () => mutationsIssued < RENT_RECLAIM_MAX_MUTATIONS_PER_RUN;
+  const noteMutation = async () => {
+    mutationsIssued += 1;
+    if (RENT_RECLAIM_TX_SPACING_MS > 0) {
+      await sleep(RENT_RECLAIM_TX_SPACING_MS);
+    }
+  };
+
+  const candidates = accounts
+    .map((row) => {
+      const data = row.account.data;
+      if (data.length < 700 || data.length > 730) return null;
+      let rumbleId = -1;
+      try {
+        rumbleId = Number(data.readBigUInt64LE(8));
+      } catch {
+        return null;
+      }
+      if (!Number.isSafeInteger(rumbleId) || rumbleId < 0) return null;
+      return { row, data, rumbleId };
+    })
+    .filter((row): row is { row: typeof accounts[number]; data: Buffer; rumbleId: number } => row !== null)
+    .sort((a, b) => b.rumbleId - a.rumbleId)
+    .slice(0, RENT_RECLAIM_MAX_SCAN_PER_RUN);
+
+  for (const { row: a, data, rumbleId } of candidates) {
+    const retryAfter = _rentReclaimRetryAfterByRumble.get(rumbleId);
+    if (retryAfter && retryAfter > Date.now()) {
+      skipped++;
+      continue;
+    }
+    if (retryAfter) _rentReclaimRetryAfterByRumble.delete(rumbleId);
 
     const state = data[16];
-    const rumbleId = Number(data.readBigUInt64LE(8));
     const [rumblePda] = deriveRumblePdaMainnet(rumbleId);
 
     // --- State 0: Betting (stuck) ---
@@ -3020,13 +3239,21 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
       // Check vault — if anyone bet, don't auto-close
       const [vaultPda] = deriveVaultPdaMainnet(rumbleId);
       let vaultBalance = 0;
-      try { vaultBalance = await conn.getBalance(vaultPda); } catch { /* ok */ }
+      try {
+        vaultBalance = await conn.getBalance(vaultPda);
+      } catch (err) {
+        skipped++;
+        deferRentReclaim(rumbleId, err);
+        continue;
+      }
 
       if (vaultBalance > RENT_EXEMPT_MIN) {
         skipped++;
         console.log(`[RentReclaim] SKIP stale betting ${rumbleId}: vault has ${(vaultBalance / 1e9).toFixed(6)} SOL (bets placed, needs admin review)`);
         continue;
       }
+
+      if (!canMutate()) break;
 
       // No bets — safe to force-complete and close over next cycles
       try {
@@ -3037,9 +3264,12 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
         const sig = await sendAdminTxFireAndForget(method, admin, conn);
         if (sig) {
           completed++;
+          _rentReclaimRetryAfterByRumble.delete(rumbleId);
           console.log(`[RentReclaim] adminSetResult (stale betting, no bets) ${rumbleId}: ${sig}`);
+          await noteMutation();
         }
       } catch (err) {
+        deferRentReclaim(rumbleId, err);
         console.warn(`[RentReclaim] adminSetResult ${rumbleId} failed:`, (err as Error).message?.slice(0, 80));
       }
       continue;
@@ -3050,13 +3280,20 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
 
     // --- State 2: Payout → Complete (safe — winners can still claim in Complete state) ---
     if (state === 2 && pastClaimWindow) {
+      if (!canMutate()) break;
       try {
         const method = (program.methods as any).completeRumble().accounts({
           admin: admin.publicKey, config: configPda, rumble: rumblePda,
         });
         const sig = await sendAdminTxFireAndForget(method, admin, conn);
-        if (sig) { completed++; console.log(`[RentReclaim] completeRumble ${rumbleId}: ${sig}`); }
+        if (sig) {
+          completed++;
+          _rentReclaimRetryAfterByRumble.delete(rumbleId);
+          console.log(`[RentReclaim] completeRumble ${rumbleId}: ${sig}`);
+          await noteMutation();
+        }
       } catch (err) {
+        deferRentReclaim(rumbleId, err);
         console.warn(`[RentReclaim] completeRumble ${rumbleId} failed:`, (err as Error).message?.slice(0, 80));
       }
       continue; // Next cycle handles sweep + close
@@ -3071,7 +3308,13 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
 
       const [vaultPda] = deriveVaultPdaMainnet(rumbleId);
       let vaultBalance = 0;
-      try { vaultBalance = await conn.getBalance(vaultPda); } catch { /* ok */ }
+      try {
+        vaultBalance = await conn.getBalance(vaultPda);
+      } catch (err) {
+        skipped++;
+        deferRentReclaim(rumbleId, err);
+        continue;
+      }
       const hasUnclaimedSol = vaultBalance > RENT_EXEMPT_MIN;
 
       // If someone bet on the winner and vault still has SOL → leave it alone.
@@ -3089,6 +3332,7 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
           console.log(`[RentReclaim] SKIP sweep ${rumbleId}: treasury address unavailable`);
           continue;
         }
+        if (!canMutate()) break;
         try {
           const method = (program.methods as any)
             .sweepTreasury()
@@ -3103,9 +3347,12 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
           const sig = await sendAdminTxFireAndForget(method, admin, conn);
           if (sig) {
             swept++;
+            _rentReclaimRetryAfterByRumble.delete(rumbleId);
             console.log(`[RentReclaim] sweepTreasury ${rumbleId} (no winners): ${sig} (${(vaultBalance / 1e9).toFixed(6)} SOL)`);
+            await noteMutation();
           }
         } catch (err) {
+          deferRentReclaim(rumbleId, err);
           console.warn(`[RentReclaim] sweepTreasury ${rumbleId} failed:`, (err as Error).message?.slice(0, 80));
         }
         continue; // Next cycle closes once vault is empty
@@ -3113,6 +3360,7 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
 
       // Vault empty (or winning bets already claimed) — close PDA and reclaim rent
       if (!hasUnclaimedSol) {
+        if (!canMutate()) break;
         try {
           const method = (program.methods as any).closeRumble().accounts({
             admin: admin.publicKey, config: configPda, rumble: rumblePda, vault: vaultPda,
@@ -3121,13 +3369,22 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
           if (signature) {
             closed++;
             reclaimedLamports += a.account.lamports;
+            _rentReclaimRetryAfterByRumble.delete(rumbleId);
             console.log(`[RentReclaim] closeRumble ${rumbleId}: ${signature} (${a.account.lamports} lamports)`);
+            await noteMutation();
           }
         } catch (err) {
+          deferRentReclaim(rumbleId, err);
           console.warn(`[RentReclaim] closeRumble ${rumbleId} failed:`, (err as Error).message?.slice(0, 80));
         }
       }
     }
+  }
+
+  if (mutationsIssued >= RENT_RECLAIM_MAX_MUTATIONS_PER_RUN) {
+    console.log(
+      `[RentReclaim] mutation cap reached (${mutationsIssued}/${RENT_RECLAIM_MAX_MUTATIONS_PER_RUN})`,
+    );
   }
 
   return { completed, closed, swept, skipped, reclaimedLamports };
@@ -3615,6 +3872,55 @@ export async function postTurnResultOnChain(
 // MagicBlock Ephemeral Rollup — Delegation / Commit / Undelegate
 // ---------------------------------------------------------------------------
 
+async function ensureErEscrowFunding(admin: Keypair, connection: Connection): Promise<void> {
+  const minLamports = Math.round(ER_ESCROW_MIN_SOL * LAMPORTS_PER_SOL);
+  if (!Number.isFinite(minLamports) || minLamports <= 0) return;
+
+  const maxTopUpLamports = Math.round(ER_ESCROW_TOPUP_MAX_SOL * LAMPORTS_PER_SOL);
+  if (!Number.isFinite(maxTopUpLamports) || maxTopUpLamports <= 0) return;
+
+  try {
+    const escrowPda = escrowPdaFromEscrowAuthority(admin.publicKey);
+    const currentLamports = await connection.getBalance(escrowPda, "confirmed");
+    if (currentLamports >= minLamports) {
+      return;
+    }
+
+    const neededLamports = minLamports - currentLamports;
+    const topUpLamports = Math.min(neededLamports, maxTopUpLamports);
+    if (topUpLamports <= 0) return;
+
+    const ix = createTopUpEscrowInstruction(
+      escrowPda,
+      admin.publicKey,
+      admin.publicKey,
+      topUpLamports,
+    );
+    const tx = new Transaction().add(ix);
+    tx.feePayer = admin.publicKey;
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("processed");
+    tx.recentBlockhash = blockhash;
+    tx.lastValidBlockHeight = lastValidBlockHeight;
+    tx.sign(admin);
+
+    const sig = await connection.sendRawTransaction(tx.serialize(), {
+      skipPreflight: false,
+      preflightCommitment: "processed",
+      maxRetries: 3,
+    });
+    await connection.confirmTransaction(
+      { signature: sig, blockhash, lastValidBlockHeight },
+      "confirmed",
+    );
+
+    console.log(
+      `[ER-DELEGATE] Escrow topped up by ${(topUpLamports / LAMPORTS_PER_SOL).toFixed(6)} SOL (${sig})`,
+    );
+  } catch (error) {
+    console.warn("[ER-DELEGATE] Escrow top-up failed (continuing without blocking):", error);
+  }
+}
+
 /**
  * Delegate a rumble's combat state PDA to a MagicBlock Ephemeral Rollup.
  * This transfers ownership to the delegation program so the ER can process
@@ -3659,6 +3965,7 @@ export async function delegateCombatToEr(
   const conn = getConnection();
   const { signature } = await sendAdminTxWithConfirmation(method, admin, conn);
   console.log(`[ER-DELEGATE] delegateCombat confirmed for rumble ${rumbleId}: ${signature}`);
+  await ensureErEscrowFunding(admin, conn);
   // Allow ER validator time to sync the newly-delegated account
   await new Promise(r => setTimeout(r, 3000));
   return signature;
@@ -3710,8 +4017,12 @@ export async function undelegateCombatFromEr(
   rumbleId: number,
   connection?: Connection,
 ): Promise<string | null> {
-  const conn = connection ?? getErConnection();
-  const provider = getAdminProvider(conn);
+  const routing = connection
+    ? { txConnection: connection, logConnection: connection, validatorEndpoint: null as string | null }
+    : await resolveErRoutingConnections();
+  const txConn = routing.txConnection;
+  const logConn = routing.logConnection;
+  const provider = getAdminProvider(txConn);
   if (!provider) {
     console.warn("[solana-programs] No admin keypair, skipping undelegateCombatFromEr");
     return null;
@@ -3732,9 +4043,21 @@ export async function undelegateCombatFromEr(
       magicContext: MAGIC_CONTEXT_ID,
     });
 
-  // Send undelegateCombat to ER
-  const sig = await sendAdminTxFireAndForget(method, admin, conn);
-  console.log(`[ER-UNDELEGATE] undelegateCombat confirmed on ER for rumble ${rumbleId}: ${sig}`);
+  // Send undelegateCombat to ER and wait for the scheduling tx confirmation.
+  // This significantly improves reliability for immediate log parsing.
+  let sig: string | null = null;
+  try {
+    const sent = await sendAdminTxWithConfirmation(method, admin, txConn);
+    sig = sent.signature;
+    console.log(`[ER-UNDELEGATE] undelegateCombat confirmed on ER for rumble ${rumbleId}: ${sig}`);
+  } catch (confirmErr) {
+    console.warn(
+      `[ER-UNDELEGATE] Confirmation failed for rumble ${rumbleId}, falling back to fire-and-forget:`,
+      confirmErr,
+    );
+    sig = await sendAdminTxFireAndForget(method, admin, txConn);
+    console.log(`[ER-UNDELEGATE] undelegateCombat sent on ER for rumble ${rumbleId}: ${sig}`);
+  }
 
   // Use GetCommitmentSignature to await the actual L1 commit.
   // The ER tx logs contain "ScheduledCommitSent signature: <L1_SIG>" which
@@ -3742,12 +4065,32 @@ export async function undelegateCombatFromEr(
   // (timebent-arena, craft) properly confirm undelegation instead of polling.
   if (sig) {
     try {
-      const { GetCommitmentSignature } = await import("@magicblock-labs/ephemeral-rollups-sdk");
-      const l1Sig = await GetCommitmentSignature(sig, conn);
-      console.log(`[ER-UNDELEGATE] L1 commitment confirmed for rumble ${rumbleId}: ${l1Sig}`);
-      return l1Sig;
-    } catch (err) {
-      console.warn(`[ER-UNDELEGATE] GetCommitmentSignature failed for rumble ${rumbleId} (will fall back to polling):`, err);
+      if (routing.validatorEndpoint) {
+        console.log(
+          `[ER-UNDELEGATE] Using closest validator ${routing.validatorEndpoint} for commitment log parsing`,
+        );
+      }
+      const maxAttempts = 15;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          const l1Sig = await GetCommitmentSignature(sig, logConn);
+          console.log(`[ER-UNDELEGATE] L1 commitment confirmed for rumble ${rumbleId}: ${l1Sig}`);
+          return l1Sig;
+        } catch (err) {
+          const isLast = attempt >= maxAttempts;
+          if (isLast) {
+            console.warn(
+              `[ER-UNDELEGATE] GetCommitmentSignature failed for rumble ${rumbleId} after ${attempt} attempts (will fall back to polling):`,
+              err,
+            );
+            break;
+          }
+          const delayMs = Math.min(5_000, 500 * attempt);
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
+      }
+    } catch (commitErr) {
+      console.warn(`[ER-UNDELEGATE] GetCommitmentSignature failed for rumble ${rumbleId}:`, commitErr);
     }
   }
 

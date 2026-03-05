@@ -19,6 +19,11 @@ const SOLANA_LEGACY_TX_MAX_BYTES = 1232;
 // No rent headroom needed — just ensure vault can cover estimated payout.
 const VAULT_HEADROOM_LAMPORTS = 0;
 
+function isRateLimitedRpcError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /429|too many requests|rate limit|rate-limited/i.test(msg);
+}
+
 function summarizeBuildError(err: unknown): string {
   if (err instanceof Error) return err.message;
   try {
@@ -96,11 +101,37 @@ export async function POST(request: Request) {
     const connection = getBettingConnection();
     const fundedTargets: typeof selectedTargets = [];
     const skippedCount = { underfunded: 0 };
+    const vaultBalances = new Map<number, number>();
+
+    try {
+      const vaultPdas = selectedTargets.map((target) => deriveVaultPdaMainnet(target.rumbleIdNum)[0]);
+      const infos = await connection.getMultipleAccountsInfo(vaultPdas, "confirmed");
+      for (let i = 0; i < selectedTargets.length; i++) {
+        vaultBalances.set(selectedTargets[i].rumbleIdNum, infos[i]?.lamports ?? 0);
+      }
+    } catch (err) {
+      if (isRateLimitedRpcError(err)) {
+        // Avoid per-vault fallback fan-out during provider throttling.
+        for (const target of selectedTargets) {
+          vaultBalances.set(target.rumbleIdNum, 0);
+        }
+      } else {
+      // Fallback for providers that intermittently fail multi-account reads.
+        for (const target of selectedTargets) {
+          try {
+            const [vaultPda] = deriveVaultPdaMainnet(target.rumbleIdNum);
+            const vaultBalance = await connection.getBalance(vaultPda, "confirmed");
+            vaultBalances.set(target.rumbleIdNum, vaultBalance);
+          } catch {
+            vaultBalances.set(target.rumbleIdNum, 0);
+          }
+        }
+      }
+    }
 
     for (const target of selectedTargets) {
       try {
-        const [vaultPda] = deriveVaultPdaMainnet(target.rumbleIdNum);
-        const vaultBalance = await connection.getBalance(vaultPda, "confirmed");
+        const vaultBalance = vaultBalances.get(target.rumbleIdNum) ?? 0;
         const estimatedPayoutLamports = Math.round(
           (target.onchainClaimableSol > 0 ? target.onchainClaimableSol : target.inferredClaimableSol) * LAMPORTS_PER_SOL,
         );

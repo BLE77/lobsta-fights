@@ -236,6 +236,10 @@ interface SlotCombatState {
   erHealthCheckTick?: number;
   /** If true, slot is abandoned due to stuck delegation — skip further ER work. */
   erAbandoned?: boolean;
+  /** Consecutive stale-delegation recovery failures while trying to start combat on-chain. */
+  startCombatDelegationFailCount?: number;
+  /** If true, bypasses on-chain turn authority and runs legacy off-chain combat for this rumble. */
+  forceLegacyFallback?: boolean;
 }
 
 interface OnchainTurnDecision {
@@ -374,6 +378,12 @@ const ONCHAIN_CREATE_VERIFY_BACKOFF_MS = readIntervalMs(
 );
 const MAX_FINALIZATION_ATTEMPTS = 30;
 const ONCHAIN_CREATE_RECOVERY_DEADLINE_SKEW_SEC = 5;
+const START_COMBAT_DELEGATION_FAILURE_LIMIT = readInt(
+  "RUMBLE_START_COMBAT_DELEGATION_FAILURE_LIMIT",
+  3,
+  1,
+  20,
+);
 const ONCHAIN_ADMIN_HEALTH_CHECK_MS = readIntervalMs(
   "RUMBLE_ONCHAIN_ADMIN_HEALTH_CHECK_MS",
   15_000,
@@ -660,11 +670,13 @@ export class RumbleOrchestrator {
   private pendingFinalizations: Map<string, PendingFinalization> = new Map();
   private pendingSweeps: Map<string, PendingSweep> = new Map();
   private lastRentReclaimAt = 0;
+  private rentReclaimInFlight = false;
   private onchainRumbleCreateRetryAt: Map<string, number> = new Map();
   private onchainRumbleCreateStartedAt: Map<string, number> = new Map();
   private onchainRumbleCreateLastError: Map<string, OnchainCreateFailure> = new Map();
   private onchainRumbleNumberById: Map<string, number> = new Map();
   private warnedInvalidHouseBotIds: Set<string> = new Set();
+  private handledUnderfilledActiveRumbles: Set<string> = new Set();
   private onchainAdminHealth: OnchainAdminHealth = {
     checkedAt: 0,
     ready: true,
@@ -1062,6 +1074,48 @@ export class RumbleOrchestrator {
   private resolveSlotIndexForRumble(rumbleId: string): number | null {
     const slot = this.queueManager.getSlots().find((entry) => entry.id === rumbleId);
     return slot ? slot.slotIndex : null;
+  }
+
+  private isUndelegateDiscriminatorError(error: unknown): boolean {
+    const msg = formatError(error);
+    return (
+      /AccountDiscriminatorNotFound/i.test(msg) ||
+      /Error Number:\s*3001/i.test(msg) ||
+      /custom program error:\s*0xbb9/i.test(msg)
+    );
+  }
+
+  private recordStartCombatDelegationFailure(rumbleId: string, reason: string): void {
+    const slotIndex = this.resolveSlotIndexForRumble(rumbleId);
+    if (slotIndex === null) return;
+    const state = this.combatStates.get(slotIndex);
+    if (!state || state.rumbleId !== rumbleId) return;
+
+    const nextFailures = (state.startCombatDelegationFailCount ?? 0) + 1;
+    state.startCombatDelegationFailCount = nextFailures;
+    if (state.forceLegacyFallback) return;
+
+    if (nextFailures < START_COMBAT_DELEGATION_FAILURE_LIMIT) {
+      console.warn(
+        `[ONCHAIN-START] stale delegation recovery failed for ${rumbleId} (${nextFailures}/${START_COMBAT_DELEGATION_FAILURE_LIMIT}): ${reason}`,
+      );
+      return;
+    }
+
+    state.forceLegacyFallback = true;
+    state.erAbandoned = true;
+    state.erDelegated = false;
+    console.error(
+      `[ONCHAIN-START] switching ${rumbleId} to legacy fallback after ${nextFailures} stale delegation failures: ${reason}`,
+    );
+  }
+
+  private clearStartCombatDelegationFailures(rumbleId: string): void {
+    const slotIndex = this.resolveSlotIndexForRumble(rumbleId);
+    if (slotIndex === null) return;
+    const state = this.combatStates.get(slotIndex);
+    if (!state || state.rumbleId !== rumbleId) return;
+    state.startCombatDelegationFailCount = 0;
   }
 
   private trimMap<K, V>(map: Map<K, V>): void {
@@ -1613,23 +1667,31 @@ export class RumbleOrchestrator {
     }
   }
 
-  /** Every 30 min, batch complete+close eligible mainnet rumble accounts to reclaim rent. */
+  /** Periodically batch complete/close eligible mainnet rumbles to reclaim rent. */
   private periodicRentReclaim(): void {
-    const RENT_RECLAIM_INTERVAL_MS = 5 * 60_000;
+    const RENT_RECLAIM_INTERVAL_MS = Math.max(
+      5 * 60_000,
+      Number(process.env.RENT_RECLAIM_INTERVAL_MS ?? String(30 * 60_000)),
+    );
     const now = Date.now();
     if (now - this.lastRentReclaimAt < RENT_RECLAIM_INTERVAL_MS) return;
+    if (this.rentReclaimInFlight) return;
     this.lastRentReclaimAt = now;
+    this.rentReclaimInFlight = true;
 
     reclaimMainnetRumbleRent()
-      .then(({ completed, closed, skipped, reclaimedLamports }) => {
-        if (completed > 0 || closed > 0) {
+      .then(({ completed, closed, swept, skipped, reclaimedLamports }) => {
+        if (completed > 0 || closed > 0 || swept > 0) {
           console.log(
-            `[RentReclaim] completed=${completed} closed=${closed} skipped=${skipped} reclaimed=${(reclaimedLamports / 1e9).toFixed(6)} SOL`,
+            `[RentReclaim] completed=${completed} closed=${closed} swept=${swept} skipped=${skipped} reclaimed=${(reclaimedLamports / 1e9).toFixed(6)} SOL`,
           );
         }
       })
       .catch((err) => {
         console.warn(`[RentReclaim] batch reclaim failed:`, (err as Error).message?.slice(0, 100));
+      })
+      .finally(() => {
+        this.rentReclaimInFlight = false;
       });
   }
 
@@ -1716,9 +1778,30 @@ export class RumbleOrchestrator {
       // two worker instances briefly coexist despite the worker lease.
       try {
         const existingActive = await persist.loadActiveRumbles();
-        const slotConflict = existingActive.find(
-          (r) => Number(r.slot_index) === idx && r.id !== slot.id &&
-            (r.status === "betting" || r.status === "combat"),
+        const slotRows = existingActive.filter((r) => {
+          if (Number(r.slot_index) !== idx) return false;
+          if (r.id === slot.id) return false;
+          const status = String(r.status ?? "").toLowerCase();
+          return status === "betting" || status === "combat";
+        });
+
+        const underfilledRows = slotRows.filter(
+          (row) => !persist.hasMinimumRumbleFighters(row.fighters),
+        );
+        for (const row of underfilledRows) {
+          if (this.handledUnderfilledActiveRumbles.has(row.id)) continue;
+          this.handledUnderfilledActiveRumbles.add(row.id);
+          const fighterIds = persist.extractRumbleFighterIds(row.fighters);
+          console.warn(
+            `[Orchestrator] Ignoring underfilled active rumble ${row.id} in slot ${idx} ` +
+              `(status=${row.status}, fighters=${fighterIds.length}, min=${persist.MIN_ACTIVE_RUMBLE_FIGHTERS}).`,
+          );
+          // Best effort: mark stale row complete so it stops polluting read APIs.
+          void persist.updateRumbleStatus(row.id, "complete");
+        }
+
+        const slotConflict = slotRows.find((row) =>
+          persist.hasMinimumRumbleFighters(row.fighters),
         );
         if (slotConflict) {
           console.warn(
@@ -1752,9 +1835,11 @@ export class RumbleOrchestrator {
         return;
       }
       this.setRumbleNumber(slot.id, rumbleNumber);
-      for (const fid of slot.fighters) {
-        persist.saveQueueFighter(fid, "in_combat");
-      }
+      // Keep DB queue state in sync before continuing so status reads don't
+      // briefly show newly-matched fighters as still "waiting".
+      await Promise.all(
+        slot.fighters.map((fid) => persist.saveQueueFighter(fid, "in_combat")),
+      );
     }
 
     // Keep trying to materialize the on-chain rumble account during betting.
@@ -2311,6 +2396,7 @@ export class RumbleOrchestrator {
         const sig = await startCombatOnChain(rumbleIdNum);
         if (sig) {
           console.log(`[ONCHAIN-START] startCombat (recovery) succeeded for rumble ${rumbleId}: ${sig}`);
+          this.clearStartCombatDelegationFailures(rumbleId);
           void persistWithRetry(
             () => persist.updateRumbleTxSignature(rumbleId, "startCombat", sig),
             `updateRumbleTxSignature:startCombat:${rumbleId}`,
@@ -2320,12 +2406,26 @@ export class RumbleOrchestrator {
         const errMsg = err?.message ?? String(err);
         if (errMsg.includes("AccountOwnedByWrongProgram") && await isCombatStateDelegated(rumbleIdNum)) {
           console.warn(`[ONCHAIN-START] startCombat (recovery) blocked by stale delegation for rumble ${rumbleId}, undelegating...`);
-          await undelegateCombatFromEr(rumbleIdNum).catch(() => {});
+          try {
+            await undelegateCombatFromEr(rumbleIdNum);
+          } catch (undelegateErr) {
+            if (this.isUndelegateDiscriminatorError(undelegateErr)) {
+              this.recordStartCombatDelegationFailure(rumbleId, formatError(undelegateErr));
+            }
+          }
           const undelegated = await waitForUndelegation(rumbleIdNum);
           if (undelegated) {
-            try { await startCombatOnChain(rumbleIdNum); } catch { /* will retry next tick */ }
+            try {
+              await startCombatOnChain(rumbleIdNum);
+              this.clearStartCombatDelegationFailures(rumbleId);
+            } catch (retryErr) {
+              if (this.isUndelegateDiscriminatorError(retryErr)) {
+                this.recordStartCombatDelegationFailure(rumbleId, formatError(retryErr));
+              }
+            }
           } else {
             console.warn(`[ER-WAIT-UNDELEGATE] Timed out for rumble ${rumbleIdNum} — will retry next tick`);
+            this.recordStartCombatDelegationFailure(rumbleId, "undelegation timeout");
           }
         } else {
           console.warn(`[ONCHAIN-START] startCombat (recovery) failed for rumble ${rumbleId}: ${formatError(err)}`);
@@ -2362,6 +2462,7 @@ export class RumbleOrchestrator {
       const sig = await startCombatOnChain(rumbleIdNum);
       if (sig) {
         console.log(`[ONCHAIN-START] startCombat succeeded for rumble ${slot.id}: ${sig}`);
+        this.clearStartCombatDelegationFailures(slot.id);
         void persistWithRetry(
           () => persist.updateRumbleTxSignature(slot.id, "startCombat", sig),
           `updateRumbleTxSignature:startCombat:${slot.id}`,
@@ -2381,12 +2482,19 @@ export class RumbleOrchestrator {
             const undelegated = await waitForUndelegation(rumbleIdNum);
             if (undelegated) {
               const retrySig = await startCombatOnChain(rumbleIdNum);
-              if (retrySig) console.log(`[ONCHAIN-START] startCombat retry succeeded for rumble ${slot.id}: ${retrySig}`);
+              if (retrySig) {
+                console.log(`[ONCHAIN-START] startCombat retry succeeded for rumble ${slot.id}: ${retrySig}`);
+                this.clearStartCombatDelegationFailures(slot.id);
+              }
             } else {
               console.warn(`[ER-WAIT-UNDELEGATE] Timed out for rumble ${rumbleIdNum} — will retry next tick`);
+              this.recordStartCombatDelegationFailure(slot.id, "undelegation timeout");
             }
           } catch (retryErr) {
             console.error(`[ONCHAIN-START] startCombat retry after undelegate failed for rumble ${slot.id}:`, retryErr);
+            if (this.isUndelegateDiscriminatorError(retryErr)) {
+              this.recordStartCombatDelegationFailure(slot.id, formatError(retryErr));
+            }
           }
         } else {
           console.error(`[ONCHAIN-START] startCombat error for rumble ${slot.id}:`, err);
@@ -2494,6 +2602,11 @@ export class RumbleOrchestrator {
 
   private async handleCombatPhase(slot: RumbleSlot): Promise<void> {
     if (ONCHAIN_TURN_AUTHORITY) {
+      const state = this.combatStates.get(slot.slotIndex);
+      if (state && state.rumbleId === slot.id && state.forceLegacyFallback) {
+        await this.handleCombatPhaseLegacy(slot);
+        return;
+      }
       if (!this.onchainAdminHealth.ready) {
         console.warn(
           `[Orchestrator] Slot ${slot.slotIndex} skipping combat tick — on-chain admin unhealthy, waiting for recovery`,
@@ -3332,6 +3445,8 @@ export class RumbleOrchestrator {
       erUndelegateFailCount: 0,
       erHealthCheckTick: 0,
       erAbandoned: false,
+      startCombatDelegationFailCount: 0,
+      forceLegacyFallback: false,
     });
   }
 
@@ -4641,6 +4756,8 @@ export class RumbleOrchestrator {
 
     let settlementSucceeded = false;
     let ichorSuccess = false;
+    let devnetPayoutReady = false;
+    let mainnetReportTriggered = false;
     try {
     // 1. Ensure on-chain result is finalized (payout-ready).
     try {
@@ -4689,48 +4806,55 @@ export class RumbleOrchestrator {
       }
 
       if (onchainState?.state !== "payout" && onchainState?.state !== "complete") {
-        throw new Error(
-          `[ONCHAIN-FINALIZE] rumble ${rumbleId} not payout-ready yet (state=${onchainState?.state ?? "unknown"})`,
+        console.warn(
+          `[ONCHAIN-FINALIZE] rumble ${rumbleId} not payout-ready yet (state=${onchainState?.state ?? "unknown"}) — continuing with mainnet report fallback`,
         );
-      }
-
-      // Post result to mainnet so bettors can claim real SOL payouts.
-      // Fire-and-forget — mainnet failure must NOT block devnet settlement.
-      const fighterCount = fighterOrder.length;
-      const placementsArray = new Array(fighterCount).fill(0);
-      for (const p of placements) {
-        const idx = fighterOrder.indexOf(p.id);
-        if (idx >= 0 && idx < fighterCount) placementsArray[idx] = p.placement;
-      }
-      const winnerIdx = fighterOrder.indexOf(winnerId);
-      if (winnerIdx >= 0) {
-        void (async () => {
-          try {
-            await persistMainnetOp({
-              rumbleId,
-              opType: "reportResult",
-              payload: { rumbleIdNum, placements: placementsArray, winnerIndex: winnerIdx },
-            });
-            const mainnetSig = await reportResultMainnet(rumbleIdNum, placementsArray, winnerIdx);
-            if (mainnetSig) {
-              console.log(`[OnChain:Mainnet] reportResult succeeded: ${mainnetSig}`);
-              await markOpComplete(rumbleId, "reportResult", mainnetSig);
-            } else {
-              await markOpFailed(rumbleId, "reportResult", "reportResultMainnet returned null");
-              console.warn(`[OnChain:Mainnet] reportResult returned null for ${rumbleId}`);
-            }
-          } catch (err) {
-            console.error(`[OnChain:Mainnet] reportResult error (non-blocking):`, err);
-            await markOpFailed(rumbleId, "reportResult", formatError(err));
-          }
-        })();
+      } else {
+        devnetPayoutReady = true;
       }
     } catch (err) {
       console.error(`[ONCHAIN-FINALIZE] finalizeRumble error for rumble ${rumbleId}:`, err);
-      return;
+    }
+
+    // Post result to mainnet so bettors can claim real SOL payouts.
+    // Fire-and-forget — mainnet failure must NOT block devnet settlement.
+    const fighterCount = fighterOrder.length;
+    const placementsArray = new Array(fighterCount).fill(0);
+    for (const p of placements) {
+      const idx = fighterOrder.indexOf(p.id);
+      if (idx >= 0 && idx < fighterCount) placementsArray[idx] = p.placement;
+    }
+    const winnerIdx = fighterOrder.indexOf(winnerId);
+    if (winnerIdx >= 0) {
+      mainnetReportTriggered = true;
+      void (async () => {
+        try {
+          await persistMainnetOp({
+            rumbleId,
+            opType: "reportResult",
+            payload: { rumbleIdNum, placements: placementsArray, winnerIndex: winnerIdx },
+          });
+          const mainnetSig = await reportResultMainnet(rumbleIdNum, placementsArray, winnerIdx);
+          if (mainnetSig) {
+            console.log(`[OnChain:Mainnet] reportResult succeeded: ${mainnetSig}`);
+            await markOpComplete(rumbleId, "reportResult", mainnetSig);
+          } else {
+            await markOpFailed(rumbleId, "reportResult", "reportResultMainnet returned null");
+            console.warn(`[OnChain:Mainnet] reportResult returned null for ${rumbleId}`);
+          }
+        } catch (err) {
+          console.error(`[OnChain:Mainnet] reportResult error (non-blocking):`, err);
+          await markOpFailed(rumbleId, "reportResult", formatError(err));
+        }
+      })();
     }
 
     // 2. Distribute ICHOR rewards by placement
+    if (!devnetPayoutReady) {
+      console.warn(
+        `[OnChain] Skipping devnet ICHOR settlement for ${rumbleId} because devnet rumble is not payout-ready`,
+      );
+    } else {
     try {
       const ichorMint = getIchorMint();
       const [arenaConfigPda] = deriveArenaConfigPda();
@@ -5029,10 +5153,13 @@ export class RumbleOrchestrator {
     } catch (err) {
       console.error(`[OnChain] ICHOR distribution error:`, err);
     }
+    }
 
     // 4-5. completeRumble + sweepTreasury are finalized asynchronously after claim window.
     if (ichorSuccess) {
       this.enqueueRumbleFinalization(rumbleId, rumbleIdNum, ONCHAIN_FINALIZATION_DELAY_MS);
+      settlementSucceeded = true;
+    } else if (mainnetReportTriggered) {
       settlementSucceeded = true;
     }
     } finally {
@@ -5340,13 +5467,18 @@ export class RumbleOrchestrator {
     // Auto-requeue ALL fighters back into the queue so the next rumble
     // fills to FIGHTERS_PER_RUMBLE. Without this, fighters silently drop
     // out and rumbles start with fewer fighters than configured.
+    const persistRequeues: Promise<void>[] = [];
     for (const fighterId of slot.fighters) {
       try {
         this.queueManager.addToQueue(fighterId, true);
-        persist.saveQueueFighter(fighterId, "waiting", true);
+        persistRequeues.push(persist.saveQueueFighter(fighterId, "waiting", true));
       } catch {
         // Fighter might already be in queue or another slot; ignore
       }
+    }
+    if (persistRequeues.length > 0) {
+      // Await writes so queue state does not oscillate between in-memory and DB views.
+      await Promise.all(persistRequeues);
     }
 
     // Note: DB status stays "payout" until handleSlotRecycled sets "complete"
@@ -5632,10 +5764,9 @@ const g = globalThis as unknown as {
 };
 
 function shouldAutoTick(): boolean {
-  const envToggle = process.env.RUMBLE_AUTO_TICK;
-  if (envToggle === "true") return true;
-  if (envToggle === "false") return false;
-  return process.env.NODE_ENV !== "production";
+  // Opt-IN only. Must explicitly set RUMBLE_AUTO_TICK=true to enable.
+  // Previously defaulted to true in dev, which caused ghost worker rumbles.
+  return process.env.RUMBLE_AUTO_TICK === "true";
 }
 
 function autoTickIntervalMs(): number {

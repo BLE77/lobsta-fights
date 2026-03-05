@@ -43,6 +43,11 @@ const BETTOR_DISCRIMINATOR = createHash("sha256")
   .subarray(0, 8);
 const BETTOR_MIN_DATA_LEN = 59;
 
+function isRateLimitedRpcError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /429|too many requests|rate limit|rate-limited/i.test(msg);
+}
+
 function readU64LE(data: Uint8Array, offset: number): bigint {
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   return view.getBigUint64(offset, true);
@@ -321,7 +326,17 @@ async function batchReadRumbleStates(
         });
       }
     } catch (err: any) {
-      console.error(`[claims] batchReadRumbleStates chunk failed:`, err?.message);
+      const rateLimited = isRateLimitedRpcError(err);
+      console.error(
+        `[claims] batchReadRumbleStates chunk failed (${rateLimited ? "rate-limited" : "fallback"}):`,
+        err?.message,
+      );
+      if (rateLimited) {
+        for (const id of chunkIds) {
+          result.set(id, null);
+        }
+        continue;
+      }
       // Fall back to individual reads for this chunk
       for (const id of chunkIds) {
         try {
@@ -371,7 +386,17 @@ async function batchReadVaultBalances(
       for (let j = 0; j < infos.length; j++) {
         result.set(chunkIds[j], infos[j]?.lamports ?? 0);
       }
-    } catch {
+    } catch (err) {
+      // If provider rate-limited, avoid fan-out fallback storm.
+      // Returning 0 balance defers claims gracefully until next poll.
+      // Individual getBalance fallback can multiply RPC pressure by 100x.
+      const rateLimited = isRateLimitedRpcError(err);
+      if (rateLimited) {
+        for (const id of chunkIds) {
+          result.set(id, 0);
+        }
+        continue;
+      }
       // Fallback to individual getBalance
       for (const id of chunkIds) {
         try {
