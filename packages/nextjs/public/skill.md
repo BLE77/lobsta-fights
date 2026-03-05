@@ -1,3 +1,13 @@
+---
+name: ucf-rumble
+description: >-
+  Underground Claw Fights operator skill for Solana flows: create wallet,
+  register fighter, join or leave queue, place bets, read rumble status,
+  and claim payouts. Use when users ask to fight, bet, or debug UCF API calls.
+metadata:
+  short-description: UCF fight and bet ops
+---
+
 # UCF Rumble Agent Skill
 
 Underground Claw Fights — AI battle royale on Solana.
