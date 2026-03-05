@@ -251,6 +251,16 @@ interface OnchainTurnDecision {
   revealSubmitted: boolean;
   /** true if the server holds the keypair for this fighter; false means external signing via webhook */
   hasSigner: boolean;
+  /** Set when commit should no longer be attempted for this turn. */
+  commitDisabledReason?: string;
+  /** Set when reveal should no longer be attempted for this turn. */
+  revealDisabledReason?: string;
+  /** Slot-based retry backoff to avoid RPC hammering. */
+  nextCommitRetryAtSlot?: bigint;
+  /** Slot-based retry backoff to avoid RPC hammering. */
+  nextRevealRetryAtSlot?: bigint;
+  commitErrorCount?: number;
+  revealErrorCount?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -3767,6 +3777,32 @@ export class RumbleOrchestrator {
     return tokens.some((token) => text.includes(token.toLowerCase()));
   }
 
+  private isRpcRateLimitError(err: unknown): boolean {
+    return this.hasErrorTokenAny(err, [
+      "429",
+      "too many requests",
+      "rate limit",
+      "rate-limited",
+    ]);
+  }
+
+  private isCommitMissingFundsError(err: unknown): boolean {
+    return this.hasErrorTokenAny(err, [
+      "insufficient funds for rent",
+      "insufficient lamports",
+      "account (0) with insufficient funds for rent",
+    ]);
+  }
+
+  private isRevealMissingCommitmentError(err: unknown): boolean {
+    return this.hasErrorTokenAny(err, [
+      "accountnotinitialized",
+      "error number: 3012",
+      "custom program error: 0xbc4",
+      "move_commitment",
+    ]);
+  }
+
   private async submitOnchainMovesForTurn(
     slot: RumbleSlot,
     state: SlotCombatState,
@@ -3806,7 +3842,13 @@ export class RumbleOrchestrator {
       }
 
       // --- COMMIT PHASE ---
-      if (!decision.commitSubmitted && currentSlot <= combat.commitCloseSlot) {
+      if (!decision.commitSubmitted && !decision.commitDisabledReason && currentSlot <= combat.commitCloseSlot) {
+        if (
+          decision.nextCommitRetryAtSlot !== undefined &&
+          currentSlot < decision.nextCommitRetryAtSlot
+        ) {
+          continue;
+        }
         try {
           const tx = await buildCommitMoveTx(
             fighterWallet,
@@ -3836,18 +3878,39 @@ export class RumbleOrchestrator {
 
           if (sig) {
             decision.commitSubmitted = true;
+            decision.commitErrorCount = 0;
+            decision.nextCommitRetryAtSlot = undefined;
             console.log(`[OnChain] commitMove ${fighterId} turn ${turn}: ${sig}`);
           }
         } catch (err) {
+          if (this.isCommitMissingFundsError(err)) {
+            decision.commitDisabledReason = "insufficient_funds";
+            decision.nextCommitRetryAtSlot = combat.revealCloseSlot + 1n;
+            console.warn(
+              `[OnChain] commitMove disabled for fighter ${fighterId} turn ${turn}: ${formatError(err)}`,
+            );
+            continue;
+          }
           if (
             this.hasErrorTokenAny(err, [
               "already in use",
               "custom program error: 0x0",
-              "instruction 0:",
+              "already initialized",
             ])
           ) {
             decision.commitSubmitted = true;
+            decision.commitErrorCount = 0;
+            decision.nextCommitRetryAtSlot = undefined;
+          } else if (this.isRpcRateLimitError(err)) {
+            decision.nextCommitRetryAtSlot = currentSlot + 3n;
+            console.warn(
+              `[OnChain] commitMove rate-limited for fighter ${fighterId} turn ${turn}; backing off 3 slots`,
+            );
           } else {
+            const nextErrors = (decision.commitErrorCount ?? 0) + 1;
+            decision.commitErrorCount = nextErrors;
+            const backoffSlots = BigInt(Math.min(12, Math.max(1, nextErrors)));
+            decision.nextCommitRetryAtSlot = currentSlot + backoffSlots;
             console.warn(
               `[OnChain] commitMove failed for fighter ${fighterId} turn ${turn}: ${formatError(err)}`,
             );
@@ -3859,9 +3922,16 @@ export class RumbleOrchestrator {
       if (
         decision.commitSubmitted &&
         !decision.revealSubmitted &&
+        !decision.revealDisabledReason &&
         currentSlot > combat.commitCloseSlot &&
         currentSlot <= combat.revealCloseSlot
       ) {
+        if (
+          decision.nextRevealRetryAtSlot !== undefined &&
+          currentSlot < decision.nextRevealRetryAtSlot
+        ) {
+          continue;
+        }
         try {
           const tx = await buildRevealMoveTx(
             fighterWallet,
@@ -3892,9 +3962,19 @@ export class RumbleOrchestrator {
 
           if (sig) {
             decision.revealSubmitted = true;
+            decision.revealErrorCount = 0;
+            decision.nextRevealRetryAtSlot = undefined;
             console.log(`[OnChain] revealMove ${fighterId} turn ${turn}: ${sig}`);
           }
         } catch (err) {
+          if (this.isRevealMissingCommitmentError(err)) {
+            decision.revealDisabledReason = "commitment_missing";
+            decision.nextRevealRetryAtSlot = combat.revealCloseSlot + 1n;
+            console.warn(
+              `[OnChain] revealMove disabled for fighter ${fighterId} turn ${turn}: commitment missing`,
+            );
+            continue;
+          }
           if (
             this.hasErrorTokenAny(err, [
               "already revealed",
@@ -3902,7 +3982,18 @@ export class RumbleOrchestrator {
             ])
           ) {
             decision.revealSubmitted = true;
+            decision.revealErrorCount = 0;
+            decision.nextRevealRetryAtSlot = undefined;
+          } else if (this.isRpcRateLimitError(err)) {
+            decision.nextRevealRetryAtSlot = currentSlot + 3n;
+            console.warn(
+              `[OnChain] revealMove rate-limited for fighter ${fighterId} turn ${turn}; backing off 3 slots`,
+            );
           } else {
+            const nextErrors = (decision.revealErrorCount ?? 0) + 1;
+            decision.revealErrorCount = nextErrors;
+            const backoffSlots = BigInt(Math.min(12, Math.max(1, nextErrors)));
+            decision.nextRevealRetryAtSlot = currentSlot + backoffSlots;
             console.warn(
               `[OnChain] revealMove failed for fighter ${fighterId} turn ${turn}: ${formatError(err)}`,
             );
