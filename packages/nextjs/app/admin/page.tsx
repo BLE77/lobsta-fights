@@ -815,6 +815,33 @@ export default function AdminPage() {
   const fighters = dashboard?.fighters ?? [];
   const shower = dashboard?.ichorShower ?? null;
   const allRumbles = [...dedupedActiveRumbles, ...recentRumbles];
+  const activeRumbleCount = dedupedActiveRumbles.length;
+  const houseBotStateKnown = houseBotStatus !== null;
+  const houseBotsPaused = houseBotStatus?.paused === true;
+  const houseBotStatusLabel = !houseBotStateKnown
+    ? "LOADING"
+    : houseBotsPaused
+      ? activeRumbleCount > 0
+        ? "PAUSED, DRAINING"
+        : "PAUSED"
+      : "AUTO-FILL ACTIVE";
+  const houseBotStatusToneClass = !houseBotStateKnown
+    ? "text-stone-300"
+    : houseBotsPaused
+      ? "text-red-400"
+      : "text-emerald-400";
+  const activeRumbleSummary = activeRumbleCount === 1
+    ? "1 active rumble"
+    : `${activeRumbleCount} active rumbles`;
+  const houseBotActivityHint = !houseBotStateKnown
+    ? "Checking worker state..."
+    : houseBotsPaused
+      ? activeRumbleCount > 0
+        ? `${activeRumbleSummary} still finishing. Pause only blocks new house-bot queueing.`
+        : "Pause is active. No new house bots will be queued."
+      : activeRumbleCount > 0
+        ? `${activeRumbleSummary} in progress. Auto-fill can still queue bots when population drops.`
+        : "Auto-fill is active and ready to queue bots when population drops.";
 
   const tabs: Array<{ id: Tab; label: string }> = [
     { id: "overview", label: "Overview" },
@@ -887,50 +914,61 @@ export default function AdminPage() {
         {/* ============================================================= */}
         <div
           className={`rounded-lg border-2 p-5 transition-colors ${
-            houseBotStatus?.paused
-              ? "bg-red-950/30 border-red-700/60"
-              : "bg-emerald-950/30 border-emerald-700/60"
+            !houseBotStateKnown
+              ? "bg-stone-900/60 border-stone-700/60"
+              : houseBotsPaused
+                ? "bg-red-950/30 border-red-700/60"
+                : "bg-emerald-950/30 border-emerald-700/60"
           }`}
         >
           <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-4">
               <div
                 className={`w-4 h-4 rounded-full ${
-                  houseBotStatus?.paused
-                    ? "bg-red-500 shadow-[0_0_12px_rgba(239,68,68,0.5)]"
-                    : "bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.5)] animate-pulse"
+                  houseBotStateKnown
+                    ? houseBotsPaused
+                      ? "bg-red-500 shadow-[0_0_12px_rgba(239,68,68,0.5)]"
+                      : "bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.5)] animate-pulse"
+                    : "bg-stone-500 shadow-[0_0_12px_rgba(120,113,108,0.35)]"
                 }`}
               />
               <div>
                 <h2 className="font-mono text-lg font-bold tracking-wide">
-                  HOUSE BOTS:{" "}
-                  <span className={houseBotStatus?.paused ? "text-red-400" : "text-emerald-400"}>
-                    {houseBotStatus?.paused ? "OFF" : "RUNNING"}
+                  HOUSE BOT AUTO-FILL:{" "}
+                  <span className={houseBotStatusToneClass}>
+                    {houseBotStatusLabel}
                   </span>
                 </h2>
                 <p className="font-mono text-[11px] text-stone-500">
                   {houseBotStatus?.configuredHouseBotCount ?? 0} bots configured
                   {" · "}target: {houseBotStatus?.targetPopulation ?? "-"}
-                  {" · "}persisted to DB
+                  {" · "}pause state persisted to DB
+                </p>
+                <p className="font-mono text-[11px] text-stone-500">
+                  {houseBotActivityHint}
                 </p>
               </div>
             </div>
             <button
               onClick={() =>
-                runHouseBotAction(houseBotStatus?.paused ? "resume" : "pause")
+                runHouseBotAction(houseBotsPaused ? "resume" : "pause")
               }
-              disabled={!!actionBusy}
+              disabled={!!actionBusy || !houseBotStateKnown}
               className={`px-6 py-3 rounded-lg font-mono text-sm font-bold transition-all disabled:opacity-50 ${
-                houseBotStatus?.paused
-                  ? "bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/50"
-                  : "bg-red-600 hover:bg-red-500 text-white shadow-lg shadow-red-900/50"
+                !houseBotStateKnown
+                  ? "bg-stone-700 text-stone-300"
+                  : houseBotsPaused
+                    ? "bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/50"
+                    : "bg-red-600 hover:bg-red-500 text-white shadow-lg shadow-red-900/50"
               }`}
             >
               {actionBusy?.includes("House bots")
                 ? "..."
-                : houseBotStatus?.paused
-                  ? "START BOTS"
-                  : "STOP BOTS"}
+                : !houseBotStateKnown
+                  ? "LOADING..."
+                  : houseBotsPaused
+                    ? "RESUME AUTO-BOTS"
+                    : "PAUSE AUTO-BOTS"}
             </button>
           </div>
         </div>
