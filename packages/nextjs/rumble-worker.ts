@@ -38,13 +38,17 @@ import { randomBytes } from "node:crypto";
 // Config
 // ---------------------------------------------------------------------------
 
-const TICK_INTERVAL_MS = Math.max(
+const ACTIVE_TICK_INTERVAL_MS = Math.max(
   500,
   Number(process.env.RUMBLE_WORKER_INTERVAL_MS) || 2_000,
 );
+const IDLE_TICK_INTERVAL_MS = Math.max(
+  ACTIVE_TICK_INTERVAL_MS,
+  Number(process.env.RUMBLE_WORKER_IDLE_INTERVAL_MS) || 15_000,
+);
 
 const WORKER_ID = `${hostname().replace(/[^a-zA-Z0-9._-]/g, "_")}-${process.pid}-${randomBytes(3).toString("hex")}`;
-const WORKER_LEASE_TTL_MS = Math.max(15_000, TICK_INTERVAL_MS * 3);
+const WORKER_LEASE_TTL_MS = Math.max(15_000, ACTIVE_TICK_INTERVAL_MS * 3);
 
 const RECONCILE_INTERVAL_MS = Math.max(
   10_000,
@@ -101,6 +105,14 @@ function summarizeSlots(
     .join(" | ");
 }
 
+function getTickIntervalMs(
+  orchestrator: ReturnType<typeof getOrchestrator>,
+): number {
+  const status = orchestrator.getStatus();
+  const hasActiveSlot = status.some((slot) => slot.state !== "idle");
+  return hasActiveSlot ? ACTIVE_TICK_INTERVAL_MS : IDLE_TICK_INTERVAL_MS;
+}
+
 function startHealthServer(orchestrator: ReturnType<typeof getOrchestrator>): void {
   const server = createServer((req, res) => {
     if (req.method !== "GET" || req.url !== "/healthz") {
@@ -138,10 +150,13 @@ function startHealthServer(orchestrator: ReturnType<typeof getOrchestrator>): vo
 
 async function run(): Promise<void> {
   console.log(`[${ts()}] [worker] Rumble worker starting`);
-  console.log(`[${ts()}] [worker] tick interval=${TICK_INTERVAL_MS}ms  reconcile interval=${RECONCILE_INTERVAL_MS}ms`);
+  console.log(
+    `[${ts()}] [worker] tick interval active=${ACTIVE_TICK_INTERVAL_MS}ms idle=${IDLE_TICK_INTERVAL_MS}ms  reconcile interval=${RECONCILE_INTERVAL_MS}ms`,
+  );
   console.log(`[${ts()}] [worker] workerId=${WORKER_ID} leaseTtlMs=${WORKER_LEASE_TTL_MS}`);
 
   const orchestrator = getOrchestrator();
+  await orchestrator.waitForHouseBotControlReady();
   orchestratorInstance = orchestrator;
   startHealthServer(orchestrator);
 
@@ -169,7 +184,7 @@ async function run(): Promise<void> {
         );
       }
       const elapsed = Date.now() - tickStart;
-      const remaining = Math.max(0, TICK_INTERVAL_MS - elapsed);
+      const remaining = Math.max(0, getTickIntervalMs(orchestrator) - elapsed);
       if (remaining > 0 && running) {
         await sleep(remaining);
       }
@@ -205,8 +220,8 @@ async function run(): Promise<void> {
       consecutiveErrors = 0;
 
       // Log status periodically
+      const status = orchestrator.getStatus();
       if (tickCount === 1 || tickCount % 15 === 0) {
-        const status = orchestrator.getStatus();
         console.log(
           `[${ts()}] [worker] tick#${tickCount} ${summarizeSlots(status)}`,
         );
@@ -229,7 +244,7 @@ async function run(): Promise<void> {
 
     // Sleep until next tick
     const elapsed = Date.now() - tickStart;
-    const remaining = Math.max(0, TICK_INTERVAL_MS - elapsed);
+    const remaining = Math.max(0, getTickIntervalMs(orchestrator) - elapsed);
     if (remaining > 0 && running) {
       await sleep(remaining);
     }

@@ -649,7 +649,10 @@ export class RumbleOrchestrator {
   private readonly houseBotSet = new Set(HOUSE_BOT_IDS);
   private readonly fighterSignerById = new Map<string, Keypair>();
   private readonly fighterSignerByWallet = new Map<string, Keypair>();
-  private houseBotsPaused = false;
+  // Safe default: do not allow house bots to run until persisted control
+  // state has been loaded from Supabase.
+  private houseBotsPaused = true;
+  private readonly houseBotControlReady: Promise<void>;
   private houseBotTargetPopulationOverride: number | null = null;
   private houseBotsLastRestartAt: string | null = null;
   private lastPauseSyncAt = 0;
@@ -781,7 +784,7 @@ export class RumbleOrchestrator {
     this.loadConfiguredFighterSigners();
 
     // Load persisted pause state from Supabase (survives deploys)
-    this.loadPersistedPauseState();
+    this.houseBotControlReady = this.loadPersistedPauseState();
 
     // Hook into the queue manager's slot recycling so we can handle auto-requeue
     this.queueManager.onSlotRecycled = (slotIndex, previousFighters, previousRumbleId) => {
@@ -789,8 +792,12 @@ export class RumbleOrchestrator {
     };
   }
 
-  private loadPersistedPauseState(): void {
-    persist.getAdminConfig("house_bots_paused").then((value) => {
+  async waitForHouseBotControlReady(): Promise<void> {
+    await this.houseBotControlReady;
+  }
+
+  private async loadPersistedPauseState(): Promise<void> {
+    await persist.getAdminConfig("house_bots_paused").then((value) => {
       const paused = value === true;
       this.houseBotsPaused = paused;
       console.log(`[Orchestrator] Loaded persisted house_bots_paused = ${paused}`);
@@ -968,6 +975,8 @@ export class RumbleOrchestrator {
   }
 
   private async tickInternal(): Promise<void> {
+    await this.waitForHouseBotControlReady();
+
     // Track when this tick started for serverless budget management.
     // Combat loop uses this to stop before the function is killed.
     const now = Date.now();

@@ -24,6 +24,7 @@ export async function GET(request: Request) {
   // On Railway: read live orchestrator state
   if (process.env.RUMBLE_WORKER_MODE === "true") {
     const orchestrator = getOrchestrator();
+    await orchestrator.waitForHouseBotControlReady();
     const status = orchestrator.getHouseBotControlStatus();
     return NextResponse.json({ success: true, ...status, timestamp: new Date().toISOString() });
   }
@@ -82,6 +83,7 @@ export async function POST(request: Request) {
     // On Railway: execute directly for instant response
     if (process.env.RUMBLE_WORKER_MODE === "true") {
       const orchestrator = getOrchestrator();
+      await orchestrator.waitForHouseBotControlReady();
       if (action === "pause") {
         const result = await orchestrator.pauseHouseBots();
         return NextResponse.json({ success: true, action, ...result, status: orchestrator.getHouseBotControlStatus() });

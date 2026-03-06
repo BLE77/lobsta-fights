@@ -1062,7 +1062,7 @@ export default function AdminPage() {
                     : "bg-stone-700 hover:bg-stone-600"
                 }`}
               >
-                {autoTickEnabled ? "Stop Auto Tick" : "Start Auto Tick"}
+                {autoTickEnabled ? "Stop Browser Tick" : "Start Browser Tick"}
               </button>
             </div>
 
@@ -1093,7 +1093,7 @@ export default function AdminPage() {
               >
                 Use Env Target
               </button>
-              <span className="font-mono text-[11px] text-stone-500">Auto Tick ms</span>
+              <span className="font-mono text-[11px] text-stone-500">Browser Tick ms</span>
               <input
                 type="number"
                 min={AUTO_TICK_INTERVAL_MIN_MS}
@@ -1106,7 +1106,7 @@ export default function AdminPage() {
             </div>
 
             <div className="font-mono text-[11px] text-stone-500">
-              Auto Tick:{" "}
+              Browser Tick:{" "}
               <span className={autoTickEnabled ? "text-emerald-400" : "text-stone-400"}>
                 {autoTickEnabled ? "ON" : "OFF"}
               </span>
@@ -1120,6 +1120,9 @@ export default function AdminPage() {
                   <span className="text-red-400">{autoTickError}</span>
                 </>
               ) : null}
+            </div>
+            <div className="font-mono text-[11px] text-stone-500">
+              Browser Tick only drives <code>/api/admin/rumble/tick</code> from this tab. Railway worker ticks continue separately in production.
             </div>
 
             {/* On-Chain Turn Controls */}

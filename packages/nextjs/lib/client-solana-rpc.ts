@@ -1,11 +1,28 @@
 type ClientSolanaNetwork = "devnet" | "mainnet-beta";
 
 const API_KEY_QUERY_PARAM_PATTERN = /(?:^|[?&])(api(?:_|-)key|x-api-key)=/i;
+const DISALLOWED_CLIENT_RPC_HOST_SUFFIXES = [
+  "helius-rpc.com",
+  "helius.xyz",
+];
 
 function safeExplicitRpcEndpoint(raw: string | undefined): string | null {
   const value = raw?.trim();
   if (!value) return null;
   if (API_KEY_QUERY_PARAM_PATTERN.test(value)) return null;
+  try {
+    const { hostname } = new URL(value);
+    const normalized = hostname.toLowerCase();
+    if (
+      DISALLOWED_CLIENT_RPC_HOST_SUFFIXES.some(
+        (suffix) => normalized === suffix || normalized.endsWith(`.${suffix}`),
+      )
+    ) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
   return value;
 }
 
