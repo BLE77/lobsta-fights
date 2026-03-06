@@ -352,8 +352,9 @@ const HOUSE_BOT_IDS = (process.env.RUMBLE_HOUSE_BOT_IDS ?? "")
   .map((id) => id.trim())
   .filter((id) => id.length > 0);
 const HOUSE_BOTS_ENABLED = process.env.RUMBLE_HOUSE_BOTS_ENABLED === "true" && HOUSE_BOT_IDS.length > 0;
-// Default to auto-fill ON when house bots are enabled; can be explicitly disabled.
-const HOUSE_BOTS_AUTO_FILL = (process.env.RUMBLE_HOUSE_BOTS_AUTO_FILL ?? "true") !== "false";
+// Default to auto-fill OFF. Keeping the arena self-running is expensive on RPC
+// and should be an explicit opt-in once you actually want autonomous traffic.
+const HOUSE_BOTS_AUTO_FILL = (process.env.RUMBLE_HOUSE_BOTS_AUTO_FILL ?? "false") === "true";
 const HOUSE_BOT_TARGET_POPULATION = readInt(
   "RUMBLE_HOUSE_BOT_TARGET_POPULATION",
   12,
@@ -1253,7 +1254,12 @@ export class RumbleOrchestrator {
    */
   private async maintainHouseBotQueue(): Promise<void> {
     if (!HOUSE_BOTS_ENABLED) return;
-    if (this.houseBotsPaused) return;
+    if (this.houseBotsPaused) {
+      // Continuously drain any house bots that sneak back into the queue
+      // (e.g. via recycleSlot auto-requeue after a rumble finishes).
+      await this.removeQueuedHouseBots();
+      return;
+    }
     if (!HOUSE_BOTS_AUTO_FILL) {
       // Don't auto-fill, but don't remove manually-queued bots either
       return;
@@ -5704,6 +5710,16 @@ export class RumbleOrchestrator {
         slotIndex,
         previousFighters,
       });
+
+      // If house bots are paused, immediately remove any that recycleSlot
+      // just re-queued. This prevents the idle→betting transition from
+      // starting a new rumble with re-queued house bots.
+      if (this.houseBotsPaused) {
+        const removed = await this.removeQueuedHouseBots();
+        if (removed > 0) {
+          console.log(`[Orchestrator] Paused: removed ${removed} re-queued house bots after slot ${slotIndex} recycled`);
+        }
+      }
     })();
 
     this.trackInFlightCleanup(cleanup);
