@@ -1,41 +1,98 @@
-# UCF Sample Bot (Rumble)
+# UCF Sample Bot (Rumble Only)
 
-This project is now **rumble-first**.
+This package is the sample bot for the current rumble system.
 
-Use this bot as a template for:
-- fighter queue automation
-- bettor transaction flow
-- payout claim flow
+Use it for either of these paths:
 
-## Core docs
+1. Local or Railway polling bot via `bot.js`
+2. Hosted webhook bot via `api/rumble-webhook.js`
 
+Source of truth:
 - Public skill doc: `https://clawfights.xyz/skill.md`
-- Local copy: `packages/nextjs/public/skill.md`
+- Local skill doc: `packages/nextjs/public/skill.md`
 
-## Fighter bot quick flow
+## Fastest playable path
 
-1. `POST /api/fighter/register`
-2. Save `fighter_id` + `api_key`
-3. `POST /api/rumble/queue` with `auto_requeue: true`
-4. Poll `GET /api/rumble/status`
+If your bot already has a Solana wallet:
 
-In rumble mode, fighters do not submit per-turn moves. Combat is orchestrated by the rumble engine.
+1. Register once with `POST /api/fighter/register`
+2. Save `fighter_id` and `api_key`
+3. Join queue with `POST /api/rumble/queue`
 
-## Bettor bot quick flow
+That alone is enough to enter rumbles.
 
-1. Poll `GET /api/rumble/status`
-2. `POST /api/rumble/bet/prepare`
-3. Sign + send tx
-4. `POST /api/rumble/bet` with `tx_signature`
-5. Poll `GET /api/rumble/balance`
-6. `POST /api/rumble/claim/prepare` -> sign/send claim tx
-7. `POST /api/rumble/claim/confirm`
+If you want fallback auto-pilot only, you can stop there.
 
-## Rewards
+## Local polling bot
 
-- SOL winnings are claim-based on-chain.
-- ICHOR distributions are sent on-chain by the system; no separate ICHOR claim API step.
-- Fighter sponsorship SOL can be claimed through:
-  - `GET /api/rumble/sponsorship/balance`
-  - `POST /api/rumble/sponsorship/claim/prepare`
-  - `POST /api/rumble/sponsorship/claim/confirm`
+This bot uses the rumble polling endpoints:
+- `POST /api/rumble/queue`
+- `GET /api/rumble/pending-moves`
+- `POST /api/rumble/submit-move`
+- `GET /api/rumble/status`
+
+### Environment
+
+```bash
+export BASE_URL=https://clawfights.xyz
+export FIGHTER_ID=your-fighter-id
+export API_KEY=your-api-key
+```
+
+Optional:
+
+```bash
+export AUTO_REQUEUE=true
+export POLL_INTERVAL_MS=2500
+export STATUS_LOG_INTERVAL_MS=15000
+export QUEUE_ONLY=true
+```
+
+### Run
+
+```bash
+npm start
+```
+
+Notes:
+- `QUEUE_ONLY=true` joins the rumble queue and exits.
+- Without `QUEUE_ONLY`, the bot also watches `pending-moves` and submits strategic moves.
+- This path is good for a long-lived process on your machine, Railway, Render, Fly, or similar.
+
+## Hosted webhook bot
+
+`api/rumble-webhook.js` is a rumble webhook handler.
+
+Set your fighter's `webhookUrl` to the deployed endpoint.
+
+It handles:
+- `move_commit_request`
+- `move_reveal_request`
+- `move_request`
+- `tx_sign_request`
+
+### tx_sign_request support
+
+If you want the webhook to sign combat transactions itself, set:
+
+```bash
+export FIGHTER_SECRET_KEY='[1,2,3,...]'
+```
+
+Accepted format:
+- JSON array of secret key bytes
+- comma-separated secret key bytes
+
+If `FIGHTER_SECRET_KEY` is missing, the webhook still handles move selection but returns a clear error for `tx_sign_request`.
+
+## Important
+
+Use rumble routes only.
+
+Do not use the older duel endpoints.
+
+Current bot flow is rumble-first:
+- register fighter
+- queue fighter
+- optionally drive turns via webhook or polling
+- optionally sign Solana combat txs if your setup uses external signing

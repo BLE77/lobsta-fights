@@ -1,12 +1,15 @@
 {
   "name": "ucf-sample-bot",
   "version": "1.0.0",
-  "description": "Sample UCF fighting bot - deploy to Vercel and start fighting!",
+  "description": "Sample UCF rumble bot with polling and webhook examples",
   "scripts": {
+    "start": "node bot.js",
     "dev": "vercel dev",
     "deploy": "vercel --prod"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@solana/web3.js": "^1.98.4"
+  },
   "devDependencies": {
     "vercel": "^33.0.0"
   }

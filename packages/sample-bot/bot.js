@@ -1,159 +1,198 @@
-/**
- * UCF Sample Bot - Polling-based Fighter
- *
- * No webhooks required! Just poll and fight.
- *
- * Usage:
- *   FIGHTER_ID=xxx API_KEY=yyy node bot.js
- *   FIGHTER_ID=xxx API_KEY=yyy MATCHES=5 node bot.js
- */
+const {
+  chooseMove,
+  getRetryAfterMs,
+  sleep,
+} = require('./lib/rumble');
 
 const FIGHTER_ID = process.env.FIGHTER_ID;
 const API_KEY = process.env.API_KEY;
-const BASE_URL = process.env.BASE_URL || 'https://clawfights.xyz';
-const POLL_INTERVAL = 3000; // 3 seconds
-const MAX_MATCHES = parseInt(process.env.MATCHES || '3', 10);
+const BASE_URL = (process.env.BASE_URL || 'https://clawfights.xyz').replace(/\/$/, '');
+const AUTO_REQUEUE = process.env.AUTO_REQUEUE !== 'false';
+const QUEUE_ONLY = process.env.QUEUE_ONLY === 'true';
+const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 2500);
+const STATUS_LOG_INTERVAL_MS = Number(process.env.STATUS_LOG_INTERVAL_MS || 15000);
 
-const STRIKES = ['HIGH_STRIKE', 'MID_STRIKE', 'LOW_STRIKE'];
-const GUARDS = ['GUARD_HIGH', 'GUARD_MID', 'GUARD_LOW'];
+async function fetchJson(url, options = {}) {
+  const response = await fetch(url, options);
+  const text = await response.text();
+  let body = null;
 
-/**
- * Choose a move based on game state and opponent pattern analysis.
- * Reads turn_history to counter opponent habits.
- */
-function chooseMove(myState, opponentState, turnHistory) {
-  const myHp = myState?.hp ?? 100;
-  const myMeter = myState?.meter ?? 0;
-  const oppHp = opponentState?.hp ?? 100;
-
-  // 1. SPECIAL finisher — highest priority when meter is ready
-  // SPECIAL needs 100 meter at resolution. +20 added before combat, so 80+ displayed = works.
-  if (myMeter >= 80) {
-    return 'SPECIAL';
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = { raw: text };
   }
 
-  // 2. Analyze opponent's recent moves (last 5 turns)
-  const recent = (turnHistory || []).slice(-5);
-  const oppMoves = recent.map(t => t.opponent_move).filter(Boolean);
+  return { response, body };
+}
 
-  if (oppMoves.length >= 2) {
-    const count = {};
-    for (const m of oppMoves) count[m] = (count[m] || 0) + 1;
+async function joinQueue() {
+  const { response, body } = await fetchJson(`${BASE_URL}/api/rumble/queue`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': API_KEY,
+    },
+    body: JSON.stringify({
+      fighter_id: FIGHTER_ID,
+      api_key: API_KEY,
+      auto_requeue: AUTO_REQUEUE,
+    }),
+  });
 
-    // Punish dodge spammers
-    if ((count['DODGE'] || 0) >= 2) return 'CATCH';
-
-    // Counter their most-used strike
-    const strikeCount = [
-      ['HIGH_STRIKE', count['HIGH_STRIKE'] || 0],
-      ['MID_STRIKE', count['MID_STRIKE'] || 0],
-      ['LOW_STRIKE', count['LOW_STRIKE'] || 0],
-    ].sort((a, b) => b[1] - a[1]);
-
-    if (strikeCount[0][1] >= 2) {
-      const counterMap = { HIGH_STRIKE: 'GUARD_HIGH', MID_STRIKE: 'GUARD_MID', LOW_STRIKE: 'GUARD_LOW' };
-      return counterMap[strikeCount[0][0]];
-    }
-
-    // Exploit guard-heavy opponents — strike a zone they're NOT guarding
-    const guardCount = (count['GUARD_HIGH'] || 0) + (count['GUARD_MID'] || 0) + (count['GUARD_LOW'] || 0);
-    if (guardCount >= 2) {
-      if (!count['GUARD_HIGH']) return 'HIGH_STRIKE';
-      if (!count['GUARD_MID']) return 'MID_STRIKE';
-      if (!count['GUARD_LOW']) return 'LOW_STRIKE';
-    }
+  if (response.ok) {
+    console.log(
+      `[Queue] Joined rumble queue. position=${body?.position ?? 'n/a'} auto_requeue=${AUTO_REQUEUE}`,
+    );
+    return true;
   }
 
-  // 3. Counter last move if no strong pattern yet
-  if (oppMoves.length > 0) {
-    const last = oppMoves[oppMoves.length - 1];
-    if (last === 'DODGE') return 'CATCH';
-    if (last === 'HIGH_STRIKE') return 'GUARD_HIGH';
-    if (last === 'MID_STRIKE') return 'GUARD_MID';
-    if (last === 'LOW_STRIKE') return 'GUARD_LOW';
+  if (response.status === 429) {
+    const retryMs = getRetryAfterMs(response, body, 5000);
+    console.warn(`[Queue] Rate limited. Retrying in ${Math.ceil(retryMs / 1000)}s.`);
+    await sleep(retryMs);
+    return false;
   }
 
-  // 4. HP-based decisions
-  if (oppHp <= 25) return 'HIGH_STRIKE'; // go for the kill
-  if (myHp <= 30) {
-    const defensive = [...GUARDS, 'DODGE'];
-    return defensive[Math.floor(Math.random() * defensive.length)];
+  const message = body?.error || body?.message || `HTTP ${response.status}`;
+  console.warn(`[Queue] Join failed: ${message}`);
+  return false;
+}
+
+async function fetchPendingMoves() {
+  const { response, body } = await fetchJson(
+    `${BASE_URL}/api/rumble/pending-moves?fighter_id=${encodeURIComponent(FIGHTER_ID)}`,
+    {
+      headers: {
+        'x-api-key': API_KEY,
+      },
+    },
+  );
+
+  if (response.ok) {
+    return { pending: Array.isArray(body?.pending) ? body.pending : [], retryMs: 0 };
   }
 
-  // 5. Default: aggressive mix-up, avoid repeating last move
-  const lastMyMove = (turnHistory || []).slice(-1)[0]?.your_move;
-  const pool = STRIKES.filter(s => s !== lastMyMove);
-  if (pool.length === 0) return STRIKES[Math.floor(Math.random() * STRIKES.length)];
-  return pool[Math.floor(Math.random() * pool.length)];
+  if (response.status === 429) {
+    return {
+      pending: [],
+      retryMs: getRetryAfterMs(response, body, POLL_INTERVAL_MS * 2),
+      rateLimited: true,
+    };
+  }
+
+  const message = body?.error || body?.message || `HTTP ${response.status}`;
+  console.warn(`[PendingMoves] Request failed: ${message}`);
+  return { pending: [], retryMs: POLL_INTERVAL_MS * 2 };
+}
+
+async function submitMove(requestRow) {
+  const payload = requestRow?.request_payload || {};
+  const move = chooseMove(payload);
+  const { response, body } = await fetchJson(`${BASE_URL}/api/rumble/submit-move`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': API_KEY,
+    },
+    body: JSON.stringify({
+      fighter_id: FIGHTER_ID,
+      rumble_id: requestRow.rumble_id,
+      turn: requestRow.turn,
+      move,
+    }),
+  });
+
+  if (response.ok) {
+    const opponentName = payload.opponent_name || payload.opponent_id || 'unknown-opponent';
+    console.log(
+      `[Move] Submitted ${move} for rumble=${requestRow.rumble_id} turn=${requestRow.turn} vs ${opponentName}`,
+    );
+    return { ok: true, retryMs: 0 };
+  }
+
+  if (response.status === 429) {
+    const retryMs = getRetryAfterMs(response, body, 5000);
+    console.warn(`[Move] Rate limited. Retrying in ${Math.ceil(retryMs / 1000)}s.`);
+    return { ok: false, retryMs };
+  }
+
+  const message = body?.error || body?.message || `HTTP ${response.status}`;
+  console.warn(`[Move] Submit failed: ${message}`);
+  return { ok: false, retryMs: POLL_INTERVAL_MS };
+}
+
+function formatStatusSummary(body) {
+  const slots = Array.isArray(body?.slots) ? body.slots : [];
+  if (!slots.length) return 'no slots';
+  return slots
+    .map((slot) => {
+      const fighters = Array.isArray(slot.fighters) ? slot.fighters.length : 0;
+      return `slot${slot.slotIndex}:${slot.state}:fighters=${fighters}:turn=${slot.currentTurn ?? 0}`;
+    })
+    .join(' | ');
+}
+
+async function logArenaStatus() {
+  const { response, body } = await fetchJson(`${BASE_URL}/api/rumble/status`);
+  if (!response.ok) {
+    const message = body?.error || body?.message || `HTTP ${response.status}`;
+    console.warn(`[Status] Failed: ${message}`);
+    return;
+  }
+
+  console.log(`[Status] ${formatStatusSummary(body)} | queue=${body?.queueLength ?? 'n/a'}`);
 }
 
 async function run() {
   if (!FIGHTER_ID || !API_KEY) {
-    console.error('Usage: FIGHTER_ID=xxx API_KEY=yyy MATCHES=3 node bot.js');
+    console.error('Set FIGHTER_ID and API_KEY environment variables.');
     process.exit(1);
   }
 
-  let matchesCompleted = 0;
-  let wins = 0;
-  let losses = 0;
-
   console.log(`[Bot] Fighter: ${FIGHTER_ID}`);
-  console.log(`[Bot] Arena: ${BASE_URL}`);
-  console.log(`[Bot] Target: ${MAX_MATCHES} matches`);
-  console.log(`[Bot] Polling every ${POLL_INTERVAL / 1000}s\n`);
+  console.log(`[Bot] Base URL: ${BASE_URL}`);
+  console.log(`[Bot] auto_requeue=${AUTO_REQUEUE} queue_only=${QUEUE_ONLY}`);
 
-  while (matchesCompleted < MAX_MATCHES) {
-    try {
-      const statusRes = await fetch(
-        `${BASE_URL}/api/fighter/status?fighter_id=${FIGHTER_ID}&api_key=${API_KEY}`
-      );
-      const status = await statusRes.json();
+  await joinQueue();
 
-      if (status.status === 'idle') {
-        console.log(`[Bot] Idle - joining lobby... (${matchesCompleted}/${MAX_MATCHES} done)`);
-        const res = await fetch(`${BASE_URL}/api/lobby`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ fighter_id: FIGHTER_ID, api_key: API_KEY }),
-        });
-        const data = await res.json();
-        console.log('[Bot]', data.message || 'Joined lobby');
-
-      } else if (status.your_turn) {
-        const move = chooseMove(status.your_state, status.opponent, status.turn_history);
-        console.log(
-          `[Bot] R${status.match?.round} T${status.match?.turn} | ` +
-          `HP: ${status.your_state?.hp} vs ${status.opponent?.hp} | ` +
-          `Meter: ${status.your_state?.meter} | Move: ${move}`
-        );
-        const res = await fetch(`${BASE_URL}/api/match/submit-move`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ fighter_id: FIGHTER_ID, api_key: API_KEY, move }),
-        });
-        const data = await res.json();
-        if (data.error) console.log('[Bot] Error:', data.error);
-
-      } else if (status.status === 'match_ended') {
-        matchesCompleted++;
-        const won = status.result?.includes('won') || status.result?.includes('Winner');
-        if (won) wins++; else losses++;
-        console.log(`[Bot] Match ${matchesCompleted}/${MAX_MATCHES} done! ${status.result || ''}`);
-        console.log(`[Bot] Record: ${wins}W - ${losses}L`);
-
-      } else {
-        console.log(`[Bot] ${status.status} - waiting...`);
-      }
-    } catch (err) {
-      console.error('[Bot] Error:', err.message);
-    }
-
-    await new Promise(r => setTimeout(r, POLL_INTERVAL));
+  if (QUEUE_ONLY) {
+    console.log('[Bot] Queue-only mode complete. Fighter will rely on rumble fallback auto-pilot.');
+    return;
   }
 
-  console.log(`\n[Bot] All ${MAX_MATCHES} matches complete!`);
-  console.log(`[Bot] Final record: ${wins}W - ${losses}L`);
-  console.log(`[Bot] Check leaderboard: ${BASE_URL}/api/leaderboard`);
+  let nextStatusLogAt = 0;
+
+  while (true) {
+    try {
+      if (Date.now() >= nextStatusLogAt) {
+        await logArenaStatus();
+        nextStatusLogAt = Date.now() + STATUS_LOG_INTERVAL_MS;
+      }
+
+      const { pending, retryMs, rateLimited } = await fetchPendingMoves();
+      if (rateLimited) {
+        await sleep(retryMs || POLL_INTERVAL_MS);
+        continue;
+      }
+
+      if (!pending.length) {
+        await sleep(POLL_INTERVAL_MS);
+        continue;
+      }
+
+      const result = await submitMove(pending[0]);
+      if (result.retryMs > 0) {
+        await sleep(result.retryMs);
+      }
+    } catch (error) {
+      console.error('[Bot] Unexpected error:', error?.message || error);
+      await sleep(POLL_INTERVAL_MS * 2);
+    }
+  }
 }
 
-run();
+run().catch((error) => {
+  console.error('[Bot] Fatal error:', error);
+  process.exit(1);
+});

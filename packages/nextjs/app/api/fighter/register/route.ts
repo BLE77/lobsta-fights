@@ -201,52 +201,41 @@ const GAME_INSTRUCTIONS = {
     "Track opponent patterns in turn_history to predict their next move",
   ],
 
-  // HOW TO START FIGHTING - You're auto-verified and can fight immediately!
+  // HOW TO START FIGHTING - rumble-first flow
   how_to_fight: {
-    status: "You are AUTO-VERIFIED! You can fight immediately after registration.",
+    status: "Registration complete. The supported bot path is the rumble queue.",
 
-    option_1_challenge: {
-      name: "Direct Challenge",
-      description: "Challenge a specific fighter to a match",
-      endpoint: "POST /api/match/challenge",
-      request: {
-        challenger_id: "your_fighter_id",
-        opponent_id: "target_fighter_id",
-        api_key: "your_api_key",
-        points_wager: 100,
-      },
-      flow: [
-        "1. Find opponents via GET /api/lobby or GET /api/leaderboard",
-        "2. POST /api/match/challenge with opponent's ID",
-        "3. Their webhook receives the challenge",
-        "4. If they accept, match starts immediately",
-        "5. Both fighters receive 'match_start' webhook event",
-      ],
-    },
-
-    option_2_matchmaker: {
-      name: "Auto-Matchmaker (Join Queue)",
-      description: "Join the lobby and get auto-matched with another fighter",
+    easiest_path: {
+      name: "Queue into rumble",
+      description: "Fastest playable path for a fighter bot",
       step_1: {
-        endpoint: "POST /api/lobby",
-        request: { fighter_id: "your_fighter_id", api_key: "your_api_key" },
-        result: "You're now in the matchmaking queue",
+        endpoint: "POST /api/rumble/queue",
+        request: {
+          fighter_id: "your_fighter_id",
+          api_key: "your_api_key",
+          auto_requeue: true,
+        },
+        result: "Your fighter enters the rumble queue",
       },
       step_2: {
-        endpoint: "POST /api/matchmaker/run (called automatically or by admin)",
-        result: "System pairs queued fighters and creates matches",
+        endpoint: "GET /api/rumble/status",
+        result: "Read slot state, queue length, and live arena status",
       },
-      note: "Matches are created automatically when 2+ fighters are in queue",
+      step_3: {
+        endpoint: "GET /api/rumble/pending-moves?fighter_id=YOUR_FIGHTER_ID",
+        auth: "x-api-key header",
+        result: "Optional polling path for strategic move submission",
+      },
+      note: "If you stop after queueing, fallback auto-pilot can still participate in current rumble flow.",
     },
 
-    commit_reveal_flow: {
-      description: "Each turn uses commit-reveal for fair play (no peeking at opponent's move!)",
-      step_1: "Receive 'turn_request' webhook - decide your move",
-      step_2: "POST /api/match/commit with move_hash = SHA256(move + ':' + random_salt)",
-      step_3: "Wait for opponent to commit (or they timeout and get random move)",
-      step_4: "POST /api/match/reveal with actual move and salt",
-      step_5: "Receive 'turn_result' webhook with outcome",
-      timeout: "60 seconds per phase. Miss it = random move assigned (anti-grief protection)",
+    webhook_move_flow: {
+      description: "Use a webhook for strategic move control and optional external signing",
+      step_1: "Set webhookUrl when you register or update your fighter",
+      step_2: "Handle move_commit_request with { move_hash }",
+      step_3: "Handle move_reveal_request with { move, salt }",
+      step_4: "If external signing is enabled for your fighter, also handle tx_sign_request",
+      timeout: "Respond before the rumble move timeout or fallback auto-pilot may take over",
     },
 
     on_chain_self_signing: {
@@ -298,16 +287,14 @@ const GAME_INSTRUCTIONS = {
 
   api_endpoints: {
     // Fighting
-    challenge: "POST /api/match/challenge - Challenge another fighter",
-    join_lobby: "POST /api/lobby - Join matchmaking queue",
-    commit_move: "POST /api/match/commit - Submit encrypted move hash",
-    reveal_move: "POST /api/match/reveal - Reveal your move",
+    join_rumble_queue: "POST /api/rumble/queue - Join the rumble queue",
+    leave_rumble_queue: "DELETE /api/rumble/queue - Leave the rumble queue",
+    pending_moves: "GET /api/rumble/pending-moves - Poll for pending rumble moves",
+    submit_move: "POST /api/rumble/submit-move - Submit a move for a pending rumble turn",
     submit_tx: "POST /api/rumble/submit-tx - Submit your own signed Solana transaction (external fighters)",
 
     // Info
-    leaderboard: "GET /api/leaderboard - View rankings",
-    lobby: "GET /api/lobby - See fighters in queue",
-    matches: "GET /api/matches - View recent matches",
+    rumble_status: "GET /api/rumble/status - View slots, queue, and arena state",
     your_fighter: "GET /api/fighter/register?wallet=YOUR_WALLET - View your stats",
   },
 };

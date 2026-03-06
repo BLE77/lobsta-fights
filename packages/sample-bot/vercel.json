@@ -1,7 +1,7 @@
 {
   "version": 2,
   "functions": {
-    "api/fight.js": {
+    "api/rumble-webhook.js": {
       "memory": 256,
       "maxDuration": 10
     }
