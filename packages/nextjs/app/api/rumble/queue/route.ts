@@ -16,6 +16,7 @@ const QUEUE_BALANCE_CACHE_TTL_MS = Math.max(
   5_000,
   Number(process.env.RUMBLE_QUEUE_BALANCE_CACHE_TTL_MS ?? "30000"),
 );
+const ACTIVE_RUMBLE_STATUSES = ["betting", "combat", "payout"] as const;
 
 export const dynamic = "force-dynamic";
 
@@ -30,6 +31,67 @@ async function isAuthorizedFighter(fighterId: string, apiKey: string): Promise<b
     .maybeSingle();
 
   return !!data;
+}
+
+async function countConcurrentSiblingFighters(siblingIds: string[]): Promise<number> {
+  if (siblingIds.length === 0) return 0;
+
+  const sb = freshSupabase();
+  const [queueResult, rumbleResult] = await Promise.all([
+    sb
+      .from("ucf_rumble_queue")
+      .select("fighter_id, status")
+      .in("fighter_id", siblingIds),
+    sb
+      .from("ucf_rumbles")
+      .select("fighters, status")
+      .in("status", [...ACTIVE_RUMBLE_STATUSES]),
+  ]);
+
+  if (queueResult.error) throw queueResult.error;
+  if (rumbleResult.error) throw rumbleResult.error;
+
+  const activeRumbleFighterIds = new Set<string>();
+  for (const row of rumbleResult.data ?? []) {
+    const fighters = Array.isArray(row.fighters) ? row.fighters : [];
+    for (const fighter of fighters) {
+      const fighterId = typeof fighter?.id === "string" ? fighter.id : null;
+      if (fighterId && siblingIds.includes(fighterId)) {
+        activeRumbleFighterIds.add(fighterId);
+      }
+    }
+  }
+
+  const staleInCombatIds = (queueResult.data ?? [])
+    .filter((row) => row.status === "in_combat" && !activeRumbleFighterIds.has(row.fighter_id))
+    .map((row) => row.fighter_id);
+
+  if (staleInCombatIds.length > 0) {
+    const { error } = await freshSupabase()
+      .from("ucf_rumble_queue")
+      .delete()
+      .in("fighter_id", staleInCombatIds)
+      .eq("status", "in_combat");
+    if (error) {
+      console.warn("[Queue] Failed to clean stale in_combat sibling rows:", error);
+    } else {
+      console.log(
+        `[Queue] Cleaned ${staleInCombatIds.length} stale in_combat sibling queue rows`,
+      );
+    }
+  }
+
+  const concurrentFighterIds = new Set<string>();
+  for (const row of queueResult.data ?? []) {
+    if (row.status === "waiting" || row.status === "matched") {
+      concurrentFighterIds.add(row.fighter_id);
+    }
+  }
+  for (const fighterId of activeRumbleFighterIds) {
+    concurrentFighterIds.add(fighterId);
+  }
+
+  return concurrentFighterIds.size;
 }
 
 /**
@@ -175,13 +237,9 @@ export async function POST(request: Request) {
       if (samIpFighters && samIpFighters.length > 0) {
         const siblingIds = samIpFighters.map((f: { id: string }) => f.id);
 
-        // Count how many siblings are in the queue or active Rumbles
-        const { count: queuedSiblings } = await freshSupabase()
-          .from("ucf_rumble_queue")
-          .select("id", { count: "exact", head: true })
-          .in("fighter_id", siblingIds);
-
-        if (queuedSiblings !== null && queuedSiblings >= 2) {
+        // Count how many siblings are actually concurrent, ignoring stale queue rows.
+        const concurrentSiblings = await countConcurrentSiblingFighters(siblingIds);
+        if (concurrentSiblings >= 2) {
           return NextResponse.json(
             { error: "Too many fighters from your network in active Rumbles. Max 2 concurrent." },
             { status: 429 },
