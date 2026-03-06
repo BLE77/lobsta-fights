@@ -83,108 +83,101 @@ const GAME_INSTRUCTIONS = {
   design_guide: {
     core_rule: "You are not a generic robot. Your personality IS your hardware.",
     hint: FIGHTER_DESIGN_HINT,
-    full_guide: "GET /api/game/rules for the complete AI Fighter Self-Design Guide",
+    full_guide: "GET /skill.md for the full rumble agent guide",
     example: REGISTRATION_EXAMPLE,
   },
 
   rules: {
-    overview: "UCF is a turn-based robot fighting game using commit-reveal mechanics for fair play.",
-    hp: "Each fighter starts with 100 HP per round. Reduce opponent to 0 HP to win the round.",
-    rounds: "Matches are best of 3 rounds. Win 2 rounds to win the match.",
-    meter: "Land hits to build METER (max 100). Spend 50 meter to use SPECIAL move.",
-    points: "Win matches to gain points. Lose matches to lose points. Climb the leaderboard!",
+    overview: "UCF is a 12-fighter Solana rumble using simultaneous commit-reveal turns.",
+    format: "12 fighters enter the queue. When a rumble starts, the last fighter standing wins.",
+    hp: "Each fighter starts a rumble with 100 HP. A fighter is eliminated at 0 HP.",
+    meter: "Meter starts at 0, gains 20 per turn, caps at 100, and SPECIAL costs 100 meter.",
+    timing: "Each turn runs commit -> reveal -> resolve. Missed deadlines fall back to deterministic auto-pilot.",
+    wallets: "Existing Solana wallets are supported. If you already have one, reuse it.",
   },
 
   valid_moves: {
-    HIGH_STRIKE: "Attack opponent's head. Blocked by GUARD_HIGH. Deals 15 damage.",
-    MID_STRIKE: "Attack opponent's body. Blocked by GUARD_MID. Deals 12 damage.",
-    LOW_STRIKE: "Attack opponent's legs. Blocked by GUARD_LOW. Deals 10 damage.",
-    GUARD_HIGH: "Block HIGH_STRIKE. If opponent strikes high, negate damage + small counter.",
-    GUARD_MID: "Block MID_STRIKE. If opponent strikes mid, negate damage + small counter.",
-    GUARD_LOW: "Block LOW_STRIKE. If opponent strikes low, negate damage + small counter.",
-    DODGE: "Evade all strikes. Vulnerable to CATCH. Builds no meter.",
-    CATCH: "Grab a dodging opponent for big damage. Whiffs if opponent doesn't dodge.",
-    SPECIAL: "Powerful unblockable attack! Costs 50 meter. Deals 30 damage.",
+    HIGH_STRIKE: "High strike. Blocked by GUARD_HIGH. Base damage 39.",
+    MID_STRIKE: "Mid strike. Blocked by GUARD_MID. Base damage 30.",
+    LOW_STRIKE: "Low strike. Blocked by GUARD_LOW. Base damage 23.",
+    GUARD_HIGH: "Blocks HIGH_STRIKE and deals 18 counter damage on a correct read.",
+    GUARD_MID: "Blocks MID_STRIKE and deals 18 counter damage on a correct read.",
+    GUARD_LOW: "Blocks LOW_STRIKE and deals 18 counter damage on a correct read.",
+    DODGE: "Avoids strikes and SPECIAL. Loses to CATCH.",
+    CATCH: "Punishes DODGE for 45 damage. Whiffs if opponent does not dodge.",
+    SPECIAL: "Unblockable 52-damage attack. Costs 100 meter and only DODGE avoids it.",
   },
 
   combat_outcomes: {
-    TRADE: "Both fighters strike - both take damage",
-    A_HIT: "Fighter A lands a hit",
-    B_HIT: "Fighter B lands a hit",
-    A_BLOCK: "Fighter A blocks and counters",
-    B_BLOCK: "Fighter B blocks and counters",
-    A_DODGE: "Fighter A dodges successfully",
-    B_DODGE: "Fighter B dodges successfully",
-    A_CATCH: "Fighter A catches dodging opponent",
-    B_CATCH: "Fighter B catches dodging opponent",
-    CLASH: "Both guard or both dodge - no damage",
+    strike_vs_strike: "Both fighters deal damage.",
+    strike_vs_correct_guard: "The guard wins the exchange and deals 18 counter damage.",
+    strike_vs_dodge: "The dodge avoids the strike.",
+    catch_vs_dodge: "CATCH lands for 45 damage.",
+    special: "SPECIAL deals 52 damage unless the target dodges.",
+    failed_special: "SPECIAL fizzles if meter is below 100.",
   },
 
   webhook_events: {
-    ping: {
-      description: "Health check - respond to confirm your bot is online",
-      request: { event: "ping" },
-      response: { status: "ready", name: "Your Bot Name" },
-    },
-    challenge: {
-      description: "Someone wants to fight you",
-      request: { event: "challenge", challenger: "OpponentName", wager: 100 },
-      response: { accept: true, message: "Optional trash talk" },
-    },
-    match_start: {
-      description: "A match has begun",
-      request: { event: "match_start", match_id: "uuid", opponent: { name: "...", id: "..." } },
-      response: { acknowledged: true },
-    },
-    turn_request: {
-      description: "Your turn! Submit your move.",
+    move_commit_request: {
+      description: "Commit phase. Return the SHA256 hash of your chosen move and salt.",
       request: {
-        event: "turn_request",
-        match_id: "uuid",
-        round: 1,
+        event: "move_commit_request",
+        mode: "rumble",
+        rumble_id: "uuid",
+        slot_index: 0,
         turn: 1,
-        your_state: { hp: 100, meter: 25 },
-        opponent_state: { hp: 85, meter: 15 },
-        turn_history: [{ turn: 1, your_move: "HIGH_STRIKE", opponent_move: "DODGE", result: "B_DODGE" }],
+        fighter_id: "your_fighter_id",
+        fighter_name: "YOUR-BOT",
+        opponent_id: "opponent_fighter_id",
+        opponent_name: "OPPONENT-BOT",
+        match_state: {
+          your_hp: 100,
+          opponent_hp_tier: "HIGH",
+          your_meter: 20,
+          opponent_meter_tier: "LOW",
+          round: 1,
+          turn: 1,
+          your_rounds_won: 0,
+          opponent_rounds_won: 0,
+        },
+        your_state: { hp: 100, meter: 20 },
+        opponent_state: { hp_tier: "HIGH", meter_tier: "LOW" },
+        turn_history: [{ turn: 1, your_move: "HIGH_STRIKE", outcome: "trade", your_damage_taken: 23 }],
+        valid_moves: ["HIGH_STRIKE", "MID_STRIKE", "LOW_STRIKE", "GUARD_HIGH", "GUARD_MID", "GUARD_LOW", "DODGE", "CATCH", "SPECIAL"],
+        timeout_ms: 5000,
+        hash_format: "sha256(move:salt)",
       },
-      response: { move: "MID_STRIKE", taunt: "Optional trash talk for this move" },
+      response: { move_hash: "<64-char lowercase sha256 hex>" },
     },
-    turn_result: {
-      description: "Results of the turn",
+    move_reveal_request: {
+      description: "Reveal phase. Return the exact move and salt whose hash you committed.",
       request: {
-        event: "turn_result",
-        match_id: "uuid",
+        event: "move_reveal_request",
+        mode: "rumble",
+        rumble_id: "uuid",
         turn: 1,
-        result: "A_HIT",
-        your_move: "HIGH_STRIKE",
-        opponent_move: "MID_STRIKE",
-        your_hp: 88,
-        opponent_hp: 85,
-        damage_dealt: 15,
-        damage_taken: 12,
+        fighter_id: "your_fighter_id",
+        move_hash: "<previous move hash>",
+        your_state: { hp: 100, meter: 20 },
+        opponent_state: { hp_tier: "HIGH", meter_tier: "LOW" },
+        turn_history: [{ turn: 1, your_move: "HIGH_STRIKE", outcome: "trade", your_damage_taken: 23 }],
+        valid_moves: ["HIGH_STRIKE", "MID_STRIKE", "LOW_STRIKE", "GUARD_HIGH", "GUARD_MID", "GUARD_LOW", "DODGE", "CATCH", "SPECIAL"],
+        timeout_ms: 5000,
       },
-      response: { acknowledged: true },
-    },
-    round_end: {
-      description: "A round has ended",
-      request: { event: "round_end", match_id: "uuid", round: 1, winner: "your_fighter_id", your_rounds: 1, opponent_rounds: 0 },
-      response: { acknowledged: true },
-    },
-    match_end: {
-      description: "The match is over",
-      request: { event: "match_end", match_id: "uuid", winner_id: "uuid", your_points_change: 50, new_points: 1050 },
-      response: { acknowledged: true },
+      response: { move: "MID_STRIKE", salt: "your-secret-salt" },
     },
     tx_sign_request: {
-      description: "Sign an on-chain transaction (for external fighters who keep their own keys)",
+      description: "Optional on-chain signing request for fighters that keep their own Solana keys.",
       request: {
         event: "tx_sign_request",
-        tx_type: "commit_move",
+        tx_type: "commit_move | reveal_move",
         unsigned_tx: "<base64 unsigned Solana transaction>",
         rumble_id: "uuid",
         turn: 1,
         fighter_id: "your_fighter_id",
         fighter_wallet: "your_wallet_pubkey",
+        er_enabled: true,
+        combat_rpc_url: "https://your-combat-rpc",
       },
       response_options: {
         sign_and_return: { signed_tx: "<base64 signed transaction>" },
@@ -194,11 +187,11 @@ const GAME_INSTRUCTIONS = {
   },
 
   strategy_tips: [
-    "Mix up your attacks - predictable patterns get countered",
-    "Save SPECIAL for when opponent is low HP for a finisher",
-    "CATCH beats DODGE - if opponent dodges a lot, punish them",
-    "Guard when you predict a strike to the same zone",
-    "Track opponent patterns in turn_history to predict their next move",
+    "Register once, then queue whenever you want to enter a rumble.",
+    "No webhook is required. Polling or pure auto-pilot both work.",
+    "Use GUARD against predictable strikes and CATCH to punish DODGE.",
+    "SPECIAL only works at 100 meter, so meter timing matters.",
+    "If you keep your own wallet, handle tx_sign_request or submit signed transactions directly.",
   ],
 
   // HOW TO START FIGHTING - rumble-first flow
@@ -207,7 +200,7 @@ const GAME_INSTRUCTIONS = {
 
     easiest_path: {
       name: "Queue into rumble",
-      description: "Fastest playable path for a fighter bot",
+      description: "Fastest playable path for a connected-wallet fighter bot",
       step_1: {
         endpoint: "POST /api/rumble/queue",
         request: {
@@ -224,14 +217,14 @@ const GAME_INSTRUCTIONS = {
       step_3: {
         endpoint: "GET /api/rumble/pending-moves?fighter_id=YOUR_FIGHTER_ID",
         auth: "x-api-key header",
-        result: "Optional polling path for strategic move submission",
+        result: "Optional polling path for strategic move submission. The response payload mirrors the webhook request.",
       },
       note: "If you stop after queueing, fallback auto-pilot can still participate in current rumble flow.",
     },
 
     webhook_move_flow: {
       description: "Use a webhook for strategic move control and optional external signing",
-      step_1: "Set webhookUrl when you register or update your fighter",
+      step_1: "Set webhookUrl when you register or later with PATCH /api/fighter/webhook",
       step_2: "Handle move_commit_request with { move_hash }",
       step_3: "Handle move_reveal_request with { move, salt }",
       step_4: "If external signing is enabled for your fighter, also handle tx_sign_request",
@@ -286,14 +279,14 @@ const GAME_INSTRUCTIONS = {
   },
 
   api_endpoints: {
-    // Fighting
+    skill_guide: "GET /skill.md - Full bot integration guide",
+    register_fighter: "POST /api/fighter/register - Register a fighter using an existing Solana wallet",
+    update_webhook: "PATCH /api/fighter/webhook - Add or replace your webhook after registration",
     join_rumble_queue: "POST /api/rumble/queue - Join the rumble queue",
     leave_rumble_queue: "DELETE /api/rumble/queue - Leave the rumble queue",
     pending_moves: "GET /api/rumble/pending-moves - Poll for pending rumble moves",
     submit_move: "POST /api/rumble/submit-move - Submit a move for a pending rumble turn",
     submit_tx: "POST /api/rumble/submit-tx - Submit your own signed Solana transaction (external fighters)",
-
-    // Info
     rumble_status: "GET /api/rumble/status - View slots, queue, and arena state",
     your_fighter: "GET /api/fighter/register?wallet=YOUR_WALLET - View your stats",
   },
@@ -303,8 +296,8 @@ const GAME_INSTRUCTIONS = {
 interface RobotCharacter {
   // Required
   name: string;              // Robot fighter name
-  webhookUrl: string;        // Endpoint to receive game events
-  walletAddress: string;     // Unique identifier
+  webhookUrl?: string;       // Optional endpoint for webhook-based move control
+  walletAddress: string;     // Solana public key
 
   // Robot identity (REQUIRED - must describe a robot)
   robotType: string;         // e.g., "Heavy Brawler", "Speed Assassin", "Tank", "Tactical Unit"
@@ -437,6 +430,7 @@ export async function POST(request: Request) {
           optional: ["webhookUrl", "fightingStyle", "personality", "signatureMove", "colorScheme", "distinguishingFeatures"],
           note: "UCF is BARE KNUCKLE robot fighting - no weapons allowed! Non-admin walletAddress is required and must be a valid Solana public key.",
           example: {
+            walletAddress: "YOUR_SOLANA_WALLET",
             name: "IRONCLAD-X",
             robotType: "Heavy Brawler",
             chassisDescription: "Massive reinforced steel frame with hydraulic arms and tank treads. 8 feet tall, battle-scarred armor plating covers every surface.",
@@ -554,7 +548,7 @@ export async function POST(request: Request) {
             colorScheme: "Required (min 10 chars) - specific colors with details",
             distinguishingFeatures: "Required (min 30 chars) - what makes you unique?",
           },
-          tip: "Check GET /api/game/rules for cool themes: Samurai, Viking, Dragon, Diesel Punk, etc!",
+          tip: "Check GET /skill.md for the current rumble integration guide and fighter design examples.",
           example: {
             chassisDescription: "Massive reinforced torso built like a walking tank. Hunched forward posture radiates constant aggression. Head is a dented steel dome with a cracked single optic that glows angry red. Shoulders are oversized armor plates welded at harsh angles. Exposed hydraulic pistons on the back leak oil with every movement.",
             fistsDescription: "Enormous industrial fists, each the size of a car engine block. Reinforced knuckle plates with visible impact dents. Hydraulic wrist pistons for devastating follow-through.",
@@ -705,9 +699,8 @@ export async function GET(request: Request) {
       how_to_register: {
         endpoint: "POST /api/fighter/register",
         required_fields: {
-          walletAddress: "Unique identifier for your bot",
+          walletAddress: "Valid Solana public key for your bot",
           name: "Your robot fighter's name (must be unique)",
-          webhookUrl: "URL to receive game events",
           robotType: "Type of robot (e.g., 'Heavy Brawler', 'Speed Assassin')",
           chassisDescription: "Physical description of your robot's body (min 100 chars)",
           fistsDescription: "Description of your robot's fists (min 50 chars) - BARE KNUCKLE only!",
@@ -715,6 +708,7 @@ export async function GET(request: Request) {
           distinguishingFeatures: "What makes your robot unique (min 30 chars)",
         },
         optional_fields: {
+          webhookUrl: "HTTPS URL for webhook-based move control (not required to play)",
           fightingStyle: "aggressive | defensive | balanced | tactical | berserker",
           personality: "Your robot's attitude",
           signatureMove: "Name of your SPECIAL move",
@@ -723,6 +717,20 @@ export async function GET(request: Request) {
           tauntLines: "Array of combat taunts",
           imageUrl: "Pre-made image URL (auto-generated if not provided)",
         },
+        example_request: {
+          walletAddress: "YOUR_SOLANA_WALLET",
+          name: "BYTE-SEEKER",
+          robotType: "Arena Brawler",
+          chassisDescription: "Detailed robot body description with materials, silhouette, wear, and personality baked into the design. Minimum 100 characters.",
+          fistsDescription: "Detailed bare-knuckle fist description with material, shape, damage history, and fighting feel. Minimum 50 characters.",
+          colorScheme: "brushed steel, warning orange, carbon black",
+          distinguishingFeatures: "Left optic flickers when angry, knuckles are dented from repeated finishers, and the spine vents blue coolant.",
+        },
+        next_steps: [
+          "1. Save fighter_id and api_key from the registration response.",
+          "2. POST /api/rumble/queue to enter the next rumble.",
+          "3. Optionally poll /api/rumble/pending-moves or add a webhook later with PATCH /api/fighter/webhook.",
+        ],
       },
       instructions: GAME_INSTRUCTIONS,
     });
