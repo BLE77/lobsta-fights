@@ -1,0 +1,37 @@
+{
+  "name": "mobile-native",
+  "version": "1.0.0",
+  "main": "./index.ts",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "android:debug-apk": "cd android && ./gradlew assembleDebug",
+    "android:release-apk": "cd android && ./gradlew assembleRelease",
+    "ios": "expo run:ios",
+    "prebuild": "expo prebuild --platform android",
+    "web": "expo start --web"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.98.4",
+    "@wallet-ui/react-native-web3js": "^3.3.0",
+    "expo": "~55.0.4",
+    "expo-av": "^16.0.8",
+    "expo-constants": "~55.0.7",
+    "expo-dev-client": "^55.0.10",
+    "expo-font": "~55.0.4",
+    "expo-haptics": "^55.0.8",
+    "expo-image": "^55.0.5",
+    "expo-status-bar": "~55.0.4",
+    "expo-system-ui": "~55.0.9",
+    "react": "19.2.0",
+    "react-native": "0.83.2",
+    "react-native-quick-crypto": "^1.0.16",
+    "react-native-safe-area-context": "~5.6.2",
+    "web-haptics": "^0.0.6"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.2",
+    "typescript": "~5.9.2"
+  },
+  "private": true
+}

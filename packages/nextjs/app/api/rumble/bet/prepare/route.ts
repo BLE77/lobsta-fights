@@ -13,7 +13,12 @@ import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 import { hasRecovered, recoverOrchestratorState } from "~~/lib/rumble-state-recovery";
 import { getBettingConnection } from "~~/lib/solana-connection";
 import { ensureRumblePublicHeartbeat } from "~~/lib/rumble-public-heartbeat";
-import { loadActiveRumbles } from "~~/lib/rumble-persistence";
+import {
+  loadActiveRumbles,
+  extractRumbleFighterIds,
+  hasMinimumRumbleFighters,
+  MIN_ACTIVE_RUMBLE_FIGHTERS,
+} from "~~/lib/rumble-persistence";
 import { requireJsonContentType, sanitizeErrorResponse } from "~~/lib/api-middleware";
 import { flushRpcMetrics, runWithRpcMetrics } from "~~/lib/solana-rpc-metrics";
 
@@ -49,6 +54,7 @@ async function loadLatestBettingRumbleForSlot(slotIndex: number): Promise<{
   for (const row of active) {
     if (Number(row.slot_index) !== slotIndex) continue;
     if (String(row.status ?? "").toLowerCase() !== "betting") continue;
+    if (!hasMinimumRumbleFighters(row.fighters)) continue;
     const createdAtMs = new Date(row.created_at).getTime();
     if (!Number.isFinite(createdAtMs)) continue;
     if (Date.now() - createdAtMs > BET_PREPARE_ACTIVE_BETTING_MAX_AGE_MS) continue;
@@ -67,13 +73,8 @@ async function loadLatestBettingRumbleForSlot(slotIndex: number): Promise<{
   }
   if (!best) return null;
 
-  const fighterRows = Array.isArray(best.fighters)
-    ? (best.fighters as Array<{ id?: string }>)
-    : [];
-  const fighterIds = fighterRows
-    .map((row) => String(row?.id ?? "").trim())
-    .filter(Boolean);
-  if (fighterIds.length === 0) return null;
+  const fighterIds = extractRumbleFighterIds(best.fighters);
+  if (!hasMinimumRumbleFighters(best.fighters)) return null;
 
   return {
     rumbleId: best.id,
@@ -138,11 +139,13 @@ export async function POST(request: Request) {
       if (localSlot?.fighters?.length) return localSlot.fighters;
       return [];
     })();
-    if (slotFighters.length === 0) {
+    if (slotFighters.length < MIN_ACTIVE_RUMBLE_FIGHTERS) {
       return NextResponse.json(
         {
           error: "Rumble fighter list is still syncing. Refresh and retry.",
           rumble_id: slotRumbleId,
+          fighters_found: slotFighters.length,
+          fighters_required: MIN_ACTIVE_RUMBLE_FIGHTERS,
         },
         { status: 409 },
       );

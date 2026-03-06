@@ -3,7 +3,7 @@ use anchor_lang::system_program;
 #[cfg(feature = "combat")]
 use sha2::{Digest, Sha256};
 #[cfg(feature = "combat")]
-use ephemeral_rollups_sdk::anchor::{commit, delegate};
+use ephemeral_rollups_sdk::anchor::{commit, delegate, ephemeral};
 #[cfg(feature = "combat")]
 use ephemeral_rollups_sdk::cpi::DelegateConfig;
 #[cfg(feature = "combat")]
@@ -520,6 +520,7 @@ pub struct DuelResult {
     pub damage_to_b: u16,
 }
 
+#[cfg_attr(feature = "combat", ephemeral)]
 #[program]
 pub mod rumble_engine {
     use super::*;
@@ -2074,6 +2075,7 @@ pub mod rumble_engine {
             &[COMBAT_STATE_SEED, &rumble_id.to_le_bytes()],
             DelegateConfig {
                 commit_frequency_ms: 3_000,
+                validator: ctx.remaining_accounts.first().map(|acc| acc.key()),
                 ..Default::default()
             },
         )?;
@@ -2090,6 +2092,9 @@ pub mod rumble_engine {
             ctx.accounts.authority.key() == ctx.accounts.config.admin,
             RumbleError::Unauthorized
         );
+        // Flush in-memory account mutations before commit CPI so L1 gets
+        // the latest combat state during periodic ER syncs.
+        ctx.accounts.combat_state.exit(&crate::ID)?;
         commit_accounts(
             &ctx.accounts.authority,
             vec![&ctx.accounts.combat_state.to_account_info()],

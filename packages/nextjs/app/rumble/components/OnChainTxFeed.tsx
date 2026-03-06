@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Connection, PublicKey } from "@solana/web3.js";
+import { usePageVisibility } from "~~/hooks/usePageVisibility";
+import { getSafeClientCombatRpcEndpoint } from "~~/lib/client-solana-rpc";
 
 const PROGRAM_ID =
   process.env.NEXT_PUBLIC_RUMBLE_ENGINE_PROGRAM?.trim() ||
@@ -9,10 +11,10 @@ const PROGRAM_ID =
   process.env.NEXT_PUBLIC_RUMBLE_ENGINE_MAINNET?.trim() ||
   process.env.NEXT_PUBLIC_RUMBLE_ENGINE_ID_MAINNET?.trim() ||
   "638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU";
-const DEVNET_RPC = process.env.NEXT_PUBLIC_SOLANA_RPC_URL?.trim() || "https://api.devnet.solana.com";
+const COMBAT_RPC = getSafeClientCombatRpcEndpoint();
 const EXPLORER_TX = "https://explorer.solana.com/tx";
 const TX_LIMIT = 20;
-const REFRESH_MS = 45_000;
+const REFRESH_MS = Math.max(120_000, Number(process.env.NEXT_PUBLIC_RUMBLE_TX_FEED_REFRESH_MS ?? "180000"));
 
 interface TxEntry {
   signature: string;
@@ -41,11 +43,12 @@ export default function OnChainTxFeed() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const connRef = useRef<Connection | null>(null);
+  const isPageVisible = usePageVisibility();
 
   const fetchTxs = useCallback(async () => {
     try {
       if (!connRef.current) {
-        connRef.current = new Connection(DEVNET_RPC, "confirmed");
+        connRef.current = new Connection(COMBAT_RPC, "confirmed");
       }
       const programKey = new PublicKey(PROGRAM_ID);
       const sigs = await connRef.current.getSignaturesForAddress(programKey, {
@@ -68,10 +71,11 @@ export default function OnChainTxFeed() {
   }, []);
 
   useEffect(() => {
+    if (!isPageVisible) return;
     fetchTxs();
     const interval = setInterval(fetchTxs, REFRESH_MS);
     return () => clearInterval(interval);
-  }, [fetchTxs]);
+  }, [fetchTxs, isPageVisible]);
 
   return (
     <div className="bg-stone-900/80 border border-stone-700 rounded-sm backdrop-blur-sm overflow-hidden">

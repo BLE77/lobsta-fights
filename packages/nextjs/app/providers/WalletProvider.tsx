@@ -22,6 +22,10 @@ import {
   createDefaultAuthorizationResultCache,
   createDefaultWalletNotFoundHandler,
 } from "@solana-mobile/wallet-adapter-mobile";
+import {
+  getSafeClientBettingRpcEndpoint,
+  getSafeClientCombatRpcEndpoint,
+} from "~~/lib/client-solana-rpc";
 import { useSolanaMobileContext } from "~~/lib/solana-mobile";
 
 import "@solana/wallet-adapter-react-ui/styles.css";
@@ -41,16 +45,8 @@ function getRpcEndpoint(): string {
   // Betting is on mainnet — users sign bet/claim txs with real SOL.
   // Use dedicated betting RPC if configured, otherwise fall back to network-based endpoint.
   const bettingRpc = process.env.NEXT_PUBLIC_BETTING_RPC_URL?.trim();
-  if (bettingRpc) return bettingRpc;
-
-  const explicit = process.env.NEXT_PUBLIC_SOLANA_RPC_URL?.trim();
-  if (explicit) return explicit;
-
-  const network = getWalletNetwork();
-  // Frontend defaults to public RPC to avoid exposing/rate-limiting a shared key.
-  return network === "mainnet-beta"
-    ? "https://api.mainnet-beta.solana.com"
-    : "https://api.devnet.solana.com";
+  if (bettingRpc) return getSafeClientBettingRpcEndpoint();
+  return getSafeClientCombatRpcEndpoint();
 }
 
 export default function WalletProvider({

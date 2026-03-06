@@ -17,7 +17,7 @@ import { hashApiKey } from "~~/lib/api-key";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 import { hasRecovered, recoverOrchestratorState } from "~~/lib/rumble-state-recovery";
 import { ensureRumblePublicHeartbeat } from "~~/lib/rumble-public-heartbeat";
-import { loadActiveRumbles } from "~~/lib/rumble-persistence";
+import { loadActiveRumbles, hasMinimumRumbleFighters } from "~~/lib/rumble-persistence";
 
 export const dynamic = "force-dynamic";
 const ALLOW_OFFCHAIN_BETS = String(process.env.RUMBLE_ALLOW_OFFCHAIN_BETS ?? "false").toLowerCase() === "true";
@@ -45,6 +45,7 @@ async function resolveOnchainRumbleIdForSlot(
     (row) => Number(row.slot_index) === slotIndex && String(row.id) === slotRumbleId,
   );
   if (!match) return null;
+  if (!hasMinimumRumbleFighters(match.fighters)) return null;
   return normalizeRumbleNumber((match as any).rumble_number);
 }
 

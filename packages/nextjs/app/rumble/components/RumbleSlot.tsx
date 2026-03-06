@@ -208,6 +208,7 @@ export default function RumbleSlot({
   // Hold the final combat turn visible for a few seconds before showing payout
   const FINAL_TURN_HOLD_MS = 5000;
   const [holdingFinalTurn, setHoldingFinalTurn] = useState(false);
+  const holdingFinalTurnRef = useRef(false);
   const [heldTurns, setHeldTurns] = useState<SlotTurn[]>([]);
   const [heldFighters, setHeldFighters] = useState<SlotFighter[]>([]);
   const [heldCurrentTurn, setHeldCurrentTurn] = useState(0);
@@ -221,9 +222,11 @@ export default function RumbleSlot({
       setHeldFighters(slot.fighters);
       setHeldCurrentTurn(slot.currentTurn);
       setHoldingFinalTurn(true);
+      holdingFinalTurnRef.current = true;
       if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
       holdTimerRef.current = setTimeout(() => {
         setHoldingFinalTurn(false);
+        holdingFinalTurnRef.current = false;
         setHeldTurns([]);
         setHeldFighters([]);
         setHeldCurrentTurn(0);
@@ -234,6 +237,7 @@ export default function RumbleSlot({
       if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
       holdTimerRef.current = null;
       setHoldingFinalTurn(false);
+      holdingFinalTurnRef.current = false;
       setHeldTurns([]);
       setHeldFighters([]);
       setHeldCurrentTurn(0);
@@ -280,18 +284,18 @@ export default function RumbleSlot({
         if (turnAnimationsTimeoutRef.current) {
           clearTimeout(turnAnimationsTimeoutRef.current);
         }
-        turnAnimationsTimeoutRef.current = setTimeout(() => setTurnAnimations(null), 1000);
+        turnAnimationsTimeoutRef.current = setTimeout(() => {
+          // Don't clear animations if we're in the final turn hold — let them persist
+          if (!holdingFinalTurnRef.current) {
+            setTurnAnimations(null);
+          }
+        }, 1000);
       }
     }
     return () => {
-      if (containerShakeTimeoutRef.current) {
-        clearTimeout(containerShakeTimeoutRef.current);
-      }
-      setShowContainerShake(false);
-      if (turnAnimationsTimeoutRef.current) {
-        clearTimeout(turnAnimationsTimeoutRef.current);
-      }
-      setTurnAnimations(null);
+      if (containerShakeTimeoutRef.current) clearTimeout(containerShakeTimeoutRef.current);
+      if (turnAnimationsTimeoutRef.current) clearTimeout(turnAnimationsTimeoutRef.current);
+      // DON'T set animation states to null here — let the new effect invocation handle it
     };
   }, [slot.currentTurn, slot.turns]);
 
@@ -502,7 +506,34 @@ export default function RumbleSlot({
 
         {/* BETTING state */}
         {effectiveState === "betting" && (
-          <div className="animate-fade-in-up">
+          <div className="animate-fade-in-up space-y-3">
+            {/* Last winner banner */}
+            {lastCompletedResult && lastCompletedResult.placements[0] && (
+              <div className="flex items-center gap-3 bg-amber-900/15 border border-amber-700/30 rounded-sm px-3 py-2">
+                {lastCompletedResult.placements[0].imageUrl ? (
+                  <img
+                    src={lastCompletedResult.placements[0].imageUrl}
+                    alt={lastCompletedResult.placements[0].fighterName}
+                    className="w-10 h-10 rounded-sm border border-amber-500/60 object-cover flex-shrink-0"
+                  />
+                ) : (
+                  <div className="w-10 h-10 rounded-sm bg-stone-800 flex items-center justify-center border border-amber-500/60 flex-shrink-0">
+                    <span className="text-amber-500 font-mono text-[8px]">BOT</span>
+                  </div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <p className="font-mono text-[10px] text-amber-600 uppercase">Last Winner</p>
+                  <p className="font-mono text-sm text-amber-400 font-bold truncate">
+                    {lastCompletedResult.placements[0].fighterName}
+                  </p>
+                </div>
+                <div className="text-right flex-shrink-0">
+                  <p className="font-mono text-[10px] text-stone-500">
+                    HP:{lastCompletedResult.placements[0].hp} DMG:{lastCompletedResult.placements[0].damageDealt}
+                  </p>
+                </div>
+              </div>
+            )}
             <BettingPanel
               slotIndex={slot.slotIndex}
               fighters={slot.odds}
@@ -762,9 +793,39 @@ export default function RumbleSlot({
                       if (!fA || !fB) return null;
                       const isLastOdd = finalTurn.pairings.length % 2 !== 0 && idx === finalTurn.pairings.length - 1;
                       const gridSpanClass = isLastOdd ? "xl:col-span-2 xl:w-[calc(50%-0.5rem)] xl:mx-auto" : "";
+
+                      // Show clash animations if turnAnimations data is available for the final turn
+                      let aClass = "";
+                      let bClass = "";
+                      let vsColorClass = "";
+                      if (turnAnimations && turnAnimations.turnNumber === finalTurn.turnNumber) {
+                        const aStrikes = ["HIGH_STRIKE", "MID_STRIKE", "LOW_STRIKE", "SPECIAL"].includes(p.moveA);
+                        const bStrikes = ["HIGH_STRIKE", "MID_STRIKE", "LOW_STRIKE", "SPECIAL"].includes(p.moveB);
+                        if (aStrikes && !bStrikes) { aClass = "animate-clash-lunge"; bClass = "animate-clash-recoil"; }
+                        else if (bStrikes && !aStrikes) { aClass = "animate-clash-recoil-reverse"; bClass = "animate-clash-lunge-reverse"; }
+                        else if (aStrikes && bStrikes) { aClass = "animate-clash-lunge"; bClass = "animate-clash-lunge-reverse"; }
+                        if (p.damageToA >= 10 || p.damageToB >= 10) vsColorClass = "animate-clash-flash-red";
+                        else if (p.moveA === "DODGE" || p.moveB === "DODGE") vsColorClass = "animate-clash-flash-green";
+                        else if (p.moveA?.startsWith("GUARD") || p.moveB?.startsWith("GUARD")) vsColorClass = "animate-clash-flash-blue";
+                      }
+
                       return (
                         <div key={`final-pairing-${idx}`} className={`flex items-center justify-between bg-stone-900/40 p-2 sm:p-4 rounded-sm border border-red-800/60 relative z-10 w-full h-full ${gridSpanClass}`}>
-                          <div className="flex flex-col items-center w-[40%]">
+                          <div className={`flex flex-col items-center w-[40%] ${aClass} relative`}>
+                            {turnAnimations && turnAnimations.turnNumber === finalTurn.turnNumber && (
+                              <>
+                                {["HIGH_STRIKE", "MID_STRIKE", "LOW_STRIKE", "SPECIAL"].includes(p.moveA) && (
+                                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-30 pointer-events-none drop-shadow-2xl animate-fade-in-up">
+                                    <img src="/strike-arm-red.png" alt="Strike" className="w-32 h-auto object-contain transform -scale-x-100 opacity-90" />
+                                  </div>
+                                )}
+                                {p.moveA === "GRAB" && (
+                                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-30 pointer-events-none drop-shadow-2xl animate-pulse">
+                                    <img src="/grab-hands.png" alt="Grab" className="w-32 h-auto object-contain opacity-90" />
+                                  </div>
+                                )}
+                              </>
+                            )}
                             <FighterHP
                               name={fA.name}
                               hp={fA.hp}
@@ -778,9 +839,23 @@ export default function RumbleSlot({
                             />
                           </div>
                           <div className="flex flex-col items-center justify-center w-[20%] relative z-20">
-                            <span className="font-fight text-2xl md:text-3xl text-red-500 opacity-80">VS</span>
+                            <span className={`font-fight text-2xl md:text-3xl text-red-500 opacity-80 ${vsColorClass}`}>VS</span>
                           </div>
-                          <div className="flex flex-col items-center w-[40%]">
+                          <div className={`flex flex-col items-center w-[40%] ${bClass} relative`}>
+                            {turnAnimations && turnAnimations.turnNumber === finalTurn.turnNumber && (
+                              <>
+                                {["HIGH_STRIKE", "MID_STRIKE", "LOW_STRIKE", "SPECIAL"].includes(p.moveB) && (
+                                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-30 pointer-events-none drop-shadow-2xl animate-fade-in-up">
+                                    <img src="/strike-arm-purple.png" alt="Strike" className="w-32 h-auto object-contain opacity-90" />
+                                  </div>
+                                )}
+                                {p.moveB === "GRAB" && (
+                                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-30 pointer-events-none drop-shadow-2xl animate-pulse">
+                                    <img src="/grab-hands.png" alt="Grab" className="w-32 h-auto object-contain transform scale-x-[-1] opacity-90" />
+                                  </div>
+                                )}
+                              </>
+                            )}
                             <FighterHP
                               name={fB.name}
                               hp={fB.hp}

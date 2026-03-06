@@ -5,6 +5,7 @@ import {
   authenticateFighterByApiKey,
   isValidUUID,
 } from "~~/lib/request-auth";
+import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,10 @@ export const dynamic = "force-dynamic";
  * Auth: x-api-key header.
  */
 export async function GET(request: Request) {
+  const rlKey = getRateLimitKey(request);
+  const rl = checkRateLimit("PUBLIC_READ", rlKey);
+  if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+
   const apiKey = getApiKeyFromHeaders(request.headers);
   if (!apiKey) {
     return NextResponse.json(

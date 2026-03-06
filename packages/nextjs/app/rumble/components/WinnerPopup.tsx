@@ -17,11 +17,13 @@ export default function WinnerPopup({
 }: WinnerPopupProps) {
   const [phase, setPhase] = useState<"enter" | "visible" | "exit">("enter");
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const onDismissRef = useRef(onDismiss);
+  onDismissRef.current = onDismiss;
 
   useEffect(() => {
     // Play the winner sound
     try {
-      const audio = new Audio("/sounds/winner-reveal.mp3");
+      const audio = new Audio("/sounds/claim.mp3");
       audio.volume = 0.6;
       audio.play().catch(() => {});
       audioRef.current = audio;
@@ -33,7 +35,7 @@ export default function WinnerPopup({
     // Auto-dismiss after 6 seconds
     const dismissTimer = setTimeout(() => {
       setPhase("exit");
-      setTimeout(onDismiss, 500);
+      setTimeout(() => onDismissRef.current?.(), 500);
     }, 6000);
 
     return () => {
@@ -44,11 +46,11 @@ export default function WinnerPopup({
         audioRef.current = null;
       }
     };
-  }, [onDismiss]);
+  }, []); // Empty deps — only run once on mount
 
   const handleClick = () => {
     setPhase("exit");
-    setTimeout(onDismiss, 500);
+    setTimeout(() => onDismissRef.current?.(), 500);
   };
 
   return (

@@ -681,6 +681,14 @@ export class RumbleOrchestrator {
   private pendingSweeps: Map<string, PendingSweep> = new Map();
   private lastRentReclaimAt = 0;
   private rentReclaimInFlight = false;
+  private mainnetResultRetryQueue: Map<string, {
+    rumbleId: string;
+    rumbleIdNum: number;
+    placements: number[];
+    winnerIndex: number;
+    attempts: number;
+    nextRetryAt: number;
+  }> = new Map();
   private onchainRumbleCreateRetryAt: Map<string, number> = new Map();
   private onchainRumbleCreateStartedAt: Map<string, number> = new Map();
   private onchainRumbleCreateLastError: Map<string, OnchainCreateFailure> = new Map();
@@ -780,7 +788,8 @@ export class RumbleOrchestrator {
       this.houseBotsPaused = paused;
       console.log(`[Orchestrator] Loaded persisted house_bots_paused = ${paused}`);
     }).catch(() => {
-      console.warn("[Orchestrator] Failed to load persisted pause state, defaulting to false");
+      console.warn("[Orchestrator] Failed to load persisted pause state, defaulting to PAUSED for safety");
+      this.houseBotsPaused = true;
     });
   }
 
@@ -1020,6 +1029,7 @@ export class RumbleOrchestrator {
     await this.processPendingSweeps();
     this.pollPendingIchorShower();
     this.periodicRentReclaim();
+    this.processMainnetResultRetries();
     this.processWorkerCommands();
   }
 
@@ -1518,7 +1528,9 @@ export class RumbleOrchestrator {
         for (let turn = 1; turn <= totalTurns; turn++) {
           for (const fighter of fighters) {
             // Return rent to the fighter, not the admin
-            closeMoveCommitmentOnChain(entry.rumbleIdNum, fighter, turn, fighter).catch(() => {});
+            closeMoveCommitmentOnChain(entry.rumbleIdNum, fighter, turn, fighter).catch((err: any) => {
+              console.warn("[OnChain] closeMoveCommitment failed:", err?.message ?? err);
+            });
           }
         }
         console.log(
@@ -1674,6 +1686,74 @@ export class RumbleOrchestrator {
           console.warn(`[Sweep] Retry ${sweep.attempts}/${MAX_SWEEP_ATTEMPTS} for ${sweep.rumbleId}: ${msg}`);
         }
       }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // In-memory mainnet reportResult retry logic
+  // ---------------------------------------------------------------------------
+
+  private static readonly MAINNET_RESULT_RETRY_DELAYS = [5_000, 15_000, 45_000, 120_000, 300_000];
+  private static readonly MAINNET_RESULT_MAX_ATTEMPTS = 5;
+
+  private enqueueMainnetResultRetry(
+    rumbleId: string,
+    rumbleIdNum: number,
+    placements: number[],
+    winnerIndex: number,
+  ): void {
+    const existing = this.mainnetResultRetryQueue.get(rumbleId);
+    if (existing && existing.attempts >= RumbleOrchestrator.MAINNET_RESULT_MAX_ATTEMPTS) return;
+    const attempts = existing ? existing.attempts : 0;
+    const delayMs = RumbleOrchestrator.MAINNET_RESULT_RETRY_DELAYS[
+      Math.min(attempts, RumbleOrchestrator.MAINNET_RESULT_RETRY_DELAYS.length - 1)
+    ];
+    this.mainnetResultRetryQueue.set(rumbleId, {
+      rumbleId,
+      rumbleIdNum,
+      placements,
+      winnerIndex,
+      attempts,
+      nextRetryAt: Date.now() + delayMs,
+    });
+    console.log(`[OnChain:Mainnet] Enqueued reportResult retry for ${rumbleId} (attempt ${attempts + 1}, delay ${delayMs}ms)`);
+  }
+
+  private processMainnetResultRetries(): void {
+    if (this.mainnetResultRetryQueue.size === 0) return;
+    const now = Date.now();
+    for (const [rumbleId, entry] of this.mainnetResultRetryQueue) {
+      if (now < entry.nextRetryAt) continue;
+      entry.attempts += 1;
+      const attempt = entry.attempts;
+      this.mainnetResultRetryQueue.delete(rumbleId);
+
+      void (async () => {
+        try {
+          console.log(`[OnChain:Mainnet] Retrying reportResult for ${rumbleId} (attempt ${attempt}/${RumbleOrchestrator.MAINNET_RESULT_MAX_ATTEMPTS})`);
+          const sig = await reportResultMainnet(entry.rumbleIdNum, entry.placements, entry.winnerIndex);
+          if (sig) {
+            console.log(`[OnChain:Mainnet] reportResult retry succeeded for ${rumbleId}: ${sig}`);
+            await markOpComplete(rumbleId, "reportResult", sig);
+          } else {
+            console.warn(`[OnChain:Mainnet] reportResult retry returned null for ${rumbleId}`);
+            await markOpFailed(rumbleId, "reportResult", `retry attempt ${attempt} returned null`);
+            if (attempt < RumbleOrchestrator.MAINNET_RESULT_MAX_ATTEMPTS) {
+              this.enqueueMainnetResultRetry(rumbleId, entry.rumbleIdNum, entry.placements, entry.winnerIndex);
+            } else {
+              console.error(`[CRITICAL] reportResultMainnet exhausted all ${RumbleOrchestrator.MAINNET_RESULT_MAX_ATTEMPTS} retries for ${rumbleId} — user SOL may be stuck`);
+            }
+          }
+        } catch (err) {
+          console.error(`[OnChain:Mainnet] reportResult retry error for ${rumbleId}:`, err);
+          await markOpFailed(rumbleId, "reportResult", formatError(err));
+          if (attempt < RumbleOrchestrator.MAINNET_RESULT_MAX_ATTEMPTS) {
+            this.enqueueMainnetResultRetry(rumbleId, entry.rumbleIdNum, entry.placements, entry.winnerIndex);
+          } else {
+            console.error(`[CRITICAL] reportResultMainnet exhausted all ${RumbleOrchestrator.MAINNET_RESULT_MAX_ATTEMPTS} retries for ${rumbleId} — user SOL may be stuck`);
+          }
+        }
+      })();
     }
   }
 
@@ -3080,7 +3160,9 @@ export class RumbleOrchestrator {
       for (const fid of slot.fighters) {
         const wallet = state.fighterWallets.get(fid);
         if (!wallet) continue;
-        closeMoveCommitmentOnChain(rumbleIdNum, wallet, turnNum, wallet, slotConn).catch(() => {});
+        closeMoveCommitmentOnChain(rumbleIdNum, wallet, turnNum, wallet, slotConn).catch((err: any) => {
+          console.warn("[OnChain] closeMoveCommitment failed:", err?.message ?? err);
+        });
       }
 
       for (const eliminatedId of sync.newEliminations) {
@@ -3256,7 +3338,9 @@ export class RumbleOrchestrator {
         for (const fid of slot.fighters) {
           const wallet = state.fighterWallets.get(fid);
           if (!wallet) continue;
-          closeMoveCommitmentOnChain(rumbleIdNum, wallet, turnNumPost, wallet, slotConn).catch(() => {});
+          closeMoveCommitmentOnChain(rumbleIdNum, wallet, turnNumPost, wallet, slotConn).catch((err: any) => {
+            console.warn("[OnChain] closeMoveCommitment failed:", err?.message ?? err);
+          });
         }
 
         for (const eliminatedId of syncAfterResolve.newEliminations) {
@@ -4490,17 +4574,17 @@ export class RumbleOrchestrator {
             match_id: slot.id,
             match_state: {
               your_hp: fighter.hp,
-              opponent_hp: opponent.hp,
+              opponent_hp_tier: opponentHpTier,
               your_meter: fighter.meter,
-              opponent_meter: opponent.meter,
+              opponent_meter_tier: opponentMeterTier,
               round: 1,
               turn: turnNumber,
               your_rounds_won: 0,
               opponent_rounds_won: 0,
             },
             opponent_state: {
-              hp: opponent.hp,
-              meter: opponent.meter,
+              hp_tier: opponentHpTier,
+              meter_tier: opponentMeterTier,
             },
             turn_history: state.turns.slice(-6),
           },
@@ -4936,10 +5020,12 @@ export class RumbleOrchestrator {
           } else {
             await markOpFailed(rumbleId, "reportResult", "reportResultMainnet returned null");
             console.warn(`[OnChain:Mainnet] reportResult returned null for ${rumbleId}`);
+            this.enqueueMainnetResultRetry(rumbleId, rumbleIdNum, placementsArray, winnerIdx);
           }
         } catch (err) {
           console.error(`[OnChain:Mainnet] reportResult error (non-blocking):`, err);
           await markOpFailed(rumbleId, "reportResult", formatError(err));
+          this.enqueueMainnetResultRetry(rumbleId, rumbleIdNum, placementsArray, winnerIdx);
         }
       })();
     }
@@ -5559,22 +5645,9 @@ export class RumbleOrchestrator {
 
     this.totalRumblesCompleted++;
 
-    // Auto-requeue ALL fighters back into the queue so the next rumble
-    // fills to FIGHTERS_PER_RUMBLE. Without this, fighters silently drop
-    // out and rumbles start with fewer fighters than configured.
-    const persistRequeues: Promise<void>[] = [];
-    for (const fighterId of slot.fighters) {
-      try {
-        this.queueManager.addToQueue(fighterId, true);
-        persistRequeues.push(persist.saveQueueFighter(fighterId, "waiting", true));
-      } catch {
-        // Fighter might already be in queue or another slot; ignore
-      }
-    }
-    if (persistRequeues.length > 0) {
-      // Await writes so queue state does not oscillate between in-memory and DB views.
-      await Promise.all(persistRequeues);
-    }
+    // Fighter re-queue happens in recycleSlot() after the slot transitions to idle.
+    // addToQueue() rejects while the slot is still in payout state, so re-queuing
+    // here is a no-op (every call throws and the catch silently swallows it).
 
     // Note: DB status stays "payout" until handleSlotRecycled sets "complete"
     // after PAYOUT_DURATION_MS, giving Vercel status API time to read payout data.

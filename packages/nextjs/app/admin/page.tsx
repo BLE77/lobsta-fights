@@ -553,14 +553,53 @@ export default function AdminPage() {
     const count = Number.isFinite(parsed)
       ? Math.min(16, Math.max(12, Math.floor(parsed)))
       : 12;
-    await runAdminAction("Test Run", () =>
-      fetch("/api/admin/rumble/test-run", {
+    setActionBusy("Test Run");
+    setActionMessage("");
+    try {
+      const res = await fetch("/api/admin/rumble/test-run", {
         method: "POST",
         headers: { ...headers(), "Content-Type": "application/json" },
         body: JSON.stringify({ fighter_count: count }),
-      }),
-    );
-  }, [headers, runAdminAction, testRunCountInput]);
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setActionMessage(`Test Run failed (${res.status})${data?.error ? `: ${data.error}` : ""}`);
+        return;
+      }
+      // If queued via worker_commands (Vercel → Railway), poll for completion
+      if (data.commandId) {
+        setActionMessage("Starting rumble via Railway...");
+        const cmdId = data.commandId;
+        for (let i = 0; i < 30; i++) {
+          await new Promise(r => setTimeout(r, 2000));
+          const poll = await fetch(`/api/admin/rumble/command-status?id=${cmdId}`, { headers: headers() });
+          const pollData = await poll.json().catch(() => ({}));
+          const cmd = pollData?.command;
+          if (cmd?.status === "complete") {
+            const r = cmd.result_json;
+            setActionMessage(`Test Run complete — ${r?.queuedCount ?? 0} bots queued`);
+            await Promise.all([fetchDashboard(), fetchOnChain(), fetchHouseBotStatus()]);
+            return;
+          }
+          if (cmd?.status === "failed") {
+            setActionMessage(`Test Run failed: ${cmd.result_json?.error ?? "unknown error"}`);
+            return;
+          }
+        }
+        setActionMessage("Test Run timed out — check Railway logs");
+        return;
+      }
+      // Direct execution response (Railway)
+      setActionMessage(
+        `Test Run complete${data?.timestamp ? ` @ ${new Date(data.timestamp).toLocaleTimeString()}` : ""}`,
+      );
+      await Promise.all([fetchDashboard(), fetchOnChain(), fetchHouseBotStatus()]);
+    } catch (err: any) {
+      setActionMessage(`Test Run failed: ${err?.message ?? "unknown error"}`);
+    } finally {
+      setActionBusy(null);
+    }
+  }, [headers, testRunCountInput, fetchDashboard, fetchOnChain, fetchHouseBotStatus]);
 
   const runFundBots = useCallback(async () => {
     await runAdminAction("Fund Bots", () =>
@@ -1447,7 +1486,174 @@ function OverviewTab({
           </div>
         )}
       </Section>
+
+      {/* Wallet Balances */}
+      <WalletBalancesPanel />
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Wallet Balances Panel (self-contained, fetches on mount)
+// ---------------------------------------------------------------------------
+
+interface WalletBalanceData {
+  deployer: { pubkey: string; balance: number } | null;
+  signers: Array<{
+    index: number;
+    fighterId: string | null;
+    pubkey: string;
+    balance: number;
+    low: boolean;
+  }>;
+  summary: {
+    totalSigners: number;
+    lowCount: number;
+    totalSignerBalance: number;
+    deployerBalance: number;
+    healthy: boolean;
+  };
+  threshold: number;
+  timestamp: string;
+}
+
+function WalletBalancesPanel() {
+  const [data, setData] = useState<WalletBalanceData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const fetchBalances = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/rumble/wallet-balances", {
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      setData(json);
+    } catch (e: any) {
+      setError(e.message ?? "Failed to fetch");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // Fetch on mount + every 5 minutes
+  useEffect(() => {
+    fetchBalances();
+    const interval = setInterval(fetchBalances, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [fetchBalances]);
+
+  const healthy = data?.summary?.healthy ?? true;
+  const lowCount = data?.summary?.lowCount ?? 0;
+
+  return (
+    <Section title="Wallet Balances">
+      <div className="space-y-3">
+        {/* Summary bar */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span
+              className={`inline-block w-2.5 h-2.5 rounded-full ${
+                !data
+                  ? "bg-stone-600"
+                  : healthy
+                  ? "bg-green-500"
+                  : "bg-red-500 animate-pulse"
+              }`}
+            />
+            <span className="font-mono text-xs text-stone-400">
+              {!data
+                ? "Loading..."
+                : healthy
+                ? "All wallets healthy"
+                : `${lowCount} signer${lowCount > 1 ? "s" : ""} LOW on SOL`}
+            </span>
+          </div>
+          <button
+            onClick={fetchBalances}
+            disabled={loading}
+            className="font-mono text-[10px] text-stone-500 hover:text-amber-400 transition-colors disabled:opacity-50"
+          >
+            {loading ? "Checking..." : "Refresh"}
+          </button>
+        </div>
+
+        {error && (
+          <p className="font-mono text-xs text-red-400">{error}</p>
+        )}
+
+        {data && (
+          <div className="space-y-2">
+            {/* Deployer */}
+            {data.deployer && (
+              <div className="flex items-center justify-between bg-stone-900/60 border border-stone-800 rounded px-3 py-2">
+                <div>
+                  <p className="font-mono text-[10px] text-stone-500 uppercase">
+                    Deployer / Treasury
+                  </p>
+                  <p className="font-mono text-xs text-stone-400">
+                    {data.deployer.pubkey.slice(0, 8)}...{data.deployer.pubkey.slice(-4)}
+                  </p>
+                </div>
+                <p
+                  className={`font-mono text-sm font-bold ${
+                    data.deployer.balance > 1
+                      ? "text-green-400"
+                      : "text-red-400"
+                  }`}
+                >
+                  {data.deployer.balance.toFixed(4)} SOL
+                </p>
+              </div>
+            )}
+
+            {/* Signer summary */}
+            <div className="bg-stone-900/60 border border-stone-800 rounded px-3 py-2">
+              <div className="flex items-center justify-between mb-2">
+                <p className="font-mono text-[10px] text-stone-500 uppercase">
+                  Fighter Signers ({data.summary.totalSigners})
+                </p>
+                <p className="font-mono text-xs text-stone-400">
+                  Total: {data.summary.totalSignerBalance.toFixed(4)} SOL
+                </p>
+              </div>
+              {lowCount > 0 && (
+                <div className="space-y-1">
+                  {data.signers
+                    .filter((s) => s.low)
+                    .map((s) => (
+                      <div
+                        key={s.index}
+                        className="flex items-center justify-between text-xs font-mono"
+                      >
+                        <span className="text-stone-500">
+                          [{s.index}] {s.pubkey.slice(0, 6)}...{s.pubkey.slice(-4)}
+                        </span>
+                        <span className="text-red-400 font-bold">
+                          {s.balance.toFixed(6)} SOL
+                        </span>
+                      </div>
+                    ))}
+                </div>
+              )}
+              {lowCount === 0 && (
+                <p className="font-mono text-[10px] text-green-500">
+                  All signers above {data.threshold} SOL threshold
+                </p>
+              )}
+            </div>
+
+            {/* Last checked */}
+            <p className="font-mono text-[10px] text-stone-600 text-right">
+              Checked: {new Date(data.timestamp).toLocaleTimeString()}
+            </p>
+          </div>
+        )}
+      </div>
+    </Section>
   );
 }
 

@@ -64,6 +64,7 @@ export default function BettingPanel({
   const [deploying, setDeploying] = useState<Set<string>>(new Set());
   const [lastTxSignature, setLastTxSignature] = useState<string | null>(null);
   const [successFighterId, setSuccessFighterId] = useState<string | null>(null);
+  const explorerCluster = process.env.NEXT_PUBLIC_BETTING_RPC_URL?.includes('mainnet') ? '' : '?cluster=devnet';
 
   useEffect(() => {
     const update = () => setRemainingMs(getRemainingBetWindowMs(deadline, closeGuardMs));
@@ -233,7 +234,7 @@ export default function BettingPanel({
           <div className="flex items-center gap-1.5 min-w-0">
             <span className="text-green-400 text-[10px]">&#x2713;</span>
             <a
-              href={`https://explorer.solana.com/tx/${lastTxSignature}?cluster=devnet`}
+              href={`https://explorer.solana.com/tx/${lastTxSignature}${explorerCluster}`}
               target="_blank"
               rel="noopener noreferrer"
               className="font-mono text-[10px] text-green-400 hover:text-green-300 hover:underline truncate"

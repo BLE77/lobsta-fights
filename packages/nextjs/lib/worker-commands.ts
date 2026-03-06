@@ -20,7 +20,7 @@ function freshClient(): SupabaseClient {
   });
 }
 
-export type WorkerCommand = "start_bots" | "stop_bots" | "set_bot_target" | "restart_bots" | "clear_bot_target";
+export type WorkerCommand = "start_bots" | "stop_bots" | "set_bot_target" | "restart_bots" | "clear_bot_target" | "test_run";
 
 export interface WorkerCommandRow {
   id: string;
@@ -90,6 +90,9 @@ export async function processPendingWorkerCommands(
     restartHouseBots: () => Promise<any>;
     setHouseBotTargetPopulation: (target: number | null) => number;
     getHouseBotControlStatus: () => any;
+    queueHouseBotsManually: (count: number) => Promise<{ queued: string[]; skipped: string[] }>;
+    tick: () => Promise<void>;
+    getStatus: () => any[];
   },
 ): Promise<number> {
   try {
@@ -130,9 +133,14 @@ export async function processPendingWorkerCommands(
       }
     }
     return processed;
-  } catch {
+  } catch (err: any) {
+    console.error("[WorkerCommands] processPendingWorkerCommands error:", err?.message ?? err);
     return 0;
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 async function executeCommand(
@@ -143,6 +151,9 @@ async function executeCommand(
     restartHouseBots: () => Promise<any>;
     setHouseBotTargetPopulation: (target: number | null) => number;
     getHouseBotControlStatus: () => any;
+    queueHouseBotsManually: (count: number) => Promise<{ queued: string[]; skipped: string[] }>;
+    tick: () => Promise<void>;
+    getStatus: () => any[];
   },
 ): Promise<Record<string, unknown>> {
   switch (row.command) {
@@ -167,6 +178,28 @@ async function executeCommand(
     case "clear_bot_target": {
       const applied = executor.setHouseBotTargetPopulation(null);
       return { action: "cleared_target", target_population: applied, status: executor.getHouseBotControlStatus() };
+    }
+    case "test_run": {
+      const fighterCount = Math.min(16, Math.max(12, Math.floor(Number(row.payload_json?.fighter_count) || 12)));
+      const wasPaused = executor.getHouseBotControlStatus().paused;
+      if (!wasPaused) await executor.pauseHouseBots();
+      const { queued, skipped } = await executor.queueHouseBotsManually(fighterCount);
+      if (queued.length === 0) {
+        if (!wasPaused) executor.resumeHouseBots();
+        throw new Error(`No bots could be queued. Skipped: ${skipped.join(", ")}`);
+      }
+      for (let i = 0; i < 3; i++) {
+        await executor.tick();
+        if (i < 2) await sleep(500);
+      }
+      if (!wasPaused) executor.resumeHouseBots();
+      const slots = executor.getStatus().map((slot: any) => ({
+        slotIndex: slot.slotIndex,
+        state: slot.state,
+        rumbleId: slot.rumbleId,
+        fighters: slot.fighters?.length ?? 0,
+      }));
+      return { action: "test_run", queued, queuedCount: queued.length, skipped, slots };
     }
     default:
       throw new Error(`Unknown command: ${row.command}`);

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { isAuthorizedAdminRequest } from "~~/lib/request-auth";
 import { getOrchestrator } from "~~/lib/rumble-orchestrator";
 import { hasRecovered, recoverOrchestratorState } from "~~/lib/rumble-state-recovery";
+import { queueWorkerCommand } from "~~/lib/worker-commands";
 
 export const dynamic = "force-dynamic";
 
@@ -20,15 +21,44 @@ function sleep(ms: number): Promise<void> {
  *
  * Manually queues house bots and bursts ticks to start a rumble.
  * Body: { fighter_count?: number }  (default 12, min 12, max 16)
+ *
+ * Railway: executes directly. Vercel: queues via worker_commands table.
  */
 export async function POST(request: Request) {
-  if (process.env.VERCEL) {
-    return NextResponse.json({ error: "Test runs disabled on Vercel. Use Railway worker." }, { status: 403 });
-  }
   if (!isAuthorizedAdminRequest(request.headers)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const body = await request.json().catch(() => ({}));
+  const requestedCountRaw = body?.fighter_count;
+  const requestedCount = Number(requestedCountRaw);
+  if (
+    requestedCountRaw !== undefined &&
+    (!Number.isFinite(requestedCount) || Math.floor(requestedCount) < 12)
+  ) {
+    return NextResponse.json(
+      { error: "fighter_count must be at least 12" },
+      { status: 400 },
+    );
+  }
+  const fighterCount = clampInt(requestedCountRaw, 12, 12, 16);
+
+  // --- Vercel: queue command for Railway worker ---
+  if (process.env.RUMBLE_WORKER_MODE !== "true") {
+    const queued = await queueWorkerCommand("test_run", { fighter_count: fighterCount });
+    if (!queued) {
+      return NextResponse.json({ error: "Failed to queue test_run command" }, { status: 500 });
+    }
+    return NextResponse.json({
+      success: true,
+      queued: true,
+      commandId: queued.id,
+      message: "Test run queued for Railway worker",
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  // --- Railway: execute directly ---
   try {
     if (!hasRecovered()) {
       await recoverOrchestratorState().catch((err) => {
@@ -36,24 +66,9 @@ export async function POST(request: Request) {
       });
     }
 
-    const body = await request.json().catch(() => ({}));
-    const requestedCountRaw = body?.fighter_count;
-    const requestedCount = Number(requestedCountRaw);
-    if (
-      requestedCountRaw !== undefined &&
-      (!Number.isFinite(requestedCount) || Math.floor(requestedCount) < 12)
-    ) {
-      return NextResponse.json(
-        { error: "fighter_count must be at least 12" },
-        { status: 400 },
-      );
-    }
-    const fighterCount = clampInt(requestedCountRaw, 12, 12, 16);
-
     const orchestrator = getOrchestrator();
 
     // Pause house bot maintenance so tick() doesn't remove our manually-queued bots
-    // (maintainHouseBotQueue removes queued house bots when HOUSE_BOTS_AUTO_FILL=false)
     const wasPaused = orchestrator.getHouseBotControlStatus().paused;
     if (!wasPaused) await orchestrator.pauseHouseBots();
 

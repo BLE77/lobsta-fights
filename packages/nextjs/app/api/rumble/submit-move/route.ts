@@ -6,6 +6,7 @@ import {
   isValidUUID,
 } from "~~/lib/request-auth";
 import { requireJsonContentType } from "~~/lib/api-middleware";
+import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -32,6 +33,10 @@ const VALID_MOVES = new Set([
 export async function POST(request: Request) {
   const ctCheck = requireJsonContentType(request);
   if (ctCheck) return ctCheck;
+
+  const rlKey = getRateLimitKey(request);
+  const rl = checkRateLimit("PUBLIC_WRITE", rlKey);
+  if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
 
   const apiKey = getApiKeyFromHeaders(request.headers);
   if (!apiKey) {

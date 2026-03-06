@@ -3,6 +3,12 @@
 import { useEffect, useRef, useState } from "react";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
+import {
+  getClientBettingNetwork,
+  getSafeClientBettingRpcEndpoint,
+  getSafeClientCombatRpcEndpoint,
+  toWsEndpoint,
+} from "~~/lib/client-solana-rpc";
 
 // ---------------------------------------------------------------------------
 // Constants (mirrored from solana-programs.ts to avoid importing node:crypto)
@@ -33,53 +39,32 @@ function deriveRumblePda(rumbleId: number): [PublicKey, number] {
 }
 
 // ---------------------------------------------------------------------------
-// Singleton WebSocket Connections (module-level, shared across all slots)
+// Singleton WebSocket Connection (module-level, shared across all betting slots)
 // ---------------------------------------------------------------------------
 
-let _mainnetWssConnection: Connection | null = null;
-let _devnetWssConnection: Connection | null = null;
+let _bettingStateWssConnection: Connection | null = null;
+let _bettingStateWssEndpoint: string | null = null;
 
-function toWsEndpoint(httpEndpoint: string): string {
-  if (httpEndpoint.startsWith("https://")) {
-    return `wss://${httpEndpoint.slice("https://".length)}`;
-  }
-  if (httpEndpoint.startsWith("http://")) {
-    return `ws://${httpEndpoint.slice("http://".length)}`;
-  }
-  return httpEndpoint;
-}
-
-function getMainnetWssConnection(): Connection | null {
-  if (_mainnetWssConnection) return _mainnetWssConnection;
-  const explicitRpc = process.env.NEXT_PUBLIC_BETTING_RPC_URL?.trim();
+function getBettingStateConnection(): { conn: Connection; label: "mainnet" | "devnet" } {
+  const network = getClientBettingNetwork();
+  const label = network === "mainnet-beta" ? "mainnet" : "devnet";
   const explicitWs = process.env.NEXT_PUBLIC_BETTING_WS_URL?.trim();
-  const heliusMainnetKey = process.env.NEXT_PUBLIC_HELIUS_MAINNET_API_KEY?.trim();
   const httpsUrl =
-    explicitRpc ||
-    (heliusMainnetKey ? `https://mainnet.helius-rpc.com/?api-key=${heliusMainnetKey}` : null);
-  if (!httpsUrl) return null;
-  const wssUrl = explicitWs || toWsEndpoint(httpsUrl);
-  _mainnetWssConnection = new Connection(httpsUrl, {
-    wsEndpoint: wssUrl,
-    commitment: "processed",
-  });
-  return _mainnetWssConnection;
-}
+    network === "mainnet-beta"
+      ? getSafeClientBettingRpcEndpoint()
+      : getSafeClientCombatRpcEndpoint();
+  const wssUrl = label === "mainnet" && explicitWs ? explicitWs : toWsEndpoint(httpsUrl);
 
-function getDevnetWssConnection(): Connection | null {
-  if (_devnetWssConnection) return _devnetWssConnection;
-  const heliusKey =
-    process.env.NEXT_PUBLIC_HELIUS_API_KEY?.trim() ||
-    process.env.NEXT_PUBLIC_HELIUS_DEVNET_API_KEY?.trim();
-  const httpsUrl = heliusKey
-    ? `https://devnet.helius-rpc.com/?api-key=${heliusKey}`
-    : "https://api.devnet.solana.com";
-  const wssUrl = toWsEndpoint(httpsUrl);
-  _devnetWssConnection = new Connection(httpsUrl, {
+  if (_bettingStateWssConnection && _bettingStateWssEndpoint === `${httpsUrl}|${wssUrl}`) {
+    return { conn: _bettingStateWssConnection, label };
+  }
+
+  _bettingStateWssEndpoint = `${httpsUrl}|${wssUrl}`;
+  _bettingStateWssConnection = new Connection(httpsUrl, {
     wsEndpoint: wssUrl,
     commitment: "processed",
   });
-  return _devnetWssConnection;
+  return { conn: _bettingStateWssConnection, label };
 }
 
 // ---------------------------------------------------------------------------
@@ -139,30 +124,19 @@ export function useOnChainBettingState(
       }
     };
 
-    // Subscribe to both mainnet AND devnet to catch state changes on
-    // whichever network the program is actually deployed to.
-    const connections: Array<{ conn: Connection; label: string }> = [];
-
-    const mainnetConn = getMainnetWssConnection();
-    if (mainnetConn) connections.push({ conn: mainnetConn, label: "mainnet" });
-
-    const devnetConn = getDevnetWssConnection();
-    if (devnetConn) connections.push({ conn: devnetConn, label: "devnet" });
-
-    for (const { conn, label } of connections) {
-      try {
-        const subId = conn.onAccountChange(
-          rumblePda,
-          (accountInfo) => handleAccountChange(accountInfo.data),
-          "processed"
-        );
-        subs.push({ conn, id: subId });
-        console.log(
-          `[OnChainBettingState] ${label} subscription active for ${rumblePda.toBase58()} (id=${subId})`
-        );
-      } catch (err) {
-        console.warn(`[OnChainBettingState] ${label} subscription failed`, err);
-      }
+    try {
+      const { conn, label } = getBettingStateConnection();
+      const subId = conn.onAccountChange(
+        rumblePda,
+        (accountInfo) => handleAccountChange(accountInfo.data),
+        "processed"
+      );
+      subs.push({ conn, id: subId });
+      console.log(
+        `[OnChainBettingState] ${label} subscription active for ${rumblePda.toBase58()} (id=${subId})`
+      );
+    } catch (err) {
+      console.warn("[OnChainBettingState] subscription failed", err);
     }
 
     subIdsRef.current = subs;

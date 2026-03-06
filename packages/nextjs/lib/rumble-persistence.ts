@@ -48,6 +48,27 @@ function toNumber(value: unknown): number {
   return 0;
 }
 
+// Full-size rumbles only: underfilled active rows are stale/corrupt and
+// should be ignored by read paths that determine current live betting/combat.
+export const MIN_ACTIVE_RUMBLE_FIGHTERS = Math.max(
+  12,
+  Math.min(64, Number(process.env.FIGHTERS_PER_RUMBLE) || 12),
+);
+
+export function extractRumbleFighterIds(fighters: unknown): string[] {
+  if (!Array.isArray(fighters)) return [];
+  return fighters
+    .map((row) => String((row as { id?: unknown })?.id ?? "").trim())
+    .filter(Boolean);
+}
+
+export function hasMinimumRumbleFighters(
+  fighters: unknown,
+  minFighters: number = MIN_ACTIVE_RUMBLE_FIGHTERS,
+): boolean {
+  return extractRumbleFighterIds(fighters).length >= minFighters;
+}
+
 function normalizeTxSignatures(value: unknown): Record<string, string | null> {
   if (!value || typeof value !== "object") return {};
   const output: Record<string, string | null> = {};
@@ -392,6 +413,7 @@ export async function loadActiveRumbles(): Promise<
 
 export interface CompletedRumbleForOnchainReconcile {
   id: string;
+  rumble_number: number | null;
   status: string;
   winner_id: string | null;
   placements: unknown;
@@ -402,6 +424,7 @@ export interface CompletedRumbleForOnchainReconcile {
 
 export interface PendingSettlementRumble {
   id: string;
+  rumble_number: number | null;
   status: string;
   winner_id: string | null;
   placements: unknown;
@@ -448,7 +471,7 @@ export async function loadRecentCompletedRumblesForOnchainReconcile(
     const since = new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString();
     const { data, error } = await sb
       .from("ucf_rumbles")
-      .select("id, status, winner_id, placements, fighters, tx_signatures, completed_at")
+      .select("id, rumble_number, status, winner_id, placements, fighters, tx_signatures, completed_at")
       .eq("status", "complete")
       .gte("completed_at", since)
       .order("completed_at", { ascending: false })
@@ -493,7 +516,7 @@ export async function loadPendingSettlementRumbles(
 
     const { data: rumbleRows, error: rumbleError } = await sb
       .from("ucf_rumbles")
-      .select("id, status, winner_id, placements, fighters")
+      .select("id, rumble_number, status, winner_id, placements, fighters")
       .in("id", rumbleIds);
     if (rumbleError) throw rumbleError;
 
@@ -504,6 +527,10 @@ export async function loadPendingSettlementRumbles(
       if (!id || !pending) continue;
       out.push({
         id,
+        rumble_number:
+          Number.isSafeInteger(Number((row as any).rumble_number))
+            ? Number((row as any).rumble_number)
+            : null,
         status: String((row as any).status ?? ""),
         winner_id:
           typeof (row as any).winner_id === "string" ? String((row as any).winner_id) : null,

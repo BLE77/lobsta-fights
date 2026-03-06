@@ -216,11 +216,8 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: "wallet_address required" }, { status: 400 });
     }
 
-    // Only admin wallets or the admin secret header can delete
-    const isAdminWallet = CHAT_ADMIN_WALLETS.has(wallet_address);
-    const isAdminHeader = isAuthorizedAdminRequest(request.headers);
-
-    if (!isAdminWallet && !isAdminHeader) {
+    // Only authenticated admin requests can delete
+    if (!isAuthorizedAdminRequest(request.headers)) {
       return NextResponse.json({ error: "Not authorized to delete messages" }, { status: 403 });
     }
 

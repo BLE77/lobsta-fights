@@ -3,6 +3,8 @@ import { PublicKey } from "@solana/web3.js";
 import { buildCommitMoveTx } from "~~/lib/solana-programs";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 import { getCombatConnectionAuto, getErStatusInfo } from "~~/lib/solana-connection";
+import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
+import { requireJsonContentType } from "~~/lib/api-middleware";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +22,13 @@ function parseHashBytes(input: unknown): Uint8Array | null {
 }
 
 export async function POST(req: Request) {
+  const ctCheck = requireJsonContentType(req);
+  if (ctCheck) return ctCheck;
+
+  const rlKey = getRateLimitKey(req);
+  const rl = checkRateLimit("PUBLIC_WRITE", rlKey);
+  if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+
   try {
     const body = await req.json();
     const walletAddress = String(body?.wallet_address ?? body?.walletAddress ?? "").trim();
@@ -68,11 +77,11 @@ export async function POST(req: Request) {
       turn,
       move_hash_hex: Buffer.from(moveHashBytes).toString("hex"),
       er_enabled: erInfo.er_enabled,
-      combat_rpc_url: erInfo.combat_rpc_url,
     });
   } catch (err: any) {
+    console.error("[Commit Prepare] Error:", err);
     return NextResponse.json(
-      { error: err?.message ?? "Failed to prepare commit tx" },
+      { error: "Failed to prepare commit transaction" },
       { status: 500 },
     );
   }

@@ -8,10 +8,14 @@ import { getApiKeyFromHeaders } from "~~/lib/request-auth";
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 import { hashApiKey } from "~~/lib/api-key";
 import { requireJsonContentType, sanitizeErrorResponse } from "~~/lib/api-middleware";
-import { getConnection } from "~~/lib/solana-connection";
+import { getCachedBalance, getConnection } from "~~/lib/solana-connection";
 
 /** Minimum SOL balance required to join queue (covers MoveCommitment rent per turn) */
 const MIN_SOL_TO_QUEUE = 0.05;
+const QUEUE_BALANCE_CACHE_TTL_MS = Math.max(
+  5_000,
+  Number(process.env.RUMBLE_QUEUE_BALANCE_CACHE_TTL_MS ?? "30000"),
+);
 
 export const dynamic = "force-dynamic";
 
@@ -132,7 +136,10 @@ export async function POST(request: Request) {
 
     // SOL balance check — fighters need SOL to pay for on-chain move commitments
     try {
-      const balance = await getConnection().getBalance(walletPubkey, "processed");
+      const balance = await getCachedBalance(getConnection(), walletPubkey, {
+        commitment: "processed",
+        ttlMs: QUEUE_BALANCE_CACHE_TTL_MS,
+      });
       const solBalance = balance / LAMPORTS_PER_SOL;
       if (solBalance < MIN_SOL_TO_QUEUE) {
         return NextResponse.json(

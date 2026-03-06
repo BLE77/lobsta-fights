@@ -2,10 +2,14 @@ import { NextResponse } from "next/server";
 import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import { freshSupabase } from "~~/lib/supabase";
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
-import { readBettorAccount } from "~~/lib/solana-programs";
+import { readBettorAccount, RUMBLE_ENGINE_ID_MAINNET } from "~~/lib/solana-programs";
 import { ADMIN_FEE_RATE, SPONSORSHIP_RATE } from "~~/lib/betting";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
-import { loadActiveRumbles } from "~~/lib/rumble-persistence";
+import {
+  loadActiveRumbles,
+  extractRumbleFighterIds,
+  hasMinimumRumbleFighters,
+} from "~~/lib/rumble-persistence";
 import { getBettingConnection } from "~~/lib/solana-connection";
 import { flushRpcMetrics, runWithRpcMetrics } from "~~/lib/solana-rpc-metrics";
 
@@ -36,9 +40,9 @@ export async function GET(request: Request) {
     const slotMap = new Map<number, string>();
     const slotFighters = new Map<number, string[]>();
     for (const r of activeRumbles) {
+      if (!hasMinimumRumbleFighters(r.fighters)) continue;
       slotMap.set(r.slot_index, r.id);
-      const fighterRows = Array.isArray(r.fighters) ? (r.fighters as Array<{ id?: string }>) : [];
-      const fighters = fighterRows.map((row) => String(row?.id ?? "").trim()).filter(Boolean);
+      const fighters = extractRumbleFighterIds(r.fighters);
       slotFighters.set(r.slot_index, fighters);
     }
     const rumbleIds = [...slotMap.values()];
@@ -94,7 +98,7 @@ export async function GET(request: Request) {
 
         let bettorState = null;
         try {
-          bettorState = await readBettorAccount(walletPubkey, rumbleIdNum, bettingConn);
+          bettorState = await readBettorAccount(walletPubkey, rumbleIdNum, bettingConn, RUMBLE_ENGINE_ID_MAINNET);
         } catch {
           continue;
         }

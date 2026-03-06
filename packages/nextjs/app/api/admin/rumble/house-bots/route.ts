@@ -30,8 +30,17 @@ export async function GET(request: Request) {
 
   // On Vercel: read persisted state from Supabase (actual Railway state)
   const paused = (await getAdminConfig("house_bots_paused")) === true;
-  const configuredCount = Number(process.env.HOUSE_BOT_COUNT) || 0;
-  const targetPop = Number(process.env.HOUSE_BOT_TARGET_POPULATION) || 0;
+  const configuredIds = String(process.env.RUMBLE_HOUSE_BOT_IDS ?? "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+  const configuredCount = configuredIds.length || Number(process.env.HOUSE_BOT_COUNT) || 0;
+  const targetPop =
+    Number(
+      process.env.RUMBLE_HOUSE_BOT_TARGET_POPULATION ??
+      process.env.HOUSE_BOT_TARGET_POPULATION ??
+      0,
+    ) || 0;
   return NextResponse.json({
     success: true,
     configuredEnabled: configuredCount > 0,

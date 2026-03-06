@@ -12,6 +12,16 @@ const MIN_INTERVAL_MS = process.env.NODE_ENV === "production" ? 120_000 : 25_000
 const MAX_WALLET_SAMPLES_PER_RUMBLE = 30;
 const WALLET_SAMPLE_CHUNK = 6;
 
+function resolveOnchainRumbleIdNumber(row: {
+  id: string;
+  rumble_number?: number | null;
+}): number | null {
+  if (Number.isSafeInteger(row.rumble_number) && (row.rumble_number ?? -1) >= 0) {
+    return row.rumble_number as number;
+  }
+  return parseOnchainRumbleIdNumber(row.id);
+}
+
 function toWinnerFromPlacements(raw: unknown): string | null {
   if (!Array.isArray(raw)) return null;
   const placements = raw as PlacementLike[];
@@ -156,7 +166,7 @@ export async function reconcileStalePendingPayouts(options?: {
       winnerId = toWinnerFromPlacements(row.placements);
     }
     if (!winnerId) {
-      const rumbleIdNum = parseOnchainRumbleIdNumber(row.id);
+      const rumbleIdNum = resolveOnchainRumbleIdNumber(row);
       if (rumbleIdNum !== null) {
         const onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
         if (onchain && (onchain.state === "payout" || onchain.state === "complete")) {
@@ -165,7 +175,7 @@ export async function reconcileStalePendingPayouts(options?: {
       }
     }
     if (!winnerId) {
-      const rumbleIdNum = parseOnchainRumbleIdNumber(row.id);
+      const rumbleIdNum = resolveOnchainRumbleIdNumber(row);
       if (rumbleIdNum !== null) {
         winnerId = await inferWinnerFromOnchainWinningWallets(row.id, rumbleIdNum).catch(() => null);
       }

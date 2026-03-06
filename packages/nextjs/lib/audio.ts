@@ -4,7 +4,7 @@ export type SoundEffect =
   | "hit_light" | "hit_heavy" | "hit_special"
   | "block" | "dodge" | "catch"
   | "ko_explosion" | "round_start" | "crowd_cheer"
-  | "bet_placed"
+  | "bet_placed" | "claim_complete"
   | "ambient_arena" | "radio_static";
 
 // ---- Synthesized sound generators ----
@@ -343,11 +343,19 @@ const SYNTH_MAP: Partial<Record<SoundEffect, SynthFn>> = {
 
 // File-based sounds (real audio files for atmospheric effects)
 const FILE_SOUNDS: Partial<Record<SoundEffect, string>> = {
-  ko_explosion: "/sounds/ko-explosion.mp3",
-  round_start: "/sounds/round-start.mp3",
-  crowd_cheer: "/sounds/crowd-cheer.mp3",
-  bet_placed: "/sounds/bet-placed.mp3",
-  ambient_arena: "/sounds/ambient-arena.mp3",
+  hit_light: "/sounds/hit-3.mp3",
+  hit_heavy: "/sounds/metal-hit-2.mp3",
+  hit_special: "/sounds/metal-hit.mp3",
+  block: "/sounds/click-4.mp3",
+  dodge: "/sounds/click-2.mp3",
+  catch: "/sounds/grab.mp3",
+  ko_explosion: "/sounds/eliminated.mp3",
+  round_start: "/sounds/walk-in.mp3",
+  crowd_cheer: "/sounds/floraphonic-90s-game-ui-4-185097.mp3",
+  bet_placed: "/sounds/click.mp3",
+  claim_complete: "/sounds/claim.mp3",
+  ambient_arena: "/sounds/walk-in.mp3",
+  radio_static: "/sounds/floraphonic-90s-game-ui-4-185097.mp3",
 };
 
 class UCFAudioManager {

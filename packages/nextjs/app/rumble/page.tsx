@@ -26,6 +26,11 @@ import { BoltIcon, ChatBubbleLeftRightIcon, ListBulletIcon } from "@heroicons/re
 import AudioToggle from "~~/components/AudioToggle";
 import { useSolanaMobileContext } from "~~/lib/solana-mobile";
 import { usePageVisibility } from "~~/hooks/usePageVisibility";
+import { getCachedBalance } from "~~/lib/solana-connection";
+import {
+  getSafeClientBettingRpcEndpoint,
+  getSafeClientCombatRpcEndpoint,
+} from "~~/lib/client-solana-rpc";
 
 // ---------------------------------------------------------------------------
 // Types for the status API response
@@ -151,6 +156,48 @@ const LEGACY_EVENT_MAP: Partial<Record<SSEEvent["type"], OrchestratorSseName>> =
 const DEFAULT_BET_CLOSE_GUARD_MS = 12_000;
 const INTRO_OVERLAY_STORAGE_KEY = "ucf_rumble_intro_overlay_seen_v1";
 const INTRO_OVERLAY_VIDEO_SRC = "/rumble-intro-overlay.mp4";
+const SOLANA_MOBILE_WALLET_NAME = /mobile|seed vault|solana mobile/i;
+const STATUS_POLL_INTERVALS_MS = {
+  combat: Math.max(4_000, Number(process.env.NEXT_PUBLIC_RUMBLE_STATUS_POLL_COMBAT_MS ?? "6000")),
+  betting: Math.max(6_000, Number(process.env.NEXT_PUBLIC_RUMBLE_STATUS_POLL_BETTING_MS ?? "10000")),
+  idle: Math.max(15_000, Number(process.env.NEXT_PUBLIC_RUMBLE_STATUS_POLL_IDLE_MS ?? "30000")),
+};
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getErrorText(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return error.message.trim();
+  if (typeof error === "string" && error.trim()) return error.trim();
+  return "";
+}
+
+function isWalletConnectionCancelled(error: unknown): boolean {
+  const lower = getErrorText(error).toLowerCase();
+  return (
+    lower.includes("rejected") ||
+    lower.includes("declined") ||
+    lower.includes("cancelled") ||
+    lower.includes("canceled")
+  );
+}
+
+function getWalletConnectionMessage(error: unknown, prefersMobile: boolean): string {
+  const lower = getErrorText(error).toLowerCase();
+  if (!lower) {
+    return prefersMobile ? "Mobile wallet connection failed. Try again." : "Wallet connection failed.";
+  }
+  if (isWalletConnectionCancelled(error)) return "Wallet connection canceled.";
+  if (lower.includes("already connecting")) return "Wallet is already connecting. Please wait.";
+  if (lower.includes("timeout")) return "Wallet connection timed out. Please retry.";
+  if (lower.includes("wallet not found") || lower.includes("not found")) {
+    return prefersMobile
+      ? "No Solana mobile wallet detected. Open in Solana Mobile dApp Browser."
+      : "No compatible wallet was found.";
+  }
+  return getErrorText(error);
+}
 
 function isSlotState(value: unknown): value is SlotData["state"] {
   return value === "idle" || value === "betting" || value === "combat" || value === "payout";
@@ -345,6 +392,8 @@ export default function RumblePage() {
   const [status, setStatus] = useState<RumbleStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [walletConnectError, setWalletConnectError] = useState<string | null>(null);
+  const [walletConnectPending, setWalletConnectPending] = useState(false);
   const [sseConnected, setSseConnected] = useState(false);
   const [betPending, setBetPending] = useState(false);
   const [betError, setBetError] = useState<string | null>(null);
@@ -396,6 +445,7 @@ export default function RumblePage() {
   const myBetAmountsBySlotRef = useRef(myBetAmountsBySlot);
   myBetAmountsBySlotRef.current = myBetAmountsBySlot;
   const claimFetchInFlightRef = useRef(false);
+  const walletBalanceRefreshInFlightRef = useRef<Promise<number | null> | null>(null);
   const claimBalanceRef = useRef<ClaimBalanceStatus | null>(null);
   const pollSeqRef = useRef(0);
 
@@ -415,6 +465,7 @@ export default function RumblePage() {
     publicKey,
     signTransaction,
     connected,
+    connecting: walletAdapterConnecting,
     disconnect: walletDisconnect,
     wallet,
     wallets,
@@ -428,12 +479,10 @@ export default function RumblePage() {
 
   // RPC connection — betting is on mainnet, so prefer betting RPC for wallet balance
   const rpcEndpoint = (() => {
-    const bettingRpc = process.env.NEXT_PUBLIC_BETTING_RPC_URL?.trim();
-    if (bettingRpc) return bettingRpc;
-    const explicit = process.env.NEXT_PUBLIC_SOLANA_RPC_URL?.trim();
-    if (explicit) return explicit;
-    const network = process.env.NEXT_PUBLIC_SOLANA_NETWORK ?? "devnet";
-    return network === "mainnet-beta" ? "https://api.mainnet-beta.solana.com" : "https://api.devnet.solana.com";
+    if (process.env.NEXT_PUBLIC_BETTING_RPC_URL?.trim()) {
+      return getSafeClientBettingRpcEndpoint();
+    }
+    return getSafeClientCombatRpcEndpoint();
   })();
   const connectionRef = useRef(new Connection(rpcEndpoint, "confirmed"));
   const connection = connectionRef.current;
@@ -467,41 +516,122 @@ export default function RumblePage() {
   }, [showIntroOverlay]);
 
   const disconnectWallet = useCallback(async () => {
+    setWalletConnectError(null);
     await walletDisconnect();
     setSolBalance(null);
     setClaimBalance(null);
     setClaimError(null);
   }, [walletDisconnect]);
 
-  const connectWallet = useCallback(async () => {
-    setError(null);
-    if (mobileContext.shouldPreferMobileWalletAdapter) {
-      const mobileWallet = wallets.find((entry) =>
-        /mobile|seed vault|solana mobile/i.test(entry.adapter.name),
-      );
-      if (mobileWallet) {
-        if (wallet?.adapter?.name !== mobileWallet.adapter.name) {
-          select(mobileWallet.adapter.name);
-          await new Promise(resolve => setTimeout(resolve, 150));
-        }
+  const refreshSolBalance = useCallback(
+    async (options?: { force?: boolean; ttlMs?: number }): Promise<number | null> => {
+      if (!publicKey) {
+        setSolBalance(null);
+        return null;
+      }
+
+      if (!options?.force && walletBalanceRefreshInFlightRef.current) {
+        return walletBalanceRefreshInFlightRef.current;
+      }
+
+      const promise = (async () => {
         try {
-          await mobileWallet.adapter.connect();
-          return;
-        } catch (firstError) {
-          console.error("[Rumble] mobile wallet connect attempt 1 failed:", firstError);
-          try {
-            await new Promise(resolve => setTimeout(resolve, 350));
-            await mobileWallet.adapter.connect();
-            return;
-          } catch (secondError) {
-            console.error("[Rumble] mobile wallet connect attempt 2 failed:", secondError);
-            setError(secondError instanceof Error ? secondError.message : "Mobile wallet connection failed");
-          }
+          const lamports = await getCachedBalance(connection, publicKey, {
+            commitment: "confirmed",
+            ttlMs: options?.ttlMs ?? 20_000,
+            forceRefresh: options?.force === true,
+          });
+          const nextBalance = lamports / LAMPORTS_PER_SOL;
+          setSolBalance(nextBalance);
+          return nextBalance;
+        } catch {
+          setSolBalance(null);
+          return null;
+        }
+      })();
+
+      walletBalanceRefreshInFlightRef.current = promise;
+      try {
+        return await promise;
+      } finally {
+        if (walletBalanceRefreshInFlightRef.current === promise) {
+          walletBalanceRefreshInFlightRef.current = null;
         }
       }
+    },
+    [connection, publicKey],
+  );
+
+  const connectWallet = useCallback(async () => {
+    if (walletConnected || walletConnectPending || walletAdapterConnecting) return;
+
+    setWalletConnectPending(true);
+    setWalletConnectError(null);
+
+    try {
+      if (mobileContext.shouldPreferMobileWalletAdapter) {
+        const mobileWallet = wallets.find((entry) =>
+          SOLANA_MOBILE_WALLET_NAME.test(entry.adapter.name),
+        );
+
+        if (mobileWallet) {
+          if (wallet?.adapter?.name !== mobileWallet.adapter.name) {
+            select(mobileWallet.adapter.name);
+            await sleep(150);
+          }
+
+          let lastError: unknown = null;
+          for (const delayMs of [0, 350, 800]) {
+            if (delayMs > 0) await sleep(delayMs);
+            try {
+              await mobileWallet.adapter.connect();
+              return;
+            } catch (attemptError) {
+              lastError = attemptError;
+              if (isWalletConnectionCancelled(attemptError)) {
+                throw attemptError;
+              }
+              console.error("[Rumble] mobile wallet connect attempt failed:", attemptError);
+            }
+          }
+
+          throw lastError ?? new Error("Mobile wallet connection failed");
+        }
+
+        if (wallets.length === 0) {
+          setWalletConnectError("No Solana mobile wallet adapter found on this device.");
+          return;
+        }
+      }
+
+      if (wallets.length === 1) {
+        try {
+          await wallets[0].adapter.connect();
+          return;
+        } catch (singleWalletError) {
+          if (isWalletConnectionCancelled(singleWalletError)) throw singleWalletError;
+          console.error("[Rumble] single wallet connect failed:", singleWalletError);
+        }
+      }
+
+      setWalletModalVisible(true);
+    } catch (connectError) {
+      setWalletConnectError(
+        getWalletConnectionMessage(connectError, mobileContext.shouldPreferMobileWalletAdapter),
+      );
+    } finally {
+      setWalletConnectPending(false);
     }
-    setWalletModalVisible(true);
-  }, [mobileContext.shouldPreferMobileWalletAdapter, wallets, wallet?.adapter?.name, select, setWalletModalVisible]);
+  }, [
+    mobileContext.shouldPreferMobileWalletAdapter,
+    walletConnected,
+    walletConnectPending,
+    walletAdapterConnecting,
+    wallets,
+    wallet?.adapter?.name,
+    select,
+    setWalletModalVisible,
+  ]);
 
   // Fetch SOL balance when wallet connects (pauses when tab hidden)
   useEffect(() => {
@@ -509,19 +639,13 @@ export default function RumblePage() {
       if (!publicKey) setSolBalance(null);
       return;
     }
-    const fetchBalance = async () => {
-      try {
-        const lamports = await connection.getBalance(publicKey, "confirmed");
-        setSolBalance(lamports / LAMPORTS_PER_SOL);
-      } catch {
-        setSolBalance(null);
-      }
-    };
-    fetchBalance();
+    void refreshSolBalance({ ttlMs: 20_000 });
     // SOL balance: 60s polling (wallet balance changes only on bets/claims)
-    const interval = setInterval(fetchBalance, 60_000);
+    const interval = setInterval(() => {
+      void refreshSolBalance({ ttlMs: 20_000 });
+    }, 60_000);
     return () => clearInterval(interval);
-  }, [publicKey, connection, isPageVisible]);
+  }, [publicKey, isPageVisible, refreshSolBalance]);
 
   useEffect(() => {
     claimBalanceRef.current = claimBalance;
@@ -529,6 +653,7 @@ export default function RumblePage() {
 
   // Reset wallet-specific state immediately when wallet account changes
   useEffect(() => {
+    setWalletConnectError(null);
     setClaimBalance(null);
     setMyBetAmountsBySlot(new Map());
     setSolBalance(null);
@@ -540,7 +665,7 @@ export default function RumblePage() {
   const fetchStatus = useCallback(async () => {
     const seq = ++pollSeqRef.current;
     try {
-      const res = await fetch(`/api/rumble/status?_t=${Date.now()}`, {
+      const res = await fetch("/api/rumble/status", {
         cache: "no-store",
       });
       if (!res.ok) throw new Error(`Status ${res.status}`);
@@ -680,7 +805,14 @@ export default function RumblePage() {
               !shownWinPopupRumbleIds.current.has(completed.rumbleId)
             ) {
               shownWinPopupRumbleIds.current.add(completed.rumbleId);
-              const solWon = completed.payout?.winnerBettorsPayout ?? 0;
+              // Calculate user's proportional share of the winner payout pool
+              const totalWinnerPayout = completed.payout?.winnerBettorsPayout ?? 0;
+              const userBetOnWinner = slotBets?.get(winner.fighterId) ?? 0;
+              const winnerOdds = slot.odds.find(o => o.fighterId === winner.fighterId);
+              const totalSolOnWinner = winnerOdds?.solDeployed ?? 0;
+              const solWon = totalSolOnWinner > 0 && userBetOnWinner > 0
+                ? (userBetOnWinner / totalSolOnWinner) * totalWinnerPayout
+                : userBetOnWinner; // fallback: show user's bet amount
               setWinnerPopup({
                 fighterName: winner.fighterName,
                 imageUrl: winner.imageUrl ?? null,
@@ -911,14 +1043,8 @@ export default function RumblePage() {
     // Sound effects are now driven by the status useEffect (works with both
     // SSE patches and polling). No need for SSE-only sound triggers here.
 
-    if (event.type === "betting_open") {
-      setLastCompletedBySlot((prev) => {
-        if (!prev.has(event.slotIndex)) return prev;
-        const next = new Map(prev);
-        next.delete(event.slotIndex);
-        return next;
-      });
-    }
+    // betting_open no longer clears lastCompletedResult immediately —
+    // the polling grace period (60s) handles cleanup naturally.
 
     // Forward to commentary player
     setLastSseEvent({
@@ -1071,9 +1197,9 @@ export default function RumblePage() {
   }, [connectSSE]);
 
   // Poll frequency is state-aware:
-  // - Combat: 2s (turns can resolve quickly; avoid "skipping" visuals)
-  // - Betting: 4s (keep odds/deadline responsive)
-  // - Idle/Payout: 15s (lower priority, but still keep UI fresh)
+  // - Combat: 6s (enough for ~24s turns without burning RPC on constant refreshes)
+  // - Betting: 10s (deadline stays accurate because the API returns absolute times)
+  // - Idle/Payout: 30s (low priority)
   // NOTE: SSE events only work when orchestrator runs in-process (local dev).
   // On production (Vercel + Railway worker), SSE connects but delivers no events,
   // so polling is the primary update mechanism.
@@ -1084,11 +1210,11 @@ export default function RumblePage() {
     fetchStatus();
     let intervalMs: number;
     if (hasActiveCombat) {
-      intervalMs = 2_000;
+      intervalMs = STATUS_POLL_INTERVALS_MS.combat;
     } else if (hasActiveBetting) {
-      intervalMs = 4_000;
+      intervalMs = STATUS_POLL_INTERVALS_MS.betting;
     } else {
-      intervalMs = 15_000;
+      intervalMs = STATUS_POLL_INTERVALS_MS.idle;
     }
     const pollInterval = setInterval(fetchStatus, intervalMs);
     return () => clearInterval(pollInterval);
@@ -1277,8 +1403,7 @@ export default function RumblePage() {
       }
 
       await Promise.all([fetchClaimBalance(), fetchStatus()]);
-      const newBalance = await connection.getBalance(publicKey, "confirmed");
-      setSolBalance(newBalance / LAMPORTS_PER_SOL);
+      await refreshSolBalance({ force: true, ttlMs: 0 });
     } catch (e: any) {
       if (e?.message?.includes("User rejected")) {
         setClaimError(totalClaimed > 0
@@ -1290,12 +1415,17 @@ export default function RumblePage() {
           : (e?.message ?? "Claim failed"));
       }
     } finally {
+      if (totalClaimed > 0) {
+        audioManager.init();
+        audioManager.play("claim_complete");
+      }
       setClaimPending(false);
     }
   }, [
     connection,
     claimBalance,
     fetchClaimBalance,
+    refreshSolBalance,
     fetchStatus,
     signTransaction,
     publicKey,
@@ -1460,8 +1590,16 @@ export default function RumblePage() {
       fetchStatus();
       fetchClaimBalance();
       setTimeout(() => fetchMyBets({ includeOnchain: true }), 4_000);
-      const newBalance = await connection.getBalance(publicKey, "confirmed");
-      setSolBalance(newBalance / LAMPORTS_PER_SOL);
+      const totalBetSol = preparedLegs.reduce((sum, leg) => {
+        const amount = Number(leg.sol_amount ?? 0);
+        return Number.isFinite(amount) && amount > 0 ? sum + amount : sum;
+      }, 0);
+      if (totalBetSol > 0) {
+        setSolBalance((prev) => (prev === null ? prev : Math.max(0, prev - totalBetSol)));
+      }
+      setTimeout(() => {
+        void refreshSolBalance({ force: true, ttlMs: 0 });
+      }, 8_000);
 
       return txSig;
     } catch (e: any) {
@@ -1488,6 +1626,7 @@ export default function RumblePage() {
     connection,
     fetchClaimBalance,
     fetchMyBets,
+    refreshSolBalance,
     fetchStatus,
     signTransaction,
     publicKey,
@@ -1618,16 +1757,33 @@ export default function RumblePage() {
                     </button>
                   </div>
                 ) : (
-                  <button
-                    onClick={connectWallet}
-                    className="px-3 py-1 bg-amber-600 hover:bg-amber-500 text-stone-950 font-mono text-xs font-bold rounded-sm transition-all active:scale-95 flex-shrink-0"
-                  >
-                    {mobileContext.shouldPreferMobileWalletAdapter
-                      ? mobileContext.isSeeker
-                        ? "Connect Seeker Wallet"
-                        : "Connect Mobile Wallet"
-                      : "Connect Wallet"}
-                  </button>
+                  <div className="flex flex-col items-end gap-1">
+                    <button
+                      onClick={connectWallet}
+                      disabled={walletConnectPending || walletAdapterConnecting}
+                      className={`px-3 py-1 text-stone-950 font-mono text-xs font-bold rounded-sm transition-all flex-shrink-0 ${
+                        walletConnectPending || walletAdapterConnecting
+                          ? "bg-amber-700 cursor-wait opacity-80"
+                          : "bg-amber-600 hover:bg-amber-500 active:scale-95"
+                      }`}
+                    >
+                      {walletConnectPending || walletAdapterConnecting
+                        ? "Connecting..."
+                        : mobileContext.shouldPreferMobileWalletAdapter
+                          ? mobileContext.isSeeker
+                            ? "Connect Seeker Wallet"
+                            : "Connect Mobile Wallet"
+                          : "Connect Wallet"}
+                    </button>
+                    {walletConnectError && (
+                      <span
+                        className="font-mono text-[10px] text-red-400 max-w-[220px] truncate text-right"
+                        title={walletConnectError}
+                      >
+                        {walletConnectError}
+                      </span>
+                    )}
+                  </div>
                 )}
               </div>
             </div>
@@ -1752,9 +1908,11 @@ export default function RumblePage() {
                                 : "No fighters queued"}
                             </p>
                             <p className="font-mono text-[10px] text-stone-600">
-                              {status?.queueLength && status.queueLength >= 8
-                                ? "NEXT RUMBLE STARTING SOON"
-                                : "Need 8+ fighters to start a rumble"}
+                              {status?.nextRumbleIn
+                                ? status.nextRumbleIn === "Starting now..."
+                                  ? "NEXT RUMBLE STARTING SOON"
+                                  : status.nextRumbleIn
+                                : "Need 12+ fighters to start a rumble"}
                             </p>
                           </div>
                         </div>

@@ -216,15 +216,47 @@ export function getBettingReadConnections(): Connection[] {
 /**
  * Get the MagicBlock ER RPC endpoint.
  * Uses MAGICBLOCK_ER_RPC_URL env var, defaults to devnet ER endpoint.
- * NOTE: devnet-us.magicblock.app is DEPRECATED — use devnet.magicblock.app
+ * NOTE: devnet-us.magicblock.app is DEPRECATED — use devnet-router.magicblock.app
  */
 export function getErRpcEndpoint(): string {
   const explicit = process.env.MAGICBLOCK_ER_RPC_URL?.trim();
   if (explicit) return explicit;
-  return "https://devnet.magicblock.app";
+  return "https://devnet-router.magicblock.app";
 }
 
 let _erConnection: Connection | null = null;
+let _erConnectionKind: "router" | "plain" | null = null;
+let _erRouterLoadWarned = false;
+
+type ConnectionMagicRouterCtor = new (
+  endpoint: string,
+  config?: { commitment?: Commitment; wsEndpoint?: string },
+) => Connection;
+
+function tryCreateMagicRouterConnection(endpoint: string): Connection | null {
+  if (typeof window !== "undefined") return null;
+  try {
+    const runtimeRequire = Function("return require")() as NodeRequire;
+    const sdk = runtimeRequire("@magicblock-labs/ephemeral-rollups-sdk") as {
+      ConnectionMagicRouter?: ConnectionMagicRouterCtor;
+    };
+    const RouterCtor = sdk?.ConnectionMagicRouter;
+    if (!RouterCtor) return null;
+    return new RouterCtor(endpoint, {
+      commitment: "confirmed",
+      wsEndpoint: endpoint.replace("https://", "wss://"),
+    });
+  } catch (error) {
+    if (!_erRouterLoadWarned) {
+      _erRouterLoadWarned = true;
+      console.warn(
+        "[solana-connection] Failed to initialize ConnectionMagicRouter. Falling back to plain Connection.",
+        error,
+      );
+    }
+    return null;
+  }
+}
 
 /**
  * Get a shared connection to the MagicBlock Ephemeral Rollup validator.
@@ -232,11 +264,15 @@ let _erConnection: Connection | null = null;
  */
 export function getErConnection(): Connection {
   if (!_erConnection) {
+    const endpoint = getErRpcEndpoint();
+    const routerConnection = tryCreateMagicRouterConnection(endpoint);
+    _erConnectionKind = routerConnection ? "router" : "plain";
     _erConnection = instrumentConnection(
-      new Connection(getErRpcEndpoint(), {
-        commitment: "confirmed",
-        wsEndpoint: getErRpcEndpoint().replace("https://", "wss://"),
-      }),
+      routerConnection ??
+        new Connection(endpoint, {
+          commitment: "confirmed",
+          wsEndpoint: endpoint.replace("https://", "wss://"),
+        }),
       "er",
     );
   }
@@ -248,6 +284,130 @@ export function getErConnection(): Connection {
  */
 export function createFreshConnection(commitment: Commitment = "confirmed"): Connection {
   return instrumentConnection(new Connection(getRpcEndpoint(), { commitment }), "fresh");
+}
+
+// ---------------------------------------------------------------------------
+// Lightweight RPC caches (blockhash + balance)
+// ---------------------------------------------------------------------------
+
+const DEFAULT_BLOCKHASH_CACHE_TTL_MS = Math.max(
+  250,
+  Number(process.env.RUMBLE_BLOCKHASH_CACHE_TTL_MS ?? "1200"),
+);
+const DEFAULT_BALANCE_CACHE_TTL_MS = Math.max(
+  1_000,
+  Number(process.env.RUMBLE_BALANCE_CACHE_TTL_MS ?? "20000"),
+);
+
+type BlockhashWithExpiry = Awaited<ReturnType<Connection["getLatestBlockhash"]>>;
+type CacheOptions = { ttlMs?: number; forceRefresh?: boolean };
+type BalanceCacheOptions = CacheOptions & { commitment?: Commitment };
+
+const _connectionCacheIds = new WeakMap<Connection, number>();
+let _nextConnectionCacheId = 1;
+
+const _blockhashCache = new Map<string, { at: number; value: BlockhashWithExpiry }>();
+const _blockhashInFlight = new Map<string, Promise<BlockhashWithExpiry>>();
+
+const _balanceCache = new Map<string, { at: number; lamports: number }>();
+const _balanceInFlight = new Map<string, Promise<number>>();
+
+function connectionCacheId(connection: Connection): number {
+  const existing = _connectionCacheIds.get(connection);
+  if (existing) return existing;
+  const id = _nextConnectionCacheId++;
+  _connectionCacheIds.set(connection, id);
+  return id;
+}
+
+function pruneRpcCaches(now: number): void {
+  if (_blockhashCache.size > 200) {
+    for (const [key, entry] of _blockhashCache.entries()) {
+      if (now - entry.at > DEFAULT_BLOCKHASH_CACHE_TTL_MS * 4) {
+        _blockhashCache.delete(key);
+      }
+    }
+  }
+  if (_balanceCache.size > 2000) {
+    for (const [key, entry] of _balanceCache.entries()) {
+      if (now - entry.at > DEFAULT_BALANCE_CACHE_TTL_MS * 4) {
+        _balanceCache.delete(key);
+      }
+    }
+  }
+}
+
+/**
+ * Cached getLatestBlockhash with in-flight dedupe.
+ * Reduces duplicate RPC calls during high-concurrency transaction bursts.
+ */
+export async function getLatestBlockhashCached(
+  connection: Connection = getConnection(),
+  commitment: Commitment = "confirmed",
+  options: CacheOptions = {},
+): Promise<BlockhashWithExpiry> {
+  const ttlMs = options.ttlMs ?? DEFAULT_BLOCKHASH_CACHE_TTL_MS;
+  const key = `${connectionCacheId(connection)}:${commitment}`;
+  const now = Date.now();
+
+  if (!options.forceRefresh) {
+    const cached = _blockhashCache.get(key);
+    if (cached && now - cached.at < ttlMs) return cached.value;
+    const inFlight = _blockhashInFlight.get(key);
+    if (inFlight) return inFlight;
+  }
+
+  const promise = connection
+    .getLatestBlockhash(commitment)
+    .then((value) => {
+      const at = Date.now();
+      _blockhashCache.set(key, { at, value });
+      pruneRpcCaches(at);
+      return value;
+    })
+    .finally(() => {
+      _blockhashInFlight.delete(key);
+    });
+
+  _blockhashInFlight.set(key, promise);
+  return promise;
+}
+
+/**
+ * Cached getBalance with in-flight dedupe.
+ * Useful for API polling and repeated wallet balance refreshes.
+ */
+export async function getCachedBalance(
+  connection: Connection,
+  publicKey: PublicKey,
+  options: BalanceCacheOptions = {},
+): Promise<number> {
+  const commitment = options.commitment ?? "confirmed";
+  const ttlMs = options.ttlMs ?? DEFAULT_BALANCE_CACHE_TTL_MS;
+  const key = `${connectionCacheId(connection)}:${commitment}:${publicKey.toBase58()}`;
+  const now = Date.now();
+
+  if (!options.forceRefresh) {
+    const cached = _balanceCache.get(key);
+    if (cached && now - cached.at < ttlMs) return cached.lamports;
+    const inFlight = _balanceInFlight.get(key);
+    if (inFlight) return inFlight;
+  }
+
+  const promise = connection
+    .getBalance(publicKey, commitment)
+    .then((lamports) => {
+      const at = Date.now();
+      _balanceCache.set(key, { at, lamports });
+      pruneRpcCaches(at);
+      return lamports;
+    })
+    .finally(() => {
+      _balanceInFlight.delete(key);
+    });
+
+  _balanceInFlight.set(key, promise);
+  return promise;
 }
 
 // ---------------------------------------------------------------------------
@@ -274,10 +434,17 @@ const DELEGATION_PROGRAM_ID = "DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh";
  */
 export function getErStatusInfo() {
   const erEnabled = isErEnabled();
+  const erConn = erEnabled ? getErConnection() : null;
+  const endpoint = erEnabled ? getErRpcEndpoint() : null;
+  const mode = erEnabled ? (_erConnectionKind ?? "plain") : null;
   return {
     er_enabled: erEnabled,
-    er_rpc_url: erEnabled ? getErRpcEndpoint() : null,
-    combat_rpc_url: erEnabled ? getErRpcEndpoint() : getRpcEndpoint(),
+    er_rpc_url: endpoint,
+    combat_rpc_url: erEnabled ? endpoint : getRpcEndpoint(),
+    er_connection_mode: mode,
+    er_runtime_rpc_url: erConn
+      ? ((erConn as unknown as { rpcEndpoint?: string }).rpcEndpoint ?? endpoint)
+      : null,
     delegation_program: erEnabled ? DELEGATION_PROGRAM_ID : null,
   };
 }
@@ -310,8 +477,10 @@ export async function buildSolTransfer(
     }),
   );
 
-  const { blockhash, lastValidBlockHeight } =
-    await connection.getLatestBlockhash("confirmed");
+  const { blockhash, lastValidBlockHeight } = await getLatestBlockhashCached(
+    connection,
+    "confirmed",
+  );
 
   transaction.recentBlockhash = blockhash;
   transaction.lastValidBlockHeight = lastValidBlockHeight;
@@ -353,13 +522,15 @@ export async function sendTransaction(
 export async function confirmTransaction(
   signature: TransactionSignature,
   timeoutMs: number = 30_000,
+  context?: { blockhash: string; lastValidBlockHeight: number },
 ): Promise<boolean> {
   const connection = getConnection();
 
   const { blockhash, lastValidBlockHeight } =
-    await connection.getLatestBlockhash("confirmed");
+    context ??
+    (await getLatestBlockhashCached(connection, "confirmed"));
 
-  const result = await connection.confirmTransaction(
+  const resultPromise = connection.confirmTransaction(
     {
       signature,
       blockhash,
@@ -367,9 +538,25 @@ export async function confirmTransaction(
     },
     "confirmed",
   );
+  const result = (() => {
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      return resultPromise;
+    }
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(
+        () => reject(new Error(`Transaction confirmation timed out after ${timeoutMs}ms`)),
+        timeoutMs,
+      );
+    });
+    return Promise.race([resultPromise, timeoutPromise]).finally(() => {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+    });
+  })();
+  const settled = await result;
 
-  if (result.value.err) {
-    throw new Error(`Transaction failed: ${JSON.stringify(result.value.err)}`);
+  if (settled.value.err) {
+    throw new Error(`Transaction failed: ${JSON.stringify(settled.value.err)}`);
   }
 
   return true;
@@ -386,7 +573,19 @@ export async function sendAndConfirmTransaction(
   signedTransaction: Transaction,
 ): Promise<TransactionSignature> {
   const signature = await sendTransaction(signedTransaction);
-  await confirmTransaction(signature);
+  const hasTxContext =
+    typeof signedTransaction.recentBlockhash === "string" &&
+    typeof signedTransaction.lastValidBlockHeight === "number";
+  await confirmTransaction(
+    signature,
+    30_000,
+    hasTxContext
+      ? {
+          blockhash: signedTransaction.recentBlockhash!,
+          lastValidBlockHeight: signedTransaction.lastValidBlockHeight!,
+        }
+      : undefined,
+  );
   return signature;
 }
 
@@ -395,7 +594,9 @@ export async function sendAndConfirmTransaction(
  */
 export async function getSolBalance(publicKey: PublicKey): Promise<number> {
   const connection = getConnection();
-  const lamports = await connection.getBalance(publicKey, "confirmed");
+  const lamports = await getCachedBalance(connection, publicKey, {
+    commitment: "confirmed",
+  });
   return lamports / LAMPORTS_PER_SOL;
 }
 

@@ -29,6 +29,7 @@ import {
   getBettingConnection,
   getBettingReadConnections,
   getErConnection,
+  getLatestBlockhashCached,
 } from "./solana-connection";
 import { createHash, randomBytes } from "node:crypto";
 import { keccak_256 } from "@noble/hashes/sha3";
@@ -887,9 +888,12 @@ export async function readBettorAccount(
   bettor: PublicKey,
   rumbleId: bigint | number,
   connection?: Connection,
+  programId?: PublicKey,
 ): Promise<BettorAccountState | null> {
   const conn = connection ?? getConnection();
-  const [bettorPda] = deriveBettorPda(rumbleId, bettor);
+  const [bettorPda] = programId && programId.equals(RUMBLE_ENGINE_ID_MAINNET)
+    ? deriveBettorPdaMainnet(rumbleId, bettor)
+    : deriveBettorPda(rumbleId, bettor);
   const info = await conn.getAccountInfo(bettorPda, "confirmed");
   if (!info || info.data.length < 59) return null;
 
@@ -1215,7 +1219,8 @@ export async function registerFighter(
     .transaction();
 
   tx.feePayer = authority;
-  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash(
+  const { blockhash, lastValidBlockHeight } = await getLatestBlockhashCached(
+    conn,
     "confirmed"
   );
   tx.recentBlockhash = blockhash;
@@ -1375,7 +1380,7 @@ async function sendAdminInstructions(
   const tx = new Transaction().add(...instructions);
   tx.feePayer = admin.publicKey;
   const { blockhash, lastValidBlockHeight } =
-    await provider.connection.getLatestBlockhash("confirmed");
+    await getLatestBlockhashCached(provider.connection, "confirmed");
   tx.recentBlockhash = blockhash;
   tx.lastValidBlockHeight = lastValidBlockHeight;
   return await provider.sendAndConfirm(tx, []);
@@ -2133,7 +2138,7 @@ export async function buildCommitMoveTx(
     .transaction();
 
   tx.feePayer = fighter;
-  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+  const { blockhash, lastValidBlockHeight } = await getLatestBlockhashCached(conn, "confirmed");
   tx.recentBlockhash = blockhash;
   tx.lastValidBlockHeight = lastValidBlockHeight;
   return tx;
@@ -2187,7 +2192,7 @@ export async function buildRevealMoveTx(
     .transaction();
 
   tx.feePayer = fighter;
-  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+  const { blockhash, lastValidBlockHeight } = await getLatestBlockhashCached(conn, "confirmed");
   tx.recentBlockhash = blockhash;
   tx.lastValidBlockHeight = lastValidBlockHeight;
   return tx;
@@ -2246,7 +2251,8 @@ export async function buildPlaceBetTx(
     .transaction();
 
   tx.feePayer = bettor;
-  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash(
+  const { blockhash, lastValidBlockHeight } = await getLatestBlockhashCached(
+    conn,
     "confirmed"
   );
   tx.recentBlockhash = blockhash;
@@ -2326,7 +2332,7 @@ export async function buildPlaceBetBatchTx(
   }
 
   tx.feePayer = bettor;
-  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+  const { blockhash, lastValidBlockHeight } = await getLatestBlockhashCached(conn, "confirmed");
   tx.recentBlockhash = blockhash;
   tx.lastValidBlockHeight = lastValidBlockHeight;
   return tx;
@@ -2447,7 +2453,7 @@ async function sendAdminTxFireAndForget(
         console.warn("[ER] getLatestBlockhashForTransaction failed; falling back to getLatestBlockhash:", error);
       }
     }
-    const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("processed");
+    const { blockhash, lastValidBlockHeight } = await getLatestBlockhashCached(conn, "processed");
     tx.recentBlockhash = blockhash;
     tx.lastValidBlockHeight = lastValidBlockHeight;
   };
@@ -2774,7 +2780,8 @@ export async function buildClaimPayoutTx(
     .transaction();
 
   tx.feePayer = bettor;
-  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash(
+  const { blockhash, lastValidBlockHeight } = await getLatestBlockhashCached(
+    conn,
     "confirmed"
   );
   tx.recentBlockhash = blockhash;
@@ -2832,7 +2839,7 @@ export async function buildClaimPayoutBatchTx(
   }
 
   tx.feePayer = bettor;
-  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+  const { blockhash, lastValidBlockHeight } = await getLatestBlockhashCached(conn, "confirmed");
   tx.recentBlockhash = blockhash;
   tx.lastValidBlockHeight = lastValidBlockHeight;
   return tx;
@@ -2864,7 +2871,8 @@ export async function buildClaimSponsorshipTx(
     .transaction();
 
   tx.feePayer = fighterOwner;
-  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash(
+  const { blockhash, lastValidBlockHeight } = await getLatestBlockhashCached(
+    conn,
     "confirmed"
   );
   tx.recentBlockhash = blockhash;
@@ -3580,7 +3588,7 @@ export async function ensureAta(
 
   const tx = new Transaction().add(ix);
   tx.feePayer = admin.publicKey;
-  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+  const { blockhash, lastValidBlockHeight } = await getLatestBlockhashCached(conn, "confirmed");
   tx.recentBlockhash = blockhash;
   tx.lastValidBlockHeight = lastValidBlockHeight;
   tx.partialSign(admin);
@@ -3898,7 +3906,7 @@ async function ensureErEscrowFunding(admin: Keypair, connection: Connection): Pr
     );
     const tx = new Transaction().add(ix);
     tx.feePayer = admin.publicKey;
-    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("processed");
+    const { blockhash, lastValidBlockHeight } = await getLatestBlockhashCached(connection, "processed");
     tx.recentBlockhash = blockhash;
     tx.lastValidBlockHeight = lastValidBlockHeight;
     tx.sign(admin);
@@ -3943,6 +3951,15 @@ export async function delegateCombatToEr(
   const [bufferPda] = deriveDelegationBufferPda(combatStatePda, program.programId);
   const [delegationRecordPda] = deriveDelegationRecordPda(combatStatePda);
   const [delegationMetadataPda] = deriveDelegationMetadataPda(combatStatePda);
+  const erValidator = await getErClosestValidatorCached(getErConnection()).catch(() => null);
+  let erValidatorPubkey: PublicKey | null = null;
+  if (erValidator?.identity) {
+    try {
+      erValidatorPubkey = new PublicKey(erValidator.identity);
+    } catch (error) {
+      console.warn("[ER-DELEGATE] Invalid closest validator identity, delegating without validator pin:", error);
+    }
+  }
 
   console.log(`[ER-DELEGATE] Sending delegateCombat for rumble ${rumbleId}...`);
   const method = (program.methods as any)
@@ -3958,6 +3975,18 @@ export async function delegateCombatToEr(
       delegationProgram: DELEGATION_PROGRAM_ID,
       systemProgram: SystemProgram.programId,
     });
+  if (erValidatorPubkey) {
+    method.remainingAccounts([
+      {
+        pubkey: erValidatorPubkey,
+        isSigner: false,
+        isWritable: false,
+      },
+    ]);
+    console.log(`[ER-DELEGATE] Pinning rumble ${rumbleId} to ER validator ${erValidatorPubkey.toBase58()}`);
+  } else {
+    console.warn(`[ER-DELEGATE] No closest validator resolved for rumble ${rumbleId}; delegating without validator pin`);
+  }
 
   // Delegate on L1 (devnet), NOT on ER.
   // MUST wait for confirmation before returning — fire-and-forget caused a race

@@ -12,6 +12,9 @@ import {
   loadPayoutResult,
   getIchorShowerState,
   getStats,
+  hasMinimumRumbleFighters,
+  extractRumbleFighterIds,
+  MIN_ACTIVE_RUMBLE_FIGHTERS,
 } from "~~/lib/rumble-persistence";
 import {
   readArenaConfig,
@@ -46,7 +49,7 @@ const MAX_ACTIVE_AGE_MS_BY_STATUS: Record<string, number> = {
 // credits burned. These were bumped from 1.5-3s to 5-15s to reduce
 // getAccountInfo calls from ~200K/day to ~50K/day.
 const STATUS_CACHE_TTLS_MS = {
-  slot: 5_000,           // was 1.5s — slot number changes every 400ms but we don't need sub-second precision
+  slot: 10_000,          // was 5s — countdowns use estimates, so 10s slot snapshots are sufficient
   fighterLookup: 30_000, // was 10s — fighter metadata rarely changes
   commentary: 10_000,    // was 2.5s — commentary updates per turn (~20s)
   turnLog: 5_000,        // was 2.5s — turn log updates per turn (~20s)
@@ -55,6 +58,56 @@ const STATUS_CACHE_TTLS_MS = {
   arenaConfig: 60_000,   // was 3s — config almost never changes
   stats: 30_000,         // was 3s — stats update per completed rumble
 };
+const STATUS_RESPONSE_CACHE_MS = {
+  combat: Math.max(2_000, Number(process.env.RUMBLE_STATUS_RESPONSE_CACHE_COMBAT_MS ?? "4000")),
+  betting: Math.max(3_000, Number(process.env.RUMBLE_STATUS_RESPONSE_CACHE_BETTING_MS ?? "8000")),
+  idle: Math.max(5_000, Number(process.env.RUMBLE_STATUS_RESPONSE_CACHE_IDLE_MS ?? "20000")),
+};
+
+type StatusResponseBody = {
+  slots: any[];
+  queue: any[];
+  queueLength: number;
+  nextRumbleIn: string | null;
+  bettingCloseGuardMs: number;
+  ichorShower: {
+    currentPool: number;
+    rumblesSinceLastTrigger: number;
+  };
+  onchain: Record<string, unknown>;
+  runtimeHealth: Record<string, unknown>;
+  systemWarnings: string[];
+};
+
+let _statusResponseCache: { body: StatusResponseBody; expiresAt: number } | null = null;
+
+function getStatusResponseCacheTtlMs(body: StatusResponseBody): number {
+  if (body.slots.some((slot) => slot?.state === "combat")) {
+    return STATUS_RESPONSE_CACHE_MS.combat;
+  }
+  if (body.slots.some((slot) => slot?.state === "betting")) {
+    return STATUS_RESPONSE_CACHE_MS.betting;
+  }
+  return STATUS_RESPONSE_CACHE_MS.idle;
+}
+
+function getCachedStatusResponse(): StatusResponseBody | null {
+  const now = Date.now();
+  if (_statusResponseCache && _statusResponseCache.expiresAt > now) {
+    return _statusResponseCache.body;
+  }
+  if (_statusResponseCache && _statusResponseCache.expiresAt <= now) {
+    _statusResponseCache = null;
+  }
+  return null;
+}
+
+function primeStatusResponseCache(body: StatusResponseBody): void {
+  _statusResponseCache = {
+    body,
+    expiresAt: Date.now() + getStatusResponseCacheTtlMs(body),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Cached getSlot — avoids redundant RPC calls across concurrent status polls
@@ -377,6 +430,13 @@ export async function GET(request: Request) {
     const rlKey = getRateLimitKey(request);
     const rl = checkRateLimit("PUBLIC_READ", rlKey);
     if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+
+    if (!STATUS_MUTATION_ENABLED) {
+      const cachedResponse = getCachedStatusResponse();
+      if (cachedResponse) {
+        return NextResponse.json(cachedResponse);
+      }
+    }
 
     try {
       // In production, keep status read-only by default to avoid split-brain
@@ -882,7 +942,9 @@ export async function GET(request: Request) {
       const maxAge = MAX_ACTIVE_AGE_MS_BY_STATUS[status] ?? 10 * 60 * 1000;
       const createdAtMs = new Date(row.created_at).getTime();
       if (!Number.isFinite(createdAtMs)) return false;
-      return nowMs - createdAtMs <= maxAge;
+      if (nowMs - createdAtMs > maxAge) return false;
+      // Reject stale/corrupt active rows that violate the 12-fighter floor.
+      return hasMinimumRumbleFighters(row.fighters);
     });
     const persistedBySlot = new Map<number, Array<(typeof persistedActive)[number]>>();
     for (const row of freshPersisted) {
@@ -915,13 +977,9 @@ export async function GET(request: Request) {
     if (freshPersisted.length > 0) {
       const base = new Map(slots.map((s) => [s.slotIndex, s]));
       for (const [slotIndex, row] of latestPersistedBySlot.entries()) {
-        const fighterRows = Array.isArray(row.fighters)
-          ? (row.fighters as Array<{ id?: string; name?: string }>)
-          : [];
-        const fighterIds = fighterRows
-          .map((f) => String(f?.id ?? "").trim())
-          .filter(Boolean);
+        const fighterIds = extractRumbleFighterIds(row.fighters);
         if (fighterIds.length === 0) continue;
+        if (fighterIds.length < MIN_ACTIVE_RUMBLE_FIGHTERS) continue;
 
         // Build fighter state — replay turn_log if available to show actual HP
         const turnLog = Array.isArray(row.turn_log) ? row.turn_log : [];
@@ -1341,9 +1399,8 @@ export async function GET(request: Request) {
       }
     }
 
-
       const erInfo = getErStatusInfo();
-      return NextResponse.json({
+      const responseBody: StatusResponseBody = {
         slots,
         queue,
         queueLength: queueEntries.length + activeFighterCount,
@@ -1364,7 +1421,13 @@ export async function GET(request: Request) {
         },
         runtimeHealth,
         systemWarnings,
-      });
+      };
+
+      if (!STATUS_MUTATION_ENABLED) {
+        primeStatusResponseCache(responseBody);
+      }
+
+      return NextResponse.json(responseBody);
     } catch (error: any) {
       console.error("[StatusAPI]", error);
       return NextResponse.json({ error: "Failed to fetch rumble status" }, { status: 500 });
