@@ -482,16 +482,16 @@ function fighterRobotMeta(lookup: Map<string, FighterInfo>, id: string): RobotMe
 
 export async function GET(request: Request) {
   return runWithRpcMetrics("GET /api/rumble/status", async () => {
-    const rlKey = getRateLimitKey(request);
-    const rl = checkRateLimit("PUBLIC_READ", rlKey);
-    if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
-
     if (!STATUS_MUTATION_ENABLED) {
       const cachedResponse = getCachedStatusResponse();
       if (cachedResponse) {
         return NextResponse.json(cachedResponse);
       }
     }
+
+    const rlKey = getRateLimitKey(request);
+    const rl = checkRateLimit("PUBLIC_READ", rlKey);
+    if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
 
     try {
       // In production, keep status read-only by default to avoid split-brain
