@@ -674,6 +674,12 @@ export class RumbleOrchestrator {
   private ichorShowerPool = 0;
   private lastShowerPollAt = 0;
   private showerPollInFlight = false;
+  private pendingVrfShowerResult: {
+    rumbleId: string;
+    slotIndex: number | null;
+    recipientWallet: string | null;
+    poolBeforeLamports: number;
+  } | null = null;
 
   // Dedup: track rumble IDs that have been settled on-chain to prevent double payouts
   private settledRumbleIds: Map<string, number> = new Map(); // rumbleId → timestamp
@@ -1808,8 +1814,20 @@ export class RumbleOrchestrator {
 
   private async pollPendingIchorShowerAsync(): Promise<void> {
     const pendingShower = await readShowerRequest().catch(() => null);
-    if (!pendingShower?.active) return;
+    if (!pendingShower?.active) {
+      await this.reconcilePendingVrfShowerResult();
+      return;
+    }
     if (pendingShower.recipientTokenAccount === "11111111111111111111111111111111") return;
+
+    // MagicBlock VRF requests reuse the same shower_request PDA but do not set
+    // legacy settlement slots. Calling checkIchorShower on them forces the old
+    // slot-hash path against a VRF request and can clear it before callback.
+    const isVrfRequest =
+      pendingShower.requestedSlot > 0n &&
+      pendingShower.targetSlotA === 0n &&
+      pendingShower.targetSlotB === 0n;
+    if (isVrfRequest) return;
 
     let recipientAta: PublicKey;
     try {
@@ -1826,6 +1844,49 @@ export class RumbleOrchestrator {
       console.log(`[OnChain] pending checkIchorShower succeeded: ${sig}`);
     } else {
       console.warn(`[OnChain] pending checkIchorShower returned null`);
+    }
+  }
+
+  private async reconcilePendingVrfShowerResult(): Promise<void> {
+    const pending = this.pendingVrfShowerResult;
+    if (!pending) return;
+
+    try {
+      invalidateReadCache("arena");
+      const arenaAfterShower = await readArenaConfig().catch(() => null);
+      const poolAfterLamports = arenaAfterShower ? Number(arenaAfterShower.ichorShowerPool) : pending.poolBeforeLamports;
+
+      if (pending.poolBeforeLamports > 0 && poolAfterLamports === 0) {
+        const recipientAmount = (pending.poolBeforeLamports / 1e9) * 0.9;
+        const slotIndex = pending.slotIndex;
+
+        if (slotIndex !== null) {
+          const existing = this.transformedPayouts.get(slotIndex);
+          if (existing) {
+            existing.ichorShowerTriggered = true;
+            existing.ichorShowerAmount = recipientAmount;
+            persist.savePayoutResult(pending.rumbleId, existing).catch((err) => {
+              console.error(`[ICHOR SHOWER] Failed to persist updated VRF payout:`, err);
+            });
+          }
+        }
+
+        this.ichorShowerPool = 0;
+        if (pending.recipientWallet) {
+          persist.triggerIchorShower(pending.rumbleId, pending.recipientWallet, recipientAmount).catch((err) => {
+            console.error(`[ICHOR SHOWER] Failed to persist VRF trigger to Supabase:`, err);
+          });
+
+          this.emit("ichor_shower", {
+            slotIndex: slotIndex ?? 0,
+            rumbleId: pending.rumbleId,
+            winnerId: pending.recipientWallet,
+            amount: recipientAmount,
+          });
+        }
+      }
+    } finally {
+      this.pendingVrfShowerResult = null;
     }
   }
 
@@ -5239,6 +5300,12 @@ export class RumbleOrchestrator {
                 () => persist.updateRumbleTxSignature(rumbleId, "ichorShowerVrf", vrfSig),
                 `updateRumbleTxSignature:ichorShowerVrf:${rumbleId}`,
               );
+              this.pendingVrfShowerResult = {
+                rumbleId,
+                slotIndex: this.findSlotIndexByRumbleId(rumbleId),
+                recipientWallet: showerRecipientWallet,
+                poolBeforeLamports: poolBefore,
+              };
               showerHandled = true;
             }
           } else {
@@ -5323,10 +5390,14 @@ export class RumbleOrchestrator {
                   winnerId: showerRecipientWallet,
                   amount: recipientAmount,
                 });
+                this.pendingVrfShowerResult = null;
               } else {
                 console.log(
                   `[ICHOR SHOWER] No trigger this time. poolBefore=${poolBefore}, poolAfter=${poolAfter}`,
                 );
+                if (!showerHandled) {
+                  this.pendingVrfShowerResult = null;
+                }
               }
             } catch (err) {
               console.warn(`[ICHOR SHOWER] Failed to read back shower result:`, err);
