@@ -12,7 +12,7 @@ interface RateLimitEntry {
 export type RateLimitTier = "PUBLIC_READ" | "PUBLIC_WRITE" | "AUTHENTICATED" | "SSE";
 
 const TIER_CONFIG: Record<RateLimitTier, { maxRequests: number; windowMs: number }> = {
-  PUBLIC_READ: { maxRequests: 60, windowMs: 60_000 },
+  PUBLIC_READ: { maxRequests: 120, windowMs: 60_000 },
   PUBLIC_WRITE: { maxRequests: 10, windowMs: 60_000 },
   AUTHENTICATED: { maxRequests: 30, windowMs: 60_000 },
   SSE: { maxRequests: 5, windowMs: 60_000 },

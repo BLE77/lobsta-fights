@@ -59,9 +59,9 @@ const STATUS_CACHE_TTLS_MS = {
   stats: 30_000,         // was 3s — stats update per completed rumble
 };
 const STATUS_RESPONSE_CACHE_MS = {
-  combat: Math.max(2_000, Number(process.env.RUMBLE_STATUS_RESPONSE_CACHE_COMBAT_MS ?? "4000")),
-  betting: Math.max(3_000, Number(process.env.RUMBLE_STATUS_RESPONSE_CACHE_BETTING_MS ?? "8000")),
-  idle: Math.max(5_000, Number(process.env.RUMBLE_STATUS_RESPONSE_CACHE_IDLE_MS ?? "20000")),
+  combat: Math.max(4_000, Number(process.env.RUMBLE_STATUS_RESPONSE_CACHE_COMBAT_MS ?? "8000")),
+  betting: Math.max(6_000, Number(process.env.RUMBLE_STATUS_RESPONSE_CACHE_BETTING_MS ?? "12000")),
+  idle: Math.max(10_000, Number(process.env.RUMBLE_STATUS_RESPONSE_CACHE_IDLE_MS ?? "30000")),
 };
 
 type StatusResponseBody = {
@@ -130,6 +130,61 @@ async function getCachedBettingSlot(): Promise<number | null> {
   const slot = await getBettingConnection().getSlot("processed").catch(() => null);
   if (slot !== null) _bettingSlotCache = { slot, at: now };
   return slot;
+}
+
+// ---------------------------------------------------------------------------
+// Cross-request on-chain state cache — prevents repeated RPC calls for the
+// same rumble across consecutive status API requests. Short TTL (8s) keeps
+// data fresh while dramatically cutting Helius RPC volume.
+// ---------------------------------------------------------------------------
+const ONCHAIN_STATE_CACHE_TTL_MS = 8_000;
+const _onchainRumbleStateCache = new Map<number, { value: any; at: number }>();
+const _onchainCombatStateCache = new Map<number, { value: any; at: number }>();
+
+async function readRumbleAccountStateCached(rumbleIdNum: number): Promise<any> {
+  const now = Date.now();
+  const cached = _onchainRumbleStateCache.get(rumbleIdNum);
+  if (cached && now - cached.at < ONCHAIN_STATE_CACHE_TTL_MS) return cached.value;
+  const value = await readRumbleAccountState(rumbleIdNum);
+  _onchainRumbleStateCache.set(rumbleIdNum, { value, at: now });
+  // Evict stale entries
+  if (_onchainRumbleStateCache.size > 30) {
+    for (const [k, v] of _onchainRumbleStateCache) {
+      if (now - v.at > ONCHAIN_STATE_CACHE_TTL_MS) _onchainRumbleStateCache.delete(k);
+    }
+  }
+  return value;
+}
+
+async function readRumbleCombatStateCached(rumbleIdNum: number): Promise<any> {
+  const now = Date.now();
+  const cached = _onchainCombatStateCache.get(rumbleIdNum);
+  if (cached && now - cached.at < ONCHAIN_STATE_CACHE_TTL_MS) return cached.value;
+  const value = await readRumbleCombatState(rumbleIdNum);
+  _onchainCombatStateCache.set(rumbleIdNum, { value, at: now });
+  if (_onchainCombatStateCache.size > 30) {
+    for (const [k, v] of _onchainCombatStateCache) {
+      if (now - v.at > ONCHAIN_STATE_CACHE_TTL_MS) _onchainCombatStateCache.delete(k);
+    }
+  }
+  return value;
+}
+
+async function readMainnetRumbleStateCached(rumbleIdNum: number): Promise<any> {
+  // Reuse the same cache — mainnet reads are just rumble state on a different connection
+  const now = Date.now();
+  const cacheKey = rumbleIdNum + 1_000_000; // offset to avoid collision with devnet reads
+  const cached = _onchainRumbleStateCache.get(cacheKey);
+  if (cached && now - cached.at < ONCHAIN_STATE_CACHE_TTL_MS) return cached.value;
+  const value = await Promise.race([
+    readMainnetRumbleAccountStateResilient(rumbleIdNum, {
+      maxPasses: 1,
+      retryDelayMs: 0,
+    }),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), 3_000)),
+  ]);
+  _onchainRumbleStateCache.set(cacheKey, { value, at: now });
+  return value;
 }
 
 // ---------------------------------------------------------------------------
@@ -640,19 +695,31 @@ export async function GET(request: Request) {
       const capped = delta > 1_000_000n ? 1_000_000n : delta;
       return Number(capped) * SLOT_MS_ESTIMATE;
     };
-    const mainnetRumbleStateById = new Map<number, Promise<Awaited<ReturnType<typeof readMainnetRumbleAccountStateResilient>>>>();
+    // Per-request dedup map (shares results within a single request)
+    // backed by cross-request cache (shares results across requests)
+    const mainnetRumbleStateById = new Map<number, Promise<any>>();
     const getMainnetRumbleState = (rumbleIdNum: number) => {
       const hit = mainnetRumbleStateById.get(rumbleIdNum);
       if (hit) return hit;
-      // Cap mainnet read at 3s to prevent Vercel 10s timeout
-      const req = Promise.race([
-        readMainnetRumbleAccountStateResilient(rumbleIdNum, {
-          maxPasses: 1,
-          retryDelayMs: 0,
-        }),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 3_000)),
-      ]);
+      const req = readMainnetRumbleStateCached(rumbleIdNum);
       mainnetRumbleStateById.set(rumbleIdNum, req);
+      return req;
+    };
+    // Per-request dedup for devnet reads too
+    const devnetRumbleStateById = new Map<number, Promise<any>>();
+    const getDevnetRumbleState = (rumbleIdNum: number) => {
+      const hit = devnetRumbleStateById.get(rumbleIdNum);
+      if (hit) return hit;
+      const req = readRumbleAccountStateCached(rumbleIdNum);
+      devnetRumbleStateById.set(rumbleIdNum, req);
+      return req;
+    };
+    const devnetCombatStateById = new Map<number, Promise<any>>();
+    const getDevnetCombatState = (rumbleIdNum: number) => {
+      const hit = devnetCombatStateById.get(rumbleIdNum);
+      if (hit) return hit;
+      const req = readRumbleCombatStateCached(rumbleIdNum);
+      devnetCombatStateById.set(rumbleIdNum, req);
       return req;
     };
 
@@ -673,7 +740,7 @@ export async function GET(request: Request) {
                 });
                 return null;
               })
-            : await readRumbleAccountState(rumbleIdNum).catch((err) => {
+            : await getDevnetRumbleState(rumbleIdNum).catch((err) => {
                 console.warn("[StatusAPI] readRumbleAccountState failed", {
                   rumbleIdNum,
                   state: slot.state,
@@ -685,7 +752,7 @@ export async function GET(request: Request) {
         let useDevnetSlotContext = slot.state !== "betting"; // non-betting reads already use devnet
         // Fallback: if mainnet read failed during betting, try devnet
         if (!onchain && slot.state === "betting") {
-          onchain = await readRumbleAccountState(rumbleIdNum).catch((err) => {
+          onchain = await getDevnetRumbleState(rumbleIdNum).catch((err) => {
             console.warn("[StatusAPI] readRumbleAccountState fallback failed", {
               rumbleIdNum,
               state: slot.state,
@@ -772,7 +839,7 @@ export async function GET(request: Request) {
         let turnPhase = slot.turnPhase;
 
         if (state === "combat") {
-          const onchainCombat = await readRumbleCombatState(rumbleIdNum).catch((err) => {
+          const onchainCombat = await getDevnetCombatState(rumbleIdNum).catch((err) => {
             console.warn("[StatusAPI] readRumbleCombatState failed", {
               rumbleIdNum,
               state: slot.state,
@@ -1184,7 +1251,7 @@ export async function GET(request: Request) {
           let useDevnetSlotContext = false;
           // Fallback: if mainnet failed, try devnet
           if (!onchain) {
-            onchain = await readRumbleAccountState(rumbleIdNum).catch((err) => {
+            onchain = await getDevnetRumbleState(rumbleIdNum).catch((err) => {
               console.warn("[StatusAPI] readRumbleAccountState failed", {
                 rumbleIdNum,
                 slotIndex: slot.slotIndex,
@@ -1250,7 +1317,7 @@ export async function GET(request: Request) {
 
         // --- Combat state: enrich from on-chain CombatState PDA ---
         if (slot.state !== "combat") return slot;
-        const onchainCombat = await readRumbleCombatState(rumbleIdNum).catch((err) => {
+        const onchainCombat = await getDevnetCombatState(rumbleIdNum).catch((err) => {
           console.warn("[StatusAPI] readRumbleCombatState failed", {
             rumbleIdNum,
             slotIndex: slot.slotIndex,

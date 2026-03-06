@@ -143,7 +143,7 @@ export default function ActivityFeed() {
   useEffect(() => {
     const fetchStatus = async () => {
       try {
-        const res = await fetch(`/api/rumble/status?_t=${Date.now()}`, { cache: "no-store" });
+        const res = await fetch("/api/rumble/status", { cache: "no-store" });
         if (!res.ok) return;
         const data = await res.json();
 
@@ -193,7 +193,7 @@ export default function ActivityFeed() {
     };
 
     fetchStatus();
-    const interval = setInterval(fetchStatus, 6000);
+    const interval = setInterval(fetchStatus, 15000);
     return () => clearInterval(interval);
   }, []);
 
