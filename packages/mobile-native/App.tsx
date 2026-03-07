@@ -82,8 +82,8 @@ const SND_CROWD_CHEER = require("./assets/sounds/crowd-cheer.mp3");
 const SND_CLICK = require("./assets/sounds/click.mp3");
 const SND_CLAIM = require("./assets/sounds/claim.mp3");
 const EXPLORER_TX = "https://explorer.solana.com/tx";
-const ONCHAIN_FEED_CLUSTER = "devnet";
-const ONCHAIN_FEED_NETWORK_LABEL = "DEVNET";
+const ONCHAIN_FEED_CLUSTER = "mainnet";
+const ONCHAIN_FEED_NETWORK_LABEL = "MAINNET";
 const LIVE_API_BASE = "https://clawfights.xyz";
 const LOCAL_API_BASE = "http://127.0.0.1:3000";
 const WRITE_RETRYABLE_STATUS = new Set([404, 405, 429, 500, 502, 503, 504]);
@@ -1788,12 +1788,6 @@ function RumbleNativeScreen() {
     <ImageBackground source={RUMBLE_ARENA_BG} style={styles.bgImage} imageStyle={styles.bgImageStyle}>
       <View style={styles.bgOverlay} />
 
-      <View pointerEvents="none" style={styles.bugsOverlayWrap}>
-        <ExpoImage source={CLEANING_BUGS_IMG} style={styles.bugsImage} contentFit="cover" />
-        <View style={styles.bugsQuoteBox}>
-          <Text style={styles.bugsQuoteText}>"Just cleaning up some bugs before mainnet"</Text>
-        </View>
-      </View>
 
       <View style={styles.screen}>
         <View style={styles.header}>

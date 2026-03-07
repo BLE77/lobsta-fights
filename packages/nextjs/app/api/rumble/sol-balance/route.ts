@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { Connection, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
-import { getRpcEndpoint } from "~~/lib/solana-connection";
+import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
+import { getCachedBalance, getBettingConnection } from "~~/lib/solana-connection";
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
@@ -38,12 +38,21 @@ export async function GET(request: Request) {
       );
     }
 
-    const rpc = getRpcEndpoint();
-    const conn = new Connection(rpc, "confirmed");
-    const lamports = await conn.getBalance(pubkey);
+    const conn = getBettingConnection();
+    const lamports = await getCachedBalance(conn, pubkey, {
+      commitment: "confirmed",
+      ttlMs: 20_000,
+    });
     const sol = lamports / LAMPORTS_PER_SOL;
 
-    return NextResponse.json({ address: pubkey.toBase58(), lamports, sol });
+    return NextResponse.json(
+      { address: pubkey.toBase58(), lamports, sol },
+      {
+        headers: {
+          "Cache-Control": "private, max-age=10, stale-while-revalidate=20",
+        },
+      },
+    );
   } catch (error) {
     console.error("[SolBalanceAPI]", error);
     return NextResponse.json(
