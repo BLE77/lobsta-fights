@@ -47,10 +47,6 @@ async function getCachedSnapshot(
 
 export async function GET(request: Request) {
   return runWithRpcMetrics("GET /api/rumble/balance", async () => {
-    const rlKey = getRateLimitKey(request);
-    const rl = checkRateLimit("PUBLIC_READ", rlKey);
-    if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
-
     try {
       const { searchParams } = new URL(request.url);
       const wallet = searchParams.get("wallet") ?? searchParams.get("wallet_address");

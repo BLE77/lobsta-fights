@@ -392,14 +392,22 @@ async function fetchApiWithFallback(
     const isLocalCandidate = /^http:\/\/(127\.0\.0\.1|localhost)/i.test(base);
     const candidateTimeoutMs = isLocalCandidate ? Math.min(baseTimeoutMs, 1500) : baseTimeoutMs;
     try {
+      const keepAliveInit: RequestInit = {
+        ...init,
+        headers: {
+          ...(init?.headers as Record<string, string> ?? {}),
+          "Connection": "keep-alive",
+        },
+        keepalive: true,
+      };
       const res = supportsAbort
         ? await (() => {
           const controller = new AbortController();
           const timer = setTimeout(() => controller.abort(), candidateTimeoutMs);
-          return fetch(`${base}${path}`, { ...init, signal: controller.signal })
+          return fetch(`${base}${path}`, { ...keepAliveInit, signal: controller.signal })
             .finally(() => clearTimeout(timer));
         })()
-        : await fetch(`${base}${path}`, init);
+        : await fetch(`${base}${path}`, keepAliveInit);
       if (res.ok) {
         preferredApiBase = base;
         return res;
@@ -1197,14 +1205,15 @@ function RumbleNativeScreen() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (isRateLimitError(error)) {
-        const retryMs = 5_000;
+        const retryMs = 15_000;
         statusRetryAfterRef.current = Date.now() + retryMs;
-        setStatusError(`Rate limited (429). Retrying in ${Math.ceil(retryMs / 1000)}s.`);
-        setStatusText(`Rate limited. Retrying in ${Math.ceil(retryMs / 1000)}s...`);
+        // Don't show error banner for rate limits — just silently back off
+        // and keep displaying the last known good state
         return;
       }
-      setStatusError(message);
+      // Only show error if we have no data at all
       if (!rumbleStatus) {
+        setStatusError(message);
         setStatusText(`Network issue: ${message}`);
       }
     } finally {
@@ -1342,13 +1351,13 @@ function RumbleNativeScreen() {
   useEffect(() => {
     const hasCombat = (rumbleStatus?.slots ?? []).some(slot => slot.state === "combat");
     const hasBetting = (rumbleStatus?.slots ?? []).some(slot => slot.state === "betting");
-    const intervalMs = hasCombat ? 2000 : hasBetting ? 4000 : 12000;
+    const intervalMs = hasCombat ? 5000 : hasBetting ? 8000 : 15000;
     const timer = setInterval(() => void fetchStatus(), intervalMs);
     return () => clearInterval(timer);
   }, [fetchStatus, rumbleStatus]);
 
   useEffect(() => {
-    const timer = setInterval(() => void fetchChat(), 6000);
+    const timer = setInterval(() => void fetchChat(), 30_000);
     return () => clearInterval(timer);
   }, [fetchChat]);
 
@@ -2024,13 +2033,6 @@ function RumbleNativeScreen() {
                             })}
                           </View>
                         )}
-                        {lastBetSig ? (
-                          <Pressable onPress={() => setLastBetSig(null)} style={({ pressed }) => [styles.lastSigCard, pressed ? styles.pressablePressed : null]}>
-                            <Text style={styles.lastSigText}>
-                              View on Explorer: {shortAddress(lastBetSig, 8, 8)}
-                            </Text>
-                          </Pressable>
-                        ) : null}
                         {selectedBets.length > 0 ? (
                           <Pressable
                             onPress={onDeploySelectedBets}
@@ -2656,9 +2658,7 @@ function RumbleNativeScreen() {
                       {txFeed.slice(0, 14).map(tx => (
                         <Pressable
                           key={tx.signature}
-                          onPress={() => {
-                            setStatusText(`Explorer: ${EXPLORER_TX}/${tx.signature}?cluster=${ONCHAIN_FEED_CLUSTER}`);
-                          }}
+                          onPress={() => {}}
                           style={({ pressed }) => [styles.rowCard, pressed ? styles.pressablePressed : null]}
                         >
                           <View style={[styles.txDot, tx.err ? styles.txDotErr : styles.txDotOk]} />

@@ -13,10 +13,6 @@ export const dynamic = "force-dynamic";
  * hit public RPC rate limits.
  */
 export async function GET(request: Request) {
-  const rlKey = getRateLimitKey(request);
-  const rl = checkRateLimit("PUBLIC_READ", rlKey);
-  if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
-
   try {
     const { searchParams } = new URL(request.url);
     const address = searchParams.get("address");

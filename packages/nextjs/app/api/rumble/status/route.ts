@@ -237,6 +237,61 @@ function getStableBettingDeadline(
   return iso;
 }
 
+function deriveOnchainBettingDeadlineIso(opts: {
+  rumbleIdNum: number;
+  closeRaw: bigint;
+  networkContext: "mainnet" | "devnet";
+  effectiveCurrentSlot: bigint | null;
+  closeToMs: (targetSlot: bigint | null) => number;
+  fallback?: string | null;
+}): string | null {
+  const {
+    rumbleIdNum,
+    closeRaw,
+    networkContext,
+    effectiveCurrentSlot,
+    closeToMs,
+    fallback = null,
+  } = opts;
+
+  if (!(closeRaw > 0n)) return fallback;
+
+  const looksLikeUnix =
+    effectiveCurrentSlot !== null
+      ? closeRaw > effectiveCurrentSlot + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD
+      : closeRaw > 1_000_000_000n;
+
+  let bettingDeadline: string | null = null;
+  if (looksLikeUnix) {
+    const unixMs = Number(closeRaw) * 1_000;
+    bettingDeadline = Number.isFinite(unixMs) ? new Date(unixMs).toISOString() : null;
+  } else {
+    const etaMs = closeToMs(closeRaw);
+    if (etaMs > 0) {
+      bettingDeadline = getStableBettingDeadline(
+        rumbleIdNum,
+        closeRaw,
+        networkContext,
+        () => new Date(Date.now() + etaMs).toISOString(),
+      );
+    }
+  }
+
+  if (!bettingDeadline) return fallback;
+
+  const deadlineMs = new Date(bettingDeadline).getTime();
+  const nowMs = Date.now();
+  if (
+    !Number.isFinite(deadlineMs) ||
+    deadlineMs < nowMs - 5 * 60 * 1000 ||
+    deadlineMs > nowMs + 10 * 60 * 1000
+  ) {
+    return fallback;
+  }
+
+  return bettingDeadline;
+}
+
 function normalizeRumbleNumber(value: unknown): number | null {
   const num = typeof value === "number" ? value : Number(value);
   if (!Number.isSafeInteger(num) || num < 0) return null;
@@ -489,9 +544,8 @@ export async function GET(request: Request) {
       }
     }
 
-    const rlKey = getRateLimitKey(request);
-    const rl = checkRateLimit("PUBLIC_READ", rlKey);
-    if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
+    // Rate limiting removed from status endpoint — it's the most critical
+    // read path and is already cached. Vercel/Cloudflare handle DDoS protection.
 
     try {
       // In production, keep status read-only by default to avoid split-brain
@@ -795,41 +849,14 @@ export async function GET(request: Request) {
 
         if (state === "betting") {
           const closeRaw = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
-          if (closeRaw > 0n) {
-            const effectiveCurrentSlot = useDevnetSlotContext ? currentClusterSlotBig : currentBettingSlotBig;
-            const looksLikeUnix =
-              effectiveCurrentSlot !== null
-                ? closeRaw > effectiveCurrentSlot + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD
-                : closeRaw > 1_000_000_000n;
-            if (looksLikeUnix) {
-              const unixMs = Number(closeRaw) * 1_000;
-              bettingDeadline = Number.isFinite(unixMs) ? new Date(unixMs).toISOString() : null;
-            } else {
-              const etaMs = useDevnetSlotContext ? slotsToMs(closeRaw) : bettingSlotsToMs(closeRaw);
-              if (etaMs > 0) {
-                bettingDeadline = getStableBettingDeadline(
-                  rumbleIdNum,
-                  closeRaw,
-                  useDevnetSlotContext ? "devnet" : "mainnet",
-                  () => new Date(Date.now() + etaMs).toISOString(),
-                );
-              } else {
-                bettingDeadline = null;
-              }
-            }
-          } else {
-            bettingDeadline = null;
-          }
-          // Validate computed deadline: discard if unreasonable.
-          // Allow up to 5 minutes in the past so expired deadlines still
-          // show as "Betting Closed" instead of "Initializing On-Chain...".
-          if (bettingDeadline) {
-            const deadlineMs = new Date(bettingDeadline).getTime();
-            const nowMs = Date.now();
-            if (!Number.isFinite(deadlineMs) || deadlineMs < nowMs - 5 * 60 * 1000 || deadlineMs > nowMs + 10 * 60 * 1000) {
-              bettingDeadline = slot.bettingDeadline ?? null;
-            }
-          }
+          bettingDeadline = deriveOnchainBettingDeadlineIso({
+            rumbleIdNum,
+            closeRaw,
+            networkContext: useDevnetSlotContext ? "devnet" : "mainnet",
+            effectiveCurrentSlot: useDevnetSlotContext ? currentClusterSlotBig : currentBettingSlotBig,
+            closeToMs: useDevnetSlotContext ? slotsToMs : bettingSlotsToMs,
+            fallback: slot.bettingDeadline ?? null,
+          });
         }
 
         // Enriched fighters/turns from on-chain + Supabase persistence
@@ -837,6 +864,36 @@ export async function GET(request: Request) {
         let turns = slot.turns;
         let remainingFighters = slot.remainingFighters;
         let turnPhase = slot.turnPhase;
+
+        if (state === "combat" && onchain.state === "betting") {
+          const closeRaw = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
+          const fallbackStartAt = getStableNextTurnAt(
+            rumbleIdNum,
+            currentTurn ?? 0,
+            "starting",
+            () => new Date(Date.now() + 3_000).toISOString(),
+          );
+          const combatStartAt = deriveOnchainBettingDeadlineIso({
+            rumbleIdNum,
+            closeRaw,
+            networkContext: useDevnetSlotContext ? "devnet" : "mainnet",
+            effectiveCurrentSlot: useDevnetSlotContext ? currentClusterSlotBig : currentBettingSlotBig,
+            closeToMs: useDevnetSlotContext ? slotsToMs : bettingSlotsToMs,
+            fallback: fallbackStartAt,
+          });
+          return {
+            ...slot,
+            state,
+            bettingDeadline: null,
+            currentTurn: currentTurn ?? 0,
+            remainingFighters: slot.fighters.length,
+            turnPhase: "starting",
+            nextTurnAt: combatStartAt,
+            nextTurnTargetSlot: null,
+            currentSlot: currentClusterSlotBig !== null ? Number(currentClusterSlotBig) : null,
+            turnIntervalMs: turnIntervalMs ?? 24_000,
+          };
+        }
 
         if (state === "combat") {
           const onchainCombat = await getDevnetCombatState(rumbleIdNum).catch((err) => {
@@ -1278,38 +1335,19 @@ export async function GET(request: Request) {
           } else {
             // Case 3: On-chain is in betting state with a valid close slot/timestamp.
             const closeRaw = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
-            if (!(closeRaw > 0n)) {
+            const bettingDeadline = deriveOnchainBettingDeadlineIso({
+              rumbleIdNum,
+              closeRaw,
+              networkContext: useDevnetSlotContext ? "devnet" : "mainnet",
+              effectiveCurrentSlot: useDevnetSlotContext ? currentClusterSlotBig : currentBettingSlotBig,
+              closeToMs: useDevnetSlotContext ? slotsToMs : bettingSlotsToMs,
+              fallback: slot.bettingDeadline ?? null,
+            });
+            if (!bettingDeadline) {
               // On-chain betting but deadline not armed yet. Keep any
               // existing synthetic deadline from the DB overlay so the
               // BettingPanel shows "Betting Open" instead of null.
               return slot;
-            }
-            const effectiveCurrentSlot = useDevnetSlotContext ? currentClusterSlotBig : currentBettingSlotBig;
-            const looksLikeUnix =
-              effectiveCurrentSlot !== null
-                ? closeRaw > effectiveCurrentSlot + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD
-                : closeRaw > 1_000_000_000n;
-            const etaMs = useDevnetSlotContext ? slotsToMs(closeRaw) : bettingSlotsToMs(closeRaw);
-            let bettingDeadline: string | null = null;
-            if (looksLikeUnix) {
-              bettingDeadline = Number(closeRaw) > 0 ? new Date(Number(closeRaw) * 1_000).toISOString() : null;
-            } else if (etaMs > 0) {
-              bettingDeadline = getStableBettingDeadline(
-                rumbleIdNum,
-                closeRaw,
-                useDevnetSlotContext ? "devnet" : "mainnet",
-                () => new Date(Date.now() + etaMs).toISOString(),
-              );
-            }
-            // Validate computed deadline: discard if unreasonable.
-            // Allow up to 5 minutes in the past so expired deadlines still
-            // show as "Betting Closed" instead of "Initializing On-Chain...".
-            if (bettingDeadline) {
-              const deadlineMs = new Date(bettingDeadline).getTime();
-              const nowMs = Date.now();
-              if (!Number.isFinite(deadlineMs) || deadlineMs < nowMs - 5 * 60 * 1000 || deadlineMs > nowMs + 10 * 60 * 1000) {
-                bettingDeadline = slot.bettingDeadline ?? null;
-              }
             }
             return { ...slot, bettingDeadline };
           }
@@ -1467,6 +1505,10 @@ export async function GET(request: Request) {
     }
 
       const erInfo = getErStatusInfo();
+      const onchainTurnAuthority =
+        (process.env.RUMBLE_ONCHAIN_TURN_AUTHORITY ?? "false") === "true";
+      const allowLegacyFallback =
+        (process.env.RUMBLE_ALLOW_LEGACY_FALLBACK ?? "false") === "true";
       const responseBody: StatusResponseBody = {
         slots,
         queue,
@@ -1485,6 +1527,14 @@ export async function GET(request: Request) {
           program_id: RUMBLE_ENGINE_ID.toBase58(),
           vrf_program_id: "Vrf1RNUjXmQGjmQrQLvJHs9SNkvDJEsRVFPkfSQUwGz",
           network: process.env.NEXT_PUBLIC_SOLANA_NETWORK ?? "devnet",
+          onchain_turn_authority: onchainTurnAuthority,
+          resolution_mode: process.env.RUMBLE_RESOLUTION_MODE ?? "onchain",
+          allow_legacy_fallback: allowLegacyFallback,
+          strict_onchain_mode: onchainTurnAuthority && !allowLegacyFallback,
+          require_matchup_vrf:
+            (process.env.RUMBLE_REQUIRE_MATCHUP_VRF ?? (onchainTurnAuthority ? "true" : "false")) === "true",
+          require_shower_vrf:
+            (process.env.RUMBLE_REQUIRE_SHOWER_VRF ?? (onchainTurnAuthority ? "true" : "false")) === "true",
         },
         runtimeHealth,
         systemWarnings,

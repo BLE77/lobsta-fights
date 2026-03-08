@@ -19,10 +19,6 @@ const CACHE_TTL_MS = 10_000;
  * a Helius key or hit public rate limits.
  */
 export async function GET(request: Request) {
-  const rlKey = getRateLimitKey(request);
-  const rl = checkRateLimit("PUBLIC_READ", rlKey);
-  if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
-
   try {
     const now = Date.now();
     if (cachedFeed && now - cachedFeed.fetchedAt < CACHE_TTL_MS) {
