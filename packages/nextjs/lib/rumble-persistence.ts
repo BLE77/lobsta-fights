@@ -11,6 +11,7 @@
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { RumblePayoutMode } from "./rumble-payout-mode";
+import { MIN_FIGHTERS_TO_START } from "./rumble-config";
 
 // ---------------------------------------------------------------------------
 // Fresh service-role client factory
@@ -48,11 +49,12 @@ function toNumber(value: unknown): number {
   return 0;
 }
 
-// Full-size rumbles only: underfilled active rows are stale/corrupt and
-// should be ignored by read paths that determine current live betting/combat.
+// Active-rumble read paths should follow the actual start threshold, not the
+// max bracket size. After moving to 12-to-start / 16-cap, valid 12-fighter
+// rumbles were being hidden as "underfilled" whenever FIGHTERS_PER_RUMBLE=16.
 export const MIN_ACTIVE_RUMBLE_FIGHTERS = Math.max(
-  12,
-  Math.min(64, Number(process.env.FIGHTERS_PER_RUMBLE) || 12),
+  2,
+  Math.min(64, MIN_FIGHTERS_TO_START || 12),
 );
 
 export function extractRumbleFighterIds(fighters: unknown): string[] {

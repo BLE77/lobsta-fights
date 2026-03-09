@@ -6462,6 +6462,21 @@ export class RumbleOrchestrator {
         }
       }
 
+      // Keep Supabase queue state aligned with the in-memory queue after a
+      // rumble recycles. Without this, recycled fighters stay stuck as
+      // "in_combat" in DB-backed read paths, so Vercel/mobile can show
+      // "Cage Awaits" even while the next rumble should already be fillable.
+      const queuedSet = new Set(
+        this.queueManager.getQueueEntries().map((entry) => entry.fighterId),
+      );
+      await Promise.all(
+        previousFighters.map((fighterId) =>
+          queuedSet.has(fighterId)
+            ? persist.saveQueueFighter(fighterId, "waiting", false)
+            : persist.removeQueueFighter(fighterId),
+        ),
+      );
+
       this.wakeSoon(`slot_recycled:${previousRumbleId}`, 250);
     })();
 
