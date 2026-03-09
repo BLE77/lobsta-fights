@@ -8,6 +8,7 @@ import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-
 import {
   loadQueueState,
   loadActiveRumbles,
+  loadRecentCompletedResultsBySlot,
   loadRumbleTurnLog,
   loadPayoutResult,
   getIchorShowerState,
@@ -24,7 +25,13 @@ import {
   RUMBLE_ENGINE_ID,
 } from "~~/lib/solana-programs";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
-import { getBettingConnection, getConnection, getErStatusInfo } from "~~/lib/solana-connection";
+import {
+  getBettingConnection,
+  getCachedBettingSlot as getSharedCachedBettingSlot,
+  getCachedCombatSlot as getSharedCachedCombatSlot,
+  getConnection,
+  getErStatusInfo,
+} from "~~/lib/solana-connection";
 import { getCommentaryForRumble } from "~~/lib/commentary-hook";
 import { MAX_TURNS } from "~~/lib/rumble-engine";
 import { flushRpcMetrics, runWithRpcMetrics } from "~~/lib/solana-rpc-metrics";
@@ -49,7 +56,7 @@ const MAX_ACTIVE_AGE_MS_BY_STATUS: Record<string, number> = {
 // credits burned. These were bumped from 1.5-3s to 5-15s to reduce
 // getAccountInfo calls from ~200K/day to ~50K/day.
 const STATUS_CACHE_TTLS_MS = {
-  slot: 10_000,          // was 5s — countdowns use estimates, so 10s slot snapshots are sufficient
+  slot: 3_000,           // tighter slot snapshots keep combat timers feeling live
   fighterLookup: 30_000, // was 10s — fighter metadata rarely changes
   commentary: 10_000,    // was 2.5s — commentary updates per turn (~20s)
   turnLog: 5_000,        // was 2.5s — turn log updates per turn (~20s)
@@ -59,7 +66,7 @@ const STATUS_CACHE_TTLS_MS = {
   stats: 30_000,         // was 3s — stats update per completed rumble
 };
 const STATUS_RESPONSE_CACHE_MS = {
-  combat: Math.max(4_000, Number(process.env.RUMBLE_STATUS_RESPONSE_CACHE_COMBAT_MS ?? "8000")),
+  combat: Math.max(1_500, Number(process.env.RUMBLE_STATUS_RESPONSE_CACHE_COMBAT_MS ?? "2000")),
   betting: Math.max(6_000, Number(process.env.RUMBLE_STATUS_RESPONSE_CACHE_BETTING_MS ?? "12000")),
   idle: Math.max(10_000, Number(process.env.RUMBLE_STATUS_RESPONSE_CACHE_IDLE_MS ?? "30000")),
 };
@@ -70,6 +77,7 @@ type StatusResponseBody = {
   queueLength: number;
   nextRumbleIn: string | null;
   bettingCloseGuardMs: number;
+  recentCompletedResults: any[];
   ichorShower: {
     currentPool: number;
     rumblesSinceLastTrigger: number;
@@ -116,7 +124,7 @@ let _slotCache: { slot: number; at: number } | null = null;
 async function getCachedSlot(): Promise<number | null> {
   const now = Date.now();
   if (_slotCache && now - _slotCache.at < STATUS_CACHE_TTLS_MS.slot) return _slotCache.slot;
-  const slot = await getConnection().getSlot("processed").catch(() => null);
+  const slot = await getSharedCachedCombatSlot("processed", STATUS_CACHE_TTLS_MS.slot);
   if (slot !== null) _slotCache = { slot, at: now };
   return slot;
 }
@@ -127,7 +135,7 @@ async function getCachedBettingSlot(): Promise<number | null> {
   if (_bettingSlotCache && now - _bettingSlotCache.at < STATUS_CACHE_TTLS_MS.slot) {
     return _bettingSlotCache.slot;
   }
-  const slot = await getBettingConnection().getSlot("processed").catch(() => null);
+  const slot = await getSharedCachedBettingSlot("processed", STATUS_CACHE_TTLS_MS.slot);
   if (slot !== null) _bettingSlotCache = { slot, at: now };
   return slot;
 }
@@ -137,7 +145,10 @@ async function getCachedBettingSlot(): Promise<number | null> {
 // same rumble across consecutive status API requests. Short TTL (8s) keeps
 // data fresh while dramatically cutting Helius RPC volume.
 // ---------------------------------------------------------------------------
-const ONCHAIN_STATE_CACHE_TTL_MS = 8_000;
+const ONCHAIN_STATE_CACHE_TTL_MS = Math.max(
+  1_500,
+  Number(process.env.RUMBLE_STATUS_ONCHAIN_CACHE_MS ?? "2500"),
+);
 const _onchainRumbleStateCache = new Map<number, { value: any; at: number }>();
 const _onchainCombatStateCache = new Map<number, { value: any; at: number }>();
 
@@ -365,6 +376,7 @@ type FighterInfo = { name: string; imageUrl: string | null; robotMeta: RobotMeta
 type CacheEntry<T> = { at: number; value: T };
 type CommentaryRows = Awaited<ReturnType<typeof getCommentaryForRumble>>;
 type ActiveRumbleRows = Awaited<ReturnType<typeof loadActiveRumbles>>;
+type RecentCompletedRows = Awaited<ReturnType<typeof loadRecentCompletedResultsBySlot>>;
 type IchorShowerState = Awaited<ReturnType<typeof getIchorShowerState>>;
 type ArenaConfigState = Awaited<ReturnType<typeof readArenaConfig>>;
 type StatsState = Awaited<ReturnType<typeof getStats>>;
@@ -373,6 +385,7 @@ let _fighterLookupCache: CacheEntry<Map<string, FighterInfo>> | null = null;
 const _commentaryCache = new Map<string, CacheEntry<CommentaryRows>>();
 const _turnLogCache = new Map<string, CacheEntry<unknown[] | null>>();
 let _activeRumblesCache: CacheEntry<ActiveRumbleRows> | null = null;
+let _recentCompletedResultsCache: CacheEntry<RecentCompletedRows> | null = null;
 let _showerStateCache: CacheEntry<IchorShowerState> | null = null;
 let _arenaConfigCache: CacheEntry<ArenaConfigState | null> | null = null;
 let _statsCache: CacheEntry<StatsState> | null = null;
@@ -486,6 +499,19 @@ async function loadActiveRumblesCached(): Promise<ActiveRumbleRows> {
   return value;
 }
 
+async function loadRecentCompletedResultsBySlotCached(): Promise<RecentCompletedRows> {
+  const now = Date.now();
+  if (
+    _recentCompletedResultsCache &&
+    now - _recentCompletedResultsCache.at < STATUS_CACHE_TTLS_MS.activeRumbles
+  ) {
+    return _recentCompletedResultsCache.value;
+  }
+  const value = await loadRecentCompletedResultsBySlot();
+  _recentCompletedResultsCache = { at: now, value };
+  return value;
+}
+
 async function getIchorShowerStateCached(): Promise<IchorShowerState> {
   const now = Date.now();
   if (_showerStateCache && now - _showerStateCache.at < STATUS_CACHE_TTLS_MS.showerState) {
@@ -526,6 +552,142 @@ function fighterImage(lookup: Map<string, FighterInfo>, id: string): string | nu
 
 function fighterRobotMeta(lookup: Map<string, FighterInfo>, id: string): RobotMeta | null {
   return lookup.get(id)?.robotMeta ?? null;
+}
+
+function buildRecentCompletedResult(
+  row: RecentCompletedRows[number],
+  lookup: Map<string, FighterInfo>,
+): {
+  slotIndex: number;
+  rumbleId: string;
+  settledAtIso: string | null;
+  placements: Array<{
+    fighterId: string;
+    fighterName: string;
+    imageUrl: string | null;
+    placement: number;
+    hp: number;
+    damageDealt: number;
+  }>;
+  payout: Record<string, unknown> | null;
+  fighterNames: Record<string, string>;
+  lastTurn: {
+    turnNumber: number;
+    pairings: Array<{
+      fighterA: string;
+      fighterB: string;
+      fighterAName: string;
+      fighterBName: string;
+      moveA: string;
+      moveB: string;
+      damageToA: number;
+      damageToB: number;
+    }>;
+    eliminations: string[];
+    bye?: string;
+  } | null;
+} | null {
+  const slotIndex = Number((row as any).slot_index);
+  if (!Number.isInteger(slotIndex) || slotIndex < 0) return null;
+
+  const fighterIds = extractRumbleFighterIds((row as any).fighters);
+  if (fighterIds.length < MIN_ACTIVE_RUMBLE_FIGHTERS) return null;
+
+  const fighters = fighterIds.map((fid) => ({
+    id: fid,
+    name: fighterName(lookup, fid),
+    imageUrl: fighterImage(lookup, fid),
+    hp: 100,
+    totalDamageDealt: 0,
+    totalDamageTaken: 0,
+    eliminatedOnTurn: null as number | null,
+    placement: 0,
+  }));
+  const fighterMap = new Map(fighters.map((fighter) => [fighter.id, fighter]));
+
+  const turnLog = Array.isArray((row as any).turn_log) ? ((row as any).turn_log as Array<any>) : [];
+  for (const turn of turnLog) {
+    for (const pairing of turn?.pairings ?? []) {
+      const fighterA = fighterMap.get(String(pairing?.fighterA ?? ""));
+      const fighterB = fighterMap.get(String(pairing?.fighterB ?? ""));
+      if (fighterA) {
+        fighterA.hp = Math.max(0, fighterA.hp - Number(pairing?.damageToA ?? 0));
+        fighterA.totalDamageDealt += Number(pairing?.damageToB ?? 0);
+        fighterA.totalDamageTaken += Number(pairing?.damageToA ?? 0);
+      }
+      if (fighterB) {
+        fighterB.hp = Math.max(0, fighterB.hp - Number(pairing?.damageToB ?? 0));
+        fighterB.totalDamageDealt += Number(pairing?.damageToA ?? 0);
+        fighterB.totalDamageTaken += Number(pairing?.damageToB ?? 0);
+      }
+    }
+    for (const eliminationId of turn?.eliminations ?? []) {
+      const fighter = fighterMap.get(String(eliminationId ?? ""));
+      if (fighter && fighter.eliminatedOnTurn === null) {
+        fighter.eliminatedOnTurn = Number(turn?.turnNumber ?? 0);
+      }
+    }
+  }
+
+  const dbPlacements = Array.isArray((row as any).placements) ? ((row as any).placements as Array<any>) : [];
+  for (const placement of dbPlacements) {
+    const fighter = fighterMap.get(String(placement?.id ?? ""));
+    if (fighter) fighter.placement = Number(placement?.placement ?? 0);
+  }
+
+  const placements = fighters
+    .filter((fighter) => fighter.placement > 0)
+    .sort((a, b) => a.placement - b.placement)
+    .map((fighter) => ({
+      fighterId: fighter.id,
+      fighterName: fighter.name,
+      imageUrl: fighter.imageUrl,
+      placement: fighter.placement,
+      hp: fighter.hp,
+      damageDealt: fighter.totalDamageDealt,
+    }));
+  if (placements.length === 0) return null;
+
+  const fighterNames: Record<string, string> = {};
+  for (const fighterId of fighterIds) {
+    fighterNames[fighterId] = fighterName(lookup, fighterId);
+  }
+
+  const lastTurnRaw = turnLog.length > 0 ? turnLog[turnLog.length - 1] : null;
+  const lastTurn = lastTurnRaw
+    ? {
+        turnNumber: Number(lastTurnRaw?.turnNumber ?? 0),
+        pairings: Array.isArray(lastTurnRaw?.pairings)
+          ? lastTurnRaw.pairings.map((pairing: any) => ({
+              fighterA: String(pairing?.fighterA ?? ""),
+              fighterB: String(pairing?.fighterB ?? ""),
+              fighterAName: fighterName(lookup, String(pairing?.fighterA ?? "")),
+              fighterBName: fighterName(lookup, String(pairing?.fighterB ?? "")),
+              moveA: String(pairing?.moveA ?? ""),
+              moveB: String(pairing?.moveB ?? ""),
+              damageToA: Number(pairing?.damageToA ?? 0),
+              damageToB: Number(pairing?.damageToB ?? 0),
+            }))
+          : [],
+        eliminations: Array.isArray(lastTurnRaw?.eliminations)
+          ? lastTurnRaw.eliminations.map((id: unknown) => String(id ?? ""))
+          : [],
+        bye: typeof lastTurnRaw?.bye === "string" ? lastTurnRaw.bye : undefined,
+      }
+    : null;
+
+  return {
+    slotIndex,
+    rumbleId: String((row as any).id ?? ""),
+    settledAtIso: typeof (row as any).completed_at === "string" ? String((row as any).completed_at) : null,
+    placements,
+    payout:
+      (row as any).payout_result && typeof (row as any).payout_result === "object"
+        ? ((row as any).payout_result as Record<string, unknown>)
+        : null,
+    fighterNames,
+    lastTurn,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1451,6 +1613,10 @@ export async function GET(request: Request) {
       };
     });
 
+    const recentCompletedResults = (await loadRecentCompletedResultsBySlotCached())
+      .map((row) => buildRecentCompletedResult(row, lookup))
+      .filter((result): result is NonNullable<typeof result> => Boolean(result));
+
     // ---- Ichor shower state ------------------------------------------------
     const showerState = await getIchorShowerStateCached();
     const arenaConfig = await readArenaConfigCached();
@@ -1515,6 +1681,7 @@ export async function GET(request: Request) {
         queueLength: queueEntries.length + activeFighterCount,
         nextRumbleIn,
         bettingCloseGuardMs: BETTING_CLOSE_GUARD_MS,
+        recentCompletedResults,
         ichorShower: {
           currentPool:
             arenaConfig

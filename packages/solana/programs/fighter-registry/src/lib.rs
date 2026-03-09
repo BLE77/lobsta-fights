@@ -288,6 +288,11 @@ pub mod fighter_registry {
             RegistryError::MaxFightersReached
         );
 
+        if new_wallet.authority == Pubkey::default() {
+            new_wallet.authority = ctx.accounts.new_authority.key();
+            new_wallet.bump = ctx.bumps.new_wallet_state;
+        }
+
         old_wallet.fighter_count = old_wallet
             .fighter_count
             .checked_sub(1)

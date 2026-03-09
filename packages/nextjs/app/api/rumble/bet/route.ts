@@ -55,6 +55,15 @@ function isMissingTxSignatureTableError(err: unknown): boolean {
   return code === "42P01" || code === "PGRST205";
 }
 
+function isRetryableVerificationError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("transaction not found after retries") ||
+    lower.includes("may not be confirmed yet") ||
+    lower.includes("blockhash not found")
+  );
+}
+
 type BetSignatureLock = { mode: "db" | "memory"; txSignature: string } | null;
 
 async function releaseBetSignatureLock(lock: BetSignatureLock): Promise<void> {
@@ -357,9 +366,17 @@ export async function POST(request: Request) {
         return batch;
       })();
       if (!verification.valid) {
+        const errorMessage = `TX verification failed: ${verification.error}`;
+        const retryable = isRetryableVerificationError(String(verification.error ?? ""));
         return NextResponse.json(
-          { error: `TX verification failed: ${verification.error}` },
-          { status: 400 },
+          {
+            error: retryable
+              ? "Bet transaction is still propagating on-chain. Retrying registration may succeed."
+              : errorMessage,
+            retryable,
+            detail: errorMessage,
+          },
+          { status: retryable ? 503 : 400 },
         );
       }
 

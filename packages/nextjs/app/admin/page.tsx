@@ -2256,18 +2256,32 @@ const SOUNDBOARD_SOUNDS: Array<{
   label: string;
   description: string;
   color: string;
+  file?: string; // direct mp3 path for sounds not in audioManager
 }> = [
-  { id: "hit_light", label: "HIT LIGHT", description: "Quick noise burst snap", color: "bg-yellow-600 hover:bg-yellow-500" },
-  { id: "hit_heavy", label: "HIT HEAVY", description: "Deep thump + crunch", color: "bg-orange-600 hover:bg-orange-500" },
-  { id: "hit_special", label: "HIT SPECIAL", description: "Rising sweep into impact", color: "bg-red-600 hover:bg-red-500" },
-  { id: "block", label: "BLOCK", description: "Metallic clang", color: "bg-blue-600 hover:bg-blue-500" },
-  { id: "dodge", label: "DODGE", description: "Whoosh sweep", color: "bg-cyan-600 hover:bg-cyan-500" },
-  { id: "catch", label: "CATCH", description: "Grab thud + crunch", color: "bg-purple-600 hover:bg-purple-500" },
-  { id: "ko_explosion", label: "KO EXPLOSION", description: "Deep rumble + explosion", color: "bg-red-800 hover:bg-red-700" },
-  { id: "round_start", label: "ROUND START", description: "Boxing bell dings", color: "bg-amber-600 hover:bg-amber-500" },
-  { id: "crowd_cheer", label: "CROWD CHEER", description: "Crowd noise + fanfare", color: "bg-green-600 hover:bg-green-500" },
-  { id: "radio_static", label: "RADIO STATIC", description: "Static burst", color: "bg-stone-600 hover:bg-stone-500" },
-  { id: "ambient_arena", label: "AMBIENT (toggle)", description: "Looping rumble + murmur", color: "bg-stone-700 hover:bg-stone-600" },
+  // Combat sounds (via audioManager)
+  { id: "hit_light", label: "HIT LIGHT", description: "hit-3.mp3", color: "bg-yellow-600 hover:bg-yellow-500" },
+  { id: "hit_heavy", label: "HIT HEAVY", description: "metal-hit-2.mp3", color: "bg-orange-600 hover:bg-orange-500" },
+  { id: "hit_special", label: "HIT SPECIAL", description: "metal-hit.mp3", color: "bg-red-600 hover:bg-red-500" },
+  { id: "block", label: "BLOCK", description: "click-4.mp3", color: "bg-blue-600 hover:bg-blue-500" },
+  { id: "dodge", label: "DODGE", description: "click-2.mp3", color: "bg-cyan-600 hover:bg-cyan-500" },
+  { id: "catch", label: "CATCH", description: "grab.mp3", color: "bg-purple-600 hover:bg-purple-500" },
+  { id: "ko_explosion", label: "KO / ELIMINATED", description: "eliminated.mp3", color: "bg-red-800 hover:bg-red-700" },
+  { id: "round_start", label: "WALK-IN", description: "walk-in.mp3", color: "bg-amber-600 hover:bg-amber-500" },
+  { id: "crowd_cheer", label: "UI CHIME", description: "floraphonic-90s-game-ui-4.mp3", color: "bg-green-600 hover:bg-green-500" },
+  { id: "bet_placed", label: "BET PLACED", description: "click.mp3", color: "bg-emerald-600 hover:bg-emerald-500" },
+  { id: "claim_complete", label: "CLAIM", description: "claim.mp3", color: "bg-lime-600 hover:bg-lime-500" },
+  { id: "radio_static", label: "RADIO STATIC", description: "floraphonic-90s-game-ui-4.mp3", color: "bg-stone-600 hover:bg-stone-500" },
+  // Direct file sounds (not in audioManager)
+  { id: "_file_hit4", label: "HIT 4", description: "hit-4.mp3", color: "bg-yellow-700 hover:bg-yellow-600", file: "/sounds/hit-4.mp3" },
+  { id: "_file_low_hit", label: "LOW HIT", description: "low-hit.mp3", color: "bg-orange-700 hover:bg-orange-600", file: "/sounds/low-hit.mp3" },
+  { id: "_file_chrome", label: "CHROME KNUCKLES", description: "chrome-knuckles.mp3", color: "bg-violet-600 hover:bg-violet-500", file: "/sounds/chrome-knuckles.mp3" },
+  { id: "_file_winner", label: "WINNER REVEAL", description: "winner-reveal.mp3", color: "bg-amber-500 hover:bg-amber-400", file: "/sounds/winner-reveal.mp3" },
+  { id: "_file_ucf1", label: "UCF THEME 1", description: "ucf-1.mp3", color: "bg-red-700 hover:bg-red-600", file: "/sounds/ucf-1.mp3" },
+  { id: "_file_ucf2", label: "UCF THEME 2", description: "ucf-2.mp3", color: "bg-red-900 hover:bg-red-800", file: "/sounds/ucf-2.mp3" },
+  { id: "_file_round_start", label: "ROUND START", description: "round-start.mp3", color: "bg-amber-700 hover:bg-amber-600", file: "/sounds/round-start.mp3" },
+  { id: "_file_crowd", label: "CROWD CHEER", description: "crowd-cheer.mp3", color: "bg-green-700 hover:bg-green-600", file: "/sounds/crowd-cheer.mp3" },
+  { id: "_file_ko", label: "KO EXPLOSION", description: "ko-explosion.mp3", color: "bg-red-950 hover:bg-red-900", file: "/sounds/ko-explosion.mp3" },
+  { id: "_file_ambient", label: "AMBIENT ARENA", description: "ambient-arena.mp3 (toggle)", color: "bg-stone-700 hover:bg-stone-600", file: "/sounds/ambient-arena.mp3" },
 ];
 
 function SoundboardTab() {
@@ -2282,7 +2296,37 @@ function SoundboardTab() {
     });
   }, []);
 
+  const fileAudioRef = useRef<HTMLAudioElement | null>(null);
+
   const handlePlay = async (soundId: string) => {
+    // Direct file playback for sounds not in audioManager
+    const soundDef = SOUNDBOARD_SOUNDS.find(s => s.id === soundId);
+    if (soundDef?.file) {
+      // Stop any currently playing file audio
+      if (fileAudioRef.current) {
+        fileAudioRef.current.pause();
+        fileAudioRef.current = null;
+      }
+      // Toggle ambient file
+      if (soundId === "_file_ambient") {
+        if (ambientPlaying) {
+          setAmbientPlaying(false);
+          return;
+        }
+        setAmbientPlaying(true);
+      }
+      const audio = new Audio(soundDef.file);
+      if (soundId === "_file_ambient") audio.loop = true;
+      audio.onended = () => {
+        if (soundId === "_file_ambient") setAmbientPlaying(false);
+        fileAudioRef.current = null;
+      };
+      await audio.play();
+      fileAudioRef.current = audio;
+      return;
+    }
+
+    // audioManager-based sounds
     if (!manager) return;
     await manager.init();
     // Force unmute for soundboard testing
@@ -2322,7 +2366,7 @@ function SoundboardTab() {
           >
             <p className="font-mono text-sm font-bold text-white">
               {sound.label}
-              {sound.id === "ambient_arena" && ambientPlaying && (
+              {(sound.id === "ambient_arena" || sound.id === "_file_ambient") && ambientPlaying && (
                 <span className="ml-2 text-xs animate-pulse">PLAYING</span>
               )}
             </p>

@@ -33,6 +33,7 @@ export interface QueueManager {
   addToQueue(fighterId: string, autoRequeue?: boolean, priority?: number): QueueEntry;
   removeFromQueue(fighterId: string): boolean;
   abortBettingSlot(slotIndex: number): string[];
+  abortActiveSlot(slotIndex: number): string[];
   getQueuePosition(fighterId: string): number | null;
   getQueueLength(): number;
   getQueueEntries(): QueueEntry[];
@@ -370,14 +371,24 @@ export class RumbleQueueManager implements QueueManager {
     const fighters = [...slot.fighters];
     const previousRumbleId = slot.id;
 
-    slot.id = `idle_slot_${slotIndex}`;
-    slot.state = "idle";
-    slot.fighters = [];
-    slot.bettingPool = new Map();
-    slot.bettingDeadline = null;
-    slot.bettingArmedAt = null;
-    slot.combatStartedAt = null;
-    slot.rumbleResult = null;
+    this.resetSlotToIdle(slot);
+
+    this.onSlotRecycled(slotIndex, fighters, previousRumbleId);
+    return fighters;
+  }
+
+  /**
+   * Abort any non-idle slot and immediately recycle it.
+   * Used by strict-mode recovery paths that must not transition through payout.
+   */
+  abortActiveSlot(slotIndex: number): string[] {
+    const slot = this.slots[slotIndex];
+    if (!slot || slot.state === "idle") return [];
+    const fighters = [...slot.fighters];
+    const previousRumbleId = slot.id;
+
+    this.payoutStartTimes.delete(slot.slotIndex);
+    this.resetSlotToIdle(slot);
 
     this.onSlotRecycled(slotIndex, fighters, previousRumbleId);
     return fighters;
@@ -498,14 +509,7 @@ export class RumbleQueueManager implements QueueManager {
     // slot.state !== "idle" and throws if the fighter is in an active slot.
     // The old code re-queued while the slot was still in payout state,
     // causing every addToQueue() to throw silently → 0 fighters re-queued.
-    slot.id = `idle_slot_${slot.slotIndex}`;
-    slot.state = "idle";
-    slot.fighters = [];
-    slot.bettingPool = new Map();
-    slot.bettingDeadline = null;
-    slot.bettingArmedAt = null;
-    slot.combatStartedAt = null;
-    slot.rumbleResult = null;
+    this.resetSlotToIdle(slot);
 
     // Now auto-requeue all fighters from the finished rumble
     let requeued = 0;
@@ -531,6 +535,17 @@ export class RumbleQueueManager implements QueueManager {
    */
   onSlotRecycled(_slotIndex: number, _previousFighters: string[], _previousRumbleId: string): void {
     // no-op by default -- external code can monkeypatch or subclass
+  }
+
+  private resetSlotToIdle(slot: RumbleSlot): void {
+    slot.id = `idle_slot_${slot.slotIndex}`;
+    slot.state = "idle";
+    slot.fighters = [];
+    slot.bettingPool = new Map();
+    slot.bettingDeadline = null;
+    slot.bettingArmedAt = null;
+    slot.combatStartedAt = null;
+    slot.rumbleResult = null;
   }
 
   // ---- Recovery helpers ----------------------------------------------------

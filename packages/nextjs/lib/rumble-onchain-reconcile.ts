@@ -12,7 +12,7 @@ import {
   waitForUndelegation,
 } from "./solana-programs";
 import { parseOnchainRumbleIdNumber } from "./rumble-id";
-import { getConnection } from "./solana-connection";
+import { getCachedCombatSlot, getConnection } from "./solana-connection";
 
 const g = globalThis as unknown as { __rumbleOnchainReconcileLastRunMs?: number };
 const MIN_INTERVAL_MS = process.env.NODE_ENV === "production" ? 60_000 : 20_000;
@@ -141,7 +141,7 @@ export async function reconcileOnchainReportResults(options?: {
       // stuck turns before attempting finalize.
       const combat = await readRumbleCombatState(rumbleIdNum, l1Connection).catch(() => null);
       if (combat) {
-        const currentSlot = await l1Connection.getSlot("confirmed").catch(() => null);
+        const currentSlot = await getCachedCombatSlot("confirmed", 5_000);
         const revealCloseSlot = Number(combat.revealCloseSlot ?? 0n);
 
         if (combat.currentTurn === 0) {

@@ -9,7 +9,7 @@ import {
   RUMBLE_ENGINE_ID_MAINNET,
 } from "~~/lib/solana-programs";
 import { discoverOnchainClaimableRumbles } from "~~/lib/rumble-onchain-claims";
-import { getBettingConnection } from "~~/lib/solana-connection";
+import { getBettingConnection, getCachedBalance } from "~~/lib/solana-connection";
 import { requireJsonContentType, sanitizeErrorResponse } from "~~/lib/api-middleware";
 
 export const dynamic = "force-dynamic";
@@ -120,7 +120,10 @@ export async function POST(request: Request) {
         for (const target of selectedTargets) {
           try {
             const [vaultPda] = deriveVaultPdaMainnet(target.rumbleIdNum);
-            const vaultBalance = await connection.getBalance(vaultPda, "confirmed");
+            const vaultBalance = await getCachedBalance(connection, vaultPda, {
+              commitment: "confirmed",
+              ttlMs: 30_000,
+            });
             vaultBalances.set(target.rumbleIdNum, vaultBalance);
           } catch {
             vaultBalances.set(target.rumbleIdNum, 0);

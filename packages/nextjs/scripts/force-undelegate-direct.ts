@@ -165,10 +165,12 @@ async function main() {
   console.log(`l1_rpc: ${getRpcEndpoint()}`);
 
   const endpoints = [
-    { label: "devnet.magicblock.app", url: "https://devnet.magicblock.app" },
-    { label: "devnet-us.magicblock.app", url: "https://devnet-us.magicblock.app" },
+    { label: "configured-validator", url: process.env.MAGICBLOCK_ER_VALIDATOR_RPC_URL ?? process.env.MAGICBLOCK_ER_REGION_RPC_URL ?? "" },
     { label: "devnet-router.magicblock.app", url: "https://devnet-router.magicblock.app" },
-  ];
+    { label: "devnet-as.magicblock.app", url: "https://devnet-as.magicblock.app" },
+    { label: "devnet-us.magicblock.app", url: "https://devnet-us.magicblock.app" },
+    { label: "devnet.magicblock.app", url: "https://devnet.magicblock.app" },
+  ].filter((entry) => entry.url);
 
   // Also add configured ER endpoint if different
   const configuredEr = getErRpcEndpoint();

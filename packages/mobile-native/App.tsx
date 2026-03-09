@@ -5,6 +5,8 @@ import * as Haptics from "expo-haptics";
 import { Image as ExpoImage } from "expo-image";
 import {
   ActivityIndicator,
+  AppState,
+  type AppStateStatus,
   Animated,
   Easing,
   ImageBackground,
@@ -23,6 +25,7 @@ import {
   PublicKey,
   Transaction,
 } from "@solana/web3.js";
+import type { RealtimeChannel } from "@supabase/supabase-js";
 import { Buffer } from "buffer";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
@@ -32,6 +35,7 @@ import {
   transact,
   useMobileWallet,
 } from "@wallet-ui/react-native-web3js";
+import { getSupabaseRealtimeClient } from "./lib/supabase";
 
 const SOLANA_CLUSTER = (process.env.EXPO_PUBLIC_SOLANA_CLUSTER ?? "mainnet").trim().toLowerCase();
 const CHAIN_BY_CLUSTER: Record<string, "solana:mainnet" | "solana:devnet"> = {
@@ -68,7 +72,11 @@ const RUMBLE_CAGE_OVERLAY_PNG = require("./assets/art/transparent-cage.png");
 const CLEANING_BUGS_IMG = require("./assets/art/cleaning-bugs.jpg");
 const BOT_AVATAR_IMG = require("./assets/art/bot-avatar.webp");
 const HUMAN_AVATAR_IMG = require("./assets/art/human-avatar.webp");
-const SND_BG_MUSIC = require("./assets/sounds/ucf-1.mp3");
+const SND_BG_TRACKS = [
+  require("./assets/sounds/ucf-1.mp3"),
+  require("./assets/sounds/ucf-2.mp3"),
+  require("./assets/sounds/ucf-4.mp3"),
+];
 const SND_BET_PLACED = require("./assets/sounds/click.mp3");
 const SND_ROUND_START = require("./assets/sounds/walk-in.mp3");
 const SND_HIT_LIGHT = require("./assets/sounds/hit-3.mp3");
@@ -90,6 +98,25 @@ const WRITE_RETRYABLE_STATUS = new Set([404, 405, 429, 500, 502, 503, 504]);
 const RPC_RATE_LIMIT_COOLDOWN_MS = 15_000;
 const READ_TIMEOUT_MS = 9_000;
 const WRITE_TIMEOUT_MS = 14_000;
+const STATUS_POLL_INTERVALS_MS = {
+  combat: Math.max(2_500, safeEnvNumber(process.env.EXPO_PUBLIC_RUMBLE_STATUS_POLL_COMBAT_MS, 4_000)),
+  betting: Math.max(4_000, safeEnvNumber(process.env.EXPO_PUBLIC_RUMBLE_STATUS_POLL_BETTING_MS, 6_000)),
+  idle: Math.max(15_000, safeEnvNumber(process.env.EXPO_PUBLIC_RUMBLE_STATUS_POLL_IDLE_MS, 20_000)),
+};
+const STATUS_POLL_BACKSTOP_INTERVALS_MS = {
+  combat: Math.max(STATUS_POLL_INTERVALS_MS.combat, safeEnvNumber(process.env.EXPO_PUBLIC_RUMBLE_STATUS_POLL_COMBAT_BACKSTOP_MS, 10_000)),
+  betting: Math.max(STATUS_POLL_INTERVALS_MS.betting, safeEnvNumber(process.env.EXPO_PUBLIC_RUMBLE_STATUS_POLL_BETTING_BACKSTOP_MS, 12_000)),
+  idle: STATUS_POLL_INTERVALS_MS.idle,
+};
+const STATUS_POLL_TRANSITION_LEAD_MS = {
+  combat: Math.max(1_500, safeEnvNumber(process.env.EXPO_PUBLIC_RUMBLE_STATUS_POLL_COMBAT_LEAD_MS, 2_500)),
+  betting: Math.max(2_000, safeEnvNumber(process.env.EXPO_PUBLIC_RUMBLE_STATUS_POLL_BETTING_LEAD_MS, 5_000)),
+};
+const STATUS_POLL_ERROR_RETRY_MS = 5_000;
+const STATUS_REALTIME_REFRESH_DEBOUNCE_MS = 350;
+const CHAT_POLL_ACTIVE_MS = 30_000;
+const TX_FEED_POLL_ACTIVE_MS = 45_000;
+const WALLET_POLL_ACTIVE_MS = 75_000;
 let preferredApiBase: string | null = null;
 
 type NonceResponse = {
@@ -164,6 +191,7 @@ type RumbleSlot = {
   odds?: RumbleSlotOdds[];
   totalPool?: number;
   bettingDeadline?: string | null;
+  nextTurnAt?: string | null;
   currentTurn?: number;
   remainingFighters?: number | null;
   turns?: RumbleTurn[];
@@ -251,6 +279,11 @@ type PrepareBetResponse = {
   onchain_betting_deadline?: string | null;
 };
 
+function safeEnvNumber(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function safeNumber(value: unknown, fallback = 0): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -308,6 +341,32 @@ function pickPairingSfx(pair: RumbleTurnPairing): number {
   return SND_HIT_LIGHT;
 }
 
+function formatMove(move: unknown): string {
+  const raw = String(move ?? "").toUpperCase().trim();
+  if (!raw) return "?";
+  switch (raw) {
+    case "HIGH_STRIKE": return "HIGH";
+    case "MID_STRIKE": return "MID";
+    case "LOW_STRIKE": return "LOW";
+    case "SPECIAL": return "SPEC";
+    case "DODGE": return "DODGE";
+    case "CATCH": return "CATCH";
+    default:
+      if (raw.startsWith("GUARD")) return "GUARD";
+      return raw.replace(/_/g, " ");
+  }
+}
+
+function getMoveColor(move: unknown): string {
+  const raw = String(move ?? "").toUpperCase().trim();
+  if (raw === "SPECIAL") return "#f59e0b";
+  if (raw === "HIGH_STRIKE" || raw === "MID_STRIKE" || raw === "LOW_STRIKE") return "#ef4444";
+  if (raw.startsWith("GUARD")) return "#3b82f6";
+  if (raw === "DODGE") return "#a78bfa";
+  if (raw === "CATCH") return "#f97316";
+  return "#a8a29e";
+}
+
 function formatCountdown(deadlineIso: string | null | undefined): string {
   if (!deadlineIso) return "--:--";
   const ms = new Date(deadlineIso).getTime() - Date.now();
@@ -316,6 +375,160 @@ function formatCountdown(deadlineIso: string | null | undefined): string {
   const minutes = Math.floor(total / 60);
   const seconds = total % 60;
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function getSuggestedStatusPollDelayMs(
+  rumbleStatus: RumbleStatusResponse | null,
+  statusError: string | null,
+): number {
+  if (statusError) return STATUS_POLL_ERROR_RETRY_MS;
+  if (!rumbleStatus?.slots?.length) return STATUS_POLL_BACKSTOP_INTERVALS_MS.idle;
+
+  const now = Date.now();
+  let nextDelay = Number.POSITIVE_INFINITY;
+
+  for (const slot of rumbleStatus.slots) {
+    if (slot?.state === "combat") {
+      const targetMs = slot.nextTurnAt ? Date.parse(slot.nextTurnAt) : Number.NaN;
+      if (Number.isFinite(targetMs)) {
+        const remainingMs = targetMs - now;
+        if (remainingMs > STATUS_POLL_TRANSITION_LEAD_MS.combat) {
+          nextDelay = Math.min(
+            nextDelay,
+            Math.max(
+              STATUS_POLL_INTERVALS_MS.combat,
+              Math.min(
+                STATUS_POLL_BACKSTOP_INTERVALS_MS.combat,
+                remainingMs - STATUS_POLL_TRANSITION_LEAD_MS.combat,
+              ),
+            ),
+          );
+        } else {
+          nextDelay = Math.min(nextDelay, STATUS_POLL_INTERVALS_MS.combat);
+        }
+      } else {
+        nextDelay = Math.min(nextDelay, STATUS_POLL_BACKSTOP_INTERVALS_MS.combat);
+      }
+      continue;
+    }
+
+    if (slot?.state === "betting") {
+      const targetMs = slot.bettingDeadline ? Date.parse(slot.bettingDeadline) : Number.NaN;
+      if (Number.isFinite(targetMs)) {
+        const remainingMs = targetMs - now;
+        if (remainingMs > STATUS_POLL_TRANSITION_LEAD_MS.betting) {
+          nextDelay = Math.min(
+            nextDelay,
+            Math.max(
+              STATUS_POLL_INTERVALS_MS.betting,
+              Math.min(
+                STATUS_POLL_BACKSTOP_INTERVALS_MS.betting,
+                remainingMs - STATUS_POLL_TRANSITION_LEAD_MS.betting,
+              ),
+            ),
+          );
+        } else {
+          nextDelay = Math.min(nextDelay, STATUS_POLL_INTERVALS_MS.betting);
+        }
+      } else {
+        nextDelay = Math.min(nextDelay, STATUS_POLL_BACKSTOP_INTERVALS_MS.betting);
+      }
+      continue;
+    }
+
+    if (slot?.state === "payout") {
+      nextDelay = Math.min(nextDelay, STATUS_POLL_BACKSTOP_INTERVALS_MS.betting);
+    }
+  }
+
+  if (Number.isFinite(nextDelay)) return Math.max(1_500, Math.floor(nextDelay));
+  return STATUS_POLL_BACKSTOP_INTERVALS_MS.idle;
+}
+
+function getRumbleStateRank(state: RumbleSlot["state"] | undefined): number {
+  if (state === "betting") return 1;
+  if (state === "combat") return 2;
+  if (state === "payout") return 3;
+  return 0;
+}
+
+function mergeRumbleStatusSnapshots(
+  previous: RumbleStatusResponse | null,
+  next: RumbleStatusResponse,
+): RumbleStatusResponse {
+  if (!previous?.slots?.length || !next.slots?.length) return next;
+
+  const previousBySlot = new Map<number, RumbleSlot>();
+  for (const slot of previous.slots) {
+    const slotIndex = safeNumber(slot.slotIndex, -1);
+    if (slotIndex >= 0) previousBySlot.set(slotIndex, slot);
+  }
+
+  const mergedSlots = next.slots.map((slot) => {
+    const slotIndex = safeNumber(slot.slotIndex, -1);
+    const previousSlot = previousBySlot.get(slotIndex);
+    if (!previousSlot) return slot;
+
+    const previousRumbleId = String(previousSlot.rumbleId ?? "").trim();
+    const nextRumbleId = String(slot.rumbleId ?? "").trim();
+    if (!previousRumbleId || !nextRumbleId || previousRumbleId !== nextRumbleId) {
+      return slot;
+    }
+
+    const nextTurns = Array.isArray(slot.turns) ? slot.turns : [];
+    const previousTurns = Array.isArray(previousSlot.turns) ? previousSlot.turns : [];
+    const nextFighters = Array.isArray(slot.fighters) ? slot.fighters : [];
+    const previousFighters = Array.isArray(previousSlot.fighters) ? previousSlot.fighters : [];
+    const nextOdds = Array.isArray(slot.odds) ? slot.odds : [];
+    const previousOdds = Array.isArray(previousSlot.odds) ? previousSlot.odds : [];
+    const mergedTurns = nextTurns.length >= previousTurns.length ? slot.turns : previousSlot.turns;
+    const mergedFighters = nextFighters.length >= previousFighters.length ? slot.fighters : previousSlot.fighters;
+    const mergedOdds = nextOdds.length >= previousOdds.length ? slot.odds : previousSlot.odds;
+    const mergedState =
+      getRumbleStateRank(slot.state) >= getRumbleStateRank(previousSlot.state)
+        ? slot.state
+        : previousSlot.state;
+
+    const mergedDeadline =
+      mergedState === "betting"
+        ? (() => {
+            if (previousSlot.state !== "betting" || !slot.bettingDeadline) return slot.bettingDeadline;
+            const previousDeadlineMs = previousSlot.bettingDeadline
+              ? Date.parse(previousSlot.bettingDeadline)
+              : Number.NaN;
+            const nextDeadlineMs = Date.parse(slot.bettingDeadline);
+            if (!Number.isFinite(nextDeadlineMs)) return previousSlot.bettingDeadline;
+            if (!Number.isFinite(previousDeadlineMs) || nextDeadlineMs < previousDeadlineMs) {
+              return slot.bettingDeadline;
+            }
+            return previousSlot.bettingDeadline;
+          })()
+        : slot.bettingDeadline;
+
+    return {
+      ...slot,
+      state: mergedState,
+      turns: mergedTurns,
+      fighters: mergedFighters,
+      odds: mergedOdds,
+      fighterNames:
+        slot.fighterNames && Object.keys(slot.fighterNames).length > 0
+          ? slot.fighterNames
+          : previousSlot.fighterNames,
+      payout: slot.payout ?? previousSlot.payout ?? null,
+      currentTurn: Math.max(
+        safeNumber(slot.currentTurn, 0),
+        safeNumber(previousSlot.currentTurn, 0),
+        Array.isArray(mergedTurns) ? mergedTurns.length : 0,
+      ),
+      bettingDeadline: mergedDeadline,
+    };
+  });
+
+  return {
+    ...next,
+    slots: mergedSlots,
+  };
 }
 
 function formatAge(iso: string): string {
@@ -540,23 +753,65 @@ function SoundControls({
   onToggleSfx: () => void;
   onToggleHaptics: () => void;
 }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+
   return (
-    <View style={styles.soundControlsRow}>
-      <Pressable onPress={onToggleSfx} style={({ pressed }) => [styles.soundBtn, sfxEnabled ? styles.soundBtnOn : styles.soundBtnOff, pressed ? styles.pressablePressed : null]}>
-        <Text style={[styles.soundBtnText, sfxEnabled ? styles.soundBtnTextOn : styles.soundBtnTextOff]}>
-          {sfxEnabled ? "SFX ON" : "SFX OFF"}
-        </Text>
+    <View style={styles.soundControlsWrap}>
+      <Pressable
+        onPress={() => setMenuOpen(current => !current)}
+        accessibilityRole="button"
+        accessibilityLabel={menuOpen ? "Close settings" : "Open settings"}
+        style={({ pressed }) => [
+          styles.soundGearBtn,
+          menuOpen ? styles.soundGearBtnOpen : null,
+          pressed ? styles.pressablePressed : null,
+        ]}
+      >
+        <Text style={[styles.soundGearGlyph, menuOpen ? styles.soundGearGlyphOpen : null]}>⚙</Text>
       </Pressable>
-      <Pressable onPress={onToggleMusic} style={({ pressed }) => [styles.soundBtn, musicEnabled ? styles.soundBtnOn : styles.soundBtnOff, pressed ? styles.pressablePressed : null]}>
-        <Text style={[styles.soundBtnText, musicEnabled ? styles.soundBtnTextOn : styles.soundBtnTextOff]}>
-          {musicEnabled ? "MUSIC ON" : "MUSIC OFF"}
-        </Text>
-      </Pressable>
-      <Pressable onPress={onToggleHaptics} style={({ pressed }) => [styles.soundBtn, hapticsEnabled ? styles.soundBtnOn : styles.soundBtnOff, pressed ? styles.pressablePressed : null]}>
-        <Text style={[styles.soundBtnText, hapticsEnabled ? styles.soundBtnTextOn : styles.soundBtnTextOff]}>
-          {hapticsEnabled ? "HAPTIC ON" : "HAPTIC OFF"}
-        </Text>
-      </Pressable>
+
+      {menuOpen ? (
+        <View style={styles.soundMenu}>
+          <Pressable
+            onPress={onToggleSfx}
+            style={({ pressed }) => [
+              styles.soundMenuRow,
+              pressed ? styles.pressablePressed : null,
+            ]}
+          >
+            <Text style={styles.soundMenuLabel}>SFX</Text>
+            <Text style={[styles.soundMenuValue, sfxEnabled ? styles.soundMenuValueOn : styles.soundMenuValueOff]}>
+              {sfxEnabled ? "ON" : "OFF"}
+            </Text>
+          </Pressable>
+
+          <Pressable
+            onPress={onToggleMusic}
+            style={({ pressed }) => [
+              styles.soundMenuRow,
+              pressed ? styles.pressablePressed : null,
+            ]}
+          >
+            <Text style={styles.soundMenuLabel}>MUSIC</Text>
+            <Text style={[styles.soundMenuValue, musicEnabled ? styles.soundMenuValueOn : styles.soundMenuValueOff]}>
+              {musicEnabled ? "ON" : "OFF"}
+            </Text>
+          </Pressable>
+
+          <Pressable
+            onPress={onToggleHaptics}
+            style={({ pressed }) => [
+              styles.soundMenuRow,
+              pressed ? styles.pressablePressed : null,
+            ]}
+          >
+            <Text style={styles.soundMenuLabel}>HAPTIC</Text>
+            <Text style={[styles.soundMenuValue, hapticsEnabled ? styles.soundMenuValueOn : styles.soundMenuValueOff]}>
+              {hapticsEnabled ? "ON" : "OFF"}
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -636,6 +891,7 @@ function RumbleNativeScreen() {
   } = useMobileWallet();
 
   const [activeTab, setActiveTab] = useState<TabKey>("arena");
+  const [appState, setAppState] = useState<AppStateStatus>(AppState.currentState);
 
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [statusText, setStatusText] = useState("Ready");
@@ -660,6 +916,7 @@ function RumbleNativeScreen() {
   const [txLoading, setTxLoading] = useState(true);
   const [txError, setTxError] = useState<string | null>(null);
   const [txFeedMinimized, setTxFeedMinimized] = useState(true);
+  const [txFeedNetwork, setTxFeedNetwork] = useState<"mainnet" | "devnet">("mainnet");
 
   const [solBalance, setSolBalance] = useState<number | null>(null);
   const [myBetsBySlot, setMyBetsBySlot] = useState<Record<number, Record<string, number>>>({});
@@ -673,6 +930,7 @@ function RumbleNativeScreen() {
   const [turnAnimationTurn, setTurnAnimationTurn] = useState<number | null>(null);
   const [recentEliminations, setRecentEliminations] = useState<string[]>([]);
   const bgMusicRef = useRef<Audio.Sound | null>(null);
+  const bgTrackIndexRef = useRef(0);
   const audioInitializedRef = useRef(false);
   const musicEnabledRef = useRef(musicEnabled);
   const turnAnim = useRef(new Animated.Value(0)).current;
@@ -682,15 +940,24 @@ function RumbleNativeScreen() {
   const betTilePressAnimRef = useRef<Record<string, Animated.Value>>({});
   const lastAnimatedTurnRef = useRef<string>("");
   const lastStateToneRef = useRef<{ rumbleId: string; state: string } | null>(null);
+  const lastNonIdleSlotRef = useRef<RumbleSlot | null>(null);
+  const idleGraceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [idleGraceActive, setIdleGraceActive] = useState(false);
+  const [winnerPopup, setWinnerPopup] = useState<{ fighter: RumbleSlotFighter; payout: SlotPayout | null; rumbleNumber: number | null } | null>(null);
+  const winnerPopupAnim = useRef(new Animated.Value(0)).current;
+  const winnerPopupShownForRef = useRef<string>("");
+  const winnerPopupDismissRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clearElimsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const statusRequestInFlightRef = useRef(false);
   const chatRequestInFlightRef = useRef(false);
   const statusRetryAfterRef = useRef(0);
   const chatRetryAfterRef = useRef(0);
-
+  const statusRealtimeChannelRef = useRef<RealtimeChannel | null>(null);
+  const statusRealtimeRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const txRetryAfterRef = useRef(0);
   const balanceRetryAfterRef = useRef(0);
   const fallbackSendConnectionRef = useRef<Connection | null>(null);
+  const isAppActive = appState === "active";
 
   const walletAddress = useMemo(() => normalizeWalletAddress(account), [account]);
   const isBusy = busyAction !== null;
@@ -763,8 +1030,42 @@ function RumbleNativeScreen() {
     musicEnabledRef.current = musicEnabled;
   }, [musicEnabled]);
 
+  const loadAndPlayTrack = useCallback(async (trackIndex: number, cancelled?: { current: boolean }) => {
+    try {
+      const prev = bgMusicRef.current;
+      if (prev) {
+        bgMusicRef.current = null;
+        await prev.unloadAsync();
+      }
+      const source = SND_BG_TRACKS[trackIndex % SND_BG_TRACKS.length];
+      const { sound } = await Audio.Sound.createAsync(source, {
+        isLooping: false,
+        volume: 0.3,
+        shouldPlay: false,
+      });
+      if (cancelled?.current) {
+        await sound.unloadAsync();
+        return;
+      }
+      sound.setOnPlaybackStatusUpdate(status => {
+        if (!status.isLoaded) return;
+        if (status.didJustFinish && musicEnabledRef.current) {
+          const nextIndex = (bgTrackIndexRef.current + 1) % SND_BG_TRACKS.length;
+          bgTrackIndexRef.current = nextIndex;
+          void loadAndPlayTrack(nextIndex);
+        }
+      });
+      bgMusicRef.current = sound;
+      if (musicEnabledRef.current) {
+        await sound.playAsync();
+      }
+    } catch {
+      // silently fail
+    }
+  }, []);
+
   useEffect(() => {
-    let cancelled = false;
+    const cancelled = { current: false };
 
     const initAudio = async () => {
       if (audioInitializedRef.current) return;
@@ -777,21 +1078,7 @@ function RumbleNativeScreen() {
           interruptionModeAndroid: 1,
           interruptionModeIOS: 1,
         });
-        const { sound } = await Audio.Sound.createAsync(SND_BG_MUSIC, {
-          isLooping: true,
-          volume: 0.3,
-          shouldPlay: false,
-        });
-        if (cancelled) {
-          await sound.unloadAsync();
-          return;
-        }
-        bgMusicRef.current = sound;
-        if (musicEnabledRef.current) {
-          await sound.playAsync();
-        } else {
-          await sound.pauseAsync();
-        }
+        await loadAndPlayTrack(bgTrackIndexRef.current, cancelled);
       } catch {
         audioInitializedRef.current = false;
       }
@@ -800,7 +1087,7 @@ function RumbleNativeScreen() {
     void initAudio();
 
     return () => {
-      cancelled = true;
+      cancelled.current = true;
       const current = bgMusicRef.current;
       bgMusicRef.current = null;
       if (current) {
@@ -819,7 +1106,7 @@ function RumbleNativeScreen() {
     }
   }, [musicEnabled]);
 
-  const featuredSlot = useMemo(() => {
+  const rawFeaturedSlot = useMemo(() => {
     const slots = Array.isArray(rumbleStatus?.slots) ? [...rumbleStatus.slots] : [];
     if (slots.length === 0) return null;
     slots.sort((a, b) => {
@@ -829,6 +1116,38 @@ function RumbleNativeScreen() {
     });
     return slots[0] ?? null;
   }, [rumbleStatus]);
+
+  // Hold the previous non-idle slot for a grace period during transitions
+  // to prevent flashing idle/blank between rumbles
+  useEffect(() => {
+    const isIdle = !rawFeaturedSlot || rawFeaturedSlot.state === "idle";
+    if (!isIdle) {
+      lastNonIdleSlotRef.current = rawFeaturedSlot;
+      setIdleGraceActive(false);
+      if (idleGraceTimeoutRef.current) {
+        clearTimeout(idleGraceTimeoutRef.current);
+        idleGraceTimeoutRef.current = null;
+      }
+    } else if (lastNonIdleSlotRef.current && !idleGraceActive) {
+      // Slot just went idle — start a 4s grace period before showing idle screen
+      setIdleGraceActive(true);
+      idleGraceTimeoutRef.current = setTimeout(() => {
+        lastNonIdleSlotRef.current = null;
+        setIdleGraceActive(false);
+        idleGraceTimeoutRef.current = null;
+      }, 4_000);
+    }
+    return () => {
+      if (idleGraceTimeoutRef.current) {
+        clearTimeout(idleGraceTimeoutRef.current);
+        idleGraceTimeoutRef.current = null;
+      }
+    };
+  }, [rawFeaturedSlot, idleGraceActive]);
+
+  const featuredSlot = idleGraceActive && lastNonIdleSlotRef.current
+    ? lastNonIdleSlotRef.current
+    : rawFeaturedSlot;
 
   const activeSlots = useMemo(
     () => (rumbleStatus?.slots ?? []).filter(slot => slot.state && slot.state !== "idle"),
@@ -1035,9 +1354,48 @@ function RumbleNativeScreen() {
     }
   }, [featuredSlot?.rumbleId, featuredSlot?.state, playSfx]);
 
+  // Winner popup when entering payout state
+  useEffect(() => {
+    const rumbleId = String(featuredSlot?.rumbleId ?? "");
+    const state = String(featuredSlot?.state ?? "idle");
+    if (state !== "payout" || !rumbleId) return;
+    if (winnerPopupShownForRef.current === rumbleId) return;
+
+    const placements = (featuredSlot?.fighters ?? [])
+      .filter(f => safeNumber(f.placement, 0) > 0)
+      .sort((a, b) => safeNumber(a.placement, 0) - safeNumber(b.placement, 0));
+    const winner = placements[0];
+    if (!winner) return;
+
+    winnerPopupShownForRef.current = rumbleId;
+    setWinnerPopup({ fighter: winner, payout: featuredSlot?.payout ?? null, rumbleNumber: featuredSlot?.rumbleNumber ?? null });
+    winnerPopupAnim.setValue(0);
+    Animated.spring(winnerPopupAnim, {
+      toValue: 1,
+      tension: 60,
+      friction: 8,
+      useNativeDriver: true,
+    }).start();
+    void triggerHaptic("impact");
+
+    if (winnerPopupDismissRef.current) clearTimeout(winnerPopupDismissRef.current);
+    winnerPopupDismissRef.current = setTimeout(() => {
+      Animated.timing(winnerPopupAnim, {
+        toValue: 0,
+        duration: 300,
+        easing: Easing.in(Easing.cubic),
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) setWinnerPopup(null);
+      });
+    }, 6_000);
+  }, [featuredSlot?.rumbleId, featuredSlot?.state, featuredSlot?.fighters, featuredSlot?.payout, featuredSlot?.rumbleNumber, winnerPopupAnim, triggerHaptic]);
+
   useEffect(() => {
     return () => {
       if (clearElimsTimeoutRef.current) clearTimeout(clearElimsTimeoutRef.current);
+      if (idleGraceTimeoutRef.current) clearTimeout(idleGraceTimeoutRef.current);
+      if (winnerPopupDismissRef.current) clearTimeout(winnerPopupDismissRef.current);
     };
   }, []);
 
@@ -1049,7 +1407,7 @@ function RumbleNativeScreen() {
       easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
     }).start();
-  }, [activeTab, featuredSlot?.rumbleId, featuredSlot?.state, contentRevealAnim]);
+  }, [activeTab, contentRevealAnim]);
 
   const payoutPlacements = useMemo(() => {
     if (!featuredSlot || !Array.isArray(featuredSlot.fighters)) return [];
@@ -1195,7 +1553,7 @@ function RumbleNativeScreen() {
 
     try {
       const data = await fetchJsonFromCandidates<RumbleStatusResponse>(`/api/rumble/status?_t=${Date.now()}`);
-      setRumbleStatus(data);
+      setRumbleStatus(previous => mergeRumbleStatusSnapshots(previous, data));
       setLastStatusAt(Date.now());
       setStatusError(null);
       statusRetryAfterRef.current = 0;
@@ -1221,6 +1579,15 @@ function RumbleNativeScreen() {
       setStatusLoading(false);
     }
   }, [rumbleStatus, statusText]);
+
+  const scheduleStatusRefresh = useCallback((force = false, delayMs = STATUS_REALTIME_REFRESH_DEBOUNCE_MS) => {
+    if (!isAppActive) return;
+    if (statusRealtimeRefreshTimeoutRef.current) return;
+    statusRealtimeRefreshTimeoutRef.current = setTimeout(() => {
+      statusRealtimeRefreshTimeoutRef.current = null;
+      void fetchStatus(force);
+    }, delayMs);
+  }, [fetchStatus, isAppActive]);
 
   const fetchClaimBalance = useCallback(async () => {
     if (!walletAddress) {
@@ -1301,7 +1668,7 @@ function RumbleNativeScreen() {
     if (now < txRetryAfterRef.current) return;
 
     try {
-      const data = await fetchJsonFromCandidates<{ signatures: TxEntry[] }>(`/api/rumble/tx-feed?_t=${Date.now()}`);
+      const data = await fetchJsonFromCandidates<{ signatures: TxEntry[] }>(`/api/rumble/tx-feed?network=${txFeedNetwork}&_t=${Date.now()}`);
       setTxFeed(Array.isArray(data.signatures) ? data.signatures : []);
       setTxError(null);
       txRetryAfterRef.current = 0;
@@ -1316,7 +1683,7 @@ function RumbleNativeScreen() {
     } finally {
       setTxLoading(false);
     }
-  }, []);
+  }, [txFeedNetwork]);
 
   const fetchSolBalance = useCallback(async () => {
     if (!walletAddress) {
@@ -1343,43 +1710,127 @@ function RumbleNativeScreen() {
   }, [walletAddress]);
 
   useEffect(() => {
+    const sub = AppState.addEventListener("change", nextState => {
+      setAppState(nextState);
+    });
+    return () => {
+      sub.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isAppActive) return;
     void fetchStatus();
-    void fetchChat();
+  }, [fetchStatus, isAppActive]);
+
+  useEffect(() => {
+    if (!isAppActive) {
+      if (statusRealtimeRefreshTimeoutRef.current) {
+        clearTimeout(statusRealtimeRefreshTimeoutRef.current);
+        statusRealtimeRefreshTimeoutRef.current = null;
+      }
+      return;
+    }
+
+    const client = getSupabaseRealtimeClient();
+    if (!client) return;
+
+    const scheduleRefresh = () => {
+      scheduleStatusRefresh(false);
+    };
+
+    const channel = client
+      .channel("rumble_status_mobile")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "ucf_rumbles" },
+        scheduleRefresh,
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "ucf_rumble_queue" },
+        scheduleRefresh,
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "ucf_ichor_shower" },
+        scheduleRefresh,
+      )
+      .subscribe(status => {
+        if (status === "CHANNEL_ERROR") {
+          console.warn("[mobile-realtime] Channel error. Polling fallback remains active.");
+        }
+      });
+
+    statusRealtimeChannelRef.current = channel;
+
+    return () => {
+      if (statusRealtimeRefreshTimeoutRef.current) {
+        clearTimeout(statusRealtimeRefreshTimeoutRef.current);
+        statusRealtimeRefreshTimeoutRef.current = null;
+      }
+      client.removeChannel(channel);
+      if (statusRealtimeChannelRef.current === channel) {
+        statusRealtimeChannelRef.current = null;
+      }
+    };
+  }, [isAppActive, scheduleStatusRefresh]);
+
+  useEffect(() => {
+    if (!isAppActive) return;
+    const delayMs = getSuggestedStatusPollDelayMs(rumbleStatus, statusError);
+    const timer = setTimeout(() => void fetchStatus(), delayMs);
+    return () => clearTimeout(timer);
+  }, [fetchStatus, isAppActive, rumbleStatus, statusError]);
+
+  useEffect(() => {
+    if (!isAppActive || activeTab !== "chat") return;
+    void fetchChat(true);
+  }, [activeTab, fetchChat, isAppActive]);
+
+  useEffect(() => {
+    if (!isAppActive || activeTab !== "chat") return;
+    const timer = setTimeout(() => void fetchChat(), CHAT_POLL_ACTIVE_MS);
+    return () => clearTimeout(timer);
+  }, [activeTab, fetchChat, isAppActive, messages.length, chatError]);
+
+  useEffect(() => {
+    if (!isAppActive || activeTab !== "queue" || txFeedMinimized) return;
     void fetchTxFeed();
-  }, [fetchStatus, fetchChat, fetchTxFeed]);
+  }, [activeTab, fetchTxFeed, isAppActive, txFeedMinimized]);
 
   useEffect(() => {
-    const hasCombat = (rumbleStatus?.slots ?? []).some(slot => slot.state === "combat");
-    const hasBetting = (rumbleStatus?.slots ?? []).some(slot => slot.state === "betting");
-    const intervalMs = hasCombat ? 5000 : hasBetting ? 8000 : 15000;
-    const timer = setInterval(() => void fetchStatus(), intervalMs);
-    return () => clearInterval(timer);
-  }, [fetchStatus, rumbleStatus]);
+    if (!isAppActive || activeTab !== "queue" || txFeedMinimized) return;
+    const timer = setTimeout(() => void fetchTxFeed(), TX_FEED_POLL_ACTIVE_MS);
+    return () => clearTimeout(timer);
+  }, [activeTab, fetchTxFeed, isAppActive, txFeedMinimized, txFeed.length, txError]);
 
   useEffect(() => {
-    const timer = setInterval(() => void fetchChat(), 30_000);
-    return () => clearInterval(timer);
-  }, [fetchChat]);
-
-  useEffect(() => {
-    const timer = setInterval(() => void fetchTxFeed(), 45_000);
-    return () => clearInterval(timer);
-  }, [fetchTxFeed]);
-
-  useEffect(() => {
+    if (!walletAddress || !isAppActive) return;
     void fetchClaimBalance();
-    void fetchMyBets(false);
+    void fetchMyBets(activeTab === "queue");
     void fetchSolBalance();
-  }, [fetchClaimBalance, fetchMyBets, fetchSolBalance]);
+  }, [walletAddress, activeTab, fetchClaimBalance, fetchMyBets, fetchSolBalance, isAppActive]);
 
   useEffect(() => {
-    const timer = setInterval(() => {
+    if (!walletAddress || !isAppActive) return;
+    const timer = setTimeout(() => {
       void fetchClaimBalance();
-      void fetchMyBets(false);
+      void fetchMyBets(activeTab === "queue");
       void fetchSolBalance();
-    }, 60_000);
-    return () => clearInterval(timer);
-  }, [fetchClaimBalance, fetchMyBets, fetchSolBalance]);
+    }, WALLET_POLL_ACTIVE_MS);
+    return () => clearTimeout(timer);
+  }, [
+    walletAddress,
+    activeTab,
+    fetchClaimBalance,
+    fetchMyBets,
+    fetchSolBalance,
+    isAppActive,
+    claimBalance?.claimable_sol,
+    claimBalance?.claimed_sol,
+    solBalance,
+  ]);
 
   useEffect(() => {
     setBetDrafts({});
@@ -1767,7 +2218,10 @@ function RumbleNativeScreen() {
 
   const featuredState = String(featuredSlot?.state ?? "idle");
   const stateColor = getStateColor(featuredSlot?.state);
-  const signalLive = lastStatusAt !== null && Date.now() - lastStatusAt < 8000;
+  const signalLive =
+    lastStatusAt !== null &&
+    Date.now() - lastStatusAt <
+      Math.max(8_000, getSuggestedStatusPollDelayMs(rumbleStatus, statusError) + 4_000);
 
   const queueLength = safeNumber(rumbleStatus?.queueLength, queuePreview.length);
   const ichorPool = safeNumber(rumbleStatus?.ichorShower?.currentPool, 0);
@@ -1810,28 +2264,34 @@ function RumbleNativeScreen() {
             >
               RUMBLE
             </Text>
-            <Text style={styles.subTitle}>BATTLE ROYALE // 8-16 FIGHTERS // LAST BOT STANDING</Text>
+            <Text style={styles.subTitle}>BATTLE ROYALE // 12-16 FIGHTERS // LAST BOT STANDING</Text>
           </View>
           <View style={styles.headerRight}>
             <View style={styles.liveRow}>
               <View style={[styles.liveDot, signalLive ? styles.liveDotOn : styles.liveDotOff]} />
               <Text style={styles.liveText}>{signalLive ? "LIVE" : "POLLING"}</Text>
             </View>
-            <SoundControls
-              musicEnabled={musicEnabled}
-              sfxEnabled={sfxEnabled}
-              hapticsEnabled={hapticsEnabled}
-              onToggleMusic={handleToggleMusic}
-              onToggleSfx={handleToggleSfx}
-              onToggleHaptics={handleToggleHaptics}
-            />
-            <WalletHeader
-              walletAddress={walletAddress}
-              busy={isBusy}
-              solBalance={solBalance}
-              onConnect={onConnect}
-              onDisconnect={onDisconnect}
-            />
+            <View style={styles.headerUtilityGroup}>
+              <View style={styles.headerWalletSlot}>
+                <WalletHeader
+                  walletAddress={walletAddress}
+                  busy={isBusy}
+                  solBalance={solBalance}
+                  onConnect={onConnect}
+                  onDisconnect={onDisconnect}
+                />
+              </View>
+              <View style={styles.headerGearSlot}>
+                <SoundControls
+                  musicEnabled={musicEnabled}
+                  sfxEnabled={sfxEnabled}
+                  hapticsEnabled={hapticsEnabled}
+                  onToggleMusic={handleToggleMusic}
+                  onToggleSfx={handleToggleSfx}
+                  onToggleHaptics={handleToggleHaptics}
+                />
+              </View>
+            </View>
           </View>
         </View>
 
@@ -1918,7 +2378,7 @@ function RumbleNativeScreen() {
                             : "No fighters queued"}
                         </Text>
                         <Text style={styles.idleArenaHint}>
-                          {queueLength >= 8 ? "NEXT RUMBLE STARTING SOON" : "Need 8+ fighters to start a rumble"}
+                          {queueLength >= 12 ? "NEXT RUMBLE STARTING SOON" : "Need 12+ fighters to start a rumble"}
                         </Text>
                       </View>
                     </View>
@@ -2233,6 +2693,11 @@ function RumbleNativeScreen() {
                                       <Text style={[styles.rowSub, leftEliminated ? styles.rowSubEliminated : null]}>
                                         HP {leftHp.toFixed(0)} / {leftMax.toFixed(0)}
                                       </Text>
+                                      {leftMove ? (
+                                        <Text style={[styles.moveTag, { color: getMoveColor(leftMove) }]}>
+                                          {formatMove(leftMove)} {safeNumber(pair.damageToB, 0) > 0 ? `(-${safeNumber(pair.damageToB, 0).toFixed(0)})` : ""}
+                                        </Text>
+                                      ) : null}
                                       {leftEliminated ? <Text style={styles.eliminatedTag}>ELIMINATED</Text> : null}
                                     </Animated.View>
                                     <Animated.Text style={[styles.vsText, vsToneStyle, vsAnimStyle]}>VS</Animated.Text>
@@ -2252,6 +2717,11 @@ function RumbleNativeScreen() {
                                       <Text style={[styles.rowSub, rightEliminated ? styles.rowSubEliminated : null]}>
                                         HP {rightHp.toFixed(0)} / {rightMax.toFixed(0)}
                                       </Text>
+                                      {rightMove ? (
+                                        <Text style={[styles.moveTag, { color: getMoveColor(rightMove) }]}>
+                                          {formatMove(rightMove)} {safeNumber(pair.damageToA, 0) > 0 ? `(-${safeNumber(pair.damageToA, 0).toFixed(0)})` : ""}
+                                        </Text>
+                                      ) : null}
                                       {rightEliminated ? <Text style={styles.eliminatedTag}>ELIMINATED</Text> : null}
                                     </Animated.View>
                                   </View>
@@ -2347,11 +2817,18 @@ function RumbleNativeScreen() {
                                           const rightMax = Math.max(1, safeNumber(right?.maxHp, 100));
                                           const leftHpPct = Math.max(0, Math.min(100, (leftHp / leftMax) * 100));
                                           const rightHpPct = Math.max(0, Math.min(100, (rightHp / rightMax) * 100));
+                                          const leftMove = String(pair.moveA ?? "").toUpperCase();
+                                          const rightMove = String(pair.moveB ?? "").toUpperCase();
                                           return (
                                             <View key={`pair_${pairIdx}`} style={styles.turnFeedPairRow}>
                                               <Text style={styles.turnFeedLine} numberOfLines={1}>
                                                 {leftName} -{dmgToB} | {rightName} -{dmgToA}
                                               </Text>
+                                              <View style={styles.turnFeedMoveRow}>
+                                                <Text style={[styles.turnFeedMoveTag, { color: getMoveColor(leftMove) }]}>{formatMove(leftMove)}</Text>
+                                                <Text style={styles.turnFeedMoveSep}>vs</Text>
+                                                <Text style={[styles.turnFeedMoveTag, { color: getMoveColor(rightMove) }]}>{formatMove(rightMove)}</Text>
+                                              </View>
                                               <View style={styles.turnFeedHpRow}>
                                                 <View style={styles.turnFeedHpTrack}>
                                                   <View
@@ -2641,10 +3118,25 @@ function RumbleNativeScreen() {
                   >
                     <Text style={styles.panelLabel}>On-Chain Feed</Text>
                     <View style={styles.panelMetaGroup}>
-                      <Text style={styles.panelMeta}>{ONCHAIN_FEED_NETWORK_LABEL}</Text>
                       <Text style={styles.panelCollapseText}>{txFeedMinimized ? "SHOW" : "HIDE"}</Text>
                     </View>
                   </Pressable>
+                  {!txFeedMinimized ? (
+                    <View style={styles.networkToggleRow}>
+                      <Pressable
+                        onPress={() => { setTxFeed([]); setTxLoading(true); setTxFeedNetwork("mainnet"); }}
+                        style={[styles.networkToggleBtn, txFeedNetwork === "mainnet" ? styles.networkToggleBtnActive : null]}
+                      >
+                        <Text style={[styles.networkToggleText, txFeedNetwork === "mainnet" ? styles.networkToggleTextActive : null]}>MAINNET</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => { setTxFeed([]); setTxLoading(true); setTxFeedNetwork("devnet"); }}
+                        style={[styles.networkToggleBtn, txFeedNetwork === "devnet" ? styles.networkToggleBtnActive : null]}
+                      >
+                        <Text style={[styles.networkToggleText, txFeedNetwork === "devnet" ? styles.networkToggleTextActive : null]}>DEVNET</Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
                   {txFeedMinimized ? (
                     <Text style={styles.panelMuted}>Minimized. Tap to expand.</Text>
                   ) : txLoading ? (
@@ -2700,6 +3192,61 @@ function RumbleNativeScreen() {
           </Pressable>
         </View>
       </View>
+
+      {winnerPopup ? (
+        <Animated.View
+          style={[
+            styles.winnerOverlay,
+            {
+              opacity: winnerPopupAnim,
+              transform: [
+                {
+                  scale: winnerPopupAnim.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [0.8, 1],
+                  }),
+                },
+              ],
+            },
+          ]}
+        >
+          <Pressable style={styles.winnerOverlayBackdrop} onPress={() => {
+            if (winnerPopupDismissRef.current) clearTimeout(winnerPopupDismissRef.current);
+            Animated.timing(winnerPopupAnim, {
+              toValue: 0,
+              duration: 250,
+              easing: Easing.in(Easing.cubic),
+              useNativeDriver: true,
+            }).start(({ finished }) => { if (finished) setWinnerPopup(null); });
+          }}>
+            <View style={styles.winnerCard}>
+              <Text style={styles.winnerCrown}>WINNER</Text>
+              {winnerPopup.rumbleNumber ? (
+                <Text style={styles.winnerRumbleLabel}>RUMBLE #{winnerPopup.rumbleNumber}</Text>
+              ) : null}
+              <View style={styles.winnerAvatarRing}>
+                <ExpoImage
+                  source={winnerPopup.fighter.imageUrl ? { uri: winnerPopup.fighter.imageUrl } : BOT_AVATAR_IMG}
+                  style={styles.winnerAvatar}
+                  contentFit="cover"
+                  transition={120}
+                />
+              </View>
+              <Text style={styles.winnerName}>{getFighterName(winnerPopup.fighter)}</Text>
+              <Text style={styles.winnerStats}>
+                HP {safeNumber(winnerPopup.fighter.hp, 0).toFixed(0)} // DMG {safeNumber(winnerPopup.fighter.totalDamageDealt, 0).toFixed(0)}
+              </Text>
+              {winnerPopup.payout ? (
+                <View style={styles.winnerPayoutRow}>
+                  <Text style={styles.winnerPayoutLabel}>Pool</Text>
+                  <Text style={styles.winnerPayoutValue}>{safeNumber(winnerPopup.payout.totalPool, 0).toFixed(3)} SOL</Text>
+                </View>
+              ) : null}
+              <Text style={styles.winnerDismissHint}>TAP TO DISMISS</Text>
+            </View>
+          </Pressable>
+        </Animated.View>
+      ) : null}
     </ImageBackground>
   );
 }
@@ -2810,6 +3357,25 @@ const styles = StyleSheet.create({
     columnGap: 8,
     width: "100%",
   },
+  headerUtilityGroup: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    minWidth: 0,
+  },
+  headerWalletSlot: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: 0,
+  },
+  headerGearSlot: {
+    width: 34,
+    alignItems: "flex-end",
+    justifyContent: "center",
+  },
   liveRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -2832,41 +3398,79 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     letterSpacing: 0.8,
   },
-  soundControlsRow: {
-    flexDirection: "row",
+  soundControlsWrap: {
+    position: "relative",
+    zIndex: 10,
+  },
+  soundGearBtn: {
+    borderWidth: 1,
+    borderColor: "#3f3f46",
+    backgroundColor: "#111111",
+    borderRadius: 9,
+    width: 34,
+    height: 34,
     alignItems: "center",
     justifyContent: "center",
-    flexWrap: "wrap",
-    gap: 6,
   },
-  soundBtn: {
-    borderWidth: 1,
-    borderRadius: 7,
-    paddingVertical: 5,
-    paddingHorizontal: 7,
+  soundGearGlyph: {
+    color: "#d6d3d1",
+    fontSize: 18,
+    lineHeight: 18,
+    fontWeight: "800",
   },
-  soundBtnOn: {
+  soundGearGlyphOpen: {
+    color: "#f59e0b",
+  },
+  soundGearBtnOpen: {
     borderColor: "#a16207",
     backgroundColor: "rgba(120,53,15,0.32)",
   },
-  soundBtnOff: {
-    borderColor: "#3f3f46",
-    backgroundColor: "#111111",
+  soundMenu: {
+    position: "absolute",
+    top: 40,
+    right: 0,
+    minWidth: 132,
+    borderWidth: 1,
+    borderColor: "#44403c",
+    borderRadius: 10,
+    backgroundColor: "rgba(14,14,14,0.97)",
+    paddingVertical: 4,
+    shadowColor: "#000",
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 8,
   },
-  soundBtnText: {
-    fontSize: 9,
+  soundMenuRow: {
+    minHeight: 34,
+    paddingHorizontal: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  soundMenuLabel: {
+    color: "#d6d3d1",
+    fontSize: 10,
+    fontWeight: "800",
     letterSpacing: 0.6,
   },
-  soundBtnTextOn: {
+  soundMenuValue: {
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.7,
+  },
+  soundMenuValueOn: {
     color: "#f59e0b",
   },
-  soundBtnTextOff: {
+  soundMenuValueOff: {
     color: "#71717a",
   },
   walletHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "flex-end",
+    justifyContent: "center",
+    flexShrink: 1,
+    minWidth: 0,
   },
   walletChip: {
     flexDirection: "row",
@@ -2878,6 +3482,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 6,
+    maxWidth: "100%",
   },
   walletBalanceText: {
     color: "#a8a29e",
@@ -2888,6 +3493,7 @@ const styles = StyleSheet.create({
     color: "#f59e0b",
     fontSize: 10,
     fontWeight: "700",
+    flexShrink: 1,
   },
   walletChipClose: {
     paddingHorizontal: 2,
@@ -3902,5 +4508,155 @@ const styles = StyleSheet.create({
   },
   bottomTabTextActive: {
     color: "#f59e0b",
+  },
+  networkToggleRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 10,
+    marginTop: 2,
+  },
+  networkToggleBtn: {
+    flex: 1,
+    paddingVertical: 7,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#3f3f46",
+    backgroundColor: "rgba(24,24,27,0.5)",
+    alignItems: "center",
+  },
+  networkToggleBtnActive: {
+    borderColor: "#f59e0b",
+    backgroundColor: "rgba(245,158,11,0.12)",
+  },
+  networkToggleText: {
+    color: "#71717a",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 1.2,
+  },
+  networkToggleTextActive: {
+    color: "#f59e0b",
+  },
+  moveTag: {
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.6,
+    marginTop: 3,
+    textAlign: "center",
+  },
+  turnFeedMoveRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    marginTop: 2,
+    marginBottom: 2,
+  },
+  turnFeedMoveTag: {
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.5,
+  },
+  turnFeedMoveSep: {
+    fontSize: 9,
+    color: "#57534e",
+    fontWeight: "600",
+  },
+  winnerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 100,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  winnerOverlayBackdrop: {
+    flex: 1,
+    width: "100%",
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "rgba(0,0,0,0.75)",
+  },
+  winnerCard: {
+    backgroundColor: "#1c1917",
+    borderWidth: 2,
+    borderColor: "#f59e0b",
+    borderRadius: 20,
+    paddingVertical: 28,
+    paddingHorizontal: 32,
+    alignItems: "center",
+    width: "82%",
+    maxWidth: 340,
+    shadowColor: "#f59e0b",
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.4,
+    shadowRadius: 24,
+    elevation: 20,
+  },
+  winnerCrown: {
+    color: "#f59e0b",
+    fontSize: 28,
+    fontWeight: "900",
+    letterSpacing: 4,
+    marginBottom: 2,
+  },
+  winnerRumbleLabel: {
+    color: "#a8a29e",
+    fontSize: 12,
+    fontWeight: "600",
+    letterSpacing: 1.5,
+    marginBottom: 16,
+  },
+  winnerAvatarRing: {
+    width: 112,
+    height: 112,
+    borderRadius: 56,
+    borderWidth: 3,
+    borderColor: "#f59e0b",
+    overflow: "hidden",
+    marginBottom: 14,
+  },
+  winnerAvatar: {
+    width: "100%",
+    height: "100%",
+  },
+  winnerName: {
+    color: "#fafaf9",
+    fontSize: 22,
+    fontWeight: "800",
+    textAlign: "center",
+    marginBottom: 6,
+  },
+  winnerStats: {
+    color: "#a8a29e",
+    fontSize: 13,
+    fontWeight: "600",
+    letterSpacing: 0.5,
+    marginBottom: 14,
+  },
+  winnerPayoutRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "rgba(245,158,11,0.12)",
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    marginBottom: 14,
+  },
+  winnerPayoutLabel: {
+    color: "#a8a29e",
+    fontSize: 12,
+    fontWeight: "700",
+    letterSpacing: 0.8,
+  },
+  winnerPayoutValue: {
+    color: "#f59e0b",
+    fontSize: 18,
+    fontWeight: "800",
+  },
+  winnerDismissHint: {
+    color: "#57534e",
+    fontSize: 10,
+    fontWeight: "600",
+    letterSpacing: 1,
   },
 });

@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Claw Fights Architecture</title>
+    <style>
+      :root {
+        --bg: #f6f1e7;
+        --ink: #17120d;
+        --muted: #5b4d41;
+        --panel: #fffaf2;
+        --line: #d7c6b2;
+        --accent: #9f3b10;
+        --accent-soft: #f4d8c7;
+        --gold: #8e6a12;
+        --gold-soft: #f2e4b3;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: "Avenir Next", "Segoe UI", sans-serif;
+        line-height: 1.45;
+      }
+
+      .page {
+        width: 1100px;
+        margin: 0 auto;
+        padding: 40px 48px 48px;
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: 2.2fr 1fr;
+        gap: 24px;
+        margin-bottom: 24px;
+      }
+
+      .hero-main,
+      .hero-side,
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        padding: 22px 24px;
+      }
+
+      h1 {
+        margin: 0 0 10px;
+        font-size: 34px;
+        line-height: 1.05;
+        letter-spacing: -0.04em;
+      }
+
+      h2 {
+        margin: 0 0 12px;
+        font-size: 18px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      p {
+        margin: 0;
+      }
+
+      .subtitle {
+        color: var(--muted);
+        font-size: 17px;
+      }
+
+      .pill {
+        display: inline-block;
+        margin-bottom: 12px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .legend {
+        display: grid;
+        gap: 10px;
+      }
+
+      .legend-row {
+        display: grid;
+        grid-template-columns: 120px 1fr;
+        gap: 12px;
+        align-items: baseline;
+        font-size: 14px;
+      }
+
+      .legend-key {
+        font-weight: 700;
+      }
+
+      .diagram {
+        margin: 0 0 24px;
+      }
+
+      .diagram pre {
+        margin: 0;
+        padding: 22px 24px;
+        overflow: hidden;
+        background: #201913;
+        color: #f8efe4;
+        border-radius: 20px;
+        border: 1px solid #3c2f25;
+        font: 15px/1.45 "SFMono-Regular", "Menlo", monospace;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: 1.25fr 1fr;
+        gap: 20px;
+      }
+
+      .stack {
+        display: grid;
+        gap: 20px;
+      }
+
+      .mini-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .card {
+        background: #fffdf8;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 16px;
+      }
+
+      .card-title {
+        margin: 0 0 8px;
+        font-size: 13px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .card-main {
+        font-size: 20px;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+      }
+
+      .card-sub {
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .accent {
+        background: var(--accent-soft);
+        border-color: #eab9a0;
+      }
+
+      .gold {
+        background: var(--gold-soft);
+        border-color: #dbc36a;
+      }
+
+      ul {
+        margin: 10px 0 0 18px;
+        padding: 0;
+      }
+
+      li {
+        margin: 0 0 6px;
+      }
+
+      .note {
+        margin-top: 20px;
+        padding: 16px 18px;
+        border-radius: 16px;
+        background: #efe5d6;
+        border: 1px solid var(--line);
+        color: #3f3127;
+        font-size: 14px;
+      }
+
+      @media print {
+        body {
+          background: white;
+        }
+
+        .page {
+          width: auto;
+          margin: 0;
+          padding: 18px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <section class="hero">
+        <div class="hero-main">
+          <div class="pill">Current Live Architecture</div>
+          <h1>Claw Fights is a hybrid system.</h1>
+          <p class="subtitle">
+            Real money lives on <strong>mainnet</strong>. Fast combat runs on
+            <strong>MagicBlock ER</strong>. Randomness comes from
+            <strong>MagicBlock VRF</strong>. Railway runs the game worker, and
+            Vercel serves the app.
+          </p>
+        </div>
+        <div class="hero-side">
+          <h2>Short Version</h2>
+          <div class="legend">
+            <div class="legend-row">
+              <div class="legend-key">Money</div>
+              <div>Mainnet betting + mainnet claims</div>
+            </div>
+            <div class="legend-row">
+              <div class="legend-key">Combat</div>
+              <div>Devnet rumble state + MagicBlock ER</div>
+            </div>
+            <div class="legend-row">
+              <div class="legend-key">Randomness</div>
+              <div>VRF for matchups and Ichor Shower</div>
+            </div>
+            <div class="legend-row">
+              <div class="legend-key">Ops</div>
+              <div>Railway worker + Vercel UI/API + Supabase mirror</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="diagram panel">
+        <h2>System Map</h2>
+        <pre>Player Wallet
+    |
+    v
+Vercel Website + Public API
+    |
+    +-------------------------------------+
+    |                                     |
+    v                                     v
+Mainnet Betting Program             Railway Worker
+(real bets / real claims)           (bots / timing / orchestration)
+    |                                     |
+    |                                     +--------------------------+
+    |                                                                |
+    v                                                                v
+Mainnet wager ledger                                         Devnet Rumble Program
+                                                             + MagicBlock ER
+                                                             + MagicBlock VRF
+                                                                |
+                                                                v
+                                                         Supabase state mirror
+                                                                |
+                                                                v
+                                                           Vercel UI reads it</pre>
+      </section>
+
+      <section class="grid">
+        <div class="stack">
+          <div class="panel">
+            <h2>What Runs Where</h2>
+            <div class="mini-grid">
+              <div class="card accent">
+                <div class="card-title">Mainnet</div>
+                <div class="card-main">Bets and claims</div>
+                <div class="card-sub">Real wager flow, wallet signing, bettor state, claim flow.</div>
+              </div>
+              <div class="card">
+                <div class="card-title">Devnet + ER</div>
+                <div class="card-main">Combat execution</div>
+                <div class="card-sub">Rumble combat state delegates into MagicBlock ER for fast turns.</div>
+              </div>
+              <div class="card gold">
+                <div class="card-title">VRF</div>
+                <div class="card-main">Fair randomness</div>
+                <div class="card-sub">Matchup seed before turn 1 and Ichor Shower random event.</div>
+              </div>
+              <div class="card">
+                <div class="card-title">Supabase</div>
+                <div class="card-main">Status mirror</div>
+                <div class="card-sub">Queue, turn logs, payout rows, UI support, public status history.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h2>End-to-End Flow</h2>
+            <ul>
+              <li>User opens `/rumble` on Vercel.</li>
+              <li>Wallet signs a mainnet bet transaction.</li>
+              <li>Railway closes betting and starts combat.</li>
+              <li>Combat state is delegated to MagicBlock ER.</li>
+              <li>Railway requests matchup VRF before turn 1.</li>
+              <li>Turns resolve on the combat side.</li>
+              <li>Railway finalizes the result.</li>
+              <li>Railway requests Ichor Shower VRF.</li>
+              <li>Supabase stores the result and Vercel shows it.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="stack">
+          <div class="panel">
+            <h2>Simple Mental Model</h2>
+            <ul>
+              <li><strong>Money side</strong>: mainnet</li>
+              <li><strong>Fight side</strong>: devnet + MagicBlock ER</li>
+              <li><strong>Who fights who</strong>: VRF matchup seed</li>
+              <li><strong>Lottery / shower</strong>: VRF shower request</li>
+              <li><strong>Game operator</strong>: Railway worker</li>
+              <li><strong>Website + API</strong>: Vercel</li>
+            </ul>
+          </div>
+
+          <div class="panel">
+            <h2>Important Caveat</h2>
+            <ul>
+              <li>This is <strong>not</strong> a single-chain-only production design yet.</li>
+              <li>Betting is on <strong>mainnet</strong>.</li>
+              <li>Combat is on <strong>devnet + ER</strong>.</li>
+              <li>Scheduling, bots, and some product behavior are still <strong>off-chain</strong>.</li>
+            </ul>
+            <div class="note">
+              Correct description: the game uses on-chain betting, on-chain ER combat,
+              and on-chain VRF, but the full product is still a hybrid web app.
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

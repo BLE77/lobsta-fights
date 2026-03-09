@@ -21,6 +21,7 @@ export interface SolanaMobileContext {
   isSeeker: boolean;
   isSaga: boolean;
   isLikelySolanaDappBrowser: boolean;
+  isStandaloneAppShell: boolean;
   hasInjectedMobileWalletAdapter: boolean;
   isLikelySolanaMobile: boolean;
   shouldPreferMobileWalletAdapter: boolean;
@@ -46,6 +47,10 @@ function hasSolanaMobileReferrer(referrer: string): boolean {
   );
 }
 
+function hasAndroidAppReferrer(referrer: string): boolean {
+  return referrer.toLowerCase().startsWith("android-app://");
+}
+
 export function detectSolanaMobileContext(
   input: DetectSolanaMobileContextInput = {},
 ): SolanaMobileContext {
@@ -69,17 +74,20 @@ export function detectSolanaMobileContext(
   const cluster = url?.searchParams.get("cluster")?.toLowerCase();
   const hasSolanaClusterParam = Boolean(cluster && SOLANA_CLUSTER_VALUES.has(cluster));
   const hasDappStoreReferrer = hasSolanaMobileReferrer(referrer);
+  const isAndroidAppReferrer = hasAndroidAppReferrer(referrer);
   const isLikelySolanaDappBrowser = hasSolanaClusterParam || hasDappStoreReferrer;
+  const isStandaloneAppShell = isStandalone || isAndroidAppReferrer;
 
   const isLikelySolanaMobile =
     isMobile &&
-    (isSeeker || isSaga || uaHintsSolanaMobile || isLikelySolanaDappBrowser || injected || isStandalone);
+    (isSeeker || isSaga || uaHintsSolanaMobile || isLikelySolanaDappBrowser || injected || isStandaloneAppShell);
 
   return {
     isMobile,
     isSeeker,
     isSaga,
     isLikelySolanaDappBrowser,
+    isStandaloneAppShell,
     hasInjectedMobileWalletAdapter: injected,
     isLikelySolanaMobile,
     shouldPreferMobileWalletAdapter: isLikelySolanaMobile || injected,

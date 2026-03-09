@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { Connection, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { isAuthorizedAdminRequest } from "~~/lib/request-auth";
 import { freshSupabase } from "~~/lib/supabase";
+import { getCachedBalance } from "~~/lib/solana-connection";
 
 export const dynamic = "force-dynamic";
 
@@ -100,7 +101,10 @@ export async function POST(request: Request) {
       }
 
       try {
-        const balanceLamports = await connection.getBalance(pubkey);
+        const balanceLamports = await getCachedBalance(connection, pubkey, {
+          commitment: "confirmed",
+          ttlMs: 20_000,
+        });
         const balanceSol = balanceLamports / LAMPORTS_PER_SOL;
 
         if (balanceSol >= MIN_BALANCE_SOL) {
@@ -123,7 +127,11 @@ export async function POST(request: Request) {
         );
         await connection.confirmTransaction(sig, "confirmed");
 
-        const newBalance = await connection.getBalance(pubkey);
+        const newBalance = await getCachedBalance(connection, pubkey, {
+          commitment: "confirmed",
+          ttlMs: 5_000,
+          forceRefresh: true,
+        });
         results.push({
           fighterId: fighter.id,
           name: fighter.name,

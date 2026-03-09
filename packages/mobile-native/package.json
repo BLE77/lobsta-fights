@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@solana/web3.js": "^1.98.4",
+    "@supabase/supabase-js": "^2.39.0",
     "@wallet-ui/react-native-web3js": "^3.3.0",
     "expo": "~55.0.4",
     "expo-av": "^16.0.8",
@@ -21,6 +22,7 @@
     "expo-font": "~55.0.4",
     "expo-haptics": "^55.0.8",
     "expo-image": "^55.0.5",
+    "expo-keep-awake": "~55.0.4",
     "expo-status-bar": "~55.0.4",
     "expo-system-ui": "~55.0.9",
     "react": "19.2.0",

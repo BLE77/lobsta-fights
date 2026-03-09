@@ -872,11 +872,17 @@ pub mod ichor_token {
     ///
     /// Admin calls this to CPI into the VRF program. The oracle will
     /// automatically call `callback_ichor_shower_vrf` with the result.
-    pub fn request_ichor_shower_vrf(ctx: Context<RequestIchorShowerVrf>, client_seed: u8) -> Result<()> {
+    pub fn request_ichor_shower_vrf(
+        ctx: Context<RequestIchorShowerVrf>,
+        client_seed: u8,
+    ) -> Result<()> {
         let arena = &ctx.accounts.arena_config;
 
         // Only admin can request
-        require!(ctx.accounts.payer.key() == arena.admin, IchorError::Unauthorized);
+        require!(
+            ctx.accounts.payer.key() == arena.admin,
+            IchorError::Unauthorized
+        );
         require!(arena.ichor_shower_pool > 0, IchorError::EmptyShowerPool);
 
         // Capture keys before mutable borrow
@@ -903,7 +909,10 @@ pub mod ichor_token {
         require!(!request.active, IchorError::ShowerRequestAlreadyActive);
 
         // Mark active with recipient
-        request.request_nonce = request.request_nonce.checked_add(1).ok_or(IchorError::MathOverflow)?;
+        request.request_nonce = request
+            .request_nonce
+            .checked_add(1)
+            .ok_or(IchorError::MathOverflow)?;
         request.active = true;
         request.recipient_token_account = recipient_key;
         request.requested_slot = Clock::get()?.slot;
@@ -959,7 +968,8 @@ pub mod ichor_token {
                 ..Default::default()
             },
         );
-        ctx.accounts.invoke_signed_vrf(&ctx.accounts.payer.to_account_info(), &ix)?;
+        ctx.accounts
+            .invoke_signed_vrf(&ctx.accounts.payer.to_account_info(), &ix)?;
 
         emit!(IchorShowerVrfRequestedEvent {
             request_nonce: nonce,
@@ -974,7 +984,10 @@ pub mod ichor_token {
     ///
     /// Only the VRF oracle (identified by VRF_PROGRAM_IDENTITY) can call this.
     /// Uses the randomness to determine if the Ichor Shower triggers.
-    pub fn callback_ichor_shower_vrf(ctx: Context<CallbackIchorShowerVrf>, randomness: [u8; 32]) -> Result<()> {
+    pub fn callback_ichor_shower_vrf(
+        ctx: Context<CallbackIchorShowerVrf>,
+        randomness: [u8; 32],
+    ) -> Result<()> {
         let arena = &mut ctx.accounts.arena_config;
         let request = &mut ctx.accounts.shower_request;
 
@@ -993,8 +1006,14 @@ pub mod ichor_token {
             let vault_balance = ctx.accounts.shower_vault.amount;
             let pool_amount = arena.ichor_shower_pool.min(vault_balance);
 
-            let recipient_amount = pool_amount.checked_mul(90).ok_or(IchorError::MathOverflow)?.checked_div(100).ok_or(IchorError::MathOverflow)?;
-            let burn_amount = pool_amount.checked_sub(recipient_amount).ok_or(IchorError::MathOverflow)?;
+            let recipient_amount = pool_amount
+                .checked_mul(90)
+                .ok_or(IchorError::MathOverflow)?
+                .checked_div(100)
+                .ok_or(IchorError::MathOverflow)?;
+            let burn_amount = pool_amount
+                .checked_sub(recipient_amount)
+                .ok_or(IchorError::MathOverflow)?;
 
             let arena_info = arena.to_account_info();
             let bump = &[arena.bump];

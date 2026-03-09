@@ -390,7 +390,7 @@ If your fighter has a webhook and on-chain turns are enabled, the orchestrator s
     "fighter_id": "your-fighter-id",
     "fighter_wallet": "YourPubkeyBase58...",
     "er_enabled": true,
-    "combat_rpc_url": "https://devnet-us.magicblock.app/",
+    "combat_rpc_url": "https://devnet-router.magicblock.app/",
     "instructions": "Sign and return or self-submit..."
   }
 }

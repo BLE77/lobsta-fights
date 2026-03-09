@@ -25,24 +25,30 @@ describe("ichor-token", () => {
 
   // PDAs and accounts
   let arenaConfigPda: PublicKey;
-  let arenaConfigBump: number;
+  let distributionVaultPda: PublicKey;
   const ichorMint = Keypair.generate();
   let winnerKeypair: Keypair;
   let winnerTokenAccount: PublicKey;
-  let showerVaultKeypair: Keypair;
   let showerVaultTokenAccount: PublicKey;
 
   const ONE_ICHOR = new anchor.BN(1_000_000_000);
+  const WINNER_REWARD_AMOUNT = "800000000000";
+  const SHOWER_REWARD_AMOUNT = "250200000000";
+  const TOTAL_DISTRIBUTED_AMOUNT = "1050200000000";
+  const WINNER_BALANCE_AFTER_BURN = "799900000000";
 
   before(async () => {
     // Derive arena config PDA
-    [arenaConfigPda, arenaConfigBump] = PublicKey.findProgramAddressSync(
+    [arenaConfigPda] = PublicKey.findProgramAddressSync(
       [Buffer.from("arena_config")],
+      program.programId
+    );
+    [distributionVaultPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("distribution_vault")],
       program.programId
     );
 
     winnerKeypair = Keypair.generate();
-    showerVaultKeypair = Keypair.generate();
   });
 
   it("Initializes the arena", async () => {
@@ -52,10 +58,11 @@ describe("ichor-token", () => {
         admin: admin.publicKey,
         arenaConfig: arenaConfigPda,
         ichorMint: ichorMint.publicKey,
+        distributionVault: distributionVaultPda,
         systemProgram: SystemProgram.programId,
         tokenProgram: TOKEN_PROGRAM_ID,
         rent: SYSVAR_RENT_PUBKEY,
-      })
+      } as any)
       .signers([ichorMint])
       .rpc();
 
@@ -64,23 +71,26 @@ describe("ichor-token", () => {
     const arenaConfig = await program.account.arenaConfig.fetch(arenaConfigPda);
     assert.ok(arenaConfig.admin.equals(admin.publicKey));
     assert.ok(arenaConfig.ichorMint.equals(ichorMint.publicKey));
-    assert.equal(arenaConfig.totalMinted.toNumber(), 0);
+    assert.ok(arenaConfig.distributionVault.equals(distributionVaultPda));
+    assert.equal(arenaConfig.totalDistributed.toNumber(), 0);
     assert.equal(arenaConfig.totalRumblesCompleted.toNumber(), 0);
     assert.equal(arenaConfig.baseReward.toNumber(), ONE_ICHOR.toNumber());
+    assert.equal(arenaConfig.seasonReward.toNumber(), 2_500 * ONE_ICHOR.toNumber());
     assert.equal(arenaConfig.ichorShowerPool.toNumber(), 0);
   });
 
-  it("Mints a rumble reward", async () => {
+  it("Distributes a rumble reward", async () => {
     // Create winner's associated token account
     winnerTokenAccount = await getAssociatedTokenAddress(
       ichorMint.publicKey,
       winnerKeypair.publicKey
     );
 
-    // Create shower vault associated token account
+    // Create shower vault ATA owned by the arena PDA
     showerVaultTokenAccount = await getAssociatedTokenAddress(
       ichorMint.publicKey,
-      showerVaultKeypair.publicKey
+      arenaConfigPda,
+      true
     );
 
     // Create ATAs
@@ -93,7 +103,7 @@ describe("ichor-token", () => {
     const createShowerAta = createAssociatedTokenAccountInstruction(
       admin.publicKey,
       showerVaultTokenAccount,
-      showerVaultKeypair.publicKey,
+      arenaConfigPda,
       ichorMint.publicKey
     );
 
@@ -102,47 +112,48 @@ describe("ichor-token", () => {
       .add(createShowerAta);
     await provider.sendAndConfirm(setupTx);
 
-    // Mint rumble reward
+    // Distribute the on-chain reward from the seeded distribution vault
     const tx = await program.methods
-      .mintRumbleReward()
+      .distributeReward()
       .accounts({
         authority: admin.publicKey,
         arenaConfig: arenaConfigPda,
+        distributionVault: distributionVaultPda,
         ichorMint: ichorMint.publicKey,
         winnerTokenAccount: winnerTokenAccount,
         showerVault: showerVaultTokenAccount,
         tokenProgram: TOKEN_PROGRAM_ID,
-      })
+      } as any)
       .rpc();
 
-    console.log("MintRumbleReward tx:", tx);
+    console.log("DistributeReward tx:", tx);
 
-    // Winner should have received 0.9 ICHOR (1.0 - 0.1 shower cut)
+    // Winner receives 32% of the 2,500 ICHOR season reward = 800 ICHOR.
     const winnerAccount = await getAccount(
       provider.connection,
       winnerTokenAccount
     );
     assert.equal(
       winnerAccount.amount.toString(),
-      "900000000" // 0.9 ICHOR
+      WINNER_REWARD_AMOUNT
     );
 
-    // Shower vault should have received 0.3 ICHOR (0.1 cut + 0.2 bonus)
+    // Shower vault receives 10% of season reward + 0.2 ICHOR bonus = 250.2 ICHOR.
     const showerAccount = await getAccount(
       provider.connection,
       showerVaultTokenAccount
     );
     assert.equal(
       showerAccount.amount.toString(),
-      "300000000" // 0.3 ICHOR
+      SHOWER_REWARD_AMOUNT
     );
 
     // Check arena state
     const arenaConfig = await program.account.arenaConfig.fetch(arenaConfigPda);
     assert.equal(arenaConfig.totalRumblesCompleted.toNumber(), 1);
     assert.equal(
-      arenaConfig.totalMinted.toNumber(),
-      1_200_000_000 // 1.0 reward + 0.2 bonus = 1.2 total
+      arenaConfig.totalDistributed.toString(),
+      TOTAL_DISTRIBUTED_AMOUNT
     );
   });
 
@@ -165,20 +176,20 @@ describe("ichor-token", () => {
         tokenAccount: winnerTokenAccount,
         arenaConfig: arenaConfigPda,
         tokenProgram: TOKEN_PROGRAM_ID,
-      })
+      } as any)
       .signers([winnerKeypair])
       .rpc();
 
     console.log("Burn tx:", tx);
 
-    // Winner should now have 0.8 ICHOR
+    // Winner should now have 799.9 ICHOR
     const winnerAccount = await getAccount(
       provider.connection,
       winnerTokenAccount
     );
     assert.equal(
       winnerAccount.amount.toString(),
-      "800000000" // 0.8 ICHOR
+      WINNER_BALANCE_AFTER_BURN
     );
   });
 
@@ -192,7 +203,7 @@ describe("ichor-token", () => {
           tokenAccount: winnerTokenAccount,
           arenaConfig: arenaConfigPda,
           tokenProgram: TOKEN_PROGRAM_ID,
-        })
+        } as any)
         .signers([winnerKeypair])
         .rpc();
       assert.fail("Should have thrown");
@@ -201,7 +212,7 @@ describe("ichor-token", () => {
     }
   });
 
-  it("Rejects unauthorized rumble reward mint", async () => {
+  it("Rejects unauthorized rumble reward distribution", async () => {
     const randomUser = Keypair.generate();
     const airdropSig = await provider.connection.requestAirdrop(
       randomUser.publicKey,
@@ -211,15 +222,16 @@ describe("ichor-token", () => {
 
     try {
       await program.methods
-        .mintRumbleReward()
+        .distributeReward()
         .accounts({
           authority: randomUser.publicKey,
           arenaConfig: arenaConfigPda,
+          distributionVault: distributionVaultPda,
           ichorMint: ichorMint.publicKey,
           winnerTokenAccount: winnerTokenAccount,
           showerVault: showerVaultTokenAccount,
           tokenProgram: TOKEN_PROGRAM_ID,
-        })
+        } as any)
         .signers([randomUser])
         .rpc();
       assert.fail("Should have thrown");
@@ -237,7 +249,7 @@ describe("ichor-token", () => {
       .accounts({
         authority: admin.publicKey,
         arenaConfig: arenaConfigPda,
-      })
+      } as any)
       .rpc();
 
     const arenaConfig = await program.account.arenaConfig.fetch(arenaConfigPda);

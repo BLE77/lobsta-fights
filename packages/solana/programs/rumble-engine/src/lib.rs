@@ -1,8 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 #[cfg(feature = "combat")]
-use sha2::{Digest, Sha256};
-#[cfg(feature = "combat")]
 use ephemeral_rollups_sdk::anchor::{commit, delegate, ephemeral};
 #[cfg(feature = "combat")]
 use ephemeral_rollups_sdk::cpi::DelegateConfig;
@@ -16,6 +14,8 @@ use ephemeral_vrf_sdk::consts::{DEFAULT_QUEUE, VRF_PROGRAM_IDENTITY};
 use ephemeral_vrf_sdk::instructions::create_request_randomness_ix;
 #[cfg(feature = "combat")]
 use ephemeral_vrf_sdk::types::SerializableAccountMeta;
+#[cfg(feature = "combat")]
+use sha2::{Digest, Sha256};
 
 #[cfg(not(feature = "mainnet"))]
 declare_id!("638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU");
@@ -393,12 +393,7 @@ fn fallback_move_code(rumble_id: u64, turn: u32, fighter: &Pubkey, meter: u8) ->
 }
 
 #[cfg(feature = "combat")]
-fn resolve_duel(
-    move_a: u8,
-    move_b: u8,
-    meter_a: u8,
-    meter_b: u8,
-) -> (u16, u16, u8, u8) {
+fn resolve_duel(move_a: u8, move_b: u8, meter_a: u8, meter_b: u8) -> (u16, u16, u8, u8) {
     let mut damage_to_a: u16 = 0;
     let mut damage_to_b: u16 = 0;
     let mut meter_used_a: u8 = 0;
@@ -489,7 +484,9 @@ fn read_revealed_move_from_remaining_accounts(
     fighter: &Pubkey,
 ) -> Option<u8> {
     let expected_pda = expected_move_commitment_pda(rumble_id, fighter, turn);
-    let info = remaining_accounts.iter().find(|acc| *acc.key == expected_pda)?;
+    let info = remaining_accounts
+        .iter()
+        .find(|acc| *acc.key == expected_pda)?;
     if *info.owner != crate::ID || info.data_is_empty() {
         return None;
     }
@@ -509,7 +506,6 @@ fn read_revealed_move_from_remaining_accounts(
     Some(parsed.revealed_move)
 }
 
-#[cfg(feature = "combat")]
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct DuelResult {
     pub fighter_a_idx: u8,
@@ -958,7 +954,10 @@ pub mod rumble_engine {
         );
         require!(combat.current_turn == 0, RumbleError::TurnAlreadyOpen);
         require!(combat.turn_resolved, RumbleError::TurnNotResolved);
-        require!(combat.remaining_fighters > 1, RumbleError::CombatAlreadyFinished);
+        require!(
+            combat.remaining_fighters > 1,
+            RumbleError::CombatAlreadyFinished
+        );
 
         combat.current_turn = 1;
         combat.turn_open_slot = clock.slot;
@@ -1005,7 +1004,7 @@ pub mod rumble_engine {
         let fighter_count = combat.fighter_count as usize;
         let turn = combat.current_turn;
 
-        let mut alive_indices: Vec<usize> = (0..fighter_count)
+        let alive_indices: Vec<usize> = (0..fighter_count)
             .filter(|i| combat.hp[*i] > 0 && combat.elimination_rank[*i] == 0)
             .collect();
 
@@ -1025,43 +1024,34 @@ pub mod rumble_engine {
         let rumble_id_bytes = rumble.id.to_le_bytes();
         let turn_bytes = turn.to_le_bytes();
         let vrf_seed_ref = &combat.vrf_seed;
-        alive_indices.sort_by(|a, b| {
-            let key_a = if *vrf_seed_ref != [0u8; 32] {
-                hash_u64(&[
-                    b"pair-order",
-                    vrf_seed_ref.as_ref(),
-                    rumble_id_bytes.as_ref(),
-                    turn_bytes.as_ref(),
-                    rumble.fighters[*a].as_ref(),
-                ])
-            } else {
-                hash_u64(&[
-                    b"pair-order",
-                    rumble_id_bytes.as_ref(),
-                    turn_bytes.as_ref(),
-                    rumble.fighters[*a].as_ref(),
-                ])
-            };
-            let key_b = if *vrf_seed_ref != [0u8; 32] {
-                hash_u64(&[
-                    b"pair-order",
-                    vrf_seed_ref.as_ref(),
-                    rumble_id_bytes.as_ref(),
-                    turn_bytes.as_ref(),
-                    rumble.fighters[*b].as_ref(),
-                ])
-            } else {
-                hash_u64(&[
-                    b"pair-order",
-                    rumble_id_bytes.as_ref(),
-                    turn_bytes.as_ref(),
-                    rumble.fighters[*b].as_ref(),
-                ])
-            };
-            key_a
-                .cmp(&key_b)
-                .then_with(|| rumble.fighters[*a].to_bytes().cmp(&rumble.fighters[*b].to_bytes()))
-        });
+        let mut alive_order_keys: Vec<(usize, u64, [u8; 32])> = alive_indices
+            .iter()
+            .map(|idx| {
+                let fighter_bytes = rumble.fighters[*idx].to_bytes();
+                let pair_key = if *vrf_seed_ref != [0u8; 32] {
+                    hash_u64(&[
+                        b"pair-order",
+                        vrf_seed_ref.as_ref(),
+                        rumble_id_bytes.as_ref(),
+                        turn_bytes.as_ref(),
+                        fighter_bytes.as_ref(),
+                    ])
+                } else {
+                    hash_u64(&[
+                        b"pair-order",
+                        rumble_id_bytes.as_ref(),
+                        turn_bytes.as_ref(),
+                        fighter_bytes.as_ref(),
+                    ])
+                };
+                (*idx, pair_key, fighter_bytes)
+            })
+            .collect();
+        alive_order_keys.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.2.cmp(&b.2)));
+        let alive_indices: Vec<usize> = alive_order_keys
+            .into_iter()
+            .map(|(idx, _, _)| idx)
+            .collect();
 
         let mut paired_indices: Vec<usize> = Vec::with_capacity(alive_indices.len());
         let mut eliminated_this_turn: Vec<usize> = Vec::new();
@@ -1084,7 +1074,9 @@ pub mod rumble_engine {
                 &fighter_a,
             )
             .filter(|m| is_valid_move_code(*m))
-            .unwrap_or_else(|| fallback_move_code(rumble.id, turn, &fighter_a, combat.meter[idx_a]));
+            .unwrap_or_else(|| {
+                fallback_move_code(rumble.id, turn, &fighter_a, combat.meter[idx_a])
+            });
             let move_b = read_revealed_move_from_remaining_accounts(
                 ctx.remaining_accounts,
                 rumble.id,
@@ -1092,7 +1084,9 @@ pub mod rumble_engine {
                 &fighter_b,
             )
             .filter(|m| is_valid_move_code(*m))
-            .unwrap_or_else(|| fallback_move_code(rumble.id, turn, &fighter_b, combat.meter[idx_b]));
+            .unwrap_or_else(|| {
+                fallback_move_code(rumble.id, turn, &fighter_b, combat.meter[idx_b])
+            });
 
             let (damage_to_a, damage_to_b, meter_used_a, meter_used_b) =
                 resolve_duel(move_a, move_b, combat.meter[idx_a], combat.meter[idx_b]);
@@ -1118,17 +1112,6 @@ pub mod rumble_engine {
 
             paired_indices.push(idx_a);
             paired_indices.push(idx_b);
-
-            emit!(TurnPairResolvedEvent {
-                rumble_id: rumble.id,
-                turn,
-                fighter_a: fighter_a,
-                fighter_b: fighter_b,
-                move_a,
-                move_b,
-                damage_to_a,
-                damage_to_b,
-            });
 
             if combat.hp[idx_a] == 0 && combat.elimination_rank[idx_a] == 0 {
                 eliminated_this_turn.push(idx_a);
@@ -1249,7 +1232,10 @@ pub mod rumble_engine {
             let idx_b = dr.fighter_b_idx as usize;
 
             // Validate indices
-            require!(idx_a < fighter_count && idx_b < fighter_count, RumbleError::InvalidFighterCount);
+            require!(
+                idx_a < fighter_count && idx_b < fighter_count,
+                RumbleError::InvalidFighterCount
+            );
             require!(idx_a != idx_b, RumbleError::DuplicateFighter);
             // M2 fix: ensure no fighter appears in multiple duels
             require!(!seen[idx_a] && !seen[idx_b], RumbleError::DuplicateFighter);
@@ -1269,8 +1255,12 @@ pub mod rumble_engine {
             require!(is_valid_move_code(dr.move_b), RumbleError::InvalidState);
 
             // RE-VALIDATE damage by running resolve_duel
-            let (expected_dmg_a, expected_dmg_b, expected_meter_a, expected_meter_b) =
-                resolve_duel(dr.move_a, dr.move_b, combat.meter[idx_a], combat.meter[idx_b]);
+            let (expected_dmg_a, expected_dmg_b, expected_meter_a, expected_meter_b) = resolve_duel(
+                dr.move_a,
+                dr.move_b,
+                combat.meter[idx_a],
+                combat.meter[idx_b],
+            );
             require!(
                 dr.damage_to_a == expected_dmg_a && dr.damage_to_b == expected_dmg_b,
                 RumbleError::DamageMismatch
@@ -1298,17 +1288,6 @@ pub mod rumble_engine {
 
             paired_indices.push(idx_a);
             paired_indices.push(idx_b);
-
-            emit!(TurnPairResolvedEvent {
-                rumble_id: rumble.id,
-                turn,
-                fighter_a: rumble.fighters[idx_a],
-                fighter_b: rumble.fighters[idx_b],
-                move_a: dr.move_a,
-                move_b: dr.move_b,
-                damage_to_a: dr.damage_to_a,
-                damage_to_b: dr.damage_to_b,
-            });
 
             if combat.hp[idx_a] == 0 && combat.elimination_rank[idx_a] == 0 {
                 eliminated_this_turn.push(idx_a);
@@ -1409,7 +1388,10 @@ pub mod rumble_engine {
         );
         require!(combat.current_turn > 0, RumbleError::TurnNotOpen);
         require!(combat.turn_resolved, RumbleError::TurnNotResolved);
-        require!(combat.remaining_fighters > 1, RumbleError::CombatAlreadyFinished);
+        require!(
+            combat.remaining_fighters > 1,
+            RumbleError::CombatAlreadyFinished
+        );
         require!(
             combat.current_turn < MAX_ONCHAIN_COMBAT_TURNS,
             RumbleError::MaxTurnsReached
@@ -1460,9 +1442,11 @@ pub mod rumble_engine {
 
         // Check for combat timeout: if current slot is >5000 past the turn_open_slot,
         // allow finalization even if combat hasn't naturally ended (prevents stuck rumbles).
-        let timed_out = clock.slot > combat.turn_open_slot
-            .checked_add(COMBAT_TIMEOUT_SLOTS)
-            .ok_or(RumbleError::MathOverflow)?;
+        let timed_out = clock.slot
+            > combat
+                .turn_open_slot
+                .checked_add(COMBAT_TIMEOUT_SLOTS)
+                .ok_or(RumbleError::MathOverflow)?;
 
         if !timed_out {
             require!(combat.turn_resolved, RumbleError::TurnNotResolved);
@@ -1493,7 +1477,11 @@ pub mod rumble_engine {
                 combat.hp[*b]
                     .cmp(&combat.hp[*a])
                     .then_with(|| combat.total_damage_dealt[*b].cmp(&combat.total_damage_dealt[*a]))
-                    .then_with(|| rumble.fighters[*a].to_bytes().cmp(&rumble.fighters[*b].to_bytes()))
+                    .then_with(|| {
+                        rumble.fighters[*a]
+                            .to_bytes()
+                            .cmp(&rumble.fighters[*b].to_bytes())
+                    })
             });
             winner_idx = *candidates.first().ok_or(RumbleError::CombatStillActive)?;
             combat.winner_index = winner_idx as u8;
@@ -1509,7 +1497,11 @@ pub mod rumble_engine {
             combat.hp[*b]
                 .cmp(&combat.hp[*a])
                 .then_with(|| combat.total_damage_dealt[*b].cmp(&combat.total_damage_dealt[*a]))
-                .then_with(|| rumble.fighters[*a].to_bytes().cmp(&rumble.fighters[*b].to_bytes()))
+                .then_with(|| {
+                    rumble.fighters[*a]
+                        .to_bytes()
+                        .cmp(&rumble.fighters[*b].to_bytes())
+                })
         });
         let mut next_place: u8 = 2;
         for idx in survivors {
@@ -1948,7 +1940,11 @@ pub mod rumble_engine {
     /// Close a MoveCommitment PDA and return rent to a destination.
     /// Admin-only. Only allowed when rumble is in Payout or Complete state.
     #[cfg(feature = "combat")]
-    pub fn close_move_commitment(_ctx: Context<CloseMoveCommitment>, _rumble_id: u64, _turn: u32) -> Result<()> {
+    pub fn close_move_commitment(
+        _ctx: Context<CloseMoveCommitment>,
+        _rumble_id: u64,
+        _turn: u32,
+    ) -> Result<()> {
         // Anchor's `close = destination` handles the lamport transfer
         Ok(())
     }
@@ -2031,10 +2027,7 @@ pub mod rumble_engine {
         let vault_balance = ctx.accounts.vault.lamports();
         let rent = Rent::get()?;
         let min_balance = rent.minimum_balance(0);
-        require!(
-            vault_balance <= min_balance,
-            RumbleError::ClaimWindowActive
-        );
+        require!(vault_balance <= min_balance, RumbleError::ClaimWindowActive);
 
         msg!("Rumble {} closed (all winners claimed)", rumble.id);
         Ok(())
@@ -2080,7 +2073,10 @@ pub mod rumble_engine {
             },
         )?;
 
-        msg!("Combat state delegated to Ephemeral Rollup for rumble {}", rumble_id);
+        msg!(
+            "Combat state delegated to Ephemeral Rollup for rumble {}",
+            rumble_id
+        );
         Ok(())
     }
 
@@ -2158,23 +2154,18 @@ pub mod rumble_engine {
                 callback_program_id: crate::ID,
                 callback_discriminator: instruction::CallbackMatchupSeed::DISCRIMINATOR.to_vec(),
                 caller_seed: [client_seed; 32],
-                accounts_metas: Some(vec![
-                    SerializableAccountMeta {
-                        pubkey: combat_state_key,
-                        is_signer: false,
-                        is_writable: true,
-                    },
-                ]),
+                accounts_metas: Some(vec![SerializableAccountMeta {
+                    pubkey: combat_state_key,
+                    is_signer: false,
+                    is_writable: true,
+                }]),
                 ..Default::default()
             },
         );
         ctx.accounts
             .invoke_signed_vrf(&ctx.accounts.payer.to_account_info(), &ix)?;
 
-        msg!(
-            "VRF matchup seed requested for rumble {}",
-            rumble_id
-        );
+        msg!("VRF matchup seed requested for rumble {}", rumble_id);
         Ok(())
     }
 
@@ -2192,10 +2183,7 @@ pub mod rumble_engine {
 
         combat.vrf_seed = randomness;
 
-        msg!(
-            "VRF matchup seed stored for rumble {}",
-            combat.rumble_id
-        );
+        msg!("VRF matchup seed stored for rumble {}", combat.rumble_id);
         Ok(())
     }
 }
@@ -2937,22 +2925,22 @@ pub struct PendingAdminRE {
 #[account]
 #[derive(InitSpace)]
 pub struct RumbleCombatState {
-    pub rumble_id: u64,                         // 8
-    pub fighter_count: u8,                      // 1
-    pub current_turn: u32,                      // 4
-    pub turn_open_slot: u64,                    // 8
-    pub commit_close_slot: u64,                 // 8
-    pub reveal_close_slot: u64,                 // 8
-    pub turn_resolved: bool,                    // 1
-    pub remaining_fighters: u8,                 // 1
-    pub winner_index: u8,                       // 1 (255 until known)
-    pub hp: [u16; MAX_FIGHTERS],                // 32
-    pub meter: [u8; MAX_FIGHTERS],              // 16
-    pub elimination_rank: [u8; MAX_FIGHTERS],   // 16
+    pub rumble_id: u64,                          // 8
+    pub fighter_count: u8,                       // 1
+    pub current_turn: u32,                       // 4
+    pub turn_open_slot: u64,                     // 8
+    pub commit_close_slot: u64,                  // 8
+    pub reveal_close_slot: u64,                  // 8
+    pub turn_resolved: bool,                     // 1
+    pub remaining_fighters: u8,                  // 1
+    pub winner_index: u8,                        // 1 (255 until known)
+    pub hp: [u16; MAX_FIGHTERS],                 // 32
+    pub meter: [u8; MAX_FIGHTERS],               // 16
+    pub elimination_rank: [u8; MAX_FIGHTERS],    // 16
     pub total_damage_dealt: [u64; MAX_FIGHTERS], // 128
     pub total_damage_taken: [u64; MAX_FIGHTERS], // 128
-    pub vrf_seed: [u8; 32],                     // 32
-    pub bump: u8,                               // 1
+    pub vrf_seed: [u8; 32],                      // 32
+    pub bump: u8,                                // 1
 }
 
 // ---------------------------------------------------------------------------

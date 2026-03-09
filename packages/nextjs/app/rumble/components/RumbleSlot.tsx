@@ -116,6 +116,8 @@ interface RumbleSlotProps {
     }>;
     payout: SlotPayout;
     myBetFighterIds?: string[];
+    fighterNames?: Record<string, string>;
+    lastTurn?: SlotTurn | null;
   };
 }
 
@@ -187,7 +189,16 @@ export default function RumbleSlot({
   );
   const effectiveState: SlotData["state"] =
     slot.state === "betting" && bettingClosedOnChain ? "combat" : slot.state;
-  const label = getStateLabel(effectiveState);
+  const baseLabel = getStateLabel(effectiveState);
+  const label =
+    effectiveState === "combat" && slot.turnPhase === "starting"
+      ? {
+          text: "STARTING",
+          color: "text-orange-300",
+          bgColor: "bg-orange-900/10",
+          borderColor: "border-orange-700/40",
+        }
+      : baseLabel;
   const myBetFighterIds = myBetAmounts ? new Set(myBetAmounts.keys()) : undefined;
   const [activeEliminations, setActiveEliminations] = useState<
     ActiveElimination[]
@@ -212,15 +223,28 @@ export default function RumbleSlot({
   const [heldTurns, setHeldTurns] = useState<SlotTurn[]>([]);
   const [heldFighters, setHeldFighters] = useState<SlotFighter[]>([]);
   const [heldCurrentTurn, setHeldCurrentTurn] = useState(0);
+  const heldSnapshotRef = useRef<{ rumbleId: string; turnCount: number } | null>(null);
   const prevStateRef = useRef<string>(slot.state);
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    if (prevStateRef.current === "combat" && slot.state === "payout" && slot.turns.length > 0) {
-      // Capture the final combat state before switching to payout view
+    const shouldCaptureFinalTurn =
+      slot.state === "payout" &&
+      slot.turns.length > 0 &&
+      (
+        prevStateRef.current === "combat" ||
+        prevStateRef.current === "betting" ||
+        heldSnapshotRef.current?.rumbleId !== slot.rumbleId ||
+        (heldSnapshotRef.current?.turnCount ?? 0) < slot.turns.length
+      );
+
+    if (shouldCaptureFinalTurn) {
+      // Capture the final combat state before switching to payout view, and
+      // refresh the hold if the definitive final turn arrives a moment later.
       setHeldTurns(slot.turns);
       setHeldFighters(slot.fighters);
       setHeldCurrentTurn(slot.currentTurn);
+      heldSnapshotRef.current = { rumbleId: slot.rumbleId, turnCount: slot.turns.length };
       setHoldingFinalTurn(true);
       holdingFinalTurnRef.current = true;
       if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
@@ -230,6 +254,7 @@ export default function RumbleSlot({
         setHeldTurns([]);
         setHeldFighters([]);
         setHeldCurrentTurn(0);
+        heldSnapshotRef.current = null;
       }, FINAL_TURN_HOLD_MS);
     } else if (slot.state !== "payout" && holdingFinalTurn) {
       // If the slot leaves payout before the hold timer ends, clear held state
@@ -241,12 +266,16 @@ export default function RumbleSlot({
       setHeldTurns([]);
       setHeldFighters([]);
       setHeldCurrentTurn(0);
+      heldSnapshotRef.current = null;
     }
     prevStateRef.current = slot.state;
+  }, [holdingFinalTurn, slot.currentTurn, slot.fighters, slot.rumbleId, slot.state, slot.turns]);
+
+  useEffect(() => {
     return () => {
       if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
     };
-  }, [slot.state]);
+  }, []);
 
   useEffect(() => {
     const curTurn = slot.currentTurn ?? 0;
@@ -330,19 +359,20 @@ export default function RumbleSlot({
   }, [effectiveState, slot.bettingDeadline]);
 
   const liveCountdown = (() => {
+    const combatCountdownLabel = slot.turnPhase === "starting" ? "COMBAT START" : "NEXT TURN";
     if (effectiveState === "combat" && slotAnchorRef.current) {
       const { targetSlot, currentSlot, anchoredAt } = slotAnchorRef.current;
       const slotMs = (slot as any).slotMsEstimate ?? 400;
       const totalEtaMs = (targetSlot - currentSlot) * slotMs;
       const elapsed = countdownNow - anchoredAt;
       const remaining = Math.max(0, Math.ceil((totalEtaMs - elapsed) / 1_000));
-      return { label: "NEXT TURN", seconds: remaining };
+      return { label: combatCountdownLabel, seconds: remaining };
     }
     if (effectiveState === "combat" && slot.nextTurnAt) {
       const targetMs = new Date(slot.nextTurnAt).getTime();
       if (!Number.isFinite(targetMs)) return null;
       return {
-        label: "NEXT TURN",
+        label: combatCountdownLabel,
         seconds: Math.max(0, Math.ceil((targetMs - countdownNow) / 1_000)),
       };
     }
@@ -351,7 +381,7 @@ export default function RumbleSlot({
       const targetMs = anchor.at + slot.turnIntervalMs;
       const remaining = Math.max(0, Math.ceil((targetMs - countdownNow) / 1_000));
       return {
-        label: "NEXT TURN",
+        label: combatCountdownLabel,
         seconds: remaining,
       };
     }
@@ -488,6 +518,18 @@ export default function RumbleSlot({
                     ? new Set(lastCompletedResult.myBetFighterIds)
                     : myBetFighterIds}
                 />
+                {lastCompletedResult.lastTurn && (
+                  <div className="border-t border-stone-800 pt-2">
+                    <p className="font-mono text-[10px] text-stone-500 uppercase mb-2">
+                      Final Turn
+                    </p>
+                    <CombatFeed
+                      turns={[lastCompletedResult.lastTurn]}
+                      currentTurn={lastCompletedResult.lastTurn.turnNumber}
+                      fighterNames={lastCompletedResult.fighterNames ?? slot.fighterNames}
+                    />
+                  </div>
+                )}
               </div>
             ) : (
               <div className="flex items-center justify-center h-32">
@@ -534,6 +576,18 @@ export default function RumbleSlot({
                 </div>
               </div>
             )}
+            {lastCompletedResult?.lastTurn && (
+              <div className="border border-stone-800/80 bg-stone-950/40 rounded-sm p-2">
+                <p className="font-mono text-[10px] text-stone-500 uppercase mb-2">
+                  Previous Final Turn
+                </p>
+                <CombatFeed
+                  turns={[lastCompletedResult.lastTurn]}
+                  currentTurn={lastCompletedResult.lastTurn.turnNumber}
+                  fighterNames={lastCompletedResult.fighterNames ?? slot.fighterNames}
+                />
+              </div>
+            )}
             <BettingPanel
               slotIndex={slot.slotIndex}
               fighters={slot.odds}
@@ -559,11 +613,17 @@ export default function RumbleSlot({
                   const hasPairings = currentTurnData && Array.isArray(currentTurnData.pairings) && currentTurnData.pairings.length > 0;
 
                   if (!hasPairings) {
+                    const preCombatStart = slot.turnPhase === "starting" || slot.currentTurn === 0;
                     return (
                       <div className="space-y-0.5">
                         <p className="font-mono text-[10px] text-stone-500 uppercase mb-1">
-                          Deploying Fighters...
+                          {preCombatStart ? "Starting On-Chain Combat..." : "Deploying Fighters..."}
                         </p>
+                        {preCombatStart && (
+                          <p className="font-mono text-[10px] text-orange-300/80 mb-2">
+                            Waiting for the combat start transaction and first turn to land.
+                          </p>
+                        )}
                         <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
                           {slot.fighters.map((f) => (
                             <FighterHP

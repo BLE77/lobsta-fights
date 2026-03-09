@@ -14,12 +14,14 @@ import { RUMBLE_ENGINE_ID_MAINNET } from "./solana-programs";
 
 /** Tolerance for SOL amount matching (accounts for rounding). */
 const AMOUNT_TOLERANCE_SOL = 0.000000001;
+const PARSED_TX_MAX_ATTEMPTS = Math.max(4, Number(process.env.RUMBLE_TX_VERIFY_MAX_ATTEMPTS ?? "8"));
+const PARSED_TX_BASE_DELAY_MS = Math.max(750, Number(process.env.RUMBLE_TX_VERIFY_DELAY_MS ?? "1500"));
 
 /** Retry getParsedTransaction until the tx is visible (handles fire-and-forget clients). */
 async function getParsedTxWithRetry(
   txSignature: string,
-  maxAttempts = 4,
-  delayMs = 2000,
+  maxAttempts = PARSED_TX_MAX_ATTEMPTS,
+  delayMs = PARSED_TX_BASE_DELAY_MS,
 ) {
   const connection = getBettingConnection();
   for (let i = 0; i < maxAttempts; i++) {
@@ -28,7 +30,10 @@ async function getParsedTxWithRetry(
       commitment: "confirmed",
     });
     if (tx) return tx;
-    if (i < maxAttempts - 1) await new Promise(r => setTimeout(r, delayMs));
+    if (i < maxAttempts - 1) {
+      const backoffMs = Math.min(delayMs * (i + 1), 4_000);
+      await new Promise(r => setTimeout(r, backoffMs));
+    }
   }
   return null;
 }

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { isAuthorizedAdminRequest } from "~~/lib/request-auth";
 import { getOrchestrator } from "~~/lib/rumble-orchestrator";
 import { queueWorkerCommand, type WorkerCommand } from "~~/lib/worker-commands";
-import { getAdminConfig } from "~~/lib/rumble-persistence";
+import { getAdminConfig, setAdminConfig } from "~~/lib/rumble-persistence";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +15,13 @@ const ACTION_TO_COMMAND: Record<HouseBotAction, WorkerCommand> = {
   set_target: "set_bot_target",
   clear_target_override: "clear_bot_target",
 };
+
+function parsePersistedTargetPopulation(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.max(0, Math.min(64, Math.floor(parsed)));
+}
 
 export async function GET(request: Request) {
   if (!isAuthorizedAdminRequest(request.headers)) {
@@ -31,24 +38,28 @@ export async function GET(request: Request) {
 
   // On Vercel: read persisted state from Supabase (actual Railway state)
   const paused = (await getAdminConfig("house_bots_paused")) === true;
+  const persistedTarget = parsePersistedTargetPopulation(
+    await getAdminConfig("house_bot_target_population"),
+  );
   const configuredIds = String(process.env.RUMBLE_HOUSE_BOT_IDS ?? "")
     .split(",")
     .map((id) => id.trim())
     .filter(Boolean);
   const configuredCount = configuredIds.length || Number(process.env.HOUSE_BOT_COUNT) || 0;
-  const targetPop =
+  const envTargetPop =
     Number(
       process.env.RUMBLE_HOUSE_BOT_TARGET_POPULATION ??
       process.env.HOUSE_BOT_TARGET_POPULATION ??
       0,
     ) || 0;
+  const targetPop = persistedTarget ?? envTargetPop;
   return NextResponse.json({
     success: true,
     configuredEnabled: configuredCount > 0,
     configuredHouseBotCount: configuredCount,
     paused,
     targetPopulation: targetPop,
-    targetPopulationSource: "persisted",
+    targetPopulationSource: persistedTarget !== null ? "persisted_override" : "env",
     source: "supabase",
     timestamp: new Date().toISOString(),
   });
@@ -98,10 +109,12 @@ export async function POST(request: Request) {
       }
       if (action === "set_target") {
         const applied = orchestrator.setHouseBotTargetPopulation(Number(body.target_population));
+        await setAdminConfig("house_bot_target_population", applied);
         return NextResponse.json({ success: true, action, target_population: applied, status: orchestrator.getHouseBotControlStatus() });
       }
       if (action === "clear_target_override") {
         const applied = orchestrator.setHouseBotTargetPopulation(null);
+        await setAdminConfig("house_bot_target_population", null);
         return NextResponse.json({ success: true, action, target_population: applied, status: orchestrator.getHouseBotControlStatus() });
       }
     }
@@ -109,7 +122,14 @@ export async function POST(request: Request) {
     // On Vercel: queue command for Railway worker to pick up
     const command = ACTION_TO_COMMAND[action];
     const payload: Record<string, unknown> = {};
-    if (action === "set_target") payload.target_population = Number(body.target_population);
+    if (action === "set_target") {
+      const targetPopulation = Number(body.target_population);
+      payload.target_population = targetPopulation;
+      await setAdminConfig("house_bot_target_population", targetPopulation);
+    }
+    if (action === "clear_target_override") {
+      await setAdminConfig("house_bot_target_population", null);
+    }
 
     const queued = await queueWorkerCommand(command, payload);
     if (!queued) {

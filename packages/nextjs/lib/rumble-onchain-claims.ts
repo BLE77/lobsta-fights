@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { LAMPORTS_PER_SOL, PublicKey, type Connection } from "@solana/web3.js";
 import { utils as anchorUtils } from "@coral-xyz/anchor";
-import { getBettingConnection, getBettingRpcEndpoint } from "./solana-connection";
+import { getBettingConnection, getBettingRpcEndpoint, getCachedBalance } from "./solana-connection";
 import {
   RUMBLE_ENGINE_ID_MAINNET,
   readRumbleAccountState,
@@ -401,7 +401,10 @@ async function batchReadVaultBalances(
       for (const id of chunkIds) {
         try {
           const [vaultPda] = deriveVaultPdaMainnet(id);
-          const bal = await connection.getBalance(vaultPda, "confirmed");
+          const bal = await getCachedBalance(connection, vaultPda, {
+            commitment: "confirmed",
+            ttlMs: 30_000,
+          });
           result.set(id, bal);
         } catch {
           result.set(id, 0);

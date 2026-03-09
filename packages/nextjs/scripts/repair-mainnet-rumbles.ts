@@ -26,8 +26,29 @@ import * as fs from "fs";
 
 const PROGRAM_ID = new PublicKey("638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU");
 
-const MAINNET_RPC = `https://mainnet.helius-rpc.com/?api-key=3e5c5b12-216f-46b2-bbd6-2546d3eab793`;
-const DEVNET_RPC = `https://devnet.helius-rpc.com/?api-key=f531d309-f3ed-4e05-b15b-a192810be1ca`;
+function getMainnetRpcUrl(): string {
+  const explicit =
+    process.env.MAINNET_RPC_URL?.trim() ||
+    process.env.NEXT_PUBLIC_BETTING_RPC_URL?.trim();
+  if (explicit) return explicit;
+
+  const heliusKey =
+    process.env.HELIUS_MAINNET_API_KEY?.trim() ||
+    process.env.NEXT_PUBLIC_HELIUS_MAINNET_API_KEY?.trim();
+  if (heliusKey) return `https://mainnet.helius-rpc.com/?api-key=${heliusKey}`;
+
+  return "https://api.mainnet-beta.solana.com";
+}
+
+function getDevnetRpcUrl(): string {
+  const explicit = process.env.DEVNET_RPC_URL?.trim();
+  if (explicit) return explicit;
+
+  const heliusKey = process.env.HELIUS_API_KEY?.trim();
+  if (heliusKey) return `https://devnet.helius-rpc.com/?api-key=${heliusKey}`;
+
+  return "https://api.devnet.solana.com";
+}
 
 const ADMIN_KEYPAIR_PATH = `${process.env.HOME}/.config/solana/mainnet-admin.json`;
 
@@ -135,8 +156,8 @@ async function main() {
   const admin = Keypair.fromSecretKey(Uint8Array.from(adminSecret));
   console.log(`Admin: ${admin.publicKey.toBase58()}`);
 
-  const mainnetConn = new Connection(MAINNET_RPC, "confirmed");
-  const devnetConn = new Connection(DEVNET_RPC, "confirmed");
+  const mainnetConn = new Connection(getMainnetRpcUrl(), "confirmed");
+  const devnetConn = new Connection(getDevnetRpcUrl(), "confirmed");
 
   // Load IDL
   const idlPath = `${__dirname}/../lib/idl/rumble_engine.json`;

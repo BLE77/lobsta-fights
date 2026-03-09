@@ -322,24 +322,34 @@ export async function completeRumbleRecord(
   placements: unknown[],
   turnLog: unknown[],
   totalTurns: number,
+  options?: {
+    payoutResult?: Record<string, unknown>;
+    throwOnError?: boolean;
+  },
 ): Promise<void> {
   try {
+    const updatePayload: Record<string, unknown> = {
+      status: "payout",
+      winner_id: winnerId,
+      placements,
+      turn_log: turnLog,
+      total_turns: totalTurns,
+    };
+    if (options?.payoutResult) {
+      updatePayload.payout_result = options.payoutResult;
+    }
+
     const sb = freshServiceClient();
     const { error } = await sb
       .from("ucf_rumbles")
-      .update({
-        status: "payout",
-        winner_id: winnerId,
-        placements,
-        turn_log: turnLog,
-        total_turns: totalTurns,
-      })
+      .update(updatePayload)
       .eq("id", rumbleId)
       .select();
     if (error) throw error;
     log("Completed rumble record (status=payout)", rumbleId);
   } catch (err) {
     logError("completeRumbleRecord failed", err);
+    if (options?.throwOnError) throw err;
   }
 }
 
@@ -422,6 +432,16 @@ export interface CompletedRumbleForOnchainReconcile {
   completed_at: string | null;
 }
 
+export interface RecentCompletedRumbleResult {
+  id: string;
+  slot_index: number;
+  completed_at: string | null;
+  payout_result: unknown;
+  placements: unknown;
+  fighters: unknown;
+  turn_log: unknown[] | null;
+}
+
 export interface PendingSettlementRumble {
   id: string;
   rumble_number: number | null;
@@ -480,6 +500,52 @@ export async function loadRecentCompletedRumblesForOnchainReconcile(
     return (data as CompletedRumbleForOnchainReconcile[]) ?? [];
   } catch (err) {
     logError("loadRecentCompletedRumblesForOnchainReconcile failed", err);
+    return [];
+  }
+}
+
+/**
+ * Load the most recent completed rumble for each slot so the public UI can
+ * keep the winner/final-turn context visible even after the slot recycles.
+ */
+export async function loadRecentCompletedResultsBySlot(
+  limit: number = 24,
+): Promise<RecentCompletedRumbleResult[]> {
+  try {
+    const sb = freshServiceClient();
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { data, error } = await sb
+      .from("ucf_rumbles")
+      .select("id, slot_index, completed_at, payout_result, placements, fighters, turn_log")
+      .eq("status", "complete")
+      .gte("completed_at", since)
+      .order("completed_at", { ascending: false })
+      .limit(Math.max(3, Math.min(limit, 100)));
+    if (error) throw error;
+
+    const latestBySlot = new Map<number, RecentCompletedRumbleResult>();
+    for (const row of (data as RecentCompletedRumbleResult[] | null) ?? []) {
+      const slotIndex = Number((row as any).slot_index);
+      if (!Number.isInteger(slotIndex) || slotIndex < 0) continue;
+      if (latestBySlot.has(slotIndex)) continue;
+      latestBySlot.set(slotIndex, {
+        id: String((row as any).id ?? ""),
+        slot_index: slotIndex,
+        completed_at:
+          typeof (row as any).completed_at === "string"
+            ? String((row as any).completed_at)
+            : null,
+        payout_result: (row as any).payout_result ?? null,
+        placements: (row as any).placements ?? null,
+        fighters: (row as any).fighters ?? null,
+        turn_log: Array.isArray((row as any).turn_log) ? ((row as any).turn_log as unknown[]) : null,
+      });
+      if (latestBySlot.size >= 3) break;
+    }
+
+    return [...latestBySlot.values()].sort((a, b) => a.slot_index - b.slot_index);
+  } catch (err) {
+    logError("loadRecentCompletedResultsBySlot failed", err);
     return [];
   }
 }
@@ -1330,6 +1396,14 @@ export async function getAdminConfig(key: string): Promise<unknown> {
 export async function setAdminConfig(key: string, value: unknown): Promise<void> {
   try {
     const sb = freshServiceClient();
+    if (value === null || value === undefined) {
+      const { error } = await sb
+        .from("admin_config")
+        .delete()
+        .eq("key", key);
+      if (error) throw error;
+      return;
+    }
     const { error } = await sb
       .from("admin_config")
       .upsert(

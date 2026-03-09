@@ -78,8 +78,8 @@ function printUsage(): void {
   console.log("");
   console.log("Examples:");
   console.log("  npx tsx scripts/debug-er-undelegate.ts --rumble-id 42");
-  console.log("  npx tsx scripts/debug-er-undelegate.ts --rumble-id 42 --er-rpc https://devnet-us.magicblock.app");
-  console.log("  npx tsx scripts/debug-er-undelegate.ts --rumble-id 42 --er-rpc https://devnet-us.magicblock.app,https://devnet.magicblock.app");
+  console.log("  npx tsx scripts/debug-er-undelegate.ts --rumble-id 42 --er-rpc https://devnet-router.magicblock.app");
+  console.log("  npx tsx scripts/debug-er-undelegate.ts --rumble-id 42 --er-rpc https://devnet-as.magicblock.app,https://devnet-router.magicblock.app");
 }
 
 function unique(values: string[]): string[] {
@@ -141,6 +141,26 @@ async function confirmSignature(
   }
 }
 
+async function confirmSignatureOnAny(
+  signature: string,
+  connections: Array<{ label: string; connection: Connection }>,
+): Promise<string | null> {
+  const failures: string[] = [];
+  const seen = new Set<string>();
+
+  for (const { label, connection } of connections) {
+    const endpoint = connection.rpcEndpoint;
+    if (seen.has(endpoint)) continue;
+    seen.add(endpoint);
+
+    const err = await confirmSignature(connection, signature);
+    if (!err) return null;
+    failures.push(`${label}(${endpoint}): ${err}`);
+  }
+
+  return failures.join(" | ");
+}
+
 async function runAttempt(params: {
   target: string;
   endpoint: string;
@@ -163,7 +183,10 @@ async function runAttempt(params: {
   }
 
   if (signature) {
-    confirmError = await confirmSignature(params.txConnection, signature);
+    confirmError = await confirmSignatureOnAny(signature, [
+      { label: "er", connection: params.txConnection },
+      { label: "l1", connection: params.l1Connection },
+    ]);
   }
 
   await sleep(DEFAULT_SETTLE_DELAY_MS);
@@ -200,7 +223,11 @@ async function main(): Promise<void> {
   const combatStatePdaBase58 = combatStatePda.toBase58();
 
   const defaultErRpcs = unique([
+    process.env.MAGICBLOCK_ER_VALIDATOR_RPC_URL ?? "",
+    process.env.MAGICBLOCK_ER_REGION_RPC_URL ?? "",
     getErRpcEndpoint(),
+    "https://devnet-router.magicblock.app",
+    "https://devnet-as.magicblock.app",
     "https://devnet-us.magicblock.app",
     "https://devnet.magicblock.app",
   ]);

@@ -1,34 +1,40 @@
 import { NextResponse } from "next/server";
 import { Connection, PublicKey } from "@solana/web3.js";
-import { getRpcEndpoint } from "~~/lib/solana-connection";
-import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
+import { getRpcEndpoint, getBettingRpcEndpoint } from "~~/lib/solana-connection";
+import { RUMBLE_ENGINE_ID, RUMBLE_ENGINE_ID_MAINNET } from "~~/lib/solana-programs";
 
 export const dynamic = "force-dynamic";
 
-const PROGRAM_ID = process.env.NEXT_PUBLIC_RUMBLE_ENGINE_PROGRAM || "638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU";
+const DEVNET_PROGRAM_ID = process.env.NEXT_PUBLIC_RUMBLE_ENGINE_PROGRAM || RUMBLE_ENGINE_ID.toBase58();
 
-// Simple in-memory cache (10s TTL) — all clients see the same feed
-let cachedFeed: { data: unknown[]; fetchedAt: number } | null = null;
+// Per-network caches (10s TTL)
+const cachedFeeds: Record<string, { data: unknown[]; fetchedAt: number }> = {};
 const CACHE_TTL_MS = 10_000;
 
 /**
- * GET /api/rumble/tx-feed
+ * GET /api/rumble/tx-feed?network=mainnet|devnet
  *
  * Returns recent transaction signatures for the rumble engine program.
- * Proxies the Solana RPC call server-side so mobile clients don't need
- * a Helius key or hit public rate limits.
+ * Supports both mainnet and devnet via the `network` query param.
  */
 export async function GET(request: Request) {
   try {
+    const url = new URL(request.url);
+    const networkParam = (url.searchParams.get("network") ?? "").trim().toLowerCase();
+    const isMainnet = networkParam === "mainnet" || networkParam === "mainnet-beta";
+    const cacheKey = isMainnet ? "mainnet" : "devnet";
+
     const now = Date.now();
-    if (cachedFeed && now - cachedFeed.fetchedAt < CACHE_TTL_MS) {
-      return NextResponse.json({ signatures: cachedFeed.data });
+    const cached = cachedFeeds[cacheKey];
+    if (cached && now - cached.fetchedAt < CACHE_TTL_MS) {
+      return NextResponse.json({ signatures: cached.data, network: cacheKey });
     }
 
-    const rpc = getRpcEndpoint();
+    const rpc = isMainnet ? getBettingRpcEndpoint() : getRpcEndpoint();
+    const programId = isMainnet ? RUMBLE_ENGINE_ID_MAINNET.toBase58() : DEVNET_PROGRAM_ID;
     const conn = new Connection(rpc, "confirmed");
     const signatures = await conn.getSignaturesForAddress(
-      new PublicKey(PROGRAM_ID),
+      new PublicKey(programId),
       { limit: 20 },
     );
 
@@ -39,9 +45,9 @@ export async function GET(request: Request) {
       err: !!sig.err,
     }));
 
-    cachedFeed = { data, fetchedAt: now };
+    cachedFeeds[cacheKey] = { data, fetchedAt: now };
 
-    return NextResponse.json({ signatures: data });
+    return NextResponse.json({ signatures: data, network: cacheKey });
   } catch (error) {
     console.error("[TxFeedAPI]", error);
     return NextResponse.json(

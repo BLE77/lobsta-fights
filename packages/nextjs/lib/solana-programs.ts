@@ -28,6 +28,7 @@ import {
   getConnection,
   getBettingConnection,
   getBettingReadConnections,
+  getCachedBalance,
   getErConnection,
   getLatestBlockhashCached,
 } from "./solana-connection";
@@ -46,6 +47,7 @@ import rumbleEngineIdl from "./idl/rumble_engine.json";
 const DEFAULT_FIGHTER_REGISTRY_ID = "2hA6Jvj1yjP2Uj3qrJcsBeYA2R9xPM95mDKw1ncKVExa";
 const DEFAULT_ICHOR_TOKEN_ID = "925GAeqjKMX4B5MDANB91SZCvrx8HpEgmPJwHJzxKJx1";
 const DEFAULT_RUMBLE_ENGINE_ID = "638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU";
+const HEAVY_ADMIN_TX_COMPUTE_LIMIT = 1_400_000;
 
 function readEnvTrimmed(name: string): string {
   return process.env[name]?.trim() ?? "";
@@ -170,6 +172,19 @@ let _erClosestValidatorCache:
   | { at: number; endpoint: string; value: ErClosestValidator | null }
   | null = null;
 
+function getConfiguredErValidatorIdentity(): string {
+  return readEnvTrimmed("MAGICBLOCK_ER_VALIDATOR_PUBKEY");
+}
+
+function getConfiguredErValidatorEndpoint(): string {
+  return normalizeErValidatorEndpoint(
+    readFirstEnv([
+      "MAGICBLOCK_ER_VALIDATOR_RPC_URL",
+      "MAGICBLOCK_ER_REGION_RPC_URL",
+    ]),
+  );
+}
+
 function normalizeErValidatorEndpoint(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) return "";
@@ -192,6 +207,14 @@ function getOrCreateErValidatorConnection(endpoint: string): Connection {
 }
 
 async function getErClosestValidatorCached(conn: Connection): Promise<ErClosestValidator | null> {
+  const configuredIdentity = getConfiguredErValidatorIdentity();
+  if (configuredIdentity) {
+    return {
+      identity: configuredIdentity,
+      fqdn: getConfiguredErValidatorEndpoint() || undefined,
+    };
+  }
+
   const routerConn = conn as ErRouterLikeConnection;
   if (typeof routerConn.getClosestValidator !== "function") return null;
 
@@ -220,6 +243,14 @@ async function resolveErRoutingConnections(
   preferredConnection?: Connection,
 ): Promise<{ txConnection: Connection; logConnection: Connection; validatorEndpoint: string | null }> {
   const txConnection = preferredConnection ?? getErConnection();
+  const configuredValidatorEndpoint = getConfiguredErValidatorEndpoint();
+  if (configuredValidatorEndpoint) {
+    return {
+      txConnection,
+      logConnection: getOrCreateErValidatorConnection(configuredValidatorEndpoint),
+      validatorEndpoint: configuredValidatorEndpoint,
+    };
+  }
   const validator = await getErClosestValidatorCached(txConnection);
   const validatorEndpoint = normalizeErValidatorEndpoint(String(validator?.fqdn ?? ""));
   if (!validatorEndpoint) {
@@ -257,24 +288,113 @@ export async function waitForUndelegation(
   rumbleId: number,
   maxWaitMs: number = 15000,
 ): Promise<boolean> {
-  console.log(`[ER-WAIT-UNDELEGATE] Polling L1 for undelegation of rumble ${rumbleId} (maxWait=${maxWaitMs}ms)...`);
+  console.log(
+    `[ER-WAIT-UNDELEGATE] Listening for L1 ownership return for rumble ${rumbleId} (maxWait=${maxWaitMs}ms)...`,
+  );
+  const conn = getConnection();
+  const [combatStatePda] = deriveCombatStatePda(rumbleId);
   const pollIntervalMs = 2000;
   const startTime = Date.now();
-  while (Date.now() - startTime < maxWaitMs) {
-    try {
-      const stillDelegated = await isCombatStateDelegated(rumbleId);
-      if (!stillDelegated) {
-        console.log(`[ER-WAIT-UNDELEGATE] Undelegation confirmed for rumble ${rumbleId} (${Date.now() - startTime}ms elapsed)`);
-        return true;
-      }
-    } catch (err) {
-      // RPC error — treat as "still delegated" and keep polling
-      console.warn(`[ER-WAIT-UNDELEGATE] RPC error for rumble ${rumbleId} (will retry):`, err);
+  let subscriptionId: number | null = null;
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const cleanup = async () => {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
     }
-    await new Promise(r => setTimeout(r, pollIntervalMs));
+    if (timeoutTimer) {
+      clearTimeout(timeoutTimer);
+      timeoutTimer = null;
+    }
+    if (subscriptionId !== null) {
+      try {
+        await conn.removeAccountChangeListener(subscriptionId);
+      } catch {
+        // Ignore listener cleanup errors.
+      }
+      subscriptionId = null;
+    }
+  };
+
+  const readDelegatedState = async (): Promise<boolean> => {
+    const info = await conn.getAccountInfo(combatStatePda, "confirmed");
+    if (!info) {
+      throw new Error(`combat_state missing while waiting for undelegation: ${combatStatePda.toBase58()}`);
+    }
+    return info.owner.equals(DELEGATION_PROGRAM_ID);
+  };
+
+  try {
+    if (!(await readDelegatedState())) {
+      console.log(
+        `[ER-WAIT-UNDELEGATE] combat_state already on L1 for rumble ${rumbleId} (${Date.now() - startTime}ms elapsed)`,
+      );
+      return true;
+    }
+  } catch (err) {
+    console.warn(`[ER-WAIT-UNDELEGATE] Initial L1 owner check failed for rumble ${rumbleId} (will keep waiting):`, err);
   }
-  console.warn(`[ER-WAIT-UNDELEGATE] Timed out for rumble ${rumbleId} after ${maxWaitMs}ms — still delegated`);
-  return false; // Timed out, still delegated
+
+  return await new Promise<boolean>((resolve) => {
+    let settled = false;
+
+    const finish = (result: boolean, message: string, logLevel: "log" | "warn" = "log") => {
+      if (settled) return;
+      settled = true;
+      console[logLevel](message);
+      void cleanup().finally(() => resolve(result));
+    };
+
+    const confirmOwnership = async (source: "listener" | "poll") => {
+      try {
+        const stillDelegated = await readDelegatedState();
+        if (!stillDelegated) {
+          finish(
+            true,
+            `[ER-WAIT-UNDELEGATE] Undelegation confirmed for rumble ${rumbleId} via ${source} (${Date.now() - startTime}ms elapsed)`,
+          );
+        }
+      } catch (err) {
+        console.warn(
+          `[ER-WAIT-UNDELEGATE] ${source} owner check failed for rumble ${rumbleId} (will retry):`,
+          err,
+        );
+      }
+    };
+
+    try {
+      subscriptionId = conn.onAccountChange(
+        combatStatePda,
+        (accountInfo) => {
+          if (!accountInfo.owner.equals(DELEGATION_PROGRAM_ID)) {
+            finish(
+              true,
+              `[ER-WAIT-UNDELEGATE] Undelegation confirmed for rumble ${rumbleId} via listener (${Date.now() - startTime}ms elapsed)`,
+            );
+          }
+        },
+        "confirmed",
+      );
+    } catch (err) {
+      console.warn(`[ER-WAIT-UNDELEGATE] Failed to subscribe for rumble ${rumbleId}; falling back to polling only:`, err);
+    }
+
+    pollTimer = setInterval(() => {
+      void confirmOwnership("poll");
+    }, pollIntervalMs);
+
+    timeoutTimer = setTimeout(() => {
+      finish(
+        false,
+        `[ER-WAIT-UNDELEGATE] Timed out for rumble ${rumbleId} after ${maxWaitMs}ms — still delegated`,
+        "warn",
+      );
+    }, maxWaitMs);
+
+    void confirmOwnership("poll");
+  });
 }
 
 // MagicBlock VRF Program
@@ -623,6 +743,7 @@ export interface RumbleCombatAccountState {
   eliminationRank: number[];
   totalDamageDealt: bigint[];
   totalDamageTaken: bigint[];
+  vrfSeed: Uint8Array;
   bump: number;
 }
 
@@ -856,6 +977,7 @@ export async function readRumbleCombatState(
       totalDamageTaken.push(view.getBigUint64(totalDamageTakenOffset + i * 8, true));
     }
 
+    const vrfSeed = data.slice(vrfSeedOffset, vrfSeedOffset + 32);
     const bump = data[bumpOffset] ?? 0;
     const winnerIndex = winnerIndexRaw < 16 ? winnerIndexRaw : null;
 
@@ -875,6 +997,7 @@ export async function readRumbleCombatState(
       eliminationRank,
       totalDamageDealt,
       totalDamageTaken,
+      vrfSeed,
       bump,
     };
   });
@@ -2601,7 +2724,7 @@ export async function resolveTurnOnChain(
       combatState: combatStatePda,
     })
     .preInstructions([
-      ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }),
+      ComputeBudgetProgram.setComputeUnitLimit({ units: HEAVY_ADMIN_TX_COMPUTE_LIMIT }),
     ]);
 
   const sig = await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
@@ -2666,7 +2789,7 @@ export async function finalizeRumbleOnChain(
       combatState: combatStatePda,
     })
     .preInstructions([
-      ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }),
+      ComputeBudgetProgram.setComputeUnitLimit({ units: HEAVY_ADMIN_TX_COMPUTE_LIMIT }),
     ]);
 
   const sig = await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
@@ -3248,7 +3371,9 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
       const [vaultPda] = deriveVaultPdaMainnet(rumbleId);
       let vaultBalance = 0;
       try {
-        vaultBalance = await conn.getBalance(vaultPda);
+        vaultBalance = await getCachedBalance(conn, vaultPda, {
+          ttlMs: 30_000,
+        });
       } catch (err) {
         skipped++;
         deferRentReclaim(rumbleId, err);
@@ -3317,7 +3442,9 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
       const [vaultPda] = deriveVaultPdaMainnet(rumbleId);
       let vaultBalance = 0;
       try {
-        vaultBalance = await conn.getBalance(vaultPda);
+        vaultBalance = await getCachedBalance(conn, vaultPda, {
+          ttlMs: 30_000,
+        });
       } catch (err) {
         skipped++;
         deferRentReclaim(rumbleId, err);
@@ -3889,7 +4016,10 @@ async function ensureErEscrowFunding(admin: Keypair, connection: Connection): Pr
 
   try {
     const escrowPda = escrowPdaFromEscrowAuthority(admin.publicKey);
-    const currentLamports = await connection.getBalance(escrowPda, "confirmed");
+    const currentLamports = await getCachedBalance(connection, escrowPda, {
+      commitment: "confirmed",
+      ttlMs: 15_000,
+    });
     if (currentLamports >= minLamports) {
       return;
     }
@@ -3951,13 +4081,22 @@ export async function delegateCombatToEr(
   const [bufferPda] = deriveDelegationBufferPda(combatStatePda, program.programId);
   const [delegationRecordPda] = deriveDelegationRecordPda(combatStatePda);
   const [delegationMetadataPda] = deriveDelegationMetadataPda(combatStatePda);
-  const erValidator = await getErClosestValidatorCached(getErConnection()).catch(() => null);
   let erValidatorPubkey: PublicKey | null = null;
-  if (erValidator?.identity) {
+  const configuredErValidatorIdentity = getConfiguredErValidatorIdentity();
+  if (configuredErValidatorIdentity) {
     try {
-      erValidatorPubkey = new PublicKey(erValidator.identity);
+      erValidatorPubkey = new PublicKey(configuredErValidatorIdentity);
     } catch (error) {
-      console.warn("[ER-DELEGATE] Invalid closest validator identity, delegating without validator pin:", error);
+      console.warn("[ER-DELEGATE] Invalid configured validator identity, delegating without validator pin:", error);
+    }
+  } else {
+    const erValidator = await getErClosestValidatorCached(getErConnection()).catch(() => null);
+    if (erValidator?.identity) {
+      try {
+        erValidatorPubkey = new PublicKey(erValidator.identity);
+      } catch (error) {
+        console.warn("[ER-DELEGATE] Invalid closest validator identity, delegating without validator pin:", error);
+      }
     }
   }
 
@@ -3983,7 +4122,11 @@ export async function delegateCombatToEr(
         isWritable: false,
       },
     ]);
-    console.log(`[ER-DELEGATE] Pinning rumble ${rumbleId} to ER validator ${erValidatorPubkey.toBase58()}`);
+    console.log(
+      configuredErValidatorIdentity
+        ? `[ER-DELEGATE] Pinning rumble ${rumbleId} to configured ER validator ${erValidatorPubkey.toBase58()}`
+        : `[ER-DELEGATE] Pinning rumble ${rumbleId} to closest ER validator ${erValidatorPubkey.toBase58()}`,
+    );
   } else {
     console.warn(`[ER-DELEGATE] No closest validator resolved for rumble ${rumbleId}; delegating without validator pin`);
   }

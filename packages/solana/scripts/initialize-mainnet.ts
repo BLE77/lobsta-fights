@@ -17,7 +17,19 @@ import * as path from "path";
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
-const MAINNET_URL = "https://mainnet.helius-rpc.com/?api-key=f531d309-f3ed-4e05-b15b-a192810be1ca";
+function getMainnetRpcUrl(): string {
+  const explicit =
+    process.env.MAINNET_RPC_URL?.trim() ||
+    process.env.NEXT_PUBLIC_BETTING_RPC_URL?.trim();
+  if (explicit) return explicit;
+
+  const heliusKey =
+    process.env.HELIUS_MAINNET_API_KEY?.trim() ||
+    process.env.NEXT_PUBLIC_HELIUS_MAINNET_API_KEY?.trim();
+  if (heliusKey) return `https://mainnet.helius-rpc.com/?api-key=${heliusKey}`;
+
+  return "https://api.mainnet-beta.solana.com";
+}
 const DEPLOYER_KEYPAIR_PATH = path.join(
   process.env.HOME || "~",
   ".config/solana/mainnet-admin.json"
@@ -56,7 +68,7 @@ async function main() {
   console.log("Deployer (mainnet admin):", deployer.publicKey.toBase58());
 
   // Connect to mainnet
-  const connection = new Connection(MAINNET_URL, "confirmed");
+  const connection = new Connection(getMainnetRpcUrl(), "confirmed");
   const balance = await connection.getBalance(deployer.publicKey);
   console.log("Balance:", (balance / 1e9).toFixed(4), "SOL");
 

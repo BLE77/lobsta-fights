@@ -20,6 +20,7 @@ import CommentaryPlayer from "./components/CommentaryPlayer";
 import OnChainTxFeed from "./components/OnChainTxFeed";
 import WinnerPopup from "./components/WinnerPopup";
 import { useBetConfirmation } from "./hooks/useBetConfirmation";
+import { useRumbleStatusRealtime } from "./hooks/useRumbleStatusRealtime";
 import type { CommentarySSEEvent } from "~~/lib/commentary";
 import { audioManager, soundForPairing } from "~~/lib/audio";
 import { BoltIcon, ChatBubbleLeftRightIcon, ListBulletIcon } from "@heroicons/react/24/outline";
@@ -49,6 +50,7 @@ interface RumbleStatus {
   queueLength: number;
   nextRumbleIn: string | null;
   bettingCloseGuardMs: number;
+  recentCompletedResults: Array<LastCompletedSlotResult & { slotIndex: number }>;
   ichorShower: {
     currentPool: number;
     rumblesSinceLastTrigger: number;
@@ -109,6 +111,8 @@ interface LastCompletedSlotResult {
   }>;
   payout: NonNullable<SlotData["payout"]>;
   myBetFighterIds?: string[]; // fighter IDs the user had bet on (captured at result time)
+  fighterNames?: Record<string, string>;
+  lastTurn?: SlotData["turns"][number] | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -158,10 +162,38 @@ const INTRO_OVERLAY_STORAGE_KEY = "ucf_rumble_intro_overlay_seen_v1";
 const INTRO_OVERLAY_VIDEO_SRC = "/rumble-intro-overlay.mp4";
 const SOLANA_MOBILE_WALLET_NAME = /mobile|seed vault|solana mobile/i;
 const STATUS_POLL_INTERVALS_MS = {
-  combat: Math.max(4_000, Number(process.env.NEXT_PUBLIC_RUMBLE_STATUS_POLL_COMBAT_MS ?? "6000")),
-  betting: Math.max(6_000, Number(process.env.NEXT_PUBLIC_RUMBLE_STATUS_POLL_BETTING_MS ?? "10000")),
+  combat: Math.max(2_000, Number(process.env.NEXT_PUBLIC_RUMBLE_STATUS_POLL_COMBAT_MS ?? "3000")),
+  betting: Math.max(
+    3_000,
+    Number(
+      process.env.NEXT_PUBLIC_RUMBLE_STATUS_POLL_BETTING_NEAR_MS ??
+      process.env.NEXT_PUBLIC_RUMBLE_STATUS_POLL_BETTING_MS ??
+      "4000",
+    ),
+  ),
   idle: Math.max(15_000, Number(process.env.NEXT_PUBLIC_RUMBLE_STATUS_POLL_IDLE_MS ?? "30000")),
 };
+const STATUS_POLL_BACKSTOP_INTERVALS_MS = {
+  combat: Math.max(
+    STATUS_POLL_INTERVALS_MS.combat,
+    Number(process.env.NEXT_PUBLIC_RUMBLE_STATUS_POLL_COMBAT_BACKSTOP_MS ?? "10000"),
+  ),
+  betting: Math.max(
+    STATUS_POLL_INTERVALS_MS.betting,
+    Number(
+      process.env.NEXT_PUBLIC_RUMBLE_STATUS_POLL_BETTING_BACKSTOP_MS ??
+      process.env.NEXT_PUBLIC_RUMBLE_STATUS_POLL_BETTING_MS ??
+      "10000",
+    ),
+  ),
+  idle: STATUS_POLL_INTERVALS_MS.idle,
+};
+const STATUS_POLL_TRANSITION_LEAD_MS = {
+  combat: Math.max(1_500, Number(process.env.NEXT_PUBLIC_RUMBLE_STATUS_POLL_COMBAT_LEAD_MS ?? "2500")),
+  betting: Math.max(2_000, Number(process.env.NEXT_PUBLIC_RUMBLE_STATUS_POLL_BETTING_LEAD_MS ?? "5000")),
+};
+const STATUS_POLL_ERROR_RETRY_MS = 5_000;
+const STATUS_REALTIME_REFRESH_DEBOUNCE_MS = 350;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -224,6 +256,8 @@ function buildLastCompletedResult(slot: SlotData): LastCompletedSlotResult | nul
     capturedAt: Date.now(),
     placements,
     payout: slot.payout,
+    fighterNames: slot.fighterNames,
+    lastTurn: slot.turns.length > 0 ? slot.turns[slot.turns.length - 1] : null,
   };
 }
 
@@ -240,6 +274,77 @@ function normalizeSlotState(value: unknown): SlotData["state"] {
   return value === "idle" || value === "betting" || value === "combat" || value === "payout"
     ? value
     : "idle";
+}
+
+function getSuggestedStatusPollDelayMs(
+  status: RumbleStatus | null,
+  error: string | null,
+): number {
+  if (error) return STATUS_POLL_ERROR_RETRY_MS;
+  if (!status) return STATUS_POLL_BACKSTOP_INTERVALS_MS.idle;
+
+  const now = Date.now();
+  let nextDelay = Number.POSITIVE_INFINITY;
+
+  for (const slot of status.slots ?? []) {
+    if (slot.state === "combat") {
+      const targetMs = slot.nextTurnAt ? Date.parse(slot.nextTurnAt) : Number.NaN;
+      if (Number.isFinite(targetMs)) {
+        const remainingMs = targetMs - now;
+        if (remainingMs > STATUS_POLL_TRANSITION_LEAD_MS.combat) {
+          nextDelay = Math.min(
+            nextDelay,
+            Math.max(
+              STATUS_POLL_INTERVALS_MS.combat,
+              Math.min(
+                STATUS_POLL_BACKSTOP_INTERVALS_MS.combat,
+                remainingMs - STATUS_POLL_TRANSITION_LEAD_MS.combat,
+              ),
+            ),
+          );
+        } else {
+          nextDelay = Math.min(nextDelay, STATUS_POLL_INTERVALS_MS.combat);
+        }
+      } else {
+        nextDelay = Math.min(nextDelay, STATUS_POLL_BACKSTOP_INTERVALS_MS.combat);
+      }
+      continue;
+    }
+
+    if (slot.state === "betting") {
+      const targetMs = slot.bettingDeadline ? Date.parse(slot.bettingDeadline) : Number.NaN;
+      if (Number.isFinite(targetMs)) {
+        const remainingMs = targetMs - now;
+        if (remainingMs > STATUS_POLL_TRANSITION_LEAD_MS.betting) {
+          nextDelay = Math.min(
+            nextDelay,
+            Math.max(
+              STATUS_POLL_INTERVALS_MS.betting,
+              Math.min(
+                STATUS_POLL_BACKSTOP_INTERVALS_MS.betting,
+                remainingMs - STATUS_POLL_TRANSITION_LEAD_MS.betting,
+              ),
+            ),
+          );
+        } else {
+          nextDelay = Math.min(nextDelay, STATUS_POLL_INTERVALS_MS.betting);
+        }
+      } else {
+        nextDelay = Math.min(nextDelay, STATUS_POLL_BACKSTOP_INTERVALS_MS.betting);
+      }
+      continue;
+    }
+
+    if (slot.state === "payout") {
+      nextDelay = Math.min(nextDelay, STATUS_POLL_BACKSTOP_INTERVALS_MS.betting);
+    }
+  }
+
+  if (Number.isFinite(nextDelay)) {
+    return Math.max(1_500, Math.floor(nextDelay));
+  }
+
+  return STATUS_POLL_BACKSTOP_INTERVALS_MS.idle;
 }
 
 function normalizeTurn(raw: any): SlotData["turns"][number] | null {
@@ -263,6 +368,67 @@ function normalizeTurn(raw: any): SlotData["turns"][number] | null {
       ? raw.eliminations.map((id: any) => safeString(id)).filter(Boolean)
       : [],
     bye: raw.bye ? safeString(raw.bye) : undefined,
+  };
+}
+
+function normalizePayoutData(raw: any): SlotData["payout"] {
+  const payoutRaw = raw && typeof raw === "object" ? raw : null;
+  if (!payoutRaw) return null;
+  return {
+    winnerBettorsPayout: safeNumber(payoutRaw.winnerBettorsPayout, 0),
+    placeBettorsPayout: safeNumber(payoutRaw.placeBettorsPayout, 0),
+    showBettorsPayout: safeNumber(payoutRaw.showBettorsPayout, 0),
+    treasuryVault: safeNumber(payoutRaw.treasuryVault, 0),
+    totalPool: safeNumber(payoutRaw.totalPool, 0),
+    ichorMined: safeNumber(payoutRaw.ichorMined, 0),
+    ichorShowerTriggered: Boolean(payoutRaw.ichorShowerTriggered),
+    ichorShowerAmount:
+      payoutRaw.ichorShowerAmount === undefined || payoutRaw.ichorShowerAmount === null
+        ? undefined
+        : safeNumber(payoutRaw.ichorShowerAmount, 0),
+  };
+}
+
+function normalizeCompletedResult(
+  raw: any,
+): (LastCompletedSlotResult & { slotIndex: number }) | null {
+  if (!raw || typeof raw !== "object") return null;
+  const payout = normalizePayoutData(raw.payout);
+  if (!payout) return null;
+
+  const placements = Array.isArray(raw.placements)
+    ? raw.placements
+        .map((placement: any) => ({
+          fighterId: safeString(placement?.fighterId),
+          fighterName: safeString(placement?.fighterName, safeString(placement?.fighterId, "Unknown")),
+          imageUrl: typeof placement?.imageUrl === "string" ? placement.imageUrl : null,
+          placement: safeNumber(placement?.placement, 0),
+          hp: safeNumber(placement?.hp, 0),
+          damageDealt: safeNumber(placement?.damageDealt, 0),
+        }))
+        .filter((placement: { fighterId: string; placement: number }) => placement.fighterId && placement.placement > 0)
+    : [];
+  if (placements.length === 0) return null;
+
+  const fighterNamesRaw =
+    raw?.fighterNames && typeof raw.fighterNames === "object" ? raw.fighterNames : {};
+  const fighterNames: Record<string, string> = {};
+  for (const [fighterId, fighterName] of Object.entries(fighterNamesRaw)) {
+    fighterNames[String(fighterId)] = safeString(fighterName, String(fighterId));
+  }
+
+  return {
+    slotIndex: safeNumber(raw.slotIndex, 0),
+    rumbleId: safeString(raw.rumbleId),
+    settledAtIso:
+      typeof raw.settledAtIso === "string" && raw.settledAtIso.length > 0
+        ? raw.settledAtIso
+        : new Date().toISOString(),
+    capturedAt: Date.now(),
+    placements,
+    payout,
+    fighterNames,
+    lastTurn: normalizeTurn(raw.lastTurn),
   };
 }
 
@@ -307,22 +473,7 @@ function normalizeStatusPayload(raw: any): RumbleStatus {
           )
         : [];
 
-      const payoutRaw = slot?.payout && typeof slot.payout === "object" ? slot.payout : null;
-      const payout = payoutRaw
-        ? {
-          winnerBettorsPayout: safeNumber(payoutRaw.winnerBettorsPayout, 0),
-          placeBettorsPayout: safeNumber(payoutRaw.placeBettorsPayout, 0),
-          showBettorsPayout: safeNumber(payoutRaw.showBettorsPayout, 0),
-          treasuryVault: safeNumber(payoutRaw.treasuryVault, 0),
-          totalPool: safeNumber(payoutRaw.totalPool, 0),
-          ichorMined: safeNumber(payoutRaw.ichorMined, 0),
-          ichorShowerTriggered: Boolean(payoutRaw.ichorShowerTriggered),
-          ichorShowerAmount:
-            payoutRaw.ichorShowerAmount === undefined || payoutRaw.ichorShowerAmount === null
-              ? undefined
-              : safeNumber(payoutRaw.ichorShowerAmount, 0),
-        }
-        : null;
+      const payout = normalizePayoutData(slot?.payout);
 
       const fighterNamesRaw =
         slot?.fighterNames && typeof slot.fighterNames === "object" ? slot.fighterNames : {};
@@ -371,12 +522,23 @@ function normalizeStatusPayload(raw: any): RumbleStatus {
     }))
     : [];
 
+  const recentCompletedResults = Array.isArray(raw?.recentCompletedResults)
+    ? raw.recentCompletedResults
+        .map((result: any) => normalizeCompletedResult(result))
+        .filter(
+          (
+            result: (LastCompletedSlotResult & { slotIndex: number }) | null,
+          ): result is LastCompletedSlotResult & { slotIndex: number } => Boolean(result),
+        )
+    : [];
+
   return {
     slots,
     queue,
     queueLength: safeNumber(raw?.queueLength, queue.length),
     nextRumbleIn: typeof raw?.nextRumbleIn === "string" ? raw.nextRumbleIn : null,
     bettingCloseGuardMs: Math.max(1_000, safeNumber(raw?.bettingCloseGuardMs, DEFAULT_BET_CLOSE_GUARD_MS)),
+    recentCompletedResults,
     ichorShower: {
       currentPool: safeNumber(raw?.ichorShower?.currentPool, 0),
       rumblesSinceLastTrigger: safeNumber(raw?.ichorShower?.rumblesSinceLastTrigger, 0),
@@ -448,6 +610,7 @@ export default function RumblePage() {
   const walletBalanceRefreshInFlightRef = useRef<Promise<number | null> | null>(null);
   const claimBalanceRef = useRef<ClaimBalanceStatus | null>(null);
   const pollSeqRef = useRef(0);
+  const realtimeRefreshTimeoutRef = useRef<number | null>(null);
 
   // Winner popup state
   const [winnerPopup, setWinnerPopup] = useState<{
@@ -475,6 +638,7 @@ export default function RumblePage() {
   const walletConnected = connected && !!publicKey;
   const mobileContext = useSolanaMobileContext();
   const seekerOptimizedUi = mobileContext.shouldUseMobileOptimizations;
+  const hideBugCleaningOverlay = mobileContext.isStandaloneAppShell;
   const isPageVisible = usePageVisibility();
 
   // RPC connection — betting is on mainnet, so prefer betting RPC for wallet balance
@@ -760,6 +924,73 @@ export default function RumblePage() {
         let changed = false;
         const next = new Map(prev);
         const now = Date.now();
+        const storeCompletedResult = (
+          slotIndex: number,
+          completed: LastCompletedSlotResult,
+          slotOdds?: SlotData["odds"],
+        ) => {
+          const slotBets = myBetAmountsBySlotRef.current.get(slotIndex);
+          if (slotBets && slotBets.size > 0 && (!completed.myBetFighterIds || completed.myBetFighterIds.length === 0)) {
+            completed.myBetFighterIds = [...slotBets.keys()];
+          }
+
+          const existing = next.get(slotIndex);
+          const merged =
+            existing && existing.rumbleId === completed.rumbleId
+              ? {
+                  ...existing,
+                  ...completed,
+                  capturedAt: existing.capturedAt,
+                  myBetFighterIds:
+                    existing.myBetFighterIds && existing.myBetFighterIds.length > 0
+                      ? existing.myBetFighterIds
+                      : completed.myBetFighterIds,
+                  fighterNames:
+                    completed.fighterNames && Object.keys(completed.fighterNames).length > 0
+                      ? completed.fighterNames
+                      : existing.fighterNames,
+                  lastTurn: completed.lastTurn ?? existing.lastTurn,
+                }
+              : completed;
+          const shouldStore =
+            !existing ||
+            existing.rumbleId !== merged.rumbleId ||
+            (!existing.lastTurn && !!merged.lastTurn) ||
+            (!(existing.myBetFighterIds?.length) && !!merged.myBetFighterIds?.length) ||
+            (existing.settledAtIso !== merged.settledAtIso &&
+              Date.parse(merged.settledAtIso) >= Date.parse(existing.settledAtIso));
+          if (!shouldStore) return;
+
+          next.set(slotIndex, merged);
+          changed = true;
+
+          const winner = merged.placements[0];
+          if (
+            winner &&
+            merged.myBetFighterIds?.includes(winner.fighterId) &&
+            !shownWinPopupRumbleIds.current.has(merged.rumbleId)
+          ) {
+            shownWinPopupRumbleIds.current.add(merged.rumbleId);
+            const totalWinnerPayout = merged.payout?.winnerBettorsPayout ?? 0;
+            const userBetOnWinner = slotBets?.get(winner.fighterId) ?? 0;
+            const winnerOdds = slotOdds?.find((odds) => odds.fighterId === winner.fighterId);
+            const totalSolOnWinner = winnerOdds?.solDeployed ?? 0;
+            const solWon =
+              totalSolOnWinner > 0 && userBetOnWinner > 0
+                ? (userBetOnWinner / totalSolOnWinner) * totalWinnerPayout
+                : userBetOnWinner;
+            setWinnerPopup({
+              fighterName: winner.fighterName,
+              imageUrl: winner.imageUrl ?? null,
+              solWon,
+            });
+          }
+        };
+
+        for (const completed of data.recentCompletedResults) {
+          storeCompletedResult(completed.slotIndex, { ...completed });
+        }
+
         for (const slot of data.slots) {
           if (slot.state === "betting" || slot.state === "combat") {
             // Keep completed result visible for 20s after slot recycles
@@ -786,44 +1017,17 @@ export default function RumblePage() {
 
           const completed = buildLastCompletedResult(slot);
           if (!completed) continue;
-          // Capture user's bet fighter IDs at result time so PayoutDisplay
-          // can show "YOU WON" even after bets are cleared for the next rumble.
-          const slotBets = myBetAmountsBySlotRef.current.get(slot.slotIndex);
-          if (slotBets && slotBets.size > 0) {
-            completed.myBetFighterIds = [...slotBets.keys()];
-          }
-          const existing = next.get(slot.slotIndex);
-          if (!existing || existing.rumbleId !== completed.rumbleId) {
-            next.set(slot.slotIndex, completed);
-            changed = true;
-
-            // Trigger winner popup if user bet on the winning fighter
-            const winner = completed.placements[0];
-            if (
-              winner &&
-              completed.myBetFighterIds?.includes(winner.fighterId) &&
-              !shownWinPopupRumbleIds.current.has(completed.rumbleId)
-            ) {
-              shownWinPopupRumbleIds.current.add(completed.rumbleId);
-              // Calculate user's proportional share of the winner payout pool
-              const totalWinnerPayout = completed.payout?.winnerBettorsPayout ?? 0;
-              const userBetOnWinner = slotBets?.get(winner.fighterId) ?? 0;
-              const winnerOdds = slot.odds.find(o => o.fighterId === winner.fighterId);
-              const totalSolOnWinner = winnerOdds?.solDeployed ?? 0;
-              const solWon = totalSolOnWinner > 0 && userBetOnWinner > 0
-                ? (userBetOnWinner / totalSolOnWinner) * totalWinnerPayout
-                : userBetOnWinner; // fallback: show user's bet amount
-              setWinnerPopup({
-                fighterName: winner.fighterName,
-                imageUrl: winner.imageUrl ?? null,
-                solWon,
-              });
-            }
-          }
+          storeCompletedResult(slot.slotIndex, completed, slot.odds);
         }
         if (changed) {
           // Persist most recent result for page-refresh survival
-          const latestEntry = [...next.entries()].pop();
+          const latestEntry =
+            [...next.entries()].sort((a, b) => {
+              const settledDelta =
+                Date.parse(b[1].settledAtIso) - Date.parse(a[1].settledAtIso);
+              if (Number.isFinite(settledDelta) && settledDelta !== 0) return settledDelta;
+              return (b[1].capturedAt ?? 0) - (a[1].capturedAt ?? 0);
+            })[0];
           if (latestEntry) {
             const [slotIndex, result] = latestEntry;
             try {
@@ -869,6 +1073,18 @@ export default function RumblePage() {
       setLoading(false);
     }
   }, []);
+
+  const scheduleStatusRefresh = useCallback(
+    (delayMs = STATUS_REALTIME_REFRESH_DEBOUNCE_MS) => {
+      if (!isPageVisible) return;
+      if (realtimeRefreshTimeoutRef.current != null) return;
+      realtimeRefreshTimeoutRef.current = window.setTimeout(() => {
+        realtimeRefreshTimeoutRef.current = null;
+        void fetchStatus();
+      }, delayMs);
+    },
+    [fetchStatus, isPageVisible],
+  );
 
   const fetchClaimBalance = useCallback(async () => {
     if (!publicKey) {
@@ -982,6 +1198,13 @@ export default function RumblePage() {
       fetchClaimBalance();
       fetchMyBets();
     }, [fetchClaimBalance, fetchMyBets]),
+  });
+
+  const { connected: rumbleRealtimeConnected } = useRumbleStatusRealtime({
+    enabled: isPageVisible,
+    onStatusChange: useCallback(() => {
+      scheduleStatusRefresh();
+    }, [scheduleStatusRefresh]),
   });
 
   // Connect to SSE for real-time combat updates
@@ -1196,29 +1419,40 @@ export default function RumblePage() {
     };
   }, [connectSSE]);
 
-  // Poll frequency is state-aware:
-  // - Combat: 6s (enough for ~24s turns without burning RPC on constant refreshes)
-  // - Betting: 10s (deadline stays accurate because the API returns absolute times)
-  // - Idle/Payout: 30s (low priority)
-  // NOTE: SSE events only work when orchestrator runs in-process (local dev).
-  // On production (Vercel + Railway worker), SSE connects but delivers no events,
-  // so polling is the primary update mechanism.
-  const hasActiveCombat = status?.slots.some(s => s.state === "combat") ?? false;
-  const hasActiveBetting = status?.slots.some(s => s.state === "betting") ?? false;
+  useEffect(() => {
+    if (isPageVisible) return;
+    if (realtimeRefreshTimeoutRef.current != null) {
+      window.clearTimeout(realtimeRefreshTimeoutRef.current);
+      realtimeRefreshTimeoutRef.current = null;
+    }
+  }, [isPageVisible]);
+
+  useEffect(() => {
+    return () => {
+      if (realtimeRefreshTimeoutRef.current != null) {
+        window.clearTimeout(realtimeRefreshTimeoutRef.current);
+        realtimeRefreshTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  // Production still relies on polling because the live worker runs on Railway,
+  // not inside the Vercel process that serves SSE. Polling is now transition-
+  // aware: sleep most of the turn/betting window, then tighten around the
+  // actual deadline/resolve edge that the status API already returns.
   useEffect(() => {
     if (!isPageVisible) return; // Stop polling when tab hidden
-    fetchStatus();
-    let intervalMs: number;
-    if (hasActiveCombat) {
-      intervalMs = STATUS_POLL_INTERVALS_MS.combat;
-    } else if (hasActiveBetting) {
-      intervalMs = STATUS_POLL_INTERVALS_MS.betting;
-    } else {
-      intervalMs = STATUS_POLL_INTERVALS_MS.idle;
-    }
-    const pollInterval = setInterval(fetchStatus, intervalMs);
-    return () => clearInterval(pollInterval);
-  }, [fetchStatus, hasActiveCombat, hasActiveBetting, isPageVisible]);
+    void fetchStatus();
+  }, [fetchStatus, isPageVisible]);
+
+  useEffect(() => {
+    if (!isPageVisible) return;
+    const pollDelayMs = getSuggestedStatusPollDelayMs(status, error);
+    const pollTimeout = setTimeout(() => {
+      void fetchStatus();
+    }, pollDelayMs);
+    return () => clearTimeout(pollTimeout);
+  }, [fetchStatus, isPageVisible, status, error]);
 
   // ---- Sound effects driven by state changes (works with polling + SSE) ----
   useEffect(() => {
@@ -1319,6 +1553,37 @@ export default function RumblePage() {
     return Transaction.from(bytes);
   };
 
+  const encodeSignedTx = (serialized: Uint8Array): string => {
+    let binary = "";
+    const CHUNK_SIZE = 0x8000;
+    for (let i = 0; i < serialized.length; i += CHUNK_SIZE) {
+      binary += String.fromCharCode(...serialized.subarray(i, i + CHUNK_SIZE));
+    }
+    return btoa(binary);
+  };
+
+  const submitSignedWalletTransaction = useCallback(
+    async (
+      signedTx: { serialize: () => Uint8Array },
+      network: "betting" | "combat" = "betting",
+    ): Promise<string> => {
+      const submitRes = await fetch("/api/rumble/wallet-submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          signed_tx: encodeSignedTx(signedTx.serialize()),
+          network,
+        }),
+      });
+      const submitData = await submitRes.json().catch(() => ({}));
+      if (!submitRes.ok || typeof submitData?.signature !== "string") {
+        throw new Error(submitData?.error ?? "Failed to submit signed transaction");
+      }
+      return submitData.signature;
+    },
+    [],
+  );
+
   const handleClaimWinnings = useCallback(async () => {
     if (!publicKey || !signTransaction || !walletConnected) {
       setClaimError("Connect your wallet first.");
@@ -1362,11 +1627,7 @@ export default function RumblePage() {
         tx.feePayer = publicKey;
 
         const signed = await signTransaction(tx);
-        const rawTx = signed.serialize();
-        const txSig = await connection.sendRawTransaction(rawTx, {
-          skipPreflight: false,
-          preflightCommitment: "processed",
-        });
+        const txSig = await submitSignedWalletTransaction(signed, "betting");
 
         // Don't block on confirmTransaction — devnet hangs for 30s+.
         // The confirm endpoint verifies the tx on-chain with retries.
@@ -1422,13 +1683,13 @@ export default function RumblePage() {
       setClaimPending(false);
     }
   }, [
-    connection,
     claimBalance,
     fetchClaimBalance,
     refreshSolBalance,
     fetchStatus,
     signTransaction,
     publicKey,
+    submitSignedWalletTransaction,
     walletConnected,
   ]);
 
@@ -1509,28 +1770,15 @@ export default function RumblePage() {
       const guardSlotsRaw = Number(prepared?.guard_slots);
       const shouldCheckCloseSlot =
         Number.isFinite(closeSlotRaw) && closeSlotRaw > 0 && Number.isFinite(guardSlotsRaw) && guardSlotsRaw >= 0;
-      const assertWindowStillOpen = async () => {
-        if (!shouldCheckCloseSlot) return;
-        const latestSlot = await connection.getSlot("processed");
-        if (latestSlot + guardSlotsRaw >= closeSlotRaw) {
-          throw new Error("Betting just closed on-chain. Wait for the next rumble.");
-        }
-      };
-
-      // Re-check immediately before signing and sending to reduce prepare->send race.
-      await assertWindowStillOpen();
+      if (shouldCheckCloseSlot && Number.isFinite(onchainDeadlineMs) && Date.now() >= onchainDeadlineMs - closeGuardMs) {
+        throw new Error("Betting just closed on-chain. Wait for the next rumble.");
+      }
 
       // 2) Sign with wallet
       const signed = await signTransaction(tx);
 
-      await assertWindowStillOpen();
-
       // 3) Send to Solana (fire-and-forget — don't block on confirmation)
-      const rawTx = signed.serialize();
-      const txSig = await connection.sendRawTransaction(rawTx, {
-        skipPreflight: false,
-        preflightCommitment: "processed",
-      });
+      const txSig = await submitSignedWalletTransaction(signed, "betting");
 
       // 4) Register bet immediately — the API verifies the tx on-chain.
       //    Blocking on confirmTransaction hangs the UI on devnet (30s+ timeouts).
@@ -1542,27 +1790,49 @@ export default function RumblePage() {
         Array.isArray(prepared?.bets) && prepared.bets.length > 0
           ? prepared.bets
           : bets.map((b) => ({ fighter_id: b.fighterId, sol_amount: b.amount }));
-      const res = await fetch("/api/rumble/bet", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          slot_index: slotIndex,
-          fighter_id: preparedLegs[0]?.fighter_id,
-          sol_amount: preparedLegs[0]?.sol_amount,
-          bets: preparedLegs,
-          wallet_address: publicKey.toBase58(),
-          tx_signature: txSig,
-          tx_kind: prepared.tx_kind ?? "rumble_place_bet",
-          rumble_id: prepared.rumble_id,
-          rumble_id_num: prepared.rumble_id_num,
-          fighter_index: preparedLegs[0]?.fighter_index ?? prepared.fighter_index,
-        }),
-      });
+      const registerBody = {
+        slot_index: slotIndex,
+        fighter_id: preparedLegs[0]?.fighter_id,
+        sol_amount: preparedLegs[0]?.sol_amount,
+        bets: preparedLegs,
+        wallet_address: publicKey.toBase58(),
+        tx_signature: txSig,
+        tx_kind: prepared.tx_kind ?? "rumble_place_bet",
+        rumble_id: prepared.rumble_id,
+        rumble_id_num: prepared.rumble_id_num,
+        fighter_index: preparedLegs[0]?.fighter_index ?? prepared.fighter_index,
+      };
+      let registerResponseOk = false;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const res = await fetch("/api/rumble/bet", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(registerBody),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          registerResponseOk = true;
+          break;
+        }
 
-      if (!res.ok) {
-        const data = await res.json();
-        setBetError(data.error || "Bet registered on-chain but API failed");
-        setTimeout(() => setBetError(null), 5000);
+        const errorMessage = String(data?.error ?? data?.detail ?? "Bet registered on-chain but API failed");
+        const retryable =
+          res.status === 503 ||
+          data?.retryable === true ||
+          errorMessage.toLowerCase().includes("still propagating") ||
+          errorMessage.toLowerCase().includes("may not be confirmed yet");
+        if (!retryable || attempt === 2) {
+          fetchStatus();
+          setBetError(errorMessage);
+          setTimeout(() => setBetError(null), 5000);
+          return;
+        }
+        await sleep(2_000 * (attempt + 1));
+      }
+      if (!registerResponseOk) {
+        fetchStatus();
+        setBetError("Bet transaction submitted, but registration did not finish yet. Check your wallet activity and retry.");
+        setTimeout(() => setBetError(null), 6000);
         return;
       }
 
@@ -1611,11 +1881,12 @@ export default function RumblePage() {
         message.includes("0x1771") ||
         message.includes("On-chain betting is closed")
       ) {
-        fetchStatus();
+        void fetchStatus();
         setBetError("Betting just closed on-chain for that rumble. No bet was placed.");
         setTimeout(() => setBetError(null), 5000);
       } else {
         console.error("Failed to place bet:", e);
+        void fetchStatus();
         setBetError(message || "Failed to place bet");
         setTimeout(() => setBetError(null), 5000);
       }
@@ -1623,7 +1894,6 @@ export default function RumblePage() {
       setBetPending(false);
     }
   }, [
-    connection,
     fetchClaimBalance,
     fetchMyBets,
     refreshSolBalance,
@@ -1632,6 +1902,7 @@ export default function RumblePage() {
     publicKey,
     status?.bettingCloseGuardMs,
     status?.slots,
+    submitSignedWalletTransaction,
     walletConnected,
   ]);
 
@@ -1655,6 +1926,8 @@ export default function RumblePage() {
     rumblesSinceLastTrigger: 0,
   };
 
+  const statusSyncConnected = sseConnected || rumbleRealtimeConnected;
+
   return (
     <main className="relative flex flex-col min-h-screen text-stone-200 pt-safe">
       {/* Background */}
@@ -1670,15 +1943,16 @@ export default function RumblePage() {
         <div className="absolute inset-0 bg-stone-950/90"></div>
       </div>
 
-      {/* Bug Cleaning Overlay */}
-      <div className="fixed bottom-4 left-4 z-[100] flex items-end gap-3 pointer-events-none animate-fade-in-up">
-        <img src="/cleaning-bugs.jpg" alt="Cleaning bugs" className="w-48 sm:w-64 h-auto object-cover rounded-lg shadow-[0_0_30px_rgba(0,0,0,0.9)] border border-stone-800" />
-        <div className="bg-stone-900/95 backdrop-blur-md border border-stone-700 p-3 rounded-lg shadow-2xl mb-4 max-w-[220px]">
-          <p className="font-mono text-xs text-stone-300 uppercase leading-snug">
-            "Just cleaning up some bugs before mainnet"
-          </p>
+      {!hideBugCleaningOverlay && (
+        <div className="fixed bottom-4 left-4 z-[100] flex items-end gap-3 pointer-events-none animate-fade-in-up">
+          <img src="/cleaning-bugs.jpg" alt="Cleaning bugs" className="w-48 sm:w-64 h-auto object-cover rounded-lg shadow-[0_0_30px_rgba(0,0,0,0.9)] border border-stone-800" />
+          <div className="bg-stone-900/95 backdrop-blur-md border border-stone-700 p-3 rounded-lg shadow-2xl mb-4 max-w-[220px]">
+            <p className="font-mono text-xs text-stone-300 uppercase leading-snug">
+              "Just cleaning up some bugs before mainnet"
+            </p>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Content */}
       <div className="relative z-10 w-full">
@@ -1717,11 +1991,11 @@ export default function RumblePage() {
               {/* Connection indicator */}
               <div className="flex items-center gap-1.5">
                 <span
-                  className={`inline-block w-2 h-2 rounded-sm ${sseConnected ? "bg-green-500" : "bg-amber-500 animate-pulse"
+                  className={`inline-block w-2 h-2 rounded-sm ${statusSyncConnected ? "bg-green-500" : "bg-amber-500 animate-pulse"
                     }`}
                 />
                 <span className="font-mono text-[10px] text-stone-500">
-                  {sseConnected ? "LIVE" : "POLLING"}
+                  {statusSyncConnected ? "REALTIME" : "POLLING"}
                 </span>
                 {mobileContext.isLikelySolanaMobile && (
                   <span className="font-mono text-[10px] text-cyan-400">

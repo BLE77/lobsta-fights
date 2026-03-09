@@ -19,6 +19,7 @@ import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { LAMPORTS_PER_SOL } from "@solana/web3.js";
 import type { WalletBalances } from "~~/lib/solana-wallet-types";
 import { truncateAddress, formatSol } from "~~/lib/solana-format";
+import { getCachedBalance } from "~~/lib/solana-connection";
 
 // Import wallet adapter styles
 import "@solana/wallet-adapter-react-ui/styles.css";
@@ -58,8 +59,11 @@ export default function WalletConnect({
     setError(null);
 
     try {
-      // Fetch SOL balance directly from connection (fast)
-      const lamports = await connection.getBalance(publicKey, "confirmed");
+      // Cache wallet balance reads so reconnects / refreshes do not hammer RPC.
+      const lamports = await getCachedBalance(connection, publicKey, {
+        commitment: "confirmed",
+        ttlMs: 20_000,
+      });
       setSolBalance(lamports / LAMPORTS_PER_SOL);
 
       // Fetch full balances from Helius (includes ICHOR + USD values)
@@ -91,11 +95,11 @@ export default function WalletConnect({
     }
   }, [connected, publicKey, fetchBalances, onConnect]);
 
-  // Refresh balances every 90 seconds while connected.
+  // Refresh balances every 2 minutes while connected.
   // Bets/claims trigger explicit refreshes elsewhere, so frequent polling only burns RPC credits.
   useEffect(() => {
     if (!connected || !publicKey) return;
-    const interval = setInterval(fetchBalances, 90_000);
+    const interval = setInterval(fetchBalances, 120_000);
     return () => clearInterval(interval);
   }, [connected, publicKey, fetchBalances]);
 

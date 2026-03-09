@@ -12,7 +12,7 @@ import {
   completeRumbleMainnet,
   readRumbleAccountState,
 } from "~~/lib/solana-programs";
-import { getBettingConnection } from "~~/lib/solana-connection";
+import { getBettingConnection, getCachedBalance } from "~~/lib/solana-connection";
 import { createHash } from "node:crypto";
 
 export const dynamic = "force-dynamic";
@@ -82,7 +82,9 @@ export async function POST(request: Request) {
       // For now, read it from the on-chain account state
 
       const [vaultPda] = deriveVaultPdaMainnet(rumbleId);
-      const vaultBalance = await conn.getBalance(vaultPda);
+      const vaultBalance = await getCachedBalance(conn, vaultPda, {
+        ttlMs: 30_000,
+      });
       const vaultSol = vaultBalance / LAMPORTS_PER_SOL;
       const rentExemptMin = 890_880; // ~0.00089 SOL
       const sweepableSol = Math.max(0, (vaultBalance - rentExemptMin) / LAMPORTS_PER_SOL);

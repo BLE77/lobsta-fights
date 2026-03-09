@@ -105,12 +105,21 @@ import {
   waitForUndelegation,
   requestMatchupSeed,
   requestIchorShowerVrf,
+  deriveCombatStatePda,
 } from "./solana-programs";
 import { markOpComplete, markOpFailed, persistMainnetOp } from "./mainnet-retry";
 import { processPendingWorkerCommands } from "./worker-commands";
 import { Keypair, PublicKey, Transaction, Connection } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
-import { getConnection, getErConnection, getBettingConnection, isErEnabled, getCombatConnectionAuto, getErStatusInfo } from "./solana-connection";
+import {
+  getCachedCombatSlot,
+  getConnection,
+  getErConnection,
+  getBettingConnection,
+  isErEnabled,
+  getCombatConnectionAuto,
+  getErStatusInfo,
+} from "./solana-connection";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -238,8 +247,24 @@ interface SlotCombatState {
   erAbandoned?: boolean;
   /** Consecutive stale-delegation recovery failures while trying to start combat on-chain. */
   startCombatDelegationFailCount?: number;
+  /** Last time startCombat was attempted for this rumble. */
+  startCombatLastAttemptAt?: number;
   /** If true, bypasses on-chain turn authority and runs legacy off-chain combat for this rumble. */
   forceLegacyFallback?: boolean;
+  /** When matchup VRF was first requested for this rumble. */
+  matchupVrfRequestedAt?: number;
+  /** Last time matchup VRF request was attempted. */
+  matchupVrfLastAttemptAt?: number;
+  /** Last time we logged that combat is waiting on matchup VRF. */
+  matchupVrfLastWaitLogAt?: number;
+  /** Last time ER undelegation was requested during finalization. */
+  finalizeUndelegateLastAttemptAt?: number;
+  /** When ER finalization started waiting on undelegation. */
+  finalizeUndelegateStartedAt?: number;
+  /** When combat first became stuck waiting for turn 1 to open. */
+  openTurnStartedAt?: number;
+  /** Number of consecutive openTurn attempts while combat remains at turn 0. */
+  openTurnAttemptCount?: number;
 }
 
 interface OnchainTurnDecision {
@@ -261,6 +286,14 @@ interface OnchainTurnDecision {
   nextRevealRetryAtSlot?: bigint;
   commitErrorCount?: number;
   revealErrorCount?: number;
+}
+
+interface CombatWakeSubscription {
+  slotIndex: number;
+  rumbleId: string;
+  account: string;
+  connection: Connection;
+  subscriptionId: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -322,6 +355,12 @@ const ONCHAIN_KEEPER_POLL_INTERVAL_MS = readIntervalMs(
   250,
   10_000,
 );
+const EVENT_WAKE_DEBOUNCE_MS = readIntervalMs(
+  "RUMBLE_EVENT_WAKE_DEBOUNCE_MS",
+  150,
+  25,
+  5_000,
+);
 const ONCHAIN_BETTING_DURATION_MS = readIntervalMs(
   "RUMBLE_BETTING_DURATION_MS",
   60_000,
@@ -361,7 +400,56 @@ const HOUSE_BOT_TARGET_POPULATION = readInt(
   0,
   64,
 );
+const HOUSE_BOT_TARGET_ADMIN_KEY = "house_bot_target_population";
 const SHOWER_SETTLEMENT_POLL_MS = 12_000;
+const MATCHUP_VRF_RETRY_MS = readIntervalMs(
+  "RUMBLE_MATCHUP_VRF_RETRY_MS",
+  5_000,
+  1_000,
+  60_000,
+);
+const MATCHUP_VRF_TIMEOUT_MS = readIntervalMs(
+  "RUMBLE_MATCHUP_VRF_TIMEOUT_MS",
+  60_000,
+  5_000,
+  10 * 60_000,
+);
+const MATCHUP_VRF_WAIT_LOG_MS = readIntervalMs(
+  "RUMBLE_MATCHUP_VRF_WAIT_LOG_MS",
+  10_000,
+  1_000,
+  60_000,
+);
+const FINALIZE_UNDELEGATE_RETRY_MS = readIntervalMs(
+  "RUMBLE_FINALIZE_UNDELEGATE_RETRY_MS",
+  15_000,
+  2_000,
+  60_000,
+);
+const START_COMBAT_RETRY_MS = readIntervalMs(
+  "RUMBLE_START_COMBAT_RETRY_MS",
+  5_000,
+  1_000,
+  60_000,
+);
+const OPEN_TURN_STUCK_TIMEOUT_MS = readIntervalMs(
+  "RUMBLE_OPEN_TURN_STUCK_TIMEOUT_MS",
+  45_000,
+  5_000,
+  10 * 60_000,
+);
+const OPEN_TURN_STUCK_MAX_ATTEMPTS = readInt(
+  "RUMBLE_OPEN_TURN_STUCK_MAX_ATTEMPTS",
+  10,
+  3,
+  120,
+);
+const FINALIZE_UNDELEGATE_TIMEOUT_MS = readIntervalMs(
+  "RUMBLE_FINALIZE_UNDELEGATE_TIMEOUT_MS",
+  120_000,
+  10_000,
+  15 * 60_000,
+);
 const ONCHAIN_FINALIZATION_DELAY_MS = 30_000; // completeRumble after 30s claim window (sweep disabled)
 const ONCHAIN_FINALIZATION_RETRY_MS = 10_000;
 const ONCHAIN_CREATE_RETRY_MS = 5_000;
@@ -403,6 +491,7 @@ const ONCHAIN_ADMIN_HEALTH_CHECK_MS = readIntervalMs(
 );
 const MAX_MAP_SIZE = 500;
 const TRACKING_MAP_CLEANUP_INTERVAL_MS = 60_000;
+const PENDING_VRF_SHOWER_ADMIN_KEY = "pending_vrf_shower_result";
 // Turn authority mode:
 // - true  => full on-chain turn loop (requires deployed program with
 //            open_turn/resolve_turn/advance_turn + combat_state account)
@@ -415,6 +504,11 @@ const ONCHAIN_TURN_AUTHORITY = (process.env.RUMBLE_ONCHAIN_TURN_AUTHORITY ?? "fa
 // "onchain" => full on-chain resolve_turn (original path)
 // "hybrid"  => off-chain combat math, post_turn_result on-chain (Option D)
 const RESOLUTION_MODE = (process.env.RUMBLE_RESOLUTION_MODE ?? "onchain") as "onchain" | "hybrid";
+const ALLOW_LEGACY_FALLBACK = (process.env.RUMBLE_ALLOW_LEGACY_FALLBACK ?? "false") === "true";
+const REQUIRE_MATCHUP_VRF =
+  (process.env.RUMBLE_REQUIRE_MATCHUP_VRF ?? (ONCHAIN_TURN_AUTHORITY ? "true" : "false")) === "true";
+const REQUIRE_SHOWER_VRF =
+  (process.env.RUMBLE_REQUIRE_SHOWER_VRF ?? (ONCHAIN_TURN_AUTHORITY ? "true" : "false")) === "true";
 
 // Server-side secret mixed into fallback move hash so observers can't precompute fallback moves
 // from public on-chain data. Generate with: openssl rand -hex 32
@@ -426,6 +520,13 @@ interface OnchainAdminHealth {
   reason: string | null;
   signerPubkey: string | null;
   rumbleAdmin: string | null;
+}
+
+interface PendingVrfShowerResult {
+  rumbleId: string;
+  slotIndex: number | null;
+  recipientWallet: string | null;
+  poolBeforeLamports: number;
 }
 
 interface OnchainCreateFailure {
@@ -654,6 +755,7 @@ export class RumbleOrchestrator {
   private houseBotsPaused = true;
   private readonly houseBotControlReady: Promise<void>;
   private houseBotTargetPopulationOverride: number | null = null;
+  private houseBotTargetPopulationSource: "env" | "persisted_override" | "runtime_override" = "env";
   private houseBotsLastRestartAt: string | null = null;
   private lastPauseSyncAt = 0;
 
@@ -677,12 +779,7 @@ export class RumbleOrchestrator {
   private ichorShowerPool = 0;
   private lastShowerPollAt = 0;
   private showerPollInFlight = false;
-  private pendingVrfShowerResult: {
-    rumbleId: string;
-    slotIndex: number | null;
-    recipientWallet: string | null;
-    poolBeforeLamports: number;
-  } | null = null;
+  private pendingVrfShowerResult: PendingVrfShowerResult | null = null;
 
   // Dedup: track rumble IDs that have been settled on-chain to prevent double payouts
   private settledRumbleIds: Map<string, number> = new Map(); // rumbleId → timestamp
@@ -714,6 +811,10 @@ export class RumbleOrchestrator {
   };
   private tickInFlight: Promise<void> | null = null;
   private inflightCleanup: Set<Promise<unknown>> = new Set();
+  private wakeTickTimer: ReturnType<typeof setTimeout> | null = null;
+  private wakeTickDueAt = 0;
+  private wakeRequestedWhileTickInFlight = false;
+  private combatWakeSubscriptions: Map<number, CombatWakeSubscription> = new Map();
 
   // Track consecutive fatal openTurn failures per rumble to detect unrecoverable on-chain state
   private openTurnFatalFailures: Map<string, number> = new Map();
@@ -743,6 +844,71 @@ export class RumbleOrchestrator {
   /** Get the combat connection based on per-rumble delegation state. */
   private getConnectionForState(state: SlotCombatState): Connection {
     return state.erDelegated ? getErConnection() : getConnection();
+  }
+
+  private get allowLegacyFallback(): boolean {
+    return ALLOW_LEGACY_FALLBACK;
+  }
+
+  private get strictOnchainMode(): boolean {
+    return ONCHAIN_TURN_AUTHORITY && !ALLOW_LEGACY_FALLBACK;
+  }
+
+  private get requireMatchupVrf(): boolean {
+    return REQUIRE_MATCHUP_VRF;
+  }
+
+  private get requireShowerVrf(): boolean {
+    return REQUIRE_SHOWER_VRF;
+  }
+
+  private hasCombatVrfSeed(combat: RumbleCombatAccountState): boolean {
+    return combat.vrfSeed.some((byte) => byte !== 0);
+  }
+
+  private isVrfShowerRequest(
+    request: Awaited<ReturnType<typeof readShowerRequest>>,
+  ): boolean {
+    return Boolean(
+      request?.active &&
+        request.requestedSlot > 0n &&
+        request.targetSlotA === 0n &&
+        request.targetSlotB === 0n,
+    );
+  }
+
+  private parsePendingVrfShowerResult(raw: unknown): PendingVrfShowerResult | null {
+    if (!raw || typeof raw !== "object") return null;
+    const value = raw as Record<string, unknown>;
+    const rumbleId = typeof value.rumbleId === "string" ? value.rumbleId : null;
+    const poolBeforeLamports = Number(value.poolBeforeLamports);
+    if (!rumbleId || !Number.isFinite(poolBeforeLamports)) return null;
+    return {
+      rumbleId,
+      slotIndex:
+        value.slotIndex === null || value.slotIndex === undefined
+          ? null
+          : Number.isFinite(Number(value.slotIndex))
+            ? Number(value.slotIndex)
+            : null,
+      recipientWallet: typeof value.recipientWallet === "string" ? value.recipientWallet : null,
+      poolBeforeLamports,
+    };
+  }
+
+  private async persistPendingVrfShowerResult(pending: PendingVrfShowerResult | null): Promise<void> {
+    this.pendingVrfShowerResult = pending;
+    await persist.setAdminConfig(PENDING_VRF_SHOWER_ADMIN_KEY, pending);
+  }
+
+  private async ensurePendingVrfShowerResultLoaded(): Promise<PendingVrfShowerResult | null> {
+    if (this.pendingVrfShowerResult) return this.pendingVrfShowerResult;
+    const raw = await persist.getAdminConfig(PENDING_VRF_SHOWER_ADMIN_KEY);
+    const parsed = this.parsePendingVrfShowerResult(raw);
+    if (parsed) {
+      this.pendingVrfShowerResult = parsed;
+    }
+    return parsed;
   }
 
   /**
@@ -796,15 +962,113 @@ export class RumbleOrchestrator {
     await this.houseBotControlReady;
   }
 
+  private clearWakeTickTimer(): void {
+    if (!this.wakeTickTimer) return;
+    clearTimeout(this.wakeTickTimer);
+    this.wakeTickTimer = null;
+    this.wakeTickDueAt = 0;
+  }
+
+  private wakeSoon(reason: string, delayMs = EVENT_WAKE_DEBOUNCE_MS): void {
+    if (process.env.RUMBLE_WORKER_MODE !== "true") return;
+    if (!shouldAutoTick()) return;
+
+    if (this.tickInFlight) {
+      this.wakeRequestedWhileTickInFlight = true;
+      return;
+    }
+
+    const safeDelayMs = Math.max(0, Math.floor(delayMs));
+    const dueAt = Date.now() + safeDelayMs;
+    if (this.wakeTickTimer && this.wakeTickDueAt <= dueAt) return;
+
+    this.clearWakeTickTimer();
+    this.wakeTickDueAt = dueAt;
+    this.wakeTickTimer = setTimeout(() => {
+      this.wakeTickTimer = null;
+      this.wakeTickDueAt = 0;
+      this.tick().catch((err) => {
+        console.error(`[RumbleWake] Tick error after ${reason}:`, err);
+      });
+    }, safeDelayMs);
+
+    if (canUnrefTimer(this.wakeTickTimer) && typeof this.wakeTickTimer.unref === "function") {
+      this.wakeTickTimer.unref();
+    }
+  }
+
+  private async clearCombatWakeSubscription(slotIndex: number): Promise<void> {
+    const existing = this.combatWakeSubscriptions.get(slotIndex);
+    if (!existing) return;
+    this.combatWakeSubscriptions.delete(slotIndex);
+    try {
+      await existing.connection.removeAccountChangeListener(existing.subscriptionId);
+    } catch {}
+  }
+
+  private async syncCombatWakeSubscription(slotIndex: number, state: SlotCombatState): Promise<void> {
+    if (process.env.RUMBLE_WORKER_MODE !== "true") return;
+    if (!shouldAutoTick()) return;
+
+    const rumbleIdNum = this.resolveOnchainRumbleIdNumber(state.rumbleId);
+    if (rumbleIdNum === null) {
+      await this.clearCombatWakeSubscription(slotIndex);
+      return;
+    }
+
+    const [combatStatePda] = deriveCombatStatePda(rumbleIdNum);
+    const connection = this.getConnectionForState(state);
+    const account = combatStatePda.toBase58();
+    const existing = this.combatWakeSubscriptions.get(slotIndex);
+    if (
+      existing &&
+      existing.rumbleId === state.rumbleId &&
+      existing.account === account &&
+      existing.connection === connection
+    ) {
+      return;
+    }
+
+    await this.clearCombatWakeSubscription(slotIndex);
+
+    try {
+      const subscriptionId = connection.onAccountChange(
+        combatStatePda,
+        () => {
+          const liveState = this.combatStates.get(slotIndex);
+          if (liveState?.rumbleId === state.rumbleId) {
+            liveState.lastTickAt = 0;
+          }
+          this.wakeSoon(`combat_account_change:${state.rumbleId}`);
+        },
+        "processed",
+      );
+      this.combatWakeSubscriptions.set(slotIndex, {
+        slotIndex,
+        rumbleId: state.rumbleId,
+        account,
+        connection,
+        subscriptionId,
+      });
+    } catch (err) {
+      console.warn(`[RumbleWake] Failed to subscribe to combat account for ${state.rumbleId}:`, err);
+    }
+  }
+
   private async loadPersistedPauseState(): Promise<void> {
-    await persist.getAdminConfig("house_bots_paused").then((value) => {
-      const paused = value === true;
-      this.houseBotsPaused = paused;
-      console.log(`[Orchestrator] Loaded persisted house_bots_paused = ${paused}`);
-    }).catch(() => {
-      console.warn("[Orchestrator] Failed to load persisted pause state, defaulting to PAUSED for safety");
-      this.houseBotsPaused = true;
-    });
+    const pausedValue = await persist.getAdminConfig("house_bots_paused");
+    const paused = pausedValue === true;
+    this.houseBotsPaused = paused;
+    console.log(`[Orchestrator] Loaded persisted house_bots_paused = ${paused}`);
+
+    const targetValue = await persist.getAdminConfig(HOUSE_BOT_TARGET_ADMIN_KEY);
+    const target = this.parseStoredHouseBotTargetPopulation(targetValue);
+    if (target !== null) {
+      const applied = this.applyHouseBotTargetPopulationOverride(target, "persisted_override");
+      console.log(`[Orchestrator] Loaded persisted ${HOUSE_BOT_TARGET_ADMIN_KEY} = ${applied}`);
+    } else {
+      this.applyHouseBotTargetPopulationOverride(null, "env");
+    }
   }
 
   private parseSecretKey(raw: unknown): Uint8Array | null {
@@ -969,6 +1233,10 @@ export class RumbleOrchestrator {
 
     const p = this.tickInternal().finally(() => {
       this.tickInFlight = null;
+      if (this.wakeRequestedWhileTickInFlight) {
+        this.wakeRequestedWhileTickInFlight = false;
+        this.wakeSoon("post_tick_followup");
+      }
     });
     this.tickInFlight = p;
     return p;
@@ -996,6 +1264,21 @@ export class RumbleOrchestrator {
         if (paused !== this.houseBotsPaused) {
           console.log(`[Orchestrator] Pause state synced from DB: ${this.houseBotsPaused} → ${paused}`);
           this.houseBotsPaused = paused;
+        }
+
+        const dbTargetRaw = await persist.getAdminConfig(HOUSE_BOT_TARGET_ADMIN_KEY);
+        const dbTarget = this.parseStoredHouseBotTargetPopulation(dbTargetRaw);
+        if (dbTarget !== null) {
+          if (
+            this.houseBotTargetPopulationOverride !== dbTarget ||
+            this.houseBotTargetPopulationSource !== "persisted_override"
+          ) {
+            this.applyHouseBotTargetPopulationOverride(dbTarget, "persisted_override");
+            console.log(`[Orchestrator] House bot target synced from DB: ${dbTarget}`);
+          }
+        } else if (this.houseBotTargetPopulationSource === "persisted_override") {
+          this.applyHouseBotTargetPopulationOverride(null, "env");
+          console.log("[Orchestrator] House bot target override cleared from DB; reverting to env");
         }
       } catch {}
     }
@@ -1121,6 +1404,184 @@ export class RumbleOrchestrator {
     );
   }
 
+  private isBettingNotEndedError(error: unknown): boolean {
+    const msg = formatError(error);
+    return (
+      /BettingNotEnded/i.test(msg) ||
+      /Error Number:\s*6002/i.test(msg) ||
+      /custom program error:\s*0x1772/i.test(msg) ||
+      /betting period has not ended yet/i.test(msg)
+    );
+  }
+
+  private async readOnchainPayoutReadyState(
+    rumbleId: string,
+  ): Promise<Exclude<Awaited<ReturnType<typeof readRumbleAccountState>>, null>> {
+    const rumbleIdNum = this.resolveOnchainRumbleIdNumber(rumbleId);
+    if (rumbleIdNum === null) {
+      throw new Error(`[OnChain] Cannot parse rumble id "${rumbleId}" for payout readiness`);
+    }
+
+    const state = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+    if (!state) {
+      throw new Error(`[OnChain] Rumble ${rumbleId} is unavailable for payout readiness check`);
+    }
+    if (state.state !== "payout" && state.state !== "complete") {
+      throw new Error(`[OnChain] Rumble ${rumbleId} is not payout-ready yet (state=${state.state})`);
+    }
+    if (state.winnerIndex === null) {
+      throw new Error(`[OnChain] Rumble ${rumbleId} has no winner yet despite state=${state.state}`);
+    }
+    return state;
+  }
+
+  private async ensureMatchupVrfReady(
+    slot: RumbleSlot,
+    state: SlotCombatState,
+    combat: RumbleCombatAccountState,
+    rumbleIdNum: number,
+    now: number,
+  ): Promise<boolean> {
+    if (!this.requireMatchupVrf || combat.remainingFighters <= 1) {
+      return true;
+    }
+
+    if (this.hasCombatVrfSeed(combat)) {
+      state.matchupVrfRequestedAt = undefined;
+      state.matchupVrfLastAttemptAt = undefined;
+      state.matchupVrfLastWaitLogAt = undefined;
+      return true;
+    }
+
+    if (combat.currentTurn > 0) {
+      console.error(
+        `[VRF] Aborting rumble ${slot.id}: combat advanced to turn ${combat.currentTurn} before matchup VRF seed was present`,
+      );
+      await this.abortStuckCombat(slot, state, "combat advanced before matchup VRF seed was ready");
+      return false;
+    }
+
+    if (!state.matchupVrfRequestedAt) {
+      state.matchupVrfRequestedAt = now;
+    }
+
+    const shouldRetry =
+      !state.matchupVrfLastAttemptAt ||
+      now - state.matchupVrfLastAttemptAt >= MATCHUP_VRF_RETRY_MS;
+
+    if (shouldRetry) {
+      state.matchupVrfLastAttemptAt = now;
+      try {
+        const vrfSig = await requestMatchupSeed(rumbleIdNum, this.getConnectionForState(state));
+        if (vrfSig) {
+          console.log(`[VRF] requestMatchupSeed succeeded for rumble ${rumbleIdNum}: ${vrfSig}`);
+          void persistWithRetry(
+            () => persist.updateRumbleTxSignature(slot.id, "requestMatchupSeed", vrfSig),
+            `updateRumbleTxSignature:requestMatchupSeed:${slot.id}`,
+          );
+        } else {
+          console.warn(`[VRF] requestMatchupSeed returned null for rumble ${rumbleIdNum}; waiting for retry`);
+        }
+      } catch (err) {
+        console.warn(`[VRF] requestMatchupSeed failed for rumble ${rumbleIdNum}; waiting for retry:`, err);
+      }
+    }
+
+    const waitedMs = now - (state.matchupVrfRequestedAt ?? now);
+    if (waitedMs >= MATCHUP_VRF_TIMEOUT_MS) {
+      console.error(
+        `[VRF] Aborting rumble ${slot.id}: matchup VRF seed was not ready after ${MATCHUP_VRF_TIMEOUT_MS}ms`,
+      );
+      await this.abortStuckCombat(slot, state, `matchup VRF seed timeout after ${MATCHUP_VRF_TIMEOUT_MS}ms`);
+      return false;
+    }
+
+    if (
+      !state.matchupVrfLastWaitLogAt ||
+      now - state.matchupVrfLastWaitLogAt >= MATCHUP_VRF_WAIT_LOG_MS
+    ) {
+      state.matchupVrfLastWaitLogAt = now;
+      console.log(
+        `[VRF] Waiting for matchup seed before opening turn 1 for rumble ${slot.id} (${waitedMs}ms elapsed)`,
+      );
+    }
+
+    return false;
+  }
+
+  private async ensureErUndelegatedForFinalize(
+    slot: RumbleSlot,
+    state: SlotCombatState,
+    rumbleIdNum: number,
+    now: number,
+  ): Promise<boolean> {
+    if (!state.erDelegated) return true;
+
+    state.finalizeUndelegateStartedAt ??= now;
+
+    const delegated = await isCombatStateDelegated(rumbleIdNum).catch(() => true);
+    if (!delegated) {
+      state.erDelegated = false;
+      state.erDelegatedAt = undefined;
+      state.finalizeUndelegateLastAttemptAt = undefined;
+      state.finalizeUndelegateStartedAt = undefined;
+      return true;
+    }
+
+    const shouldRetry =
+      !state.finalizeUndelegateLastAttemptAt ||
+      now - state.finalizeUndelegateLastAttemptAt >= FINALIZE_UNDELEGATE_RETRY_MS;
+    if (shouldRetry) {
+      state.finalizeUndelegateLastAttemptAt = now;
+      try {
+        const sig = await undelegateCombatFromEr(rumbleIdNum);
+        if (sig) {
+          console.log(`[ER-UNDELEGATE] Requested final undelegation for rumble ${rumbleIdNum}: ${sig}`);
+        }
+      } catch (err) {
+        console.warn(`[ER-UNDELEGATE] Final undelegation request failed for rumble ${rumbleIdNum}:`, err);
+      }
+    }
+
+    const waitedMs = now - (state.finalizeUndelegateStartedAt ?? now);
+    if (waitedMs >= FINALIZE_UNDELEGATE_TIMEOUT_MS) {
+      console.error(
+        `[ER-UNDELEGATE] Aborting rumble ${slot.id}: final undelegation did not complete after ${FINALIZE_UNDELEGATE_TIMEOUT_MS}ms`,
+      );
+      await this.abortStuckCombat(slot, state, `final undelegation timeout after ${FINALIZE_UNDELEGATE_TIMEOUT_MS}ms`);
+      return false;
+    }
+
+    console.log(
+      `[ER-UNDELEGATE] Waiting for combat_state ownership to return to L1 before finalize for rumble ${slot.id} (${waitedMs}ms elapsed)`,
+    );
+    return false;
+  }
+
+  private shouldAttemptStartCombat(rumbleId: string, now: number): boolean {
+    const slotIndex = this.resolveSlotIndexForRumble(rumbleId);
+    if (slotIndex === null) return true;
+    const state = this.combatStates.get(slotIndex);
+    if (!state || state.rumbleId !== rumbleId) return true;
+    return !state.startCombatLastAttemptAt || now - state.startCombatLastAttemptAt >= START_COMBAT_RETRY_MS;
+  }
+
+  private markStartCombatAttempt(rumbleId: string, now: number): void {
+    const slotIndex = this.resolveSlotIndexForRumble(rumbleId);
+    if (slotIndex === null) return;
+    const state = this.combatStates.get(slotIndex);
+    if (!state || state.rumbleId !== rumbleId) return;
+    state.startCombatLastAttemptAt = now;
+  }
+
+  private clearStartCombatAttempt(rumbleId: string): void {
+    const slotIndex = this.resolveSlotIndexForRumble(rumbleId);
+    if (slotIndex === null) return;
+    const state = this.combatStates.get(slotIndex);
+    if (!state || state.rumbleId !== rumbleId) return;
+    state.startCombatLastAttemptAt = undefined;
+  }
+
   private recordStartCombatDelegationFailure(rumbleId: string, reason: string): void {
     const slotIndex = this.resolveSlotIndexForRumble(rumbleId);
     if (slotIndex === null) return;
@@ -1142,7 +1603,9 @@ export class RumbleOrchestrator {
     state.erAbandoned = true;
     state.erDelegated = false;
     console.error(
-      `[ONCHAIN-START] switching ${rumbleId} to legacy fallback after ${nextFailures} stale delegation failures: ${reason}`,
+      this.allowLegacyFallback
+        ? `[ONCHAIN-START] switching ${rumbleId} to legacy fallback after ${nextFailures} stale delegation failures: ${reason}`
+        : `[ONCHAIN-START] marking ${rumbleId} unrecoverable after ${nextFailures} stale delegation failures: ${reason}`,
     );
   }
 
@@ -1175,6 +1638,7 @@ export class RumbleOrchestrator {
     this.trimSet(this.settlingRumbleIds);
     this.trimMap(this.pendingFinalizations);
     this.trimMap(this.pendingSweeps);
+    this.trimMap(this.mainnetResultRetryQueue);
     this.trimMap(this.onchainRumbleCreateRetryAt);
     this.trimMap(this.onchainRumbleCreateStartedAt);
     this.trimMap(this.onchainRumbleCreateLastError);
@@ -1243,6 +1707,28 @@ export class RumbleOrchestrator {
 
   private getHouseBotTargetPopulation(): number {
     return this.houseBotTargetPopulationOverride ?? HOUSE_BOT_TARGET_POPULATION;
+  }
+
+  private parseStoredHouseBotTargetPopulation(value: unknown): number | null {
+    if (value === null || value === undefined || value === "") return null;
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return null;
+    return Math.max(0, Math.min(64, Math.floor(parsed)));
+  }
+
+  private applyHouseBotTargetPopulationOverride(
+    target: number | null,
+    source: "env" | "persisted_override" | "runtime_override",
+  ): number {
+    if (target === null) {
+      this.houseBotTargetPopulationOverride = null;
+      this.houseBotTargetPopulationSource = "env";
+      return this.getHouseBotTargetPopulation();
+    }
+    const safe = Math.max(0, Math.min(64, Math.floor(target)));
+    this.houseBotTargetPopulationOverride = safe;
+    this.houseBotTargetPopulationSource = source;
+    return safe;
   }
 
   private async removeQueuedHouseBots(): Promise<number> {
@@ -1352,6 +1838,7 @@ export class RumbleOrchestrator {
     this.houseBotsPaused = false;
     this.houseBotsLastRestartAt = new Date().toISOString();
     await persist.setAdminConfig("house_bots_paused", false);
+    await this.maintainHouseBotQueue();
     return {
       removedQueuedHouseBots,
       restartedAt: this.houseBotsLastRestartAt,
@@ -1368,6 +1855,7 @@ export class RumbleOrchestrator {
   async resumeHouseBots(): Promise<void> {
     this.houseBotsPaused = false;
     await persist.setAdminConfig("house_bots_paused", false);
+    await this.maintainHouseBotQueue();
   }
 
   /**
@@ -1419,13 +1907,10 @@ export class RumbleOrchestrator {
   }
 
   setHouseBotTargetPopulation(target: number | null): number {
-    if (target === null) {
-      this.houseBotTargetPopulationOverride = null;
-      return this.getHouseBotTargetPopulation();
-    }
-    const safe = Math.max(0, Math.min(64, Math.floor(target)));
-    this.houseBotTargetPopulationOverride = safe;
-    return safe;
+    return this.applyHouseBotTargetPopulationOverride(
+      target,
+      target === null ? "env" : "runtime_override",
+    );
   }
 
   getHouseBotControlStatus(): {
@@ -1434,7 +1919,7 @@ export class RumbleOrchestrator {
     configuredHouseBotCount: number;
     paused: boolean;
     targetPopulation: number;
-    targetPopulationSource: "env" | "runtime_override";
+    targetPopulationSource: "env" | "persisted_override" | "runtime_override";
     lastRestartAt: string | null;
   } {
     return {
@@ -1443,7 +1928,7 @@ export class RumbleOrchestrator {
       configuredHouseBotCount: this.houseBotIds.length,
       paused: this.houseBotsPaused,
       targetPopulation: this.getHouseBotTargetPopulation(),
-      targetPopulationSource: this.houseBotTargetPopulationOverride === null ? "env" : "runtime_override",
+      targetPopulationSource: this.houseBotTargetPopulationSource,
       lastRestartAt: this.houseBotsLastRestartAt,
     };
   }
@@ -1496,6 +1981,15 @@ export class RumbleOrchestrator {
           console.log(
             `[ONCHAIN-COMPLETE] completeRumble already finalized for rumble ${entry.rumbleId}; skipping duplicate complete call`
           );
+        } else if (this.isClaimWindowActiveError(err) || onchainState?.state === "payout") {
+          entry.attempts = Math.max(0, entry.attempts - 1);
+          entry.nextAttemptAt = Date.now() + ONCHAIN_FINALIZATION_DELAY_MS;
+          console.log(
+            `[ONCHAIN-COMPLETE] Claim window still active for rumble ${entry.rumbleId}; retrying in ${Math.round(
+              ONCHAIN_FINALIZATION_DELAY_MS / 1000,
+            )}s`,
+          );
+          return;
         } else {
           if (entry.attempts >= MAX_FINALIZATION_ATTEMPTS) {
             this.pendingFinalizations.delete(entry.rumbleId);
@@ -1550,7 +2044,7 @@ export class RumbleOrchestrator {
           for (const fighter of fighters) {
             // Return rent to the fighter, not the admin
             closeMoveCommitmentOnChain(entry.rumbleIdNum, fighter, turn, fighter).catch((err: any) => {
-              console.warn("[OnChain] closeMoveCommitment failed:", err?.message ?? err);
+              this.logCloseMoveCommitmentCleanupError(err);
             });
           }
         }
@@ -1737,6 +2231,7 @@ export class RumbleOrchestrator {
       attempts,
       nextRetryAt: Date.now() + delayMs,
     });
+    this.trimTrackingMaps();
     console.log(`[OnChain:Mainnet] Enqueued reportResult retry for ${rumbleId} (attempt ${attempts + 1}, delay ${delayMs}ms)`);
   }
 
@@ -1832,11 +2327,7 @@ export class RumbleOrchestrator {
     // MagicBlock VRF requests reuse the same shower_request PDA but do not set
     // legacy settlement slots. Calling checkIchorShower on them forces the old
     // slot-hash path against a VRF request and can clear it before callback.
-    const isVrfRequest =
-      pendingShower.requestedSlot > 0n &&
-      pendingShower.targetSlotA === 0n &&
-      pendingShower.targetSlotB === 0n;
-    if (isVrfRequest) return;
+    if (this.isVrfShowerRequest(pendingShower)) return;
 
     let recipientAta: PublicKey;
     try {
@@ -1857,12 +2348,19 @@ export class RumbleOrchestrator {
   }
 
   private async reconcilePendingVrfShowerResult(): Promise<void> {
-    const pending = this.pendingVrfShowerResult;
+    const pending = await this.ensurePendingVrfShowerResultLoaded();
     if (!pending) return;
 
+    let shouldClearPending = false;
     try {
       invalidateReadCache("arena");
       const arenaAfterShower = await readArenaConfig().catch(() => null);
+      if (!arenaAfterShower) {
+        console.warn(
+          `[ICHOR SHOWER] Failed to read arena config while reconciling pending VRF shower for ${pending.rumbleId}; keeping pending context for retry`,
+        );
+        return;
+      }
       const poolAfterLamports = arenaAfterShower ? Number(arenaAfterShower.ichorShowerPool) : pending.poolBeforeLamports;
 
       if (pending.poolBeforeLamports > 0 && poolAfterLamports === 0) {
@@ -1894,8 +2392,11 @@ export class RumbleOrchestrator {
           });
         }
       }
+      shouldClearPending = true;
     } finally {
-      this.pendingVrfShowerResult = null;
+      if (shouldClearPending) {
+        await this.persistPendingVrfShowerResult(null);
+      }
     }
   }
 
@@ -2220,7 +2721,6 @@ export class RumbleOrchestrator {
     const rumbleId = slot.id;
     const slotIndex = slot.slotIndex;
     const rumbleIdNum = this.resolveOnchainRumbleIdNumber(rumbleId);
-    const fighterIds = slot.fighters.slice();
 
     // If combat was delegated to ER, undelegate before cleanup
     if (state.erDelegated && rumbleIdNum !== null) {
@@ -2233,15 +2733,8 @@ export class RumbleOrchestrator {
       }
     }
 
-    // Report a no-contest result so the slot transitions normally through payout→idle
-    this.queueManager.reportResult(slotIndex, {
-      rumbleId,
-      fighters: state.fighters,
-      turns: [],
-      winner: state.fighters[0]?.id ?? "",
-      placements: state.fighters.map((f, i) => ({ id: f.id, placement: i + 1 })),
-      totalTurns: 0,
-    });
+    // Strict aborts must skip payout entirely; immediately recycle the slot.
+    this.queueManager.abortActiveSlot(slotIndex);
 
     // Persist: mark rumble as complete (no real winner)
     await persistWithRetry(
@@ -2251,17 +2744,8 @@ export class RumbleOrchestrator {
 
     // Clean up tracking maps
     this.openTurnFatalFailures.delete(rumbleId);
+    await this.clearCombatWakeSubscription(slotIndex);
     this.combatStates.delete(slotIndex);
-
-    // Re-queue fighters for next rumble
-    for (const fighterId of fighterIds) {
-      try {
-        this.queueManager.addToQueue(fighterId, false);
-        await persist.saveQueueFighter(fighterId, "waiting", false);
-      } catch {
-        // Ignore duplicates/conflicts during recovery
-      }
-    }
 
     console.error(`[Orchestrator] Aborted stuck combat slot ${slotIndex} (${rumbleId}): ${reason}`);
   }
@@ -2356,7 +2840,11 @@ export class RumbleOrchestrator {
 
         return true;
       } else {
-        console.warn(`[ONCHAIN-CREATE] createRumble returned null for rumble ${rumbleId} — continuing off-chain`);
+        console.warn(
+          this.strictOnchainMode
+            ? `[ONCHAIN-CREATE] createRumble returned null for rumble ${rumbleId} — will retry next tick`
+            : `[ONCHAIN-CREATE] createRumble returned null for rumble ${rumbleId} — continuing off-chain`,
+        );
         this.recordOnchainCreateFailure(
           rumbleId,
           "createRumble RPC returned null signature",
@@ -2562,6 +3050,11 @@ export class RumbleOrchestrator {
     if (!state) return null;
 
     if (state.state === "betting") {
+      const now = Date.now();
+      if (!this.shouldAttemptStartCombat(rumbleId, now)) {
+        return state;
+      }
+      this.markStartCombatAttempt(rumbleId, now);
       try {
         const sig = await startCombatOnChain(rumbleIdNum);
         if (sig) {
@@ -2574,7 +3067,11 @@ export class RumbleOrchestrator {
         }
       } catch (err: any) {
         const errMsg = err?.message ?? String(err);
-        if (errMsg.includes("AccountOwnedByWrongProgram") && await isCombatStateDelegated(rumbleIdNum)) {
+        if (this.isBettingNotEndedError(err)) {
+          console.log(
+            `[ONCHAIN-START] startCombat (recovery) is still waiting for the on-chain betting deadline on rumble ${rumbleId}`,
+          );
+        } else if (errMsg.includes("AccountOwnedByWrongProgram") && await isCombatStateDelegated(rumbleIdNum)) {
           console.warn(`[ONCHAIN-START] startCombat (recovery) blocked by stale delegation for rumble ${rumbleId}, undelegating...`);
           try {
             await undelegateCombatFromEr(rumbleIdNum);
@@ -2603,6 +3100,9 @@ export class RumbleOrchestrator {
       }
       invalidateReadCache(`rumble:${rumbleIdNum}`);
       state = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+      if (state && state.state !== "betting") {
+        this.clearStartCombatAttempt(rumbleId);
+      }
     }
     return state;
   }
@@ -2625,8 +3125,15 @@ export class RumbleOrchestrator {
       return;
     }
     if (onchainState.state === "combat" || onchainState.state === "payout" || onchainState.state === "complete") {
+      this.clearStartCombatAttempt(slot.id);
       return;
     }
+
+    const now = Date.now();
+    if (!this.shouldAttemptStartCombat(slot.id, now)) {
+      return;
+    }
+    this.markStartCombatAttempt(slot.id, now);
 
     try {
       const sig = await startCombatOnChain(rumbleIdNum);
@@ -2638,12 +3145,20 @@ export class RumbleOrchestrator {
           `updateRumbleTxSignature:startCombat:${slot.id}`,
         );
       } else {
-        console.warn(`[ONCHAIN-START] startCombat returned null for rumble ${slot.id} — continuing off-chain`);
+        console.warn(
+          this.strictOnchainMode
+            ? `[ONCHAIN-START] startCombat returned null for rumble ${slot.id} — will retry next tick`
+            : `[ONCHAIN-START] startCombat returned null for rumble ${slot.id} — continuing off-chain`,
+        );
       }
     } catch (err: any) {
       // If combat_state is stuck delegated from a previous run, undelegate and retry
       const errMsg = err?.message ?? String(err);
-      if (errMsg.includes("AccountOwnedByWrongProgram") || errMsg.includes("owned by a different program")) {
+      if (this.isBettingNotEndedError(err)) {
+        console.log(
+          `[ONCHAIN-START] startCombat is still waiting for the on-chain betting deadline on rumble ${slot.id}`,
+        );
+      } else if (errMsg.includes("AccountOwnedByWrongProgram") || errMsg.includes("owned by a different program")) {
         const stillDelegated = await isCombatStateDelegated(rumbleIdNum);
         if (stillDelegated) {
           console.warn(`[ONCHAIN-START] startCombat failed for rumble ${slot.id} — combat_state delegated from previous run, undelegating...`);
@@ -2774,7 +3289,11 @@ export class RumbleOrchestrator {
     if (ONCHAIN_TURN_AUTHORITY) {
       const state = this.combatStates.get(slot.slotIndex);
       if (state && state.rumbleId === slot.id && state.forceLegacyFallback) {
-        await this.handleCombatPhaseLegacy(slot);
+        if (this.allowLegacyFallback) {
+          await this.handleCombatPhaseLegacy(slot);
+        } else {
+          await this.abortStuckCombat(slot, state, "strict on-chain mode refused legacy fallback");
+        }
         return;
       }
       if (!this.onchainAdminHealth.ready) {
@@ -2861,10 +3380,18 @@ export class RumbleOrchestrator {
           // Not fatal — the on-chain tick loop self-heals by detecting betting state
         }
 
-        // Request VRF matchup seed (fire-and-forget for fairness audit trail)
+        // Legacy mode does not consume the on-chain VRF seed for pairings or
+        // damage. Keep this request audit-only and send it over the active
+        // combat connection so delegated combat does not hit L1 ownership
+        // errors.
         const rumbleIdNumOffchain = this.resolveOnchainRumbleIdNumber(slot.id);
         if (rumbleIdNumOffchain !== null) {
-          requestMatchupSeed(rumbleIdNumOffchain).catch((err) => {
+          if (!ONCHAIN_TURN_AUTHORITY) {
+            console.warn(
+              `[VRF] Legacy off-chain combat is active for rumble ${slot.id}; VRF seed is audit-only and does not drive pairings.`,
+            );
+          }
+          requestMatchupSeed(rumbleIdNumOffchain, this.getConnectionForState(state)).catch((err) => {
             console.warn(`[VRF] requestMatchupSeed failed for rumble ${slot.id}:`, err);
           });
         }
@@ -3034,6 +3561,17 @@ export class RumbleOrchestrator {
       }
       await this.startCombatOnChain(slot);
 
+      invalidateReadCache(`rumble:${rumbleIdNum}`);
+      const postStartState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+      if (!postStartState || postStartState.state !== "combat") {
+        if (postStartState?.state === "betting") {
+          console.log(
+            `[ONCHAIN-START] Waiting for on-chain combat readiness before delegating rumble ${rumbleIdNum}`,
+          );
+        }
+        return;
+      }
+
       // Delegate combat state to Ephemeral Rollup for real-time execution.
       // Also handles cold-start: if on-chain is already "combat" (startCombatOnChain
       // returned early), check if already delegated or delegate now.
@@ -3047,7 +3585,11 @@ export class RumbleOrchestrator {
             state.erDelegatedAt = Date.now();
             console.log(`[ER-DELEGATE] delegateCombat succeeded for rumble ${rumbleIdNum}: ${sig}`);
           } else {
-            console.warn(`[ER-DELEGATE] delegateCombat returned null for rumble ${rumbleIdNum} — falling back to L1`);
+            console.warn(
+              this.strictOnchainMode
+                ? `[ER-DELEGATE] delegateCombat returned null for rumble ${rumbleIdNum} — ER remains unavailable`
+                : `[ER-DELEGATE] delegateCombat returned null for rumble ${rumbleIdNum} — falling back to L1`,
+            );
           }
         } catch (err) {
           // Check if delegation failed because account is ALREADY delegated (cold-start recovery)
@@ -3059,22 +3601,27 @@ export class RumbleOrchestrator {
               console.log(`[ER-DELEGATE] delegateCombat failed but account already delegated for rumble ${rumbleIdNum} — using ER`);
             } else {
               state.erDelegated = false;
-              console.warn(`[ER-DELEGATE] delegateCombat failed for rumble ${rumbleIdNum}, falling back to L1:`, err);
+              console.warn(
+                this.strictOnchainMode
+                  ? `[ER-DELEGATE] delegateCombat failed for rumble ${rumbleIdNum}; strict mode will abort this rumble:`
+                  : `[ER-DELEGATE] delegateCombat failed for rumble ${rumbleIdNum}, falling back to L1:`,
+                err,
+              );
             }
           }
         }
+        if (this.erEnabled && state && !state.erDelegated) {
+          console.error(
+            `[ER-DELEGATE] Aborting rumble ${slot.id}: ER delegation is required but did not become active`,
+          );
+          await this.abortStuckCombat(slot, state, "ER delegation required but unavailable");
+          return;
+        }
       }
 
-      // Request VRF matchup seed for provably-fair fighter pairing
-      try {
-        const vrfSig = await requestMatchupSeed(rumbleIdNum);
-        if (vrfSig) {
-          console.log(`[VRF] requestMatchupSeed succeeded for rumble ${rumbleIdNum}: ${vrfSig}`);
-        } else {
-          console.warn(`[VRF] requestMatchupSeed returned null for rumble ${rumbleIdNum} — continuing with slot-hash RNG`);
-        }
-      } catch (err) {
-        console.warn(`[VRF] requestMatchupSeed failed for rumble ${rumbleIdNum}, falling back to slot-hash RNG:`, err);
+      const updatedState = this.combatStates.get(idx);
+      if (updatedState) {
+        await this.syncCombatWakeSubscription(idx, updatedState);
       }
 
       this.emit("combat_started", {
@@ -3087,6 +3634,7 @@ export class RumbleOrchestrator {
     }
 
     const state = this.combatStates.get(idx)!;
+    await this.syncCombatWakeSubscription(idx, state);
     if (!justInitialized) {
       if (now - state.lastTickAt < ONCHAIN_KEEPER_POLL_INTERVAL_MS) return;
     }
@@ -3127,9 +3675,14 @@ export class RumbleOrchestrator {
 
       // 3. Abandoned delegation escape hatch (5+ consecutive failures)
       if ((state.erUndelegateFailCount ?? 0) >= 5) {
-        console.error(`[ER-UNDELEGATE] Rumble ${rumbleIdNum} undelegation failed 5+ times — marking slot as abandoned, falling back to L1`);
-        state.erAbandoned = true;
-        state.erDelegated = false;
+        if (this.allowLegacyFallback) {
+          console.error(`[ER-UNDELEGATE] Rumble ${rumbleIdNum} undelegation failed 5+ times — marking slot as abandoned, falling back to L1`);
+          state.erAbandoned = true;
+          state.erDelegated = false;
+        } else {
+          await this.abortStuckCombat(slot, state, "ER undelegation failed 5+ times");
+          return;
+        }
       }
     }
 
@@ -3153,13 +3706,27 @@ export class RumbleOrchestrator {
       console.warn(`[ER-COMMIT] Combat state read failed on ER for rumble ${rumbleIdNum}, trying L1 fallback`);
       combat = await readRumbleCombatState(rumbleIdNum, getConnection()).catch(() => null);
       if (combat) {
-        // L1 has the data — delegation may have expired. Switch back to L1 mode.
-        state.erDelegated = false;
-        slotConn = getConnection();
-        console.log(`[ER-COMMIT] Switched rumble ${rumbleIdNum} back to L1 mode (ER read failed, L1 succeeded)`);
+        if (this.allowLegacyFallback) {
+          // L1 has the data — delegation may have expired. Switch back to L1 mode.
+          state.erDelegated = false;
+          slotConn = getConnection();
+          console.log(`[ER-COMMIT] Switched rumble ${rumbleIdNum} back to L1 mode (ER read failed, L1 succeeded)`);
+        } else {
+          await this.abortStuckCombat(slot, state, "ER combat read failed and only L1 state was readable");
+          return;
+        }
       }
     }
     if (!combat) return;
+
+    if (!(await this.ensureMatchupVrfReady(slot, state, combat, rumbleIdNum, now))) {
+      return;
+    }
+
+    if (combat.currentTurn > 0) {
+      state.openTurnStartedAt = undefined;
+      state.openTurnAttemptCount = 0;
+    }
 
     const sync = this.syncLocalFightersFromOnchain(slot, state, combat);
     if (combat.turnResolved && combat.currentTurn > state.lastOnchainTurnResolved) {
@@ -3237,7 +3804,7 @@ export class RumbleOrchestrator {
         const wallet = state.fighterWallets.get(fid);
         if (!wallet) continue;
         closeMoveCommitmentOnChain(rumbleIdNum, wallet, turnNum, wallet, slotConn).catch((err: any) => {
-          console.warn("[OnChain] closeMoveCommitment failed:", err?.message ?? err);
+          this.logCloseMoveCommitmentCleanupError(err);
         });
       }
 
@@ -3256,6 +3823,8 @@ export class RumbleOrchestrator {
     // begin with currentTurn=0 and turnResolved=false; gating on turnResolved
     // can deadlock the match at "Waiting for combat to begin...".
     if (combat.currentTurn === 0 && combat.remainingFighters > 1) {
+      state.openTurnStartedAt ??= now;
+      state.openTurnAttemptCount = (state.openTurnAttemptCount ?? 0) + 1;
       try {
         const sig = await openTurnOnChain(rumbleIdNum, slotConn);
         if (sig) {
@@ -3299,10 +3868,34 @@ export class RumbleOrchestrator {
       // commit/reveal/resolve in the same tick cycle.
       invalidateReadCache(`combat:${rumbleIdNum}`);
       combat = await readRumbleCombatState(rumbleIdNum, slotConn).catch(() => null);
-      if (!combat || combat.currentTurn === 0) return;
+      if (!combat) return;
+      if (combat.currentTurn === 0) {
+        const stuckStartedAt = state.openTurnStartedAt ?? now;
+        const stuckAttempts = state.openTurnAttemptCount ?? 0;
+        if (
+          now - stuckStartedAt >= OPEN_TURN_STUCK_TIMEOUT_MS ||
+          stuckAttempts >= OPEN_TURN_STUCK_MAX_ATTEMPTS
+        ) {
+          console.error(
+            `[Orchestrator] Aborting rumble ${slot.id} — turn 1 never opened after ${stuckAttempts} attempts / ${now - stuckStartedAt}ms`,
+          );
+          await this.abortStuckCombat(
+            slot,
+            state,
+            `turn 1 failed to open after ${stuckAttempts} attempts / ${now - stuckStartedAt}ms`,
+          );
+        }
+        return;
+      }
+      state.openTurnStartedAt = undefined;
+      state.openTurnAttemptCount = 0;
     }
 
-    const currentSlot = await slotConn.getSlot("processed");
+    // ER/router endpoints can omit generic cluster helpers like getSlot().
+    // Use the L1 connection for slot-based pacing while keeping combat state
+    // reads and writes on the delegated execution connection.
+    const currentSlot = await getCachedCombatSlot("processed");
+    if (currentSlot === null) return;
     const currentSlotBig = BigInt(currentSlot);
 
     // --- Missed-window recovery ---
@@ -3415,7 +4008,7 @@ export class RumbleOrchestrator {
           const wallet = state.fighterWallets.get(fid);
           if (!wallet) continue;
           closeMoveCommitmentOnChain(rumbleIdNum, wallet, turnNumPost, wallet, slotConn).catch((err: any) => {
-            console.warn("[OnChain] closeMoveCommitment failed:", err?.message ?? err);
+            this.logCloseMoveCommitmentCleanupError(err);
           });
         }
 
@@ -3440,81 +4033,50 @@ export class RumbleOrchestrator {
     // --- Turn is resolved: finalize or advance ---
 
     if (combat.remainingFighters <= 1) {
-      // If ER delegated, fire-and-forget the undelegate request and complete
-      // off-chain immediately.  MagicBlock's ScheduleCommitAndUndelegate is
-      // async — the ER validator confirms the request instantly but the actual
-      // L1 ownership revert happens in a background worker that can take
-      // seconds to minutes (or fail entirely on devnet).  We NEVER block on
-      // undelegation.  Instead we kick off a background task that retries the
-      // on-chain finalize for up to 60s in case the undelegate eventually
-      // lands.
       if (state.erDelegated) {
-        // Fire the undelegate request — don't await the L1 result
-        undelegateCombatFromEr(rumbleIdNum).catch((err) =>
-          console.warn(`[ER-UNDELEGATE] fire-and-forget failed for rumble ${rumbleIdNum}:`, err),
-        );
-        state.erDelegated = false;
-        state.erAbandoned = true;
-        console.log(`[ER-UNDELEGATE] Sent undelegate for rumble ${rumbleIdNum} — completing off-chain, will retry on-chain finalize in background`);
-
-        // Background: poll for undelegation and attempt on-chain finalize
-        const capturedRumbleId = slot.id;
-        const capturedRumbleIdNum = rumbleIdNum;
-        void (async () => {
-          const maxRetries = 12; // 12 × 5s = 60s window
-          for (let i = 0; i < maxRetries; i++) {
-            await new Promise((r) => setTimeout(r, 5000));
-            const stillDelegated = await isCombatStateDelegated(capturedRumbleIdNum).catch(() => true);
-            if (stillDelegated) {
-              if (i % 3 === 2) {
-                // Re-send undelegate every 15s in case first one was lost
-                undelegateCombatFromEr(capturedRumbleIdNum).catch(() => {});
-              }
-              continue;
-            }
-            console.log(`[ER-UNDELEGATE-BG] Undelegation confirmed for rumble ${capturedRumbleIdNum} after ${(i + 1) * 5}s — attempting on-chain finalize`);
-            try {
-              const sig = await finalizeRumbleOnChainTx(capturedRumbleIdNum, getConnection());
-              if (sig) {
-                console.log(`[ONCHAIN-FINALIZE-BG] finalizeRumble succeeded for rumble ${capturedRumbleId}: ${sig}`);
-                void persistWithRetry(
-                  () => persist.updateRumbleTxSignature(capturedRumbleId, "reportResult", sig),
-                  `updateRumbleTxSignature:reportResult:${capturedRumbleId}`,
-                );
-              }
-            } catch (err) {
-              console.warn(`[ONCHAIN-FINALIZE-BG] finalizeRumble failed for rumble ${capturedRumbleId}:`, formatError(err));
-            }
-            return; // done
-          }
-          console.warn(`[ER-UNDELEGATE-BG] Gave up on undelegation for rumble ${capturedRumbleIdNum} after 60s — PDA abandoned`);
-        })();
-      } else {
-        // Not delegated — try on-chain finalize directly
-        try {
-          const sig = await finalizeRumbleOnChainTx(rumbleIdNum, getConnection());
-          if (sig) {
-            console.log(`[ONCHAIN-FINALIZE] finalizeRumble succeeded for rumble ${slot.id}: ${sig}`);
-            await persistWithRetry(
-              () => persist.updateRumbleTxSignature(slot.id, "reportResult", sig),
-              `updateRumbleTxSignature:reportResult:${slot.id}`,
-            );
-          }
-        } catch (err) {
-          console.warn(`[ONCHAIN-FINALIZE] finalizeRumble failed for rumble ${slot.id}: ${formatError(err)}`);
-        }
-        invalidateReadCache(`rumble:${rumbleIdNum}`);
-        onchainState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
-        if (onchainState?.state === "payout" || onchainState?.state === "complete") {
-          await this.finishCombatFromOnchain(slot, state, rumbleIdNum);
+        const undelegated = await this.ensureErUndelegatedForFinalize(slot, state, rumbleIdNum, now);
+        if (!undelegated) {
           return;
         }
       }
 
-      // Complete from local state — works regardless of on-chain status.
-      // If the background finalize lands later, it's just a bonus.
-      console.log(`[Orchestrator] Completing rumble ${slot.id} via off-chain path`);
-      await this.finishCombat(slot, state);
+      invalidateReadCache(`rumble:${rumbleIdNum}`);
+      onchainState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+      if (onchainState?.state === "payout" || onchainState?.state === "complete") {
+        await this.finishCombatFromOnchain(slot, state, rumbleIdNum);
+        return;
+      }
+
+      try {
+        const sig = await finalizeRumbleOnChainTx(rumbleIdNum, getConnection());
+        if (sig) {
+          console.log(`[ONCHAIN-FINALIZE] finalizeRumble succeeded for rumble ${slot.id}: ${sig}`);
+          await persistWithRetry(
+            () => persist.updateRumbleTxSignature(slot.id, "reportResult", sig),
+            `updateRumbleTxSignature:reportResult:${slot.id}`,
+          );
+        }
+      } catch (err) {
+        invalidateReadCache(`rumble:${rumbleIdNum}`);
+        const latestOnchainState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+        if (latestOnchainState?.state === "payout" || latestOnchainState?.state === "complete") {
+          console.log(
+            `[ONCHAIN-FINALIZE] finalizeRumble already settled for rumble ${slot.id} (state=${latestOnchainState.state})`,
+          );
+          await this.finishCombatFromOnchain(slot, state, rumbleIdNum);
+          return;
+        }
+        console.warn(`[ONCHAIN-FINALIZE] finalizeRumble failed for rumble ${slot.id}: ${formatError(err)}`);
+      }
+
+      invalidateReadCache(`rumble:${rumbleIdNum}`);
+      onchainState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+      if (onchainState?.state === "payout" || onchainState?.state === "complete") {
+        await this.finishCombatFromOnchain(slot, state, rumbleIdNum);
+        return;
+      }
+
+      console.log(`[ONCHAIN-FINALIZE] Waiting for on-chain payout state for rumble ${slot.id}`);
       return;
     }
 
@@ -3620,8 +4182,20 @@ export class RumbleOrchestrator {
       erHealthCheckTick: 0,
       erAbandoned: false,
       startCombatDelegationFailCount: 0,
+      startCombatLastAttemptAt: undefined,
       forceLegacyFallback: false,
+      matchupVrfRequestedAt: undefined,
+      matchupVrfLastAttemptAt: undefined,
+      matchupVrfLastWaitLogAt: undefined,
+      finalizeUndelegateLastAttemptAt: undefined,
+      finalizeUndelegateStartedAt: undefined,
+      openTurnStartedAt: undefined,
+      openTurnAttemptCount: 0,
     });
+    const state = this.combatStates.get(slot.slotIndex);
+    if (state) {
+      await this.syncCombatWakeSubscription(slot.slotIndex, state);
+    }
   }
 
   private moveToCode(move: MoveType): number {
@@ -3814,6 +4388,8 @@ export class RumbleOrchestrator {
     rumbleBuf.writeBigUInt64LE(BigInt(rumbleIdNum));
     const turnBuf = Buffer.alloc(4);
     turnBuf.writeUInt32LE(turn >>> 0);
+    const hasVrfSeed = combat.vrfSeed.some((byte) => byte !== 0);
+    const vrfSeedBuf = hasVrfSeed ? Buffer.from(combat.vrfSeed) : null;
 
     const aliveIndices: number[] = [];
     for (let i = 0; i < fighterCount; i++) {
@@ -3829,18 +4405,16 @@ export class RumbleOrchestrator {
       const fighterBWallet = state.fighterWallets.get(fighterBId);
       if (!fighterAWallet || !fighterBWallet) return a - b;
 
-      const keyA = this.hashU64([
-        Buffer.from("pair-order"),
-        rumbleBuf,
-        turnBuf,
-        fighterAWallet.toBuffer(),
-      ]);
-      const keyB = this.hashU64([
-        Buffer.from("pair-order"),
-        rumbleBuf,
-        turnBuf,
-        fighterBWallet.toBuffer(),
-      ]);
+      const keyAParts: Array<Buffer | Uint8Array> = [Buffer.from("pair-order")];
+      if (vrfSeedBuf) keyAParts.push(vrfSeedBuf);
+      keyAParts.push(rumbleBuf, turnBuf, fighterAWallet.toBuffer());
+
+      const keyBParts: Array<Buffer | Uint8Array> = [Buffer.from("pair-order")];
+      if (vrfSeedBuf) keyBParts.push(vrfSeedBuf);
+      keyBParts.push(rumbleBuf, turnBuf, fighterBWallet.toBuffer());
+
+      const keyA = this.hashU64(keyAParts);
+      const keyB = this.hashU64(keyBParts);
       if (keyA !== keyB) return keyA < keyB ? -1 : 1;
       return Buffer.compare(fighterAWallet.toBuffer(), fighterBWallet.toBuffer());
     });
@@ -3965,6 +4539,19 @@ export class RumbleOrchestrator {
       "custom program error: 0xbc4",
       "move_commitment",
     ]);
+  }
+
+  private isClaimWindowActiveError(err: unknown): boolean {
+    return this.hasErrorTokenAny(err, [
+      "claimwindowactive",
+      "error number: 6018",
+      "custom program error: 0x1782",
+    ]);
+  }
+
+  private logCloseMoveCommitmentCleanupError(err: unknown): void {
+    if (this.isRevealMissingCommitmentError(err)) return;
+    console.warn("[OnChain] closeMoveCommitment failed:", formatError(err));
   }
 
   private async submitOnchainMovesForTurn(
@@ -4415,10 +5002,14 @@ export class RumbleOrchestrator {
       .sort((a, b) => a.placement - b.placement);
 
     if (rankedFighters.length < 2) {
-      console.warn(
-        `[Orchestrator] On-chain result had <2 ranked fighters for ${slot.id}; forcing legacy completion flow.`,
-      );
-      await this.finishCombat(slot, state);
+      if (this.allowLegacyFallback) {
+        console.warn(
+          `[Orchestrator] On-chain result had <2 ranked fighters for ${slot.id}; forcing legacy completion flow.`,
+        );
+        await this.finishCombat(slot, state);
+      } else {
+        await this.abortStuckCombat(slot, state, "on-chain result did not contain enough ranked fighters");
+      }
       return;
     }
     const winner = rankedFighters[0].id;
@@ -4978,11 +5569,11 @@ export class RumbleOrchestrator {
    * Settle a completed rumble on-chain:
    * 1. Report result on-chain (placements)
    * 2. Distribute ICHOR rewards by placement (1st via distributeReward, rest via adminDistribute)
-   * 3. Check for Ichor Shower trigger
+   * 3. Request or reconcile the Ichor Shower VRF roll
    * 4. Complete rumble on-chain
    *
-   * All calls are best-effort: failures are logged but do not block the
-   * off-chain payout flow. This is safe for devnet testing.
+   * In strict on-chain mode, ER/VRF prerequisites must succeed or the payout
+   * phase is retried on the next tick instead of silently degrading.
    */
   private async settleOnChain(
     rumbleId: string,
@@ -5039,25 +5630,40 @@ export class RumbleOrchestrator {
           // Wait for L1 ownership to revert before finalizing
           const undelegated = await waitForUndelegation(rumbleIdNum);
           if (!undelegated) {
-            console.warn(`[ER-WAIT-UNDELEGATE] Timed out in settleOnChain for rumble ${rumbleIdNum} — skipping on-chain finalize (off-chain result already persisted)`);
-            // Don't block — the off-chain result is already in the DB.
-            // On-chain finalize is best-effort. The stuck PDA will be
-            // abandoned and the next rumble gets a fresh PDA.
-          } else {
-            console.log(`[ER-UNDELEGATE] Undelegation confirmed on L1 for rumble ${rumbleIdNum}, proceeding to finalize`);
+            throw new Error(
+              `[ER-WAIT-UNDELEGATE] Timed out in settleOnChain for rumble ${rumbleIdNum} before L1 ownership returned`,
+            );
           }
+          console.log(`[ER-UNDELEGATE] Undelegation confirmed on L1 for rumble ${rumbleIdNum}, proceeding to finalize`);
         }
 
-        // Finalize on L1 (rumble PDA is never delegated, needs mut access)
-        const finalizeSig = await finalizeRumbleOnChainTx(rumbleIdNum, getConnection()).catch(() => null);
-        if (finalizeSig) {
-          console.log(`[ONCHAIN-FINALIZE] finalizeRumble succeeded for rumble ${rumbleId}: ${finalizeSig}`);
-          void persistWithRetry(
-            () => persist.updateRumbleTxSignature(rumbleId, "reportResult", finalizeSig),
-            `updateRumbleTxSignature:reportResult:${rumbleId}`,
-          );
-        }
+        invalidateReadCache(`rumble:${rumbleIdNum}`);
         onchainState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+        if (onchainState?.state !== "payout" && onchainState?.state !== "complete") {
+          // Finalize on L1 (rumble PDA is never delegated, needs mut access)
+          try {
+            const finalizeSig = await finalizeRumbleOnChainTx(rumbleIdNum, getConnection());
+            if (finalizeSig) {
+              console.log(`[ONCHAIN-FINALIZE] finalizeRumble succeeded for rumble ${rumbleId}: ${finalizeSig}`);
+              void persistWithRetry(
+                () => persist.updateRumbleTxSignature(rumbleId, "reportResult", finalizeSig),
+                `updateRumbleTxSignature:reportResult:${rumbleId}`,
+              );
+            }
+          } catch (finalizeErr) {
+            invalidateReadCache(`rumble:${rumbleIdNum}`);
+            onchainState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+            if (onchainState?.state === "payout" || onchainState?.state === "complete") {
+              console.log(
+                `[ONCHAIN-FINALIZE] finalizeRumble already settled for rumble ${rumbleId} (state=${onchainState.state})`,
+              );
+            } else {
+              throw finalizeErr;
+            }
+          }
+          invalidateReadCache(`rumble:${rumbleIdNum}`);
+          onchainState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+        }
       }
 
       if (onchainState?.state !== "payout" && onchainState?.state !== "complete") {
@@ -5108,318 +5714,351 @@ export class RumbleOrchestrator {
 
     // 2. Distribute ICHOR rewards by placement
     if (!devnetPayoutReady) {
-      console.warn(
-        `[OnChain] Skipping devnet ICHOR settlement for ${rumbleId} because devnet rumble is not payout-ready`,
-      );
+      const message =
+        `[OnChain] Devnet rumble ${rumbleId} is not payout-ready; delaying ICHOR settlement until finalize catches up`;
+      if (this.strictOnchainMode) {
+        throw new Error(message);
+      }
+      console.warn(message);
     } else {
-    try {
-      const ichorMint = getIchorMint();
-      const [arenaConfigPda] = deriveArenaConfigPda();
-      const showerVaultAta = getAssociatedTokenAddressSync(ichorMint, arenaConfigPda, true);
-
-      // Ensure shower vault ATA exists
       try {
-        await ensureAtaOnChain(ichorMint, arenaConfigPda, true);
-      } catch (ataErr) {
-        console.warn(`[Orchestrator] Failed to create shower vault ATA:`, ataErr);
-      }
+        const ichorMint = getIchorMint();
+        const [arenaConfigPda] = deriveArenaConfigPda();
+        const showerVaultAta = getAssociatedTokenAddressSync(ichorMint, arenaConfigPda, true);
 
-      // Resolve winner wallet for the distributeReward call (1st fighter share + shower pool accounting).
-      const winnerWallet = await this.resolveFighterWallet(winnerId);
-      let winnerAta: PublicKey | null = null;
-
-      if (winnerWallet) {
-        winnerAta = getAssociatedTokenAddressSync(ichorMint, winnerWallet);
+        // Ensure shower vault ATA exists
         try {
-          await ensureAtaOnChain(ichorMint, winnerWallet);
+          await ensureAtaOnChain(ichorMint, arenaConfigPda, true);
         } catch (ataErr) {
-          console.warn(`[Orchestrator] Failed to create winner ATA:`, ataErr);
+          console.warn(`[Orchestrator] Failed to create shower vault ATA:`, ataErr);
         }
 
-        // Idempotency guard: skip if distributeReward already called for this rumble
-        const existingSig = await persist.getRumbleTxSignature(rumbleId, "distributeReward");
-        if (existingSig) {
-          console.log(`[OnChain] distributeReward already done for ${rumbleId} (${existingSig}), skipping`);
-        }
+        // Resolve winner wallet for the distributeReward call (1st fighter share + shower pool accounting).
+        const winnerWallet = await this.resolveFighterWallet(winnerId);
+        let winnerAta: PublicKey | null = null;
 
-        // distributeReward: sends 1st place share + shower pool cut, increments rumble counter
-        const sig = !existingSig ? await distributeRewardOnChain(winnerAta, showerVaultAta) : null;
-        if (sig) {
-          console.log(`[OnChain] distributeReward (1st place) succeeded: ${sig}`);
-          void persistWithRetry(
-            () => persist.updateRumbleTxSignature(rumbleId, "distributeReward", sig),
-            `updateRumbleTxSignature:distributeReward:${rumbleId}`,
-          );
-          void persistWithRetry(
-            () => persist.updateRumbleTxSignature(rumbleId, "mintRumbleReward", sig),
-            `updateRumbleTxSignature:mintRumbleReward:${rumbleId}`,
-          );
-        } else {
-          console.warn(`[OnChain] distributeReward returned null — continuing off-chain`);
-        }
-      }
-
-      // Distribute non-1st fighter ICHOR shares from payout distribution.
-      for (const [fighterId, ichorAmount] of payoutResult.ichorDistribution.fighters.entries()) {
-        if (fighterId === winnerId) continue;
-        const amountLamports = this.toIchorLamports(ichorAmount);
-        if (amountLamports <= 0n) continue;
-
-        const fighterWallet = await this.resolveFighterWallet(fighterId);
-        if (!fighterWallet) {
-          console.log(`[Orchestrator] No wallet for "${fighterId}", skipping fighter ICHOR reward`);
-          continue;
-        }
-
-        try {
-          await ensureAtaOnChain(ichorMint, fighterWallet);
-          const ata = getAssociatedTokenAddressSync(ichorMint, fighterWallet);
-
-          const rewardKey: `ichor-fighter-${string}` = `ichor-fighter-${fighterWallet.toBase58()}`;
-          const existingSig = await persist.getRumbleTxSignature(rumbleId, rewardKey);
-          if (existingSig) {
-            console.log(
-              `[OnChain] adminDistribute fighter reward to ${fighterId} already done for ${rumbleId} (${existingSig}), skipping`,
-            );
-            continue;
-          }
-
-          const sig = await adminDistributeOnChain(ata, amountLamports);
-          if (sig) {
-            console.log(`[OnChain] adminDistribute fighter reward to ${fighterId} succeeded: ${sig}`);
-            await persistWithRetry(
-              () => persist.updateRumbleTxSignature(rumbleId, rewardKey, sig),
-              `updateRumbleTxSignature:${rewardKey}:${rumbleId}`,
-            );
-          } else {
-            console.warn(`[OnChain] adminDistribute fighter reward to ${fighterId} returned null`);
-          }
-        } catch (err) {
-          console.error(`[OnChain] adminDistribute fighter reward for ${fighterId} error:`, err);
-        }
-      }
-
-      // Distribute winner-bettor ICHOR shares from payout distribution.
-      for (const [bettorWalletStr, ichorAmount] of payoutResult.ichorDistribution.winningBettors.entries()) {
-        const amountLamports = this.toIchorLamports(ichorAmount);
-        if (amountLamports <= 0n) continue;
-
-        let bettorWallet: PublicKey;
-        try {
-          bettorWallet = new PublicKey(bettorWalletStr);
-        } catch {
-          console.warn(`[OnChain] Skipping bettor ICHOR reward for invalid wallet "${bettorWalletStr}"`);
-          continue;
-        }
-
-        try {
-          await ensureAtaOnChain(ichorMint, bettorWallet);
-          const ata = getAssociatedTokenAddressSync(ichorMint, bettorWallet);
-
-          const rewardKey: `ichor-bettor-${string}` = `ichor-bettor-${bettorWalletStr}`;
-          const existingSig = await persist.getRumbleTxSignature(rumbleId, rewardKey);
-          if (existingSig) {
-            console.log(
-              `[OnChain] adminDistribute bettor reward to ${bettorWalletStr} already done for ${rumbleId} (${existingSig}), skipping`,
-            );
-            continue;
-          }
-
-          const sig = await adminDistributeOnChain(ata, amountLamports);
-          if (sig) {
-            console.log(`[OnChain] adminDistribute bettor reward to ${bettorWalletStr} succeeded: ${sig}`);
-            await persistWithRetry(
-              () => persist.updateRumbleTxSignature(rumbleId, rewardKey, sig),
-              `updateRumbleTxSignature:${rewardKey}:${rumbleId}`,
-            );
-          } else {
-            console.warn(`[OnChain] adminDistribute bettor reward to ${bettorWalletStr} returned null`);
-          }
-        } catch (err) {
-          console.error(`[OnChain] adminDistribute bettor reward for ${bettorWalletStr} error:`, err);
-        }
-      }
-
-      // 3. Check Ichor Shower — try VRF first, fall back to slot-hash
-      if (winnerAta) {
-        try {
-          let showerRecipientAta = winnerAta;
-          let showerRecipientWallet = winnerId;
-          let showerRecipientOwnerWallet: PublicKey | null = winnerWallet;
-          const chosenBettorWallet = this.pickWeightedWinnerBettorWallet(payoutResult);
-          if (chosenBettorWallet) {
-            try {
-              const bettorPk = new PublicKey(chosenBettorWallet);
-              await ensureAtaOnChain(ichorMint, bettorPk);
-              showerRecipientAta = getAssociatedTokenAddressSync(ichorMint, bettorPk);
-              showerRecipientWallet = chosenBettorWallet;
-              showerRecipientOwnerWallet = bettorPk;
-            } catch (err) {
-              console.warn(`[OnChain] Failed to use bettor shower recipient "${chosenBettorWallet}":`, err);
-            }
-          }
-
-          const pendingShower = await readShowerRequest().catch(() => null);
-          if (
-            pendingShower?.active &&
-            pendingShower.recipientTokenAccount !== "11111111111111111111111111111111"
-          ) {
-            try {
-              const expectedRecipientAta = showerRecipientOwnerWallet
-                ? getAssociatedTokenAddressSync(ichorMint, showerRecipientOwnerWallet)
-                : null;
-              showerRecipientAta = new PublicKey(pendingShower.recipientTokenAccount);
-              if (expectedRecipientAta && !showerRecipientAta.equals(expectedRecipientAta)) {
-                // If on-chain request points to a different token account, we don't
-                // reliably know its owner here. Verify existence only before VRF.
-                showerRecipientOwnerWallet = null;
-              }
-            } catch {}
-          }
-
-          let showerRecipientAtaReady = false;
+        if (winnerWallet) {
+          winnerAta = getAssociatedTokenAddressSync(ichorMint, winnerWallet);
           try {
-            if (showerRecipientOwnerWallet) {
-              const ensuredRecipientAta = await ensureAtaOnChain(ichorMint, showerRecipientOwnerWallet);
-              if (ensuredRecipientAta) {
-                showerRecipientAta = ensuredRecipientAta;
-                showerRecipientAtaReady = true;
-              }
+            await ensureAtaOnChain(ichorMint, winnerWallet);
+          } catch (ataErr) {
+            console.warn(`[Orchestrator] Failed to create winner ATA:`, ataErr);
+          }
+
+          // Idempotency guard: skip if distributeReward already called for this rumble
+          const existingSig = await persist.getRumbleTxSignature(rumbleId, "distributeReward");
+          if (existingSig) {
+            console.log(`[OnChain] distributeReward already done for ${rumbleId} (${existingSig}), skipping`);
+          }
+
+          // distributeReward: sends 1st place share + shower pool cut, increments rumble counter
+          const sig = !existingSig ? await distributeRewardOnChain(winnerAta, showerVaultAta) : null;
+          if (sig) {
+            console.log(`[OnChain] distributeReward (1st place) succeeded: ${sig}`);
+            void persistWithRetry(
+              () => persist.updateRumbleTxSignature(rumbleId, "distributeReward", sig),
+              `updateRumbleTxSignature:distributeReward:${rumbleId}`,
+            );
+            void persistWithRetry(
+              () => persist.updateRumbleTxSignature(rumbleId, "mintRumbleReward", sig),
+              `updateRumbleTxSignature:mintRumbleReward:${rumbleId}`,
+            );
+          } else {
+            console.warn(`[OnChain] distributeReward returned null${this.strictOnchainMode ? "" : " — continuing off-chain"}`);
+          }
+        }
+
+        // Distribute non-1st fighter ICHOR shares from payout distribution.
+        for (const [fighterId, ichorAmount] of payoutResult.ichorDistribution.fighters.entries()) {
+          if (fighterId === winnerId) continue;
+          const amountLamports = this.toIchorLamports(ichorAmount);
+          if (amountLamports <= 0n) continue;
+
+          const fighterWallet = await this.resolveFighterWallet(fighterId);
+          if (!fighterWallet) {
+            console.log(`[Orchestrator] No wallet for "${fighterId}", skipping fighter ICHOR reward`);
+            continue;
+          }
+
+          try {
+            await ensureAtaOnChain(ichorMint, fighterWallet);
+            const ata = getAssociatedTokenAddressSync(ichorMint, fighterWallet);
+
+            const rewardKey: `ichor-fighter-${string}` = `ichor-fighter-${fighterWallet.toBase58()}`;
+            const existingSig = await persist.getRumbleTxSignature(rumbleId, rewardKey);
+            if (existingSig) {
+              console.log(
+                `[OnChain] adminDistribute fighter reward to ${fighterId} already done for ${rumbleId} (${existingSig}), skipping`,
+              );
+              continue;
+            }
+
+            const sig = await adminDistributeOnChain(ata, amountLamports);
+            if (sig) {
+              console.log(`[OnChain] adminDistribute fighter reward to ${fighterId} succeeded: ${sig}`);
+              await persistWithRetry(
+                () => persist.updateRumbleTxSignature(rumbleId, rewardKey, sig),
+                `updateRumbleTxSignature:${rewardKey}:${rumbleId}`,
+              );
             } else {
-              const showerRecipientAccountInfo = await getConnection().getAccountInfo(showerRecipientAta);
-              showerRecipientAtaReady = !!showerRecipientAccountInfo;
+              console.warn(`[OnChain] adminDistribute fighter reward to ${fighterId} returned null`);
             }
           } catch (err) {
-            console.warn("[Orchestrator] Failed to ensure shower recipient ATA:", err);
+            console.error(`[OnChain] adminDistribute fighter reward for ${fighterId} error:`, err);
+          }
+        }
+
+        // Distribute winner-bettor ICHOR shares from payout distribution.
+        for (const [bettorWalletStr, ichorAmount] of payoutResult.ichorDistribution.winningBettors.entries()) {
+          const amountLamports = this.toIchorLamports(ichorAmount);
+          if (amountLamports <= 0n) continue;
+
+          let bettorWallet: PublicKey;
+          try {
+            bettorWallet = new PublicKey(bettorWalletStr);
+          } catch {
+            console.warn(`[OnChain] Skipping bettor ICHOR reward for invalid wallet "${bettorWalletStr}"`);
+            continue;
           }
 
-          // Read on-chain shower pool BEFORE the call to detect trigger
-          invalidateReadCache("arena");
-          const arenaBeforeShower = await readArenaConfig().catch(() => null);
-          const poolBefore = arenaBeforeShower ? Number(arenaBeforeShower.ichorShowerPool) : 0;
+          try {
+            await ensureAtaOnChain(ichorMint, bettorWallet);
+            const ata = getAssociatedTokenAddressSync(ichorMint, bettorWallet);
 
-          // Try MagicBlock VRF for provably-fair shower roll
-          let showerHandled = false;
-        try {
-          if (showerRecipientAtaReady) {
-            const vrfSig = await requestIchorShowerVrf(showerRecipientAta, showerVaultAta);
-            if (vrfSig) {
-              console.log(`[VRF] requestIchorShowerVrf succeeded: ${vrfSig}`);
-              void persistWithRetry(
-                () => persist.updateRumbleTxSignature(rumbleId, "ichorShowerVrf", vrfSig),
-                `updateRumbleTxSignature:ichorShowerVrf:${rumbleId}`,
+            const rewardKey: `ichor-bettor-${string}` = `ichor-bettor-${bettorWalletStr}`;
+            const existingSig = await persist.getRumbleTxSignature(rumbleId, rewardKey);
+            if (existingSig) {
+              console.log(
+                `[OnChain] adminDistribute bettor reward to ${bettorWalletStr} already done for ${rumbleId} (${existingSig}), skipping`,
               );
-              this.pendingVrfShowerResult = {
-                rumbleId,
-                slotIndex: this.findSlotIndexByRumbleId(rumbleId),
-                recipientWallet: showerRecipientWallet,
-                poolBeforeLamports: poolBefore,
-              };
-              showerHandled = true;
+              continue;
             }
-          } else {
-            console.warn(
-              `[OnChain] Skipping VRF shower request, shower recipient ATA not ready: ${showerRecipientAta.toBase58()}`,
-            );
-          }
-          } catch (vrfErr) {
-            const showerErr = vrfErr as { logs?: unknown };
-            console.warn(`[VRF] requestIchorShowerVrf failed, falling back to checkIchorShower:`, {
-              error: showerErr,
-              logs: showerErr?.logs,
-            });
-          }
 
-          // Fallback to slot-hash based shower if VRF unavailable
-          if (!showerHandled) {
-            try {
-              const showerSig = await checkIchorShowerOnChain(showerRecipientAta, showerVaultAta);
-              if (showerSig) {
-                console.log(`[OnChain] checkIchorShower succeeded: ${showerSig}`);
-                void persistWithRetry(
-                  () => persist.updateRumbleTxSignature(rumbleId, "checkIchorShower", showerSig),
-                  `updateRumbleTxSignature:checkIchorShower:${rumbleId}`,
-                );
-              } else {
-                console.warn(`[OnChain] checkIchorShower returned null — continuing off-chain`);
+            const sig = await adminDistributeOnChain(ata, amountLamports);
+            if (sig) {
+              console.log(`[OnChain] adminDistribute bettor reward to ${bettorWalletStr} succeeded: ${sig}`);
+              await persistWithRetry(
+                () => persist.updateRumbleTxSignature(rumbleId, rewardKey, sig),
+                `updateRumbleTxSignature:${rewardKey}:${rumbleId}`,
+              );
+            } else {
+              console.warn(`[OnChain] adminDistribute bettor reward to ${bettorWalletStr} returned null`);
+            }
+          } catch (err) {
+            console.error(`[OnChain] adminDistribute bettor reward for ${bettorWalletStr} error:`, err);
+          }
+        }
+
+        // 3. Resolve Ichor Shower via VRF in strict mode.
+        if (winnerAta) {
+          try {
+            let showerRecipientAta = winnerAta;
+            let showerRecipientWallet = winnerId;
+            let showerRecipientOwnerWallet: PublicKey | null = winnerWallet;
+            const chosenBettorWallet = this.pickWeightedWinnerBettorWallet(payoutResult);
+            if (chosenBettorWallet) {
+              try {
+                const bettorPk = new PublicKey(chosenBettorWallet);
+                await ensureAtaOnChain(ichorMint, bettorPk);
+                showerRecipientAta = getAssociatedTokenAddressSync(ichorMint, bettorPk);
+                showerRecipientWallet = chosenBettorWallet;
+                showerRecipientOwnerWallet = bettorPk;
+              } catch (err) {
+                console.warn(`[OnChain] Failed to use bettor shower recipient "${chosenBettorWallet}":`, err);
               }
-            } catch (showerErr) {
-              const fallbackErr = showerErr as { logs?: unknown };
-              console.warn("[OnChain] checkIchorShowerOnChain failed, continuing off-chain:", {
-                error: fallbackErr,
-                logs: fallbackErr?.logs,
-              });
             }
-          }
 
-          // Read on-chain shower pool AFTER to detect if shower triggered
-          if (poolBefore > 0) {
+            let showerRecipientAtaReady = false;
             try {
-              // Brief delay to let tx confirmation propagate
-              await new Promise(r => setTimeout(r, 2000));
-              invalidateReadCache("arena");
-              const arenaAfterShower = await readArenaConfig().catch(() => null);
-              const poolAfter = arenaAfterShower ? Number(arenaAfterShower.ichorShowerPool) : poolBefore;
-
-              if (poolAfter === 0 && poolBefore > 0) {
-                // ICHOR SHOWER TRIGGERED!
-                const showerAmount = poolBefore / 1e9; // Convert lamports to ICHOR
-                const recipientAmount = showerAmount * 0.9; // 90% to recipient
-                console.log(
-                  `[ICHOR SHOWER] TRIGGERED! pool=${poolBefore} (${showerAmount} ICHOR), ` +
-                  `recipient=${showerRecipientWallet}, payout=${recipientAmount} ICHOR`,
-                );
-
-                // Update in-memory payout data
-                const slotIndex = this.findSlotIndexByRumbleId(rumbleId);
-                if (slotIndex !== null) {
-                  const existing = this.transformedPayouts.get(slotIndex);
-                  if (existing) {
-                    existing.ichorShowerTriggered = true;
-                    existing.ichorShowerAmount = recipientAmount;
-                    // Re-persist updated payout
-                    persist.savePayoutResult(rumbleId, existing).catch(err => {
-                      console.error(`[ICHOR SHOWER] Failed to persist updated payout:`, err);
-                    });
-                  }
+              if (showerRecipientOwnerWallet) {
+                const ensuredRecipientAta = await ensureAtaOnChain(ichorMint, showerRecipientOwnerWallet);
+                if (ensuredRecipientAta) {
+                  showerRecipientAta = ensuredRecipientAta;
+                  showerRecipientAtaReady = true;
                 }
-
-                // Reset in-memory shower pool (on-chain already reset)
-                this.ichorShowerPool = 0;
-
-                // Persist shower trigger to Supabase
-                persist.triggerIchorShower(rumbleId, showerRecipientWallet, recipientAmount).catch(err => {
-                  console.error(`[ICHOR SHOWER] Failed to persist to Supabase:`, err);
-                });
-
-                // Emit event for commentary system
-                this.emit("ichor_shower", {
-                  slotIndex: slotIndex ?? 0,
-                  rumbleId,
-                  winnerId: showerRecipientWallet,
-                  amount: recipientAmount,
-                });
-                this.pendingVrfShowerResult = null;
               } else {
-                console.log(
-                  `[ICHOR SHOWER] No trigger this time. poolBefore=${poolBefore}, poolAfter=${poolAfter}`,
-                );
-                if (!showerHandled) {
-                  this.pendingVrfShowerResult = null;
-                }
+                const showerRecipientAccountInfo = await getConnection().getAccountInfo(showerRecipientAta);
+                showerRecipientAtaReady = !!showerRecipientAccountInfo;
               }
             } catch (err) {
-              console.warn(`[ICHOR SHOWER] Failed to read back shower result:`, err);
+              console.warn("[Orchestrator] Failed to ensure shower recipient ATA:", err);
+            }
+
+            invalidateReadCache("arena");
+            const arenaBeforeShower = await readArenaConfig().catch(() => null);
+            const poolBefore = arenaBeforeShower ? Number(arenaBeforeShower.ichorShowerPool) : 0;
+            const requiresShowerRoll = poolBefore > 0;
+            let showerHandled = !requiresShowerRoll;
+            let showerRequestInFlight = false;
+
+            if (requiresShowerRoll) {
+              const pendingShower = await readShowerRequest().catch(() => null);
+              const activeVrfShower = this.isVrfShowerRequest(pendingShower);
+              const trackedPendingShower = activeVrfShower
+                ? await this.ensurePendingVrfShowerResultLoaded()
+                : null;
+
+              if (
+                pendingShower?.active &&
+                pendingShower.recipientTokenAccount !== "11111111111111111111111111111111"
+              ) {
+                try {
+                  const expectedRecipientAta = showerRecipientOwnerWallet
+                    ? getAssociatedTokenAddressSync(ichorMint, showerRecipientOwnerWallet)
+                    : null;
+                  showerRecipientAta = new PublicKey(pendingShower.recipientTokenAccount);
+                  if (expectedRecipientAta && !showerRecipientAta.equals(expectedRecipientAta)) {
+                    showerRecipientOwnerWallet = null;
+                  }
+                } catch {}
+              }
+
+              if (activeVrfShower) {
+                if (!trackedPendingShower) {
+                  throw new Error(
+                    `[VRF] ICHOR shower request is active but pending context is missing; waiting for explicit reconciliation before settling ${rumbleId}`,
+                  );
+                }
+                if (trackedPendingShower.rumbleId !== rumbleId) {
+                  throw new Error(
+                    `[VRF] ICHOR shower request for ${trackedPendingShower.rumbleId} is still active; delaying ${rumbleId}`,
+                  );
+                }
+                console.log(
+                  `[VRF] Existing ICHOR shower VRF request is still active for ${rumbleId}; waiting for settlement`,
+                );
+                showerHandled = true;
+                showerRequestInFlight = true;
+              } else if (showerRecipientAtaReady) {
+                try {
+                  const vrfSig = await requestIchorShowerVrf(showerRecipientAta, showerVaultAta);
+                  if (vrfSig) {
+                    console.log(`[VRF] requestIchorShowerVrf succeeded: ${vrfSig}`);
+                    void persistWithRetry(
+                      () => persist.updateRumbleTxSignature(rumbleId, "ichorShowerVrf", vrfSig),
+                      `updateRumbleTxSignature:ichorShowerVrf:${rumbleId}`,
+                    );
+                    await this.persistPendingVrfShowerResult({
+                      rumbleId,
+                      slotIndex: this.findSlotIndexByRumbleId(rumbleId),
+                      recipientWallet: showerRecipientWallet,
+                      poolBeforeLamports: poolBefore,
+                    });
+                    showerHandled = true;
+                    showerRequestInFlight = true;
+                  } else if (this.requireShowerVrf) {
+                    throw new Error(`[VRF] requestIchorShowerVrf returned null for ${rumbleId}`);
+                  } else {
+                    console.warn(`[VRF] requestIchorShowerVrf returned null for ${rumbleId}`);
+                  }
+                } catch (vrfErr) {
+                  if (this.requireShowerVrf) {
+                    throw vrfErr;
+                  }
+                  const showerErr = vrfErr as { logs?: unknown };
+                  console.warn(`[VRF] requestIchorShowerVrf failed for ${rumbleId}:`, {
+                    error: showerErr,
+                    logs: showerErr?.logs,
+                  });
+                }
+              } else {
+                const message =
+                  `[OnChain] Shower recipient ATA not ready for strict VRF request: ${showerRecipientAta.toBase58()}`;
+                if (this.requireShowerVrf) {
+                  throw new Error(message);
+                }
+                console.warn(message);
+              }
+
+              if (!showerHandled && !this.requireShowerVrf) {
+                try {
+                  const showerSig = await checkIchorShowerOnChain(showerRecipientAta, showerVaultAta);
+                  if (showerSig) {
+                    console.log(`[OnChain] checkIchorShower succeeded: ${showerSig}`);
+                    void persistWithRetry(
+                      () => persist.updateRumbleTxSignature(rumbleId, "checkIchorShower", showerSig),
+                      `updateRumbleTxSignature:checkIchorShower:${rumbleId}`,
+                    );
+                  } else {
+                    console.warn(`[OnChain] checkIchorShower returned null — continuing off-chain`);
+                  }
+                } catch (showerErr) {
+                  const fallbackErr = showerErr as { logs?: unknown };
+                  console.warn("[OnChain] checkIchorShowerOnChain failed, continuing off-chain:", {
+                    error: fallbackErr,
+                    logs: fallbackErr?.logs,
+                  });
+                }
+              }
+
+              if (this.requireShowerVrf && !showerHandled) {
+                throw new Error(`[VRF] strict shower settlement did not start for ${rumbleId}`);
+              }
+
+              try {
+                await new Promise((resolve) => setTimeout(resolve, 2000));
+                invalidateReadCache("arena");
+                const arenaAfterShower = await readArenaConfig().catch(() => null);
+                const poolAfter = arenaAfterShower ? Number(arenaAfterShower.ichorShowerPool) : poolBefore;
+
+                if (poolAfter === 0 && poolBefore > 0) {
+                  const showerAmount = poolBefore / 1e9;
+                  const recipientAmount = showerAmount * 0.9;
+                  console.log(
+                    `[ICHOR SHOWER] TRIGGERED! pool=${poolBefore} (${showerAmount} ICHOR), ` +
+                    `recipient=${showerRecipientWallet}, payout=${recipientAmount} ICHOR`,
+                  );
+
+                  const slotIndex = this.findSlotIndexByRumbleId(rumbleId);
+                  if (slotIndex !== null) {
+                    const existing = this.transformedPayouts.get(slotIndex);
+                    if (existing) {
+                      existing.ichorShowerTriggered = true;
+                      existing.ichorShowerAmount = recipientAmount;
+                      persist.savePayoutResult(rumbleId, existing).catch((err) => {
+                        console.error(`[ICHOR SHOWER] Failed to persist updated payout:`, err);
+                      });
+                    }
+                  }
+
+                  this.ichorShowerPool = 0;
+                  persist.triggerIchorShower(rumbleId, showerRecipientWallet, recipientAmount).catch((err) => {
+                    console.error(`[ICHOR SHOWER] Failed to persist to Supabase:`, err);
+                  });
+
+                  this.emit("ichor_shower", {
+                    slotIndex: slotIndex ?? 0,
+                    rumbleId,
+                    winnerId: showerRecipientWallet,
+                    amount: recipientAmount,
+                  });
+                  void this.persistPendingVrfShowerResult(null);
+                } else {
+                  console.log(
+                    `[ICHOR SHOWER] No trigger this time. poolBefore=${poolBefore}, poolAfter=${poolAfter}`,
+                  );
+                  if (!showerRequestInFlight && !this.requireShowerVrf) {
+                    void this.persistPendingVrfShowerResult(null);
+                  }
+                }
+              } catch (err) {
+                console.warn(`[ICHOR SHOWER] Failed to read back shower result:`, err);
+              }
+            }
+          } catch (err) {
+            console.error(`[OnChain] checkIchorShower error:`, err);
+            if (this.requireShowerVrf) {
+              throw err;
             }
           }
-        } catch (err) {
-          console.error(`[OnChain] checkIchorShower error:`, err);
+        }
+        ichorSuccess = true;
+      } catch (err) {
+        console.error(`[OnChain] ICHOR distribution error:`, err);
+        if (this.strictOnchainMode || this.requireShowerVrf) {
+          throw err;
         }
       }
-      ichorSuccess = true;
-    } catch (err) {
-      console.error(`[OnChain] ICHOR distribution error:`, err);
-    }
     }
 
     // 4-5. completeRumble + sweepTreasury are finalized asynchronously after claim window.
@@ -5465,6 +6104,10 @@ export class RumbleOrchestrator {
   }
 
   async stop(): Promise<void> {
+    this.clearWakeTickTimer();
+    await Promise.allSettled(
+      [...this.combatWakeSubscriptions.keys()].map((slotIndex) => this.clearCombatWakeSubscription(slotIndex)),
+    );
     if (this.inflightCleanup.size === 0) return;
     await Promise.allSettled([...this.inflightCleanup]);
   }
@@ -5483,6 +6126,9 @@ export class RumbleOrchestrator {
     if (!slot) return;
 
     const combatState = this.combatStates.get(slotIndex);
+    const strictPayoutState = this.strictOnchainMode
+      ? await this.readOnchainPayoutReadyState(slot.id)
+      : null;
 
     // Build placements from the rumble result or combat state
     let placements: Array<{ id: string; placement: number }> = [];
@@ -5512,6 +6158,7 @@ export class RumbleOrchestrator {
     if (placements.length < 2) {
       console.warn(`[Orchestrator] Not enough fighters for payout in slot ${slotIndex}`);
       this.cleanupSlot(slotIndex, slot.id);
+      await this.clearCombatWakeSubscription(slotIndex);
       this.combatStates.delete(slotIndex);
       this.autoRequeueFighters.delete(slotIndex);
       this.payoutProcessed.delete(slot.id);
@@ -5552,7 +6199,7 @@ export class RumbleOrchestrator {
     let onchainTreasuryVault = 0;
 
     if (rumbleIdNum !== null) {
-      const rumbleAccount = await readRumbleAccountState(rumbleIdNum);
+      const rumbleAccount = strictPayoutState ?? await readRumbleAccountState(rumbleIdNum);
       if (!rumbleAccount) {
         // Rumble must exist on-chain during payout — null means RPC issue
         console.warn(`[Orchestrator] readRumbleAccountState returned null for ${slot.id} — will retry`);
@@ -5684,9 +6331,22 @@ export class RumbleOrchestrator {
       ichorShowerTriggered: false,
       ichorShowerAmount: 0,
     };
+    if (!winnerFighterId) {
+      throw new Error(`Missing winnerFighterId during payout persistence for ${slot.id}`);
+    }
     this.transformedPayouts.set(slotIndex, transformedPayout);
     try {
-      await persist.savePayoutResult(slot.id, transformedPayout);
+      await persist.completeRumbleRecord(
+        slot.id,
+        winnerFighterId,
+        placements,
+        slot.rumbleResult?.turns ?? combatState?.turns ?? [],
+        slot.rumbleResult?.totalTurns ?? combatState?.turns.length ?? 0,
+        {
+          payoutResult: transformedPayout,
+          throwOnError: true,
+        },
+      );
     } catch (err) {
       // Clean up in-memory state and throw so handlePayoutPhase retries
       this.transformedPayouts.delete(slotIndex);
@@ -5781,6 +6441,7 @@ export class RumbleOrchestrator {
       this.onchainRumbleCreateStartedAt.delete(previousRumbleId);
       this.onchainRumbleNumberById.delete(previousRumbleId);
       this.clearOnchainCreateFailure(previousRumbleId);
+      await this.clearCombatWakeSubscription(slotIndex);
       this.combatStates.delete(slotIndex);
       this.payoutResults.delete(slotIndex);
       this.transformedPayouts.delete(slotIndex);
@@ -5800,6 +6461,8 @@ export class RumbleOrchestrator {
           console.log(`[Orchestrator] Paused: removed ${removed} re-queued house bots after slot ${slotIndex} recycled`);
         }
       }
+
+      this.wakeSoon(`slot_recycled:${previousRumbleId}`, 250);
     })();
 
     this.trackInFlightCleanup(cleanup);
@@ -6077,6 +6740,9 @@ export function getOrchestrator(): RumbleOrchestrator {
 }
 
 export function resetOrchestrator(): void {
+  void g.__rumbleOrchestrator?.stop().catch((err) => {
+    console.warn("[Orchestrator] stop() failed during reset:", err);
+  });
   if (g.__rumbleAutoTickTimer) {
     clearInterval(g.__rumbleAutoTickTimer);
     g.__rumbleAutoTickTimer = undefined;

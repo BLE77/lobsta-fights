@@ -1,16 +1,34 @@
 import { NextResponse } from "next/server";
-import { Transaction } from "@solana/web3.js";
+import { ComputeBudgetProgram, SystemProgram, Transaction } from "@solana/web3.js";
+import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { freshSupabase } from "~~/lib/supabase";
 import { getApiKeyFromHeaders } from "~~/lib/request-auth";
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 import { requireJsonContentType, sanitizeErrorResponse } from "~~/lib/api-middleware";
 import { hashApiKey } from "~~/lib/api-key";
 import { getCombatConnectionAuto, isErEnabled, getErStatusInfo } from "~~/lib/solana-connection";
+import { RUMBLE_ENGINE_ID } from "~~/lib/solana-programs";
 
 export const dynamic = "force-dynamic";
 
 const ALLOWED_TX_TYPES = ["commit_move", "reveal_move"] as const;
 type TxType = (typeof ALLOWED_TX_TYPES)[number];
+
+const ALLOWED_PROGRAM_IDS = new Set([
+  ComputeBudgetProgram.programId.toBase58(),
+  SystemProgram.programId.toBase58(),
+  TOKEN_PROGRAM_ID.toBase58(),
+  ASSOCIATED_TOKEN_PROGRAM_ID.toBase58(),
+  RUMBLE_ENGINE_ID.toBase58(),
+]);
+
+function findUnexpectedProgramId(transaction: Transaction): string | null {
+  for (const instruction of transaction.instructions) {
+    const programId = instruction.programId.toBase58();
+    if (!ALLOWED_PROGRAM_IDS.has(programId)) return programId;
+  }
+  return null;
+}
 
 /**
  * Validate that the fighter exists and the API key matches.
@@ -179,6 +197,17 @@ export async function POST(request: Request) {
     if (!transaction.signatures || transaction.signatures.length === 0) {
       return NextResponse.json(
         { error: "Transaction has no signatures. Sign the transaction before submitting." },
+        { status: 400 },
+      );
+    }
+
+    const unexpectedProgramId = findUnexpectedProgramId(transaction);
+    if (unexpectedProgramId) {
+      return NextResponse.json(
+        {
+          error: "Transaction includes a program that is not allowed for combat submission.",
+          program_id: unexpectedProgramId,
+        },
         { status: 400 },
       );
     }

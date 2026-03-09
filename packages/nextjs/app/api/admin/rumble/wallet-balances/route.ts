@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { isAuthorizedAdminRequest } from "~~/lib/request-auth";
+import { getCachedBalance } from "~~/lib/solana-connection";
 
 export const dynamic = "force-dynamic";
 
@@ -31,7 +32,10 @@ export async function GET(request: Request) {
       try {
         const arr = JSON.parse(deployerRaw);
         const kp = Keypair.fromSecretKey(new Uint8Array(arr));
-        const bal = await conn.getBalance(kp.publicKey);
+        const bal = await getCachedBalance(conn, kp.publicKey, {
+          commitment: "confirmed",
+          ttlMs: 30_000,
+        });
         deployer = {
           pubkey: kp.publicKey.toBase58(),
           balance: bal / LAMPORTS_PER_SOL,
@@ -58,7 +62,10 @@ export async function GET(request: Request) {
           const entry = entries[i];
           try {
             const pubkey = new PublicKey(entry.wallet_public_key);
-            const bal = await conn.getBalance(pubkey);
+            const bal = await getCachedBalance(conn, pubkey, {
+              commitment: "confirmed",
+              ttlMs: 30_000,
+            });
             const solBal = bal / LAMPORTS_PER_SOL;
             signers.push({
               index: i,

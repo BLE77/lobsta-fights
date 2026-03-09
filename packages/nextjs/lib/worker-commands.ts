@@ -6,6 +6,7 @@
 // =============================================================================
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { setAdminConfig } from "./rumble-persistence";
 
 const noStoreFetch: typeof fetch = (input, init) =>
   fetch(input, { ...init, cache: "no-store" });
@@ -173,10 +174,12 @@ async function executeCommand(
       const target = Number(row.payload_json?.target_population);
       if (!Number.isFinite(target)) throw new Error("Invalid target_population");
       const applied = executor.setHouseBotTargetPopulation(target);
+      await setAdminConfig("house_bot_target_population", applied);
       return { action: "set_target", target_population: applied, status: executor.getHouseBotControlStatus() };
     }
     case "clear_bot_target": {
       const applied = executor.setHouseBotTargetPopulation(null);
+      await setAdminConfig("house_bot_target_population", null);
       return { action: "cleared_target", target_population: applied, status: executor.getHouseBotControlStatus() };
     }
     case "test_run": {

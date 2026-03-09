@@ -142,6 +142,12 @@ export function getBettingReadRpcEndpoints(): string[] {
 // ---------------------------------------------------------------------------
 
 let _connection: Connection | null = null;
+const _slotCache = new Map<string, { slot: number; at: number }>();
+const DEFAULT_SLOT_CACHE_TTL_MS = (() => {
+  const raw = Number(process.env.RUMBLE_RPC_SLOT_CACHE_MS ?? "1500");
+  if (!Number.isFinite(raw)) return 1_500;
+  return Math.min(10_000, Math.max(250, Math.floor(raw)));
+})();
 
 /**
  * Get a shared Solana connection instance (combat/devnet).
@@ -157,6 +163,32 @@ export function getConnection(): Connection {
     );
   }
   return _connection;
+}
+
+async function getCachedSlotForConnection(
+  cacheKey: string,
+  connection: Connection,
+  commitment: Commitment = "processed",
+  ttlMs = DEFAULT_SLOT_CACHE_TTL_MS,
+): Promise<number | null> {
+  const now = Date.now();
+  const key = `${cacheKey}:${commitment}`;
+  const cached = _slotCache.get(key);
+  if (cached && now - cached.at < ttlMs) {
+    return cached.slot;
+  }
+  const slot = await connection.getSlot(commitment).catch(() => null);
+  if (slot !== null) {
+    _slotCache.set(key, { slot, at: now });
+  }
+  return slot;
+}
+
+export async function getCachedCombatSlot(
+  commitment: Commitment = "processed",
+  ttlMs = DEFAULT_SLOT_CACHE_TTL_MS,
+): Promise<number | null> {
+  return getCachedSlotForConnection("combat", getConnection(), commitment, ttlMs);
 }
 
 /** Alias for getConnection() — explicit name for combat operations. */
@@ -180,6 +212,13 @@ export function getBettingConnection(): Connection {
     );
   }
   return _bettingConnection;
+}
+
+export async function getCachedBettingSlot(
+  commitment: Commitment = "processed",
+  ttlMs = DEFAULT_SLOT_CACHE_TTL_MS,
+): Promise<number | null> {
+  return getCachedSlotForConnection("betting", getBettingConnection(), commitment, ttlMs);
 }
 
 const _bettingReadFallbackConnections = new Map<string, Connection>();
@@ -227,16 +266,60 @@ export function getErRpcEndpoint(): string {
 let _erConnection: Connection | null = null;
 let _erConnectionKind: "router" | "plain" | null = null;
 let _erRouterLoadWarned = false;
+let _erRouterRequireWarned = false;
 
 type ConnectionMagicRouterCtor = new (
   endpoint: string,
   config?: { commitment?: Commitment; wsEndpoint?: string },
 ) => Connection;
 
+function getRuntimeRequire(): NodeRequire | null {
+  if (typeof window !== "undefined") return null;
+
+  const globalRequire = (globalThis as { require?: NodeRequire }).require;
+  if (typeof globalRequire === "function") {
+    return globalRequire;
+  }
+
+  const proc = process as typeof process & {
+    getBuiltinModule?: (
+      id: string,
+    ) => { createRequire?: (filename: string) => NodeRequire } | undefined;
+  };
+
+  if (typeof proc.getBuiltinModule === "function") {
+    try {
+      const moduleBuiltin = proc.getBuiltinModule("module");
+      if (typeof moduleBuiltin?.createRequire === "function") {
+        return moduleBuiltin.createRequire(`${process.cwd()}/package.json`);
+      }
+    } catch (error) {
+      if (!_erRouterRequireWarned) {
+        _erRouterRequireWarned = true;
+        console.warn(
+          "[solana-connection] Failed to create a runtime require for ConnectionMagicRouter.",
+          error,
+        );
+      }
+    }
+  }
+
+  return null;
+}
+
 function tryCreateMagicRouterConnection(endpoint: string): Connection | null {
   if (typeof window !== "undefined") return null;
   try {
-    const runtimeRequire = Function("return require")() as NodeRequire;
+    const runtimeRequire = getRuntimeRequire();
+    if (!runtimeRequire) {
+      if (!_erRouterLoadWarned) {
+        _erRouterLoadWarned = true;
+        console.warn(
+          "[solana-connection] ConnectionMagicRouter unavailable in this runtime. Falling back to plain Connection.",
+        );
+      }
+      return null;
+    }
     const sdk = runtimeRequire("@magicblock-labs/ephemeral-rollups-sdk") as {
       ConnectionMagicRouter?: ConnectionMagicRouterCtor;
     };
@@ -429,6 +512,11 @@ export function getCombatConnectionAuto(): Connection {
 
 const DELEGATION_PROGRAM_ID = "DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh";
 
+function readOptionalEnv(name: string): string | null {
+  const value = process.env[name]?.trim();
+  return value || null;
+}
+
 /**
  * Returns ER status info suitable for API JSON responses.
  */
@@ -444,6 +532,10 @@ export function getErStatusInfo() {
     er_connection_mode: mode,
     er_runtime_rpc_url: erConn
       ? ((erConn as unknown as { rpcEndpoint?: string }).rpcEndpoint ?? endpoint)
+      : null,
+    er_validator_pubkey: erEnabled ? readOptionalEnv("MAGICBLOCK_ER_VALIDATOR_PUBKEY") : null,
+    er_validator_rpc_url: erEnabled
+      ? (readOptionalEnv("MAGICBLOCK_ER_VALIDATOR_RPC_URL") ?? readOptionalEnv("MAGICBLOCK_ER_REGION_RPC_URL"))
       : null,
     delegation_program: erEnabled ? DELEGATION_PROGRAM_ID : null,
   };
