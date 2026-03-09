@@ -123,6 +123,7 @@ import {
 } from "./lib/utils";
 
 import { styles } from "./lib/styles";
+import { DamageNumberManager, type DamageNumberManagerHandle } from "./lib/DamageNumberManager";
 
 // Types are now in ./lib/types.ts
 // Utility functions are now in ./lib/utils.ts
@@ -364,6 +365,7 @@ function RumbleNativeScreen() {
   const betTileSelectAnimRef = useRef<Record<string, Animated.Value>>({});
   const betTilePressAnimRef = useRef<Record<string, Animated.Value>>({});
   const lastAnimatedTurnRef = useRef<string>("");
+  const damageNumberManagerRef = useRef<DamageNumberManagerHandle>(null);
   const lastStateToneRef = useRef<{ rumbleId: string; state: string } | null>(null);
   const lastNonIdleSlotRef = useRef<RumbleSlot | null>(null);
   const idleGraceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -736,6 +738,28 @@ function RumbleNativeScreen() {
       void playSfx(pickPairingSfx(loudestPairing));
     } else {
       void playSfx(SND_ROUND_START);
+    }
+
+    // Spawn floating damage numbers
+    if (damageNumberManagerRef.current) {
+      for (const pair of pairings) {
+        const dmgA = safeNumber(pair.damageToA, 0);
+        const dmgB = safeNumber(pair.damageToB, 0);
+        if (dmgA > 0) {
+          damageNumberManagerRef.current.spawn({
+            damage: dmgA,
+            fighterKey: String(pair.fighterA ?? ""),
+            side: "left",
+          });
+        }
+        if (dmgB > 0) {
+          damageNumberManagerRef.current.spawn({
+            damage: dmgB,
+            fighterKey: String(pair.fighterB ?? ""),
+            side: "right",
+          });
+        }
+      }
     }
 
     if (hasImpact || elimTokens.length > 0) {
@@ -1943,12 +1967,23 @@ function RumbleNativeScreen() {
 
                     {featuredState === "combat" ? (
                       <>
-                        <View style={styles.timerCard}>
-                          <Text style={styles.timerLabel}>LIVE MATCHUPS</Text>
-                          <Text style={styles.timerValue}>TURN {activeTurn}</Text>
-                        </View>
+                        {activeTurn === 0 || featuredSlot?.turnPhase === "starting" ? (
+                          <View style={styles.timerCard}>
+                            <Text style={styles.timerLabel}>COMBAT START</Text>
+                            <Text style={styles.timerValue}>PREPARING</Text>
+                          </View>
+                        ) : (
+                          <View style={styles.timerCard}>
+                            <Text style={styles.timerLabel}>LIVE MATCHUPS</Text>
+                            <Text style={styles.timerValue}>TURN {activeTurn}</Text>
+                          </View>
+                        )}
                         <View style={styles.combatHeaderRow}>
-                          <Text style={styles.sectionLabel}>LIVE MATCHUPS // TURN {safeNumber(activeTurnData?.turnNumber, activeTurn)}</Text>
+                          {activeTurn === 0 || featuredSlot?.turnPhase === "starting" ? (
+                            <Text style={styles.sectionLabel}>STARTING ON-CHAIN COMBAT</Text>
+                          ) : (
+                            <Text style={styles.sectionLabel}>LIVE MATCHUPS // TURN {safeNumber(activeTurnData?.turnNumber, activeTurn)}</Text>
+                          )}
                           <Text style={styles.panelMeta}>({combatAliveCount} alive)</Text>
                         </View>
                         {recentEliminations.length > 0 ? (
@@ -1965,8 +2000,44 @@ function RumbleNativeScreen() {
                           </View>
                         ) : null}
                         {activePairings.length === 0 ? (
-                          <Text style={styles.emptyText}>Deploying fighters...</Text>
+                          <View style={styles.combatStartingWrap}>
+                            <Text style={styles.combatStartingText}>
+                              {activeTurn === 0 || featuredSlot?.turnPhase === "starting"
+                                ? "Waiting for first turn to land on-chain..."
+                                : "Deploying fighters..."}
+                            </Text>
+                            {featuredFighters.length > 0 ? (
+                              <View style={styles.listStack}>
+                                {featuredFighters.slice(0, 16).map((fighter, idx) => {
+                                  const hp = Math.max(0, safeNumber(fighter.hp, 0));
+                                  const maxHp = Math.max(1, safeNumber(fighter.maxHp, 100));
+                                  return (
+                                    <View key={`${getFighterId(fighter)}_pre_${idx}`} style={styles.rowCardTall}>
+                                      <View style={styles.avatarWrap}>
+                                        <ExpoImage
+                                          source={fighter.imageUrl ? { uri: fighter.imageUrl } : BOT_AVATAR_IMG}
+                                          style={styles.avatarImage}
+                                          contentFit="cover"
+                                          transition={120}
+                                        />
+                                      </View>
+                                      <View style={styles.rowMain}>
+                                        <Text style={styles.rowName} numberOfLines={1}>{getFighterName(fighter)}</Text>
+                                        <View style={styles.hpTrack}>
+                                          <View style={[styles.hpFill, { width: `${Math.max(0, Math.min(100, (hp / maxHp) * 100))}%` }]} />
+                                        </View>
+                                        <Text style={styles.rowSub}>HP {hp.toFixed(0)} / {maxHp.toFixed(0)}</Text>
+                                      </View>
+                                    </View>
+                                  );
+                                })}
+                              </View>
+                            ) : (
+                              <ActivityIndicator color="#f59e0b" style={{ marginTop: 12 }} />
+                            )}
+                          </View>
                         ) : (
+                          <View style={{ position: "relative" }}>
                           <Animated.View style={{ transform: [{ translateX: combatShakeTranslateX }] }}>
                             <View style={styles.combatPairsStack}>
                               {activePairings.map((pair, idx) => {
@@ -2120,8 +2191,11 @@ function RumbleNativeScreen() {
                                       </Text>
                                       {leftMove ? (
                                         <Text style={[styles.moveTag, { color: getMoveColor(leftMove) }]}>
-                                          {formatMove(leftMove)} {safeNumber(pair.damageToB, 0) > 0 ? `(-${safeNumber(pair.damageToB, 0).toFixed(0)})` : ""}
+                                          {formatMove(leftMove)}
                                         </Text>
+                                      ) : null}
+                                      {safeNumber(pair.damageToA, 0) > 0 ? (
+                                        <Text style={styles.dmgReceived}>-{safeNumber(pair.damageToA, 0).toFixed(0)}</Text>
                                       ) : null}
                                       {leftEliminated ? <Text style={styles.eliminatedTag}>ELIMINATED</Text> : null}
                                     </Animated.View>
@@ -2144,8 +2218,11 @@ function RumbleNativeScreen() {
                                       </Text>
                                       {rightMove ? (
                                         <Text style={[styles.moveTag, { color: getMoveColor(rightMove) }]}>
-                                          {formatMove(rightMove)} {safeNumber(pair.damageToA, 0) > 0 ? `(-${safeNumber(pair.damageToA, 0).toFixed(0)})` : ""}
+                                          {formatMove(rightMove)}
                                         </Text>
+                                      ) : null}
+                                      {safeNumber(pair.damageToB, 0) > 0 ? (
+                                        <Text style={styles.dmgReceived}>-{safeNumber(pair.damageToB, 0).toFixed(0)}</Text>
                                       ) : null}
                                       {rightEliminated ? <Text style={styles.eliminatedTag}>ELIMINATED</Text> : null}
                                     </Animated.View>
@@ -2154,6 +2231,8 @@ function RumbleNativeScreen() {
                               })}
                             </View>
                           </Animated.View>
+                          <DamageNumberManager ref={damageNumberManagerRef} containerWidth={320} />
+                          </View>
                         )}
                         {combatBench.length > 0 ? (
                           <View style={styles.combatBenchWrap}>
@@ -2244,15 +2323,22 @@ function RumbleNativeScreen() {
                                           const rightHpPct = Math.max(0, Math.min(100, (rightHp / rightMax) * 100));
                                           const leftMove = String(pair.moveA ?? "").toUpperCase();
                                           const rightMove = String(pair.moveB ?? "").toUpperCase();
+                                          const leftTookDmg = safeNumber(pair.damageToA, 0);
+                                          const rightTookDmg = safeNumber(pair.damageToB, 0);
                                           return (
                                             <View key={`pair_${pairIdx}`} style={styles.turnFeedPairRow}>
-                                              <Text style={styles.turnFeedLine} numberOfLines={1}>
-                                                {leftName} -{dmgToB} | {rightName} -{dmgToA}
-                                              </Text>
-                                              <View style={styles.turnFeedMoveRow}>
-                                                <Text style={[styles.turnFeedMoveTag, { color: getMoveColor(leftMove) }]}>{formatMove(leftMove)}</Text>
+                                              <View style={styles.turnFeedMatchup}>
+                                                <View style={styles.turnFeedFighterCol}>
+                                                  <Text style={styles.turnFeedFighterName} numberOfLines={1}>{leftName}</Text>
+                                                  <Text style={[styles.turnFeedMoveTag, { color: getMoveColor(leftMove) }]}>{formatMove(leftMove)}</Text>
+                                                  {leftTookDmg > 0 ? <Text style={styles.turnFeedDmgReceived}>-{leftTookDmg.toFixed(0)}</Text> : null}
+                                                </View>
                                                 <Text style={styles.turnFeedMoveSep}>vs</Text>
-                                                <Text style={[styles.turnFeedMoveTag, { color: getMoveColor(rightMove) }]}>{formatMove(rightMove)}</Text>
+                                                <View style={styles.turnFeedFighterCol}>
+                                                  <Text style={styles.turnFeedFighterName} numberOfLines={1}>{rightName}</Text>
+                                                  <Text style={[styles.turnFeedMoveTag, { color: getMoveColor(rightMove) }]}>{formatMove(rightMove)}</Text>
+                                                  {rightTookDmg > 0 ? <Text style={styles.turnFeedDmgReceived}>-{rightTookDmg.toFixed(0)}</Text> : null}
+                                                </View>
                                               </View>
                                               <View style={styles.turnFeedHpRow}>
                                                 <View style={styles.turnFeedHpTrack}>
@@ -2273,10 +2359,6 @@ function RumbleNativeScreen() {
                                                     ]}
                                                   />
                                                 </View>
-                                              </View>
-                                              <View style={styles.turnFeedHpMetaRow}>
-                                                <Text style={styles.turnFeedHpMetaText}>L {leftHp.toFixed(0)}/{leftMax.toFixed(0)}</Text>
-                                                <Text style={styles.turnFeedHpMetaText}>R {rightHp.toFixed(0)}/{rightMax.toFixed(0)}</Text>
                                               </View>
                                             </View>
                                           );
@@ -2613,7 +2695,7 @@ function RumbleNativeScreen() {
             style={({ pressed }) => [styles.bottomTabBtn, activeTab === "queue" && styles.bottomTabBtnActive, pressed ? styles.pressablePressed : null]}
             onPress={() => handleTabChange("queue")}
           >
-            <Text style={[styles.bottomTabText, activeTab === "queue" && styles.bottomTabTextActive]}>QUEUE</Text>
+            <Text style={[styles.bottomTabText, activeTab === "queue" && styles.bottomTabTextActive]}>CLAIM</Text>
           </Pressable>
         </View>
       </View>

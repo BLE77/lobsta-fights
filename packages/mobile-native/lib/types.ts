@@ -71,6 +71,7 @@ export type RumbleSlot = {
   rumbleId?: string;
   rumbleNumber?: number | null;
   state?: "idle" | "betting" | "combat" | "payout";
+  turnPhase?: string | null;
   fighters?: RumbleSlotFighter[];
   odds?: RumbleSlotOdds[];
   totalPool?: number;

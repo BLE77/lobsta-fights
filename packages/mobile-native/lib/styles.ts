@@ -974,6 +974,45 @@ export const styles = StyleSheet.create({
     color: "#78716c",
     fontSize: 12,
   },
+  dmgReceived: {
+    color: "#ef4444",
+    fontSize: 14,
+    fontWeight: "900",
+    textAlign: "center",
+    marginTop: 2,
+  },
+  turnFeedMatchup: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 4,
+  },
+  turnFeedFighterCol: {
+    flex: 1,
+    alignItems: "center",
+    gap: 1,
+  },
+  turnFeedFighterName: {
+    color: "#d6d3d1",
+    fontSize: 11,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  turnFeedDmgReceived: {
+    color: "#ef4444",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  combatStartingWrap: {
+    marginTop: 4,
+  },
+  combatStartingText: {
+    color: "#f59e0b",
+    fontSize: 13,
+    fontWeight: "700",
+    textAlign: "center",
+    marginBottom: 12,
+  },
   rewardGrid: {
     flexDirection: "row",
     gap: 6,
