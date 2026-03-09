@@ -17,4 +17,5 @@ packages/solana/node_modules
 packages/nextjs/node_modules
 packages/nextjs/test-results
 packages/nextjs/coverage
+packages/nextjs/scripts
 *.log
