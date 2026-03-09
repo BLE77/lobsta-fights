@@ -465,6 +465,84 @@ export default function RumbleSlot({
     }
   }, [slot.turns, slot.state, slot.fighters, slot.fighterNames]);
 
+  const lastCompletedWinner = lastCompletedResult?.placements?.[0] ?? null;
+  const payoutPlacements = slot.fighters
+    .filter((fighter) => fighter.placement > 0)
+    .sort((a, b) => a.placement - b.placement)
+    .map((fighter) => ({
+      fighterId: fighter.id,
+      fighterName: fighter.name,
+      imageUrl: fighter.imageUrl,
+      placement: fighter.placement,
+      hp: fighter.hp,
+      damageDealt: fighter.totalDamageDealt,
+    }));
+  const payoutWinner = payoutPlacements[0] ?? null;
+  const payoutFinalTurn = slot.turns.length > 0 ? slot.turns[slot.turns.length - 1] : null;
+
+  const renderCompactLastMatch = ({
+    title,
+    winner,
+    lastTurn,
+    fighterNames,
+  }: {
+    title: string;
+    winner: {
+      fighterId: string;
+      fighterName: string;
+      imageUrl: string | null;
+      hp: number;
+      damageDealt: number;
+    } | null;
+    lastTurn: SlotTurn | null;
+    fighterNames: Record<string, string>;
+  }) => {
+    if (!winner && !lastTurn) return null;
+
+    return (
+      <div className="border border-stone-800/80 bg-stone-950/40 rounded-sm p-2.5">
+        {winner && (
+          <div className="flex items-center gap-3">
+            {winner.imageUrl ? (
+              <img
+                src={winner.imageUrl}
+                alt={winner.fighterName}
+                className="w-9 h-9 rounded-sm border border-amber-500/50 object-cover flex-shrink-0"
+              />
+            ) : (
+              <div className="w-9 h-9 rounded-sm bg-stone-800 border border-amber-500/50 flex items-center justify-center flex-shrink-0">
+                <span className="text-amber-500 font-mono text-[8px]">BOT</span>
+              </div>
+            )}
+            <div className="min-w-0 flex-1">
+              <p className="font-mono text-[9px] text-stone-500 uppercase">{title}</p>
+              <p className="font-mono text-sm text-amber-400 font-bold truncate">
+                {winner.fighterName}
+              </p>
+            </div>
+            <div className="text-right font-mono text-[9px] leading-4 text-stone-500 flex-shrink-0">
+              <div>HP {winner.hp}</div>
+              <div>DMG {winner.damageDealt}</div>
+            </div>
+          </div>
+        )}
+
+        {lastTurn && (
+          <div className={winner ? "mt-2 pt-2 border-t border-stone-800/80" : ""}>
+            <p className="font-mono text-[9px] text-stone-500 uppercase mb-1.5">
+              Final Move
+            </p>
+            <CombatFeed
+              turns={[lastTurn]}
+              currentTurn={lastTurn.turnNumber}
+              fighterNames={fighterNames}
+            />
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div
       className={`${label.bgColor} border ${label.borderColor} rounded-sm backdrop-blur-sm overflow-hidden transition-all ${showContainerShake ? "animate-intense-shake" : ""
@@ -549,45 +627,6 @@ export default function RumbleSlot({
         {/* BETTING state */}
         {effectiveState === "betting" && (
           <div className="animate-fade-in-up space-y-3">
-            {/* Last winner banner */}
-            {lastCompletedResult && lastCompletedResult.placements[0] && (
-              <div className="flex items-center gap-3 bg-amber-900/15 border border-amber-700/30 rounded-sm px-3 py-2">
-                {lastCompletedResult.placements[0].imageUrl ? (
-                  <img
-                    src={lastCompletedResult.placements[0].imageUrl}
-                    alt={lastCompletedResult.placements[0].fighterName}
-                    className="w-10 h-10 rounded-sm border border-amber-500/60 object-cover flex-shrink-0"
-                  />
-                ) : (
-                  <div className="w-10 h-10 rounded-sm bg-stone-800 flex items-center justify-center border border-amber-500/60 flex-shrink-0">
-                    <span className="text-amber-500 font-mono text-[8px]">BOT</span>
-                  </div>
-                )}
-                <div className="flex-1 min-w-0">
-                  <p className="font-mono text-[10px] text-amber-600 uppercase">Last Winner</p>
-                  <p className="font-mono text-sm text-amber-400 font-bold truncate">
-                    {lastCompletedResult.placements[0].fighterName}
-                  </p>
-                </div>
-                <div className="text-right flex-shrink-0">
-                  <p className="font-mono text-[10px] text-stone-500">
-                    HP:{lastCompletedResult.placements[0].hp} DMG:{lastCompletedResult.placements[0].damageDealt}
-                  </p>
-                </div>
-              </div>
-            )}
-            {lastCompletedResult?.lastTurn && (
-              <div className="border border-stone-800/80 bg-stone-950/40 rounded-sm p-2">
-                <p className="font-mono text-[10px] text-stone-500 uppercase mb-2">
-                  Previous Final Turn
-                </p>
-                <CombatFeed
-                  turns={[lastCompletedResult.lastTurn]}
-                  currentTurn={lastCompletedResult.lastTurn.turnNumber}
-                  fighterNames={lastCompletedResult.fighterNames ?? slot.fighterNames}
-                />
-              </div>
-            )}
             <BettingPanel
               slotIndex={slot.slotIndex}
               fighters={slot.odds}
@@ -598,6 +637,12 @@ export default function RumbleSlot({
               onPlaceBatchBet={onPlaceBatchBet}
               myBetAmounts={myBetAmounts}
             />
+            {renderCompactLastMatch({
+              title: "Last Match",
+              winner: lastCompletedWinner,
+              lastTurn: lastCompletedResult?.lastTurn ?? null,
+              fighterNames: lastCompletedResult?.fighterNames ?? slot.fighterNames,
+            })}
           </div>
         )}
 
@@ -946,22 +991,18 @@ export default function RumbleSlot({
           </div>
         )}
         {effectiveState === "payout" && !holdingFinalTurn && slot.payout && (
-          <div className="animate-fade-in-up">
+          <div className="animate-fade-in-up space-y-3">
             <PayoutDisplay
-              placements={slot.fighters
-                .filter((f) => f.placement > 0)
-                .sort((a, b) => a.placement - b.placement)
-                .map((f) => ({
-                  fighterId: f.id,
-                  fighterName: f.name,
-                  imageUrl: f.imageUrl,
-                  placement: f.placement,
-                  hp: f.hp,
-                  damageDealt: f.totalDamageDealt,
-                }))}
+              placements={payoutPlacements}
               payout={slot.payout}
               myBetFighterIds={myBetFighterIds}
             />
+            {renderCompactLastMatch({
+              title: "Winner Locked",
+              winner: payoutWinner,
+              lastTurn: payoutFinalTurn,
+              fighterNames: slot.fighterNames,
+            })}
           </div>
         )}
       </div>
