@@ -17,7 +17,6 @@
 import * as persist from "./rumble-persistence";
 import { getOrchestrator } from "./rumble-orchestrator";
 import { getQueueManager } from "./queue-manager";
-import { MIN_FIGHTERS_TO_START as MIN_FIGHTERS_PER_RUMBLE } from "./rumble-config";
 import { isErEnabled } from "./solana-connection";
 import { isCombatStateDelegated, delegateCombatToEr } from "./solana-programs";
 import { parseOnchainRumbleIdNumber } from "./rumble-id";
@@ -51,6 +50,7 @@ const MAX_COMBAT_STUCK_AGE_MS = (() => {
   if (!Number.isFinite(raw)) return 5 * 60 * 1000;
   return Math.max(60 * 1000, Math.min(60 * 60 * 1000, Math.floor(raw)));
 })();
+const MIN_RECOVERABLE_ACTIVE_FIGHTERS = 2;
 
 // ---------------------------------------------------------------------------
 // Main recovery function
@@ -154,10 +154,10 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
         orchestrator.setRumbleNumber(rumble.id, rumble.rumble_number ?? null);
         const fighters = rumble.fighters as Array<{ id: string; name: string }>;
         const fighterIds = fighters.map((f) => f.id);
-        if (fighterIds.length < MIN_FIGHTERS_PER_RUMBLE) {
+        if (fighterIds.length < MIN_RECOVERABLE_ACTIVE_FIGHTERS) {
           console.warn(
             `[StateRecovery] Discarding underfilled active rumble ${rumble.id} ` +
-              `(status=${rumble.status}, fighters=${fighterIds.length}, min=${MIN_FIGHTERS_PER_RUMBLE})`,
+              `(status=${rumble.status}, fighters=${fighterIds.length}, min=${MIN_RECOVERABLE_ACTIVE_FIGHTERS})`,
           );
           await persist.updateRumbleStatus(rumble.id, "complete");
           await requeueFighters(fighterIds);

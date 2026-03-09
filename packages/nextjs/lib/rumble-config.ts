@@ -7,8 +7,10 @@ function clampInt(value: number, min: number, max: number): number {
 }
 
 function readIntEnv(name: string): number | null {
-  const raw = Number(process.env[name] ?? "");
-  return Number.isFinite(raw) ? Math.floor(raw) : null;
+  const raw = process.env[name];
+  if (typeof raw !== "string" || raw.trim() === "") return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? Math.floor(parsed) : null;
 }
 
 export const FIGHTERS_PER_RUMBLE = (() => {
