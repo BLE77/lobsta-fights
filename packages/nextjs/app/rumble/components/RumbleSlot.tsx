@@ -174,6 +174,54 @@ interface ActiveElimination {
   totalFighters: number;
 }
 
+interface CompactLastMatchWinner {
+  fighterId: string;
+  fighterName: string;
+  imageUrl: string | null;
+  hp: number;
+  damageDealt: number;
+}
+
+interface TransitionLastMatchSnapshot {
+  rumbleId: string;
+  capturedAt: number;
+  winner: CompactLastMatchWinner | null;
+  lastTurn: SlotTurn | null;
+  fighterNames: Record<string, string>;
+}
+
+function deriveWinnerFromSlot(slot: SlotData): CompactLastMatchWinner | null {
+  const placed = slot.fighters
+    .filter((fighter) => fighter.placement > 0)
+    .sort((a, b) => a.placement - b.placement);
+  const winner = placed[0];
+  if (winner) {
+    return {
+      fighterId: winner.id,
+      fighterName: winner.name,
+      imageUrl: winner.imageUrl,
+      hp: winner.hp,
+      damageDealt: winner.totalDamageDealt,
+    };
+  }
+
+  const survivors = slot.fighters.filter(
+    (fighter) => fighter.eliminatedOnTurn == null && fighter.hp > 0,
+  );
+  if (survivors.length === 1) {
+    const survivor = survivors[0];
+    return {
+      fighterId: survivor.id,
+      fighterName: survivor.name,
+      imageUrl: survivor.imageUrl,
+      hp: survivor.hp,
+      damageDealt: survivor.totalDamageDealt,
+    };
+  }
+
+  return null;
+}
+
 export default function RumbleSlot({
   slot,
   betCloseGuardMs = 12_000,
@@ -226,6 +274,8 @@ export default function RumbleSlot({
   const heldSnapshotRef = useRef<{ rumbleId: string; turnCount: number } | null>(null);
   const prevStateRef = useRef<string>(slot.state);
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previousSlotRef = useRef<SlotData>(slot);
+  const [transitionLastMatch, setTransitionLastMatch] = useState<TransitionLastMatchSnapshot | null>(null);
 
   useEffect(() => {
     const shouldCaptureFinalTurn =
@@ -276,6 +326,27 @@ export default function RumbleSlot({
       if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    const previousSlot = previousSlotRef.current;
+    if (previousSlot.rumbleId !== slot.rumbleId) {
+      const previousLastTurn =
+        previousSlot.turns.length > 0
+          ? previousSlot.turns[previousSlot.turns.length - 1]
+          : null;
+      const previousWinner = deriveWinnerFromSlot(previousSlot);
+      if (previousWinner || previousLastTurn) {
+        setTransitionLastMatch({
+          rumbleId: previousSlot.rumbleId,
+          capturedAt: Date.now(),
+          winner: previousWinner,
+          lastTurn: previousLastTurn,
+          fighterNames: previousSlot.fighterNames,
+        });
+      }
+    }
+    previousSlotRef.current = slot;
+  }, [slot]);
 
   useEffect(() => {
     const curTurn = slot.currentTurn ?? 0;
@@ -479,6 +550,10 @@ export default function RumbleSlot({
     }));
   const payoutWinner = payoutPlacements[0] ?? null;
   const payoutFinalTurn = slot.turns.length > 0 ? slot.turns[slot.turns.length - 1] : null;
+  const fallbackLastMatchWinner = lastCompletedWinner ?? transitionLastMatch?.winner ?? null;
+  const fallbackLastMatchTurn = lastCompletedResult?.lastTurn ?? transitionLastMatch?.lastTurn ?? null;
+  const fallbackLastMatchNames =
+    lastCompletedResult?.fighterNames ?? transitionLastMatch?.fighterNames ?? slot.fighterNames;
 
   const renderCompactLastMatch = ({
     title,
@@ -639,9 +714,9 @@ export default function RumbleSlot({
             />
             {renderCompactLastMatch({
               title: "Last Match",
-              winner: lastCompletedWinner,
-              lastTurn: lastCompletedResult?.lastTurn ?? null,
-              fighterNames: lastCompletedResult?.fighterNames ?? slot.fighterNames,
+              winner: fallbackLastMatchWinner,
+              lastTurn: fallbackLastMatchTurn,
+              fighterNames: fallbackLastMatchNames,
             })}
           </div>
         )}
