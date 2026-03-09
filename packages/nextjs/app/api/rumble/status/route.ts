@@ -859,6 +859,7 @@ export async function GET(request: Request) {
         audioUrl: e.audioUrl,
         eventType: e.eventType,
         createdAt: e.createdAt,
+        source: e.source,
       }));
 
       return {

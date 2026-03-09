@@ -13,7 +13,11 @@ import {
   type CommentarySlotData,
   type CommentarySSEEvent,
 } from "./commentary";
-import { generateAndUploadCommentary } from "./commentary-generator";
+import {
+  generateAndUploadCommentary,
+  type PreGeneratedCommentaryClip,
+} from "./commentary-generator";
+import { findVoiceClipForTurn } from "./commentary-voice-clips";
 import type { VoiceClipMeta } from "./rumble-persistence";
 
 // ---------------------------------------------------------------------------
@@ -43,6 +47,8 @@ export interface CommentaryEntry {
   audioUrl: string | null;
   eventType: string;
   createdAt: number;
+  /** Explicit source tag so the frontend knows exactly how to handle broken URLs */
+  source: "pregen" | "dynamic";
 }
 
 // ---------------------------------------------------------------------------
@@ -62,6 +68,7 @@ async function persistClip(
         event_type: entry.eventType,
         text: entry.text,
         audio_url: entry.audioUrl,
+        source: entry.source,
         created_at: new Date(entry.createdAt).toISOString(),
       },
       { onConflict: "rumble_id,clip_key" },
@@ -82,7 +89,7 @@ export async function getCommentaryForRumble(
     const sb = freshServiceClient();
     const { data, error } = await sb
       .from("ucf_commentary_clips")
-      .select("clip_key, text, audio_url, event_type, created_at")
+      .select("clip_key, text, audio_url, event_type, created_at, source")
       .eq("rumble_id", rumbleId)
       .order("created_at", { ascending: true })
       .limit(20);
@@ -94,6 +101,7 @@ export async function getCommentaryForRumble(
       audioUrl: row.audio_url,
       eventType: row.event_type,
       createdAt: new Date(row.created_at).getTime(),
+      source: (row.source === "pregen" ? "pregen" : "dynamic") as "pregen" | "dynamic",
     }));
   } catch (err) {
     console.warn("[commentary-hook] getCommentaryForRumble failed:", err);
@@ -103,116 +111,6 @@ export async function getCommentaryForRumble(
 
 // Prevent duplicate generation for the same clipKey
 const inflightKeys = new Set<string>();
-
-// ---------------------------------------------------------------------------
-// Voice clip reuse — map combat events to pre-generated announcer voice clips
-// ---------------------------------------------------------------------------
-
-type VoiceLineKey =
-  | "intro"
-  | "hit_landed"
-  | "special_landed"
-  | "hit_taken"
-  | "elim_killer"
-  | "elim_victim"
-  | "victory";
-
-interface VoiceClipMatch {
-  fighterId: string;
-  fighterName: string;
-  lineKey: VoiceLineKey;
-  clip: VoiceClipMeta;
-}
-
-/**
- * Given turn data, find the most dramatic event and check if the relevant
- * fighter has a pre-generated voice clip for it. Returns the clip if found.
- *
- * Priority: special_landed > elim_killer > elim_victim > hit_landed > hit_taken
- */
-function findVoiceClipForTurn(
-  turnData: any,
-  fighterVoiceClips: Map<string, Record<string, VoiceClipMeta>>,
-): VoiceClipMatch | null {
-  const pairings: any[] = turnData?.pairings ?? [];
-  const eliminations: string[] = turnData?.eliminations ?? [];
-
-  // Helper to look up a clip for a fighter
-  const getClip = (fighterId: string, key: VoiceLineKey): VoiceClipMeta | null => {
-    const clips = fighterVoiceClips.get(fighterId);
-    if (!clips) return null;
-    const clip = clips[key];
-    return clip?.audio_url ? clip : null;
-  };
-
-  // 1. SPECIAL moves that landed
-  for (const p of pairings) {
-    if (p.moveA === "SPECIAL" && Number(p.damageToB ?? 0) > 0) {
-      const clip = getClip(p.fighterA, "special_landed");
-      if (clip) return { fighterId: p.fighterA, fighterName: p.fighterAName ?? p.fighterA, lineKey: "special_landed", clip };
-    }
-    if (p.moveB === "SPECIAL" && Number(p.damageToA ?? 0) > 0) {
-      const clip = getClip(p.fighterB, "special_landed");
-      if (clip) return { fighterId: p.fighterB, fighterName: p.fighterBName ?? p.fighterB, lineKey: "special_landed", clip };
-    }
-  }
-
-  // 2. Eliminations — killer clip first, then victim
-  if (eliminations.length > 0) {
-    for (const p of pairings) {
-      const bDead = eliminations.includes(p.fighterB);
-      const aDead = eliminations.includes(p.fighterA);
-      if (bDead) {
-        const clip = getClip(p.fighterA, "elim_killer");
-        if (clip) return { fighterId: p.fighterA, fighterName: p.fighterAName ?? p.fighterA, lineKey: "elim_killer", clip };
-      }
-      if (aDead) {
-        const clip = getClip(p.fighterB, "elim_killer");
-        if (clip) return { fighterId: p.fighterB, fighterName: p.fighterBName ?? p.fighterB, lineKey: "elim_killer", clip };
-      }
-    }
-    // Victim clips
-    for (const victimId of eliminations) {
-      const clip = getClip(victimId, "elim_victim");
-      if (clip) return { fighterId: victimId, fighterName: victimId, lineKey: "elim_victim", clip };
-    }
-  }
-
-  // 3. Big hits — attacker's hit_landed
-  const BIG_HIT = 18;
-  const bigHits = pairings
-    .filter((p: any) => Number(p.damageToA ?? 0) >= BIG_HIT || Number(p.damageToB ?? 0) >= BIG_HIT)
-    .sort((a: any, b: any) => {
-      const aMax = Math.max(Number(a.damageToA ?? 0), Number(a.damageToB ?? 0));
-      const bMax = Math.max(Number(b.damageToA ?? 0), Number(b.damageToB ?? 0));
-      return bMax - aMax;
-    });
-
-  for (const p of bigHits) {
-    if (Number(p.damageToB ?? 0) >= BIG_HIT) {
-      const clip = getClip(p.fighterA, "hit_landed");
-      if (clip) return { fighterId: p.fighterA, fighterName: p.fighterAName ?? p.fighterA, lineKey: "hit_landed", clip };
-    }
-    if (Number(p.damageToA ?? 0) >= BIG_HIT) {
-      const clip = getClip(p.fighterB, "hit_landed");
-      if (clip) return { fighterId: p.fighterB, fighterName: p.fighterBName ?? p.fighterB, lineKey: "hit_landed", clip };
-    }
-  }
-
-  // 4. Hit taken (defender perspective) — use for biggest hit received
-  for (const p of bigHits) {
-    if (Number(p.damageToA ?? 0) >= BIG_HIT) {
-      const clip = getClip(p.fighterA, "hit_taken");
-      if (clip) return { fighterId: p.fighterA, fighterName: p.fighterAName ?? p.fighterA, lineKey: "hit_taken", clip };
-    }
-    if (Number(p.damageToB ?? 0) >= BIG_HIT) {
-      const clip = getClip(p.fighterB, "hit_taken");
-      if (clip) return { fighterId: p.fighterB, fighterName: p.fighterBName ?? p.fighterB, lineKey: "hit_taken", clip };
-    }
-  }
-
-  return null;
-}
 
 /**
  * Build a map of fighterId → voice_clips from the orchestrator's combat state.
@@ -272,48 +170,13 @@ function buildSlotData(
 // Helper: generate + persist a clip
 // ---------------------------------------------------------------------------
 
-/**
- * Use a pre-generated voice clip directly — no LLM, no TTS, no upload.
- * Persists to ucf_commentary_clips so the frontend picks it up.
- */
-function firePregenClip(
-  rumbleId: string,
-  clipKey: string,
-  eventType: string,
-  match: VoiceClipMatch,
-): void {
-  const fullKey = `${rumbleId}:${clipKey}`;
-  if (inflightKeys.has(fullKey)) return;
-  inflightKeys.add(fullKey);
-
-  const entry: CommentaryEntry = {
-    clipKey,
-    text: match.clip.text,
-    audioUrl: match.clip.audio_url,
-    eventType,
-    createdAt: Date.now(),
-  };
-
-  persistClip(rumbleId, entry)
-    .then(() => {
-      console.log(
-        `[commentary-hook] Reused pre-gen clip: ${match.lineKey} for ${match.fighterName} (${clipKey})`,
-      );
-    })
-    .catch((err) => {
-      console.warn(`[commentary-hook] Failed to persist pre-gen clip:`, err);
-    })
-    .finally(() => {
-      inflightKeys.delete(fullKey);
-    });
-}
-
 function fireAndPersist(
   rumbleId: string,
   clipKey: string,
   eventType: string,
   context: string,
   allowedNames: string[],
+  preGeneratedClip: PreGeneratedCommentaryClip | null = null,
 ): void {
   const fullKey = `${rumbleId}:${clipKey}`;
   if (inflightKeys.has(fullKey)) return;
@@ -325,6 +188,7 @@ function fireAndPersist(
     eventType as any,
     context,
     allowedNames,
+    { preGeneratedClip },
   )
     .then((result) => {
       if (result) {
@@ -334,11 +198,18 @@ function fireAndPersist(
           audioUrl: result.audioUrl,
           eventType,
           createdAt: Date.now(),
+          source: result.source === "pre_generated" ? "pregen" : "dynamic",
         };
         persistClip(rumbleId, entry);
-        console.log(
-          `[commentary-hook] Generated clip: ${clipKey} (${result.audioUrl ? "uploaded" : "no-upload"})`,
-        );
+        if (result.source === "pre_generated" && result.preGeneratedClip) {
+          console.log(
+            `[commentary-hook] Persisted pre-gen clip: ${result.preGeneratedClip.lineKey} for ${result.preGeneratedClip.fighterName} (${clipKey})`,
+          );
+        } else {
+          console.log(
+            `[commentary-hook] Generated dynamic clip: ${clipKey} (${result.audioUrl ? "uploaded" : "no-upload"})`,
+          );
+        }
       }
     })
     .catch((err) => {
@@ -387,15 +258,16 @@ export function registerCommentaryHook(orchestrator: RumbleOrchestrator): void {
 
     // Try to reuse a pre-generated voice clip for the star fighter of this turn
     const voiceClips = collectVoiceClips(orchestrator, data.slotIndex);
-    if (voiceClips.size > 0) {
-      const match = findVoiceClipForTurn(data.turn, voiceClips);
-      if (match) {
-        firePregenClip(data.rumbleId, clipKey, candidate.eventType, match);
-        return;
-      }
-    }
+    const match = voiceClips.size > 0 ? findVoiceClipForTurn(data.turn, voiceClips) : null;
 
-    fireAndPersist(data.rumbleId, clipKey, candidate.eventType, candidate.context, candidate.allowedNames);
+    fireAndPersist(
+      data.rumbleId,
+      clipKey,
+      candidate.eventType,
+      candidate.context,
+      candidate.allowedNames,
+      match,
+    );
   });
 
   // ---- combat_started ----
@@ -425,14 +297,21 @@ export function registerCommentaryHook(orchestrator: RumbleOrchestrator): void {
       const picked = fighterIds[Math.abs(hash) % fighterIds.length];
       const clips = voiceClips.get(picked);
       const introClip = clips?.intro;
-      if (introClip?.audio_url) {
+      if (introClip) {
         const name = combatState?.fighterProfiles.get(picked)?.name ?? picked;
-        firePregenClip(data.rumbleId, clipKey, candidate.eventType, {
-          fighterId: picked,
-          fighterName: name,
-          lineKey: "intro",
-          clip: introClip,
-        });
+        fireAndPersist(
+          data.rumbleId,
+          clipKey,
+          candidate.eventType,
+          candidate.context,
+          candidate.allowedNames,
+          {
+            fighterId: picked,
+            fighterName: name,
+            lineKey: "intro",
+            clip: introClip,
+          },
+        );
         return;
       }
     }
@@ -485,14 +364,21 @@ export function registerCommentaryHook(orchestrator: RumbleOrchestrator): void {
       const voiceClips = collectVoiceClips(orchestrator, data.slotIndex);
       const winnerClips = voiceClips.get(winnerId);
       const victoryClip = winnerClips?.victory;
-      if (victoryClip?.audio_url) {
+      if (victoryClip) {
         const name = combatState?.fighterProfiles.get(winnerId)?.name ?? winnerId;
-        firePregenClip(data.rumbleId, clipKey, candidate.eventType, {
-          fighterId: winnerId,
-          fighterName: name,
-          lineKey: "victory",
-          clip: victoryClip,
-        });
+        fireAndPersist(
+          data.rumbleId,
+          clipKey,
+          candidate.eventType,
+          candidate.context,
+          candidate.allowedNames,
+          {
+            fighterId: winnerId,
+            fighterName: name,
+            lineKey: "victory",
+            clip: victoryClip,
+          },
+        );
         return;
       }
     }

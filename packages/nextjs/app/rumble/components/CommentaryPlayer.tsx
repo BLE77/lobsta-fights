@@ -933,13 +933,10 @@ export default function CommentaryPlayer({
         if (playedSharedClipsRef.current.has(fullKey)) continue;
         playedSharedClipsRef.current.add(fullKey);
 
-        // Detect pre-gen clips: explicit source field (set by UCFA-31 backend) or
-        // heuristic — Supabase Storage URLs from fighter voice clip library.
-        const isPregen =
-          clip.source === "pregen" ||
-          (clip.source === undefined &&
-            typeof clip.audioUrl === "string" &&
-            clip.audioUrl.includes("/storage/v1/object/"));
+        // Use explicit source field — backend now always persists this.
+        // Heuristic URL sniffing is intentionally removed to avoid
+        // misclassifying uploaded dynamic clips as pre-gen.
+        const isPregen = clip.source === "pregen";
 
         // Enqueue with the audio URL — mixer will fetch it directly
         mixer.enqueue(
