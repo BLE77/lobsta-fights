@@ -4,15 +4,14 @@ import * as anchor from "@coral-xyz/anchor";
 import { isAuthorizedAdminRequest } from "~~/lib/request-auth";
 import {
   RUMBLE_ENGINE_ID_MAINNET,
-  deriveRumbleConfigPdaMainnet,
-  deriveRumblePdaMainnet,
   deriveVaultPdaMainnet,
   sweepTreasuryMainnet,
   reportResultMainnet,
   completeRumbleMainnet,
-  readRumbleAccountState,
+  readMainnetRumbleAccountStateResilient,
 } from "~~/lib/solana-programs";
 import { getBettingConnection, getCachedBalance } from "~~/lib/solana-connection";
+import { freshSupabase } from "~~/lib/supabase";
 import { createHash } from "node:crypto";
 
 export const dynamic = "force-dynamic";
@@ -25,6 +24,63 @@ const RUMBLE_DISCRIMINATOR = createHash("sha256")
 function readU64LE(data: Uint8Array, offset: number): bigint {
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   return view.getBigUint64(offset, true);
+}
+
+type BettingSweepSafety = {
+  safe: boolean;
+  reason: string;
+  dbBetCount: number | null;
+  onchainTotalDeployedLamports: bigint | null;
+};
+
+async function getBettingSweepSafety(rumbleId: number): Promise<BettingSweepSafety> {
+  let dbBetCount: number | null = null;
+  try {
+    const sb = freshSupabase();
+    const { count, error } = await sb
+      .from("ucf_bets")
+      .select("id", { count: "exact", head: true })
+      .eq("rumble_id", String(rumbleId));
+    if (error) throw error;
+    dbBetCount = count ?? 0;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      safe: false,
+      reason: `manual review required: failed to verify DB bets (${message.slice(0, 120)})`,
+      dbBetCount: null,
+      onchainTotalDeployedLamports: null,
+    };
+  }
+
+  const onchainState = await readMainnetRumbleAccountStateResilient(rumbleId).catch(() => null);
+  if (!onchainState) {
+    return {
+      safe: false,
+      reason: "manual review required: failed to read mainnet betting state",
+      dbBetCount,
+      onchainTotalDeployedLamports: null,
+    };
+  }
+
+  const onchainTotalDeployedLamports = onchainState.totalDeployedLamports ?? 0n;
+  if (dbBetCount > 0 || onchainTotalDeployedLamports > 0n) {
+    return {
+      safe: false,
+      reason:
+        `manual review required: bets exist ` +
+        `(db=${dbBetCount}, onchain=${Number(onchainTotalDeployedLamports) / LAMPORTS_PER_SOL} SOL)`,
+      dbBetCount,
+      onchainTotalDeployedLamports,
+    };
+  }
+
+  return {
+    safe: true,
+    reason: "verified no-bet betting-state rumble",
+    dbBetCount,
+    onchainTotalDeployedLamports,
+  };
 }
 
 /**
@@ -106,7 +162,17 @@ export async function POST(request: Request) {
 
       if (dryRun) {
         if (state === "betting") {
-          entry.actions.push("would: reportResult → completeRumble → sweepTreasury");
+          const safety = await getBettingSweepSafety(rumbleId);
+          entry.db_bet_count = safety.dbBetCount;
+          entry.onchain_total_deployed_sol =
+            safety.onchainTotalDeployedLamports === null
+              ? null
+              : Number(safety.onchainTotalDeployedLamports) / LAMPORTS_PER_SOL;
+          if (safety.safe) {
+            entry.actions.push("would: reportResult → completeRumble → sweepTreasury");
+          } else {
+            entry.actions.push(`BLOCKED: ${safety.reason}`);
+          }
         } else if (state === "payout") {
           entry.actions.push("would: completeRumble → sweepTreasury (if claim window expired)");
         } else if (state === "complete") {
@@ -120,10 +186,22 @@ export async function POST(request: Request) {
 
       // Actually execute sweep
       if (state === "betting") {
+        const safety = await getBettingSweepSafety(rumbleId);
+        entry.db_bet_count = safety.dbBetCount;
+        entry.onchain_total_deployed_sol =
+          safety.onchainTotalDeployedLamports === null
+            ? null
+            : Number(safety.onchainTotalDeployedLamports) / LAMPORTS_PER_SOL;
+        if (!safety.safe) {
+          entry.actions.push(`BLOCKED: ${safety.reason}`);
+          results.push(entry);
+          continue;
+        }
+
         // Rumble never started combat — report dummy result and sweep
         const fighterCount = data[17] ?? 12; // fighter_count u8
         const placements = Array.from({ length: fighterCount }, (_, i) => i === 0 ? 1 : i + 1);
-        const winnerIndex = 0; // first fighter "wins" (arbitrary — nobody bet on them anyway)
+        const winnerIndex = 0; // safe only after verifying no bets exist anywhere
 
         try {
           const sig = await reportResultMainnet(rumbleId, placements, winnerIndex);
