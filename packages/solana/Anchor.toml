@@ -23,4 +23,5 @@ test = "npx ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
 # Build commands:
 #   Devnet (full, with combat):  anchor build -p rumble-engine -- --features rumble-engine/combat
 #   Mainnet (betting-only):      cargo build-sbf --manifest-path programs/rumble-engine/Cargo.toml
+#   Safe devnet deploy:          npm run deploy:rumble:devnet
 #   Deploy devnet:               anchor deploy --program-name rumble_engine --provider.cluster devnet

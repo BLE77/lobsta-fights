@@ -18,6 +18,7 @@ cargo-build-sbf \
 echo "Building rumble-engine..."
 cargo-build-sbf \
   --manifest-path programs/rumble-engine/Cargo.toml \
+  --features combat \
   --tools-version "$TOOLS_VERSION" \
   --sbf-out-dir target/deploy
 
