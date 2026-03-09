@@ -52,8 +52,9 @@ const SFX_MAP: Record<string, string> = {
 };
 
 const AMBIENT_PLAYLIST = [
-  "/sounds/walk-in.mp3",
-  "/sounds/floraphonic-90s-game-ui-4-185097.mp3",
+  "/sounds/ucf-1.mp3",
+  "/sounds/ucf-2.mp3",
+  "/sounds/chrome-knuckles.mp3",
 ];
 
 const ALL_SOUND_URLS = [
