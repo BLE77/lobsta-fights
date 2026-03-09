@@ -9,6 +9,7 @@
 
 import crypto, { randomBytes } from "crypto";
 import { MoveType } from "./types";
+import { FIGHTERS_PER_RUMBLE as MAX_FIGHTERS, MIN_FIGHTERS_TO_START as MIN_FIGHTERS } from "./rumble-config";
 
 /** Cryptographically secure random float in [0, 1) */
 function secureRandom(): number {
@@ -69,8 +70,6 @@ export interface RumbleResult {
 // -------------------------------------------------------------------
 
 export const MAX_TURNS = 20;
-const MIN_FIGHTERS = Math.max(12, Math.min(64, Number(process.env.FIGHTERS_PER_RUMBLE) || 12));
-const MAX_FIGHTERS = 16;
 
 // -------------------------------------------------------------------
 // Move selection (placeholder - will be replaced by bot API calls)

@@ -2186,7 +2186,7 @@ export default function RumblePage() {
                                 ? status.nextRumbleIn === "Starting now..."
                                   ? "NEXT RUMBLE STARTING SOON"
                                   : status.nextRumbleIn
-                                : "Need 12+ fighters to start a rumble"}
+                                : "Queue is building for the next rumble"}
                             </p>
                           </div>
                         </div>

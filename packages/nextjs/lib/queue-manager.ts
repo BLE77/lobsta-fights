@@ -2,6 +2,7 @@
 // See ICHOR_WHITEPAPER.md section 8 for design details.
 
 import type { RumbleResult } from "./rumble-engine";
+import { FIGHTERS_PER_RUMBLE, MIN_FIGHTERS_TO_START } from "./rumble-config";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -58,10 +59,6 @@ export interface QueueManager {
 // retained as dead code so it can be re-activated when the contracts support
 // concurrent rumbles.  Do not remove.
 const NUM_SLOTS = 1;
-// Enforce full-size rumbles: never run with fewer than 12 fighters.
-const FIGHTERS_PER_RUMBLE = Math.max(12, Math.min(64, Number(process.env.FIGHTERS_PER_RUMBLE) || 12));
-// Start only when a full bracket is available.
-const MIN_FIGHTERS_TO_START = FIGHTERS_PER_RUMBLE;
 
 function readDurationMs(
   envName: string,

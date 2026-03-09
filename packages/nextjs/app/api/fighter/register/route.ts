@@ -8,6 +8,7 @@ import { generateApiKey } from "../../../../lib/api-key";
 import { isAuthorizedAdminRequest } from "../../../../lib/request-auth";
 import { requireJsonContentType, sanitizeErrorResponse } from "../../../../lib/api-middleware";
 import { validateWebhookUrl } from "../../../../lib/url-validation";
+import { FIGHTERS_PER_RUMBLE, MIN_FIGHTERS_TO_START } from "../../../../lib/rumble-config";
 
 export const dynamic = "force-dynamic";
 
@@ -88,8 +89,8 @@ const GAME_INSTRUCTIONS = {
   },
 
   rules: {
-    overview: "UCF is a 12-fighter Solana rumble using simultaneous commit-reveal turns.",
-    format: "12 fighters enter the queue. When a rumble starts, the last fighter standing wins.",
+    overview: `UCF is a ${MIN_FIGHTERS_TO_START}-${FIGHTERS_PER_RUMBLE} fighter Solana rumble using simultaneous commit-reveal turns.`,
+    format: `Once at least ${MIN_FIGHTERS_TO_START} fighters are queued, the next rumble locks and can fill up to ${FIGHTERS_PER_RUMBLE} fighters before combat. The last fighter standing wins.`,
     hp: "Each fighter starts a rumble with 100 HP. A fighter is eliminated at 0 HP.",
     meter: "Meter starts at 0, gains 20 per turn, caps at 100, and SPECIAL costs 100 meter.",
     timing: "Each turn runs commit -> reveal -> resolve. Missed deadlines fall back to deterministic auto-pilot.",

@@ -33,13 +33,13 @@ import {
   getErStatusInfo,
 } from "~~/lib/solana-connection";
 import { getCommentaryForRumble } from "~~/lib/commentary-hook";
+import { FIGHTERS_PER_RUMBLE, MIN_FIGHTERS_TO_START } from "~~/lib/rumble-config";
 import { MAX_TURNS } from "~~/lib/rumble-engine";
 import { flushRpcMetrics, runWithRpcMetrics } from "~~/lib/solana-rpc-metrics";
 
 export const dynamic = "force-dynamic";
 const SLOT_MS_ESTIMATE = Math.max(250, Number(process.env.RUMBLE_SLOT_MS_ESTIMATE ?? "400"));
 const BETTING_CLOSE_GUARD_MS = Math.max(1000, Number(process.env.RUMBLE_BETTING_CLOSE_GUARD_MS ?? "12000"));
-const FIGHTERS_PER_RUMBLE = Math.max(12, Math.min(64, Number(process.env.FIGHTERS_PER_RUMBLE) || 12));
 const ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD = 5_000_000n;
 const STATUS_MUTATION_ENABLED = (() => {
   const env = process.env.RUMBLE_PUBLIC_STATUS_MUTATION_ENABLED;
@@ -733,7 +733,7 @@ export async function GET(request: Request) {
       const allSlotsIdle = inMemorySlots.every(
         (slot) => slot.state === "idle" && slot.fighters.length === 0,
       );
-      if (allSlotsIdle && qm.getQueueLength() >= FIGHTERS_PER_RUMBLE) {
+      if (allSlotsIdle && qm.getQueueLength() >= MIN_FIGHTERS_TO_START) {
         await orchestrator.tick().catch((err) => {
           console.warn("[StatusAPI] deadlock kick tick failed", err);
         });
@@ -1626,7 +1626,7 @@ export async function GET(request: Request) {
     // ---- nextRumbleIn estimate ---------------------------------------------
     const effectiveQueueLen = queueEntries.length;
     let nextRumbleIn: string | null = null;
-    const fightersNeeded = FIGHTERS_PER_RUMBLE;
+    const fightersNeeded = MIN_FIGHTERS_TO_START;
     if (effectiveQueueLen > 0 && effectiveQueueLen < fightersNeeded) {
       nextRumbleIn = `Need ${fightersNeeded - effectiveQueueLen} more fighters`;
     } else if (effectiveQueueLen >= fightersNeeded) {
@@ -1634,7 +1634,15 @@ export async function GET(request: Request) {
       if (!hasIdleSlot) {
         nextRumbleIn = "All slots active";
       } else {
-        nextRumbleIn = "Starting now...";
+        const queueLockCountdownMs = qm.getQueueStartCountdownMs();
+        if (effectiveQueueLen >= FIGHTERS_PER_RUMBLE) {
+          nextRumbleIn = "Starting now...";
+        } else if (queueLockCountdownMs !== null && queueLockCountdownMs > 0) {
+          const seconds = Math.max(1, Math.ceil(queueLockCountdownMs / 1000));
+          nextRumbleIn = `Locking in ${seconds}s (${effectiveQueueLen}/${FIGHTERS_PER_RUMBLE})`;
+        } else {
+          nextRumbleIn = `Starting soon... (${effectiveQueueLen}/${FIGHTERS_PER_RUMBLE})`;
+        }
       }
     }
 

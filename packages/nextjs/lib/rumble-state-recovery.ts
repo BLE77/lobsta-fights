@@ -17,6 +17,7 @@
 import * as persist from "./rumble-persistence";
 import { getOrchestrator } from "./rumble-orchestrator";
 import { getQueueManager } from "./queue-manager";
+import { MIN_FIGHTERS_TO_START as MIN_FIGHTERS_PER_RUMBLE } from "./rumble-config";
 import { isErEnabled } from "./solana-connection";
 import { isCombatStateDelegated, delegateCombatToEr } from "./solana-programs";
 import { parseOnchainRumbleIdNumber } from "./rumble-id";
@@ -50,7 +51,6 @@ const MAX_COMBAT_STUCK_AGE_MS = (() => {
   if (!Number.isFinite(raw)) return 5 * 60 * 1000;
   return Math.max(60 * 1000, Math.min(60 * 60 * 1000, Math.floor(raw)));
 })();
-const MIN_FIGHTERS_PER_RUMBLE = Math.max(12, Math.min(64, Number(process.env.FIGHTERS_PER_RUMBLE) || 12));
 
 // ---------------------------------------------------------------------------
 // Main recovery function

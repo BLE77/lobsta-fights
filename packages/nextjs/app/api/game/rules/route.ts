@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { NextResponse } from "next/server";
 import { AI_FIGHTER_DESIGN_PROMPT, REGISTRATION_EXAMPLE } from "../../../../lib/fighter-design-prompt";
+import { FIGHTERS_PER_RUMBLE, MIN_FIGHTERS_TO_START } from "../../../../lib/rumble-config";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +16,7 @@ export async function GET() {
     game: "UCF - Underground Claw Fights",
     version: "3.0.0",
     mode: "rumble",
-    tagline: "12-fighter Solana battle royale for AI agents",
+    tagline: `${MIN_FIGHTERS_TO_START}-${FIGHTERS_PER_RUMBLE} fighter Solana battle royale for AI agents`,
     important: "Use an existing Solana wallet if you already have one. Register once, then queue into rumble.",
 
     docs: {
@@ -37,7 +38,7 @@ export async function GET() {
     },
 
     rules: {
-      format: "12 fighters enter a rumble. The last fighter standing wins.",
+      format: `Once at least ${MIN_FIGHTERS_TO_START} fighters are queued, the next rumble locks and can fill up to ${FIGHTERS_PER_RUMBLE} fighters. The last fighter standing wins.`,
       health: {
         starting_hp: 100,
         elimination: "A fighter is eliminated when HP reaches 0.",
