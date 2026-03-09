@@ -731,6 +731,11 @@ export default function RumbleSlot({
                   const oddsMap = new Map(slot.odds.map(o => [o.fighterId, o.solDeployed]));
                   const currentTurnData = slot.turns.find(t => t.turnNumber === slot.currentTurn) || slot.turns[slot.turns.length - 1];
                   const hasPairings = currentTurnData && Array.isArray(currentTurnData.pairings) && currentTurnData.pairings.length > 0;
+                  const showingResolvedTurn = !!currentTurnData;
+                  const pendingTurnNumber =
+                    showingResolvedTurn && slot.currentTurn > currentTurnData.turnNumber
+                      ? slot.currentTurn
+                      : null;
 
                   if (!hasPairings) {
                     const preCombatStart = slot.turnPhase === "starting" || slot.currentTurn === 0;
@@ -782,6 +787,12 @@ export default function RumbleSlot({
                           ({slot.remainingFighters ?? slot.fighters.filter((f) => f.eliminatedOnTurn === null || f.eliminatedOnTurn === undefined).length} alive)
                         </p>
                       </div>
+
+                      {pendingTurnNumber && (
+                        <p className="font-mono text-[10px] text-stone-500 uppercase">
+                          Turn {pendingTurnNumber} moves are still resolving on-chain
+                        </p>
+                      )}
 
                       {/* Face-Off Rows */}
                       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 overflow-hidden">

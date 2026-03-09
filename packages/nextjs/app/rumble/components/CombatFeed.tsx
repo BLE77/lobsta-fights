@@ -92,6 +92,8 @@ export default function CombatFeed({
   fighterNames,
 }: CombatFeedProps) {
   const feedRef = useRef<HTMLDivElement>(null);
+  const latestResolvedTurnNumber = turns.length > 0 ? turns[turns.length - 1].turnNumber : 0;
+  const showingPendingTurn = currentTurn > latestResolvedTurnNumber;
 
   // Newest turns first — scroll to top when new turns arrive
   useEffect(() => {
@@ -136,16 +138,23 @@ export default function CombatFeed({
   }
 
   return (
-    <div
+      <div
       ref={feedRef}
       className="space-y-2 max-h-64 overflow-y-auto pr-1 scrollbar-thin relative pb-4"
       style={{ maskImage: "linear-gradient(to bottom, black 85%, transparent)", WebkitMaskImage: "linear-gradient(to bottom, black 85%, transparent)" }}
     >
       {/* Turn header */}
       <div className="sticky top-0 bg-stone-900/95 py-1 border-b border-stone-800 text-center">
-        <span className="font-mono text-xs text-amber-500">
-          TURN {currentTurn}
-        </span>
+        <div className="flex flex-col items-center gap-0.5">
+          <span className="font-mono text-xs text-amber-500">
+            TURN {showingPendingTurn ? latestResolvedTurnNumber : currentTurn}
+          </span>
+          {showingPendingTurn && latestResolvedTurnNumber > 0 && (
+            <span className="font-mono text-[9px] text-stone-500 uppercase">
+              Turn {currentTurn} resolving on-chain
+            </span>
+          )}
+        </div>
       </div>
 
       {turns.slice().reverse().map((turn) => (
