@@ -104,6 +104,8 @@ class RadioMixer {
     allowedNames: string[];
     clipKey?: string;
     audioUrl?: string;
+    /** True when audioUrl is a pre-generated Supabase Storage clip (vs dynamically generated) */
+    isPregen?: boolean;
     retries: number;
     priority: boolean;
     enqueuedAt: number;
@@ -383,6 +385,7 @@ class RadioMixer {
     allowedNames: string[],
     clipKey?: string,
     audioUrl?: string,
+    isPregen?: boolean,
   ) {
     if (clipKey) {
       if (this.currentClipKey === clipKey) return;
@@ -399,6 +402,7 @@ class RadioMixer {
       allowedNames,
       clipKey,
       audioUrl,
+      isPregen,
       retries: 0,
       priority,
       enqueuedAt: Date.now(),
@@ -474,13 +478,27 @@ class RadioMixer {
       // If we have a pre-generated audio URL from the server, fetch that directly
       // instead of calling the commentary API (shared stream — all viewers hear same audio)
       if (item.audioUrl) {
+        if (item.isPregen) {
+          console.log(`[commentary] Playing pre-gen clip: ${item.clipKey ?? item.eventType}`);
+        } else {
+          console.log(`[commentary] Playing uploaded dynamic clip: ${item.clipKey ?? item.eventType}`);
+        }
         res = await fetch(item.audioUrl);
         if (!res.ok) {
+          if (item.isPregen) {
+            // Pre-gen clips use fighter voice line text as their "context", not a commentary
+            // prompt — falling back to the commentary API would generate nonsense. Skip instead.
+            console.warn(`[commentary] Pre-gen clip URL broken (${res.status}), skipping: ${item.clipKey ?? item.eventType}`);
+            this.unduckAmbient();
+            setTimeout(() => this.processNextVoice(), 100);
+            return;
+          }
           console.warn("[commentary] Pre-generated audio fetch failed, falling back to API");
-          // Fall through to API generation
+          // Fall through to API generation for dynamically-generated clips
           res = await this.fetchFromCommentaryApi(item);
         }
       } else {
+        console.log(`[commentary] Generating dynamic clip: ${item.clipKey ?? item.eventType}`);
         res = await this.fetchFromCommentaryApi(item);
       }
 
@@ -890,6 +908,8 @@ export default function CommentaryPlayer({
           audioUrl: string | null;
           eventType: string;
           createdAt: number;
+          /** Set by UCFA-31 backend to indicate this is a pre-generated fighter voice clip */
+          source?: "pregen" | "dynamic";
         }>;
       };
       const commentary = slotAny.commentary;
@@ -901,7 +921,15 @@ export default function CommentaryPlayer({
         if (playedSharedClipsRef.current.has(fullKey)) continue;
         playedSharedClipsRef.current.add(fullKey);
 
-        // Enqueue with the pre-generated audio URL — mixer will fetch it directly
+        // Detect pre-gen clips: explicit source field (set by UCFA-31 backend) or
+        // heuristic — Supabase Storage URLs from fighter voice clip library.
+        const isPregen =
+          clip.source === "pregen" ||
+          (clip.source === undefined &&
+            typeof clip.audioUrl === "string" &&
+            clip.audioUrl.includes("/storage/v1/object/"));
+
+        // Enqueue with the audio URL — mixer will fetch it directly
         mixer.enqueue(
           (clip.eventType as CommentaryEventType) ?? "big_hit",
           clip.text,
@@ -909,6 +937,7 @@ export default function CommentaryPlayer({
           [],
           clip.clipKey,
           clip.audioUrl,
+          isPregen,
         );
       }
     }
