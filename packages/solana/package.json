@@ -13,6 +13,7 @@
     "configure:entropy": "node ./scripts/configure-entropy.mjs",
     "setup:entropy:var": "node ./scripts/setup-entropy-var.mjs"
   },
+  "_versionNote": "Anchor CLI (Anchor.toml) pins 0.32.1 which matches the on-chain Cargo crates (anchor-lang 0.32.1). The TS SDK below (^0.30.1) is the latest 0.30.x release; Anchor 0.30.x SDK is wire-compatible with programs built by CLI 0.32.x (same IDL spec 0.1.0, same discriminator format). Upgrade SDK to @coral-xyz/anchor@^0.32.0 when it is published to npm to keep versions fully aligned.",
   "dependencies": {
     "@coral-xyz/anchor": "^0.30.1",
     "@solana/web3.js": "^1.95.3"

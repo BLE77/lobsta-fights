@@ -34,6 +34,11 @@ export function sanitizeErrorResponse(_error: unknown, context: string): { error
 /**
  * Simple in-memory per-key per-minute rate limiter.
  * Returns true when the key is over the provided per-minute limit.
+ *
+ * NOTE: This is the older rate-limit helper from api-middleware. Most
+ * endpoints now use the tiered checkRateLimit() from lib/rate-limit.ts.
+ * Both share the same in-memory limitation on Vercel serverless — see
+ * the doc comment in rate-limit.ts for details.
  */
 export function rateLimitCheck(key: string, maxPerMinute: number): boolean {
   if (maxPerMinute <= 0) {

@@ -21,6 +21,11 @@ const scriptSrc = [
 const nextConfig = {
   productionBrowserSourceMaps: false,
   reactStrictMode: true,
+  // images.unoptimized = true disables the Next.js Image Optimization API.
+  // This is intentional: all fighter/arena images are served from Supabase
+  // Storage (external CDN), and Vercel image optimization would add latency
+  // + cost for images we don't control.  It also side-steps the Next.js
+  // Image Optimizer DoS advisory (GHSA-*) since the optimizer is disabled.
   images: {
     unoptimized: true,
   },

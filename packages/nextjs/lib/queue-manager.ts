@@ -49,6 +49,14 @@ export interface QueueManager {
 // Constants
 // ---------------------------------------------------------------------------
 
+// DESIGN NOTE: The original architecture (see ICHOR_WHITEPAPER.md section 8)
+// envisioned 3 staggered slots cycling through betting/combat/payout so there
+// is always a slot accepting bets.  In practice the system runs a single slot
+// (NUM_SLOTS = 1) because the on-chain Rumble Engine processes one rumble at a
+// time.  The multi-slot scaffolding (SLOT_INITIAL_STATES, initializeStaggered,
+// getEstimatedWait's timeBetweenRumbles divisor, etc.) is intentionally
+// retained as dead code so it can be re-activated when the contracts support
+// concurrent rumbles.  Do not remove.
 const NUM_SLOTS = 1;
 // Enforce full-size rumbles: never run with fewer than 12 fighters.
 const FIGHTERS_PER_RUMBLE = Math.max(12, Math.min(64, Number(process.env.FIGHTERS_PER_RUMBLE) || 12));
@@ -109,6 +117,7 @@ const QUEUE_LOCK_COUNTDOWN_MS = readDurationMs(
 // Slot offsets -- each slot is staggered by ~2 minutes so there's always
 // something happening. These aren't wall-clock offsets; they're the initial
 // phase each slot starts in. We rotate through betting -> combat -> payout.
+// NOTE: Only used when NUM_SLOTS > 1. Currently dead code (see NUM_SLOTS note).
 const SLOT_INITIAL_STATES: SlotState[] = ["betting", "combat", "payout"];
 
 // ---------------------------------------------------------------------------
@@ -496,7 +505,19 @@ export class RumbleQueueManager implements QueueManager {
     }
   }
 
-  /** Reset a slot to idle and auto-requeue fighters that opted in. */
+  /**
+   * Reset a slot to idle and auto-requeue fighters that opted in.
+   *
+   * ATOMICITY NOTE (review item): recycleSlot() calls resetSlotToIdle()
+   * then addToQueue() in two separate steps.  This is NOT atomic, but it
+   * is safe because: (1) the QueueManager is single-threaded JS — no
+   * concurrent mutation can interleave between resetSlotToIdle and
+   * addToQueue within the same synchronous call; (2) addToQueue already
+   * guards against duplicates via fighterSet and throws if the fighter is
+   * in an active (non-idle) slot.  The earlier bug (re-queuing while the
+   * slot was still in payout state) was fixed by moving resetSlotToIdle
+   * before the requeue loop.
+   */
   private recycleSlot(slot: RumbleSlot): void {
     // Clean up payout tracking
     this.payoutStartTimes.delete(slot.slotIndex);

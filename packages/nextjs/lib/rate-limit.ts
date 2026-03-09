@@ -2,6 +2,35 @@ import { NextResponse } from "next/server";
 
 // ---------------------------------------------------------------------------
 // In-memory rate limiter using Map
+//
+// LIMITATION (distributed / serverless): These buckets live in process memory.
+// On Vercel, each serverless invocation may run in a separate isolate, so a
+// client can exceed the configured limit by spreading requests across cold
+// starts.  This is an intentional trade-off — adding Redis or an external
+// store is not warranted for the current traffic volume.  The rate limiter
+// still provides meaningful protection within a single long-lived instance
+// (Railway worker, sustained Vercel warm instance) and acts as a
+// best-effort guard against simple abuse in the serverless case.
+//
+// Endpoints that still apply rate limiting (as of 2026-03):
+//   PUBLIC_READ  — /leaderboard, /matches, /stats, /activity, /history,
+//                  /rumble/queue (GET), /rumble/bet (GET), /rumble/submit-tx (GET),
+//                  /rumble/pending-moves, /mobile-auth/nonce,
+//                  /rumble/sponsorship/balance
+//   PUBLIC_WRITE — /rumble/bet (POST), /rumble/wallet-submit,
+//                  /rumble/claim/prepare, /rumble/claim/confirm,
+//                  /rumble/bet/prepare, /rumble/submit-move,
+//                  /rumble/move/commit/prepare, /rumble/move/reveal/prepare,
+//                  /mobile-auth/verify, /fighter/verify,
+//                  /rumble/commentary (POST),
+//                  /rumble/sponsorship/claim/prepare,
+//                  /rumble/sponsorship/claim/confirm
+//   AUTHENTICATED — /rumble/submit-tx (POST), /rumble/queue (POST/DELETE)
+//   SSE          — /rumble/live
+//
+// Intentionally removed from high-frequency read endpoints:
+//   /rumble/status, /rumble/my-bets, /rumble/balance, /rumble/sol-balance
+//   (these are polled rapidly by the UI and rate limiting caused false 429s)
 // ---------------------------------------------------------------------------
 
 interface RateLimitEntry {

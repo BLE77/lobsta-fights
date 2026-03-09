@@ -38,6 +38,13 @@ import { randomBytes } from "node:crypto";
 // Config
 // ---------------------------------------------------------------------------
 
+// The 500ms floor is intentional — during active combat the worker must
+// tick faster than the legacy combat tick interval (default 3s, min 1s)
+// to avoid falling behind on turn processing.  In practice the default
+// is 2000ms; the 500ms floor only applies if an operator explicitly sets
+// RUMBLE_WORKER_INTERVAL_MS below 500.  At 500ms the tick is lightweight
+// (single synchronous advanceSlots + one async turn per slot at most) and
+// does not cause meaningful CPU pressure on Railway.
 const ACTIVE_TICK_INTERVAL_MS = Math.max(
   500,
   Number(process.env.RUMBLE_WORKER_INTERVAL_MS) || 2_000,
