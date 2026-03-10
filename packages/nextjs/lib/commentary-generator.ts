@@ -14,6 +14,7 @@ import {
   buildGroundedCommentary,
   type CommentaryEventType,
 } from "./commentary";
+import type { VoiceClipMeta } from "./rumble-persistence";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -199,6 +200,15 @@ export async function uploadCommentaryClip(
 export interface CommentaryClipResult {
   text: string;
   audioUrl: string | null;
+  source: "dynamic" | "pre_generated";
+  preGeneratedClip?: PreGeneratedCommentaryClip | null;
+}
+
+export interface PreGeneratedCommentaryClip {
+  fighterId: string;
+  fighterName: string;
+  lineKey: string;
+  clip: VoiceClipMeta;
 }
 
 export async function generateAndUploadCommentary(
@@ -207,8 +217,19 @@ export async function generateAndUploadCommentary(
   eventType: CommentaryEventType,
   context: string,
   allowedNames: string[] = [],
+  options: { preGeneratedClip?: PreGeneratedCommentaryClip | null } = {},
 ): Promise<CommentaryClipResult | null> {
   try {
+    const preGeneratedClip = options.preGeneratedClip ?? null;
+    if (preGeneratedClip?.clip?.audio_url) {
+      return {
+        text: preGeneratedClip.clip.text || buildGroundedCommentary(context),
+        audioUrl: preGeneratedClip.clip.audio_url,
+        source: "pre_generated",
+        preGeneratedClip,
+      };
+    }
+
     const text = await generateCommentaryText(eventType, context, allowedNames);
     if (!text) return null;
 
@@ -223,7 +244,12 @@ export async function generateAndUploadCommentary(
       }
     }
 
-    return { text, audioUrl };
+    return {
+      text,
+      audioUrl,
+      source: "dynamic",
+      preGeneratedClip: null,
+    };
   } catch (err) {
     console.warn("[commentary-generator] Pipeline failed:", err);
     return null;
