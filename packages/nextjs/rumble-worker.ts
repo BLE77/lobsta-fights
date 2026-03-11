@@ -29,6 +29,7 @@ import { retryPendingMainnetOps } from "./lib/mainnet-retry";
 import {
   acquireWorkerLease,
   releaseWorkerLease,
+  setAdminConfig,
 } from "./lib/rumble-persistence";
 import { createServer } from "node:http";
 import { hostname } from "node:os";
@@ -80,7 +81,10 @@ let consecutiveErrors = 0;
 let lastReconcileAt = 0;
 let lastMainnetRetryAt = 0;
 let lastTickAt = 0;
+let lastHealthPersistAt = 0;
 const STOP_TIMEOUT_MS = 10_000;
+const WORKER_RUNTIME_HEALTH_KEY = "worker_runtime_health";
+const WORKER_RUNTIME_HEALTH_INTERVAL_MS = 5_000;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -118,6 +122,33 @@ function getTickIntervalMs(
   const status = orchestrator.getStatus();
   const hasActiveSlot = status.some((slot) => slot.state !== "idle");
   return hasActiveSlot ? ACTIVE_TICK_INTERVAL_MS : IDLE_TICK_INTERVAL_MS;
+}
+
+async function persistWorkerRuntimeHealth(
+  orchestrator: ReturnType<typeof getOrchestrator>,
+): Promise<void> {
+  const runtimeHealth = orchestrator.getRuntimeHealth();
+  const status = orchestrator.getStatus();
+  await setAdminConfig(WORKER_RUNTIME_HEALTH_KEY, {
+    updatedAt: new Date().toISOString(),
+    workerId: WORKER_ID,
+    lastTickAt: lastTickAt ? new Date(lastTickAt).toISOString() : null,
+    activeTickIntervalMs: ACTIVE_TICK_INTERVAL_MS,
+    idleTickIntervalMs: IDLE_TICK_INTERVAL_MS,
+    reconcileIntervalMs: RECONCILE_INTERVAL_MS,
+    queueLength: runtimeHealth.queueLength,
+    queueStartCountdownMs: runtimeHealth.queueStartCountdownMs,
+    onchainAdmin: runtimeHealth.onchainAdmin,
+    onchainCreateFailures: runtimeHealth.onchainCreateFailures,
+    slotReports: runtimeHealth.slotReports,
+    slotStatus: status.map((slot) => ({
+      slotIndex: slot.slotIndex,
+      state: slot.state,
+      fighters: slot.fighters.length,
+      turnCount: slot.turnCount,
+      remainingFighters: slot.remainingFighters,
+    })),
+  });
 }
 
 function startHealthServer(orchestrator: ReturnType<typeof getOrchestrator>): void {
@@ -228,6 +259,15 @@ async function run(): Promise<void> {
 
       // Log status periodically
       const status = orchestrator.getStatus();
+      if (
+        tickCount === 1 ||
+        Date.now() - lastHealthPersistAt >= WORKER_RUNTIME_HEALTH_INTERVAL_MS
+      ) {
+        await persistWorkerRuntimeHealth(orchestrator).catch((e) =>
+          console.error(`[${ts()}] [worker] runtime health persist error:`, e),
+        );
+        lastHealthPersistAt = Date.now();
+      }
       if (tickCount === 1 || tickCount % 15 === 0) {
         console.log(
           `[${ts()}] [worker] tick#${tickCount} ${summarizeSlots(status)}`,

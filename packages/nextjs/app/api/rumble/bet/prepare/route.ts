@@ -18,6 +18,7 @@ import {
   extractRumbleFighterIds,
   hasMinimumRumbleFighters,
   MIN_ACTIVE_RUMBLE_FIGHTERS,
+  getBettingReadyMarker,
 } from "~~/lib/rumble-persistence";
 import { requireJsonContentType, sanitizeErrorResponse } from "~~/lib/api-middleware";
 import { flushRpcMetrics, runWithRpcMetrics } from "~~/lib/solana-rpc-metrics";
@@ -47,8 +48,18 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function loadBettingRumbleCandidatesForSlot(slotIndex: number): Promise<BettingRumbleCandidate[]> {
+  const marker = await getBettingReadyMarker(slotIndex);
   const active = await loadActiveRumbles();
   const candidates: BettingRumbleCandidate[] = [];
+  if (marker && marker.rumbleId) {
+    candidates.push({
+      rumbleId: marker.rumbleId,
+      rumbleNumber: marker.rumbleNumber,
+      fighterIds: marker.fighterIds,
+      createdAtMs: new Date(marker.armedAtIso).getTime() || Date.now(),
+      source: "persisted",
+    });
+  }
   for (const row of active) {
     if (Number(row.slot_index) !== slotIndex) continue;
     if (String(row.status ?? "").toLowerCase() !== "betting") continue;
@@ -67,8 +78,12 @@ async function loadBettingRumbleCandidatesForSlot(slotIndex: number): Promise<Be
       source: "persisted",
     });
   }
-  candidates.sort((a, b) => b.createdAtMs - a.createdAtMs);
-  return candidates;
+  const deduped = new Map<string, BettingRumbleCandidate>();
+  for (const candidate of candidates) {
+    if (!candidate.rumbleId) continue;
+    if (!deduped.has(candidate.rumbleId)) deduped.set(candidate.rumbleId, candidate);
+  }
+  return [...deduped.values()].sort((a, b) => b.createdAtMs - a.createdAtMs);
 }
 
 function prependLocalBettingCandidate(

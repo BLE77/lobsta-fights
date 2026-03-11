@@ -110,6 +110,26 @@ interface DashboardData {
       ready: boolean;
       reason: string | null;
     };
+    queueLength?: number;
+    queueStartCountdownMs?: number | null;
+    slotReports?: Array<{
+      slotIndex: number;
+      rumbleId: string;
+      state: string;
+      stage: string;
+      fighterCount: number;
+      bettingDeadline: string | null;
+      bettingArmedAt: string | null;
+      combatStartedAt: string | null;
+      turnCount: number;
+      lastOnchainTurnResolved: number;
+      remainingFighters: number;
+      erDelegated: boolean;
+      waitingOnMainnetReady: boolean;
+      waitingOnMatchupVrf: boolean;
+      lastResolveSubmittedTurn: number | null;
+      lastAdvanceSubmittedTurn: number | null;
+    }>;
     onchainCreateFailures?: Array<{
       rumbleId: string;
       slotIndex: number | null;
@@ -118,6 +138,49 @@ interface DashboardData {
       lastSeenAt: string;
     }>;
   };
+  workerRuntime?: {
+    updatedAt: string;
+    workerId: string;
+    lastTickAt: string | null;
+    activeTickIntervalMs: number;
+    idleTickIntervalMs: number;
+    reconcileIntervalMs: number;
+    queueLength?: number;
+    queueStartCountdownMs?: number | null;
+    onchainAdmin?: {
+      ready: boolean;
+      reason: string | null;
+    };
+    onchainCreateFailures?: Array<{
+      rumbleId: string;
+      slotIndex: number | null;
+      reason: string;
+      attempts: number;
+      lastSeenAt: string;
+    }>;
+    slotReports?: Array<{
+      slotIndex: number;
+      rumbleId: string;
+      state: string;
+      stage: string;
+      fighterCount: number;
+      bettingDeadline: string | null;
+      bettingArmedAt: string | null;
+      combatStartedAt: string | null;
+      turnCount: number;
+      lastOnchainTurnResolved: number;
+      remainingFighters: number;
+      erDelegated: boolean;
+      waitingOnMainnetReady: boolean;
+      waitingOnMatchupVrf: boolean;
+      lastResolveSubmittedTurn: number | null;
+      lastAdvanceSubmittedTurn: number | null;
+    }>;
+  } | null;
+  workerLease?: {
+    worker_id: string;
+    expires_at: string;
+  } | null;
   systemWarnings?: string[];
   stuckRumbles?: StuckRumble[];
   onchainHealth?: {
@@ -1205,6 +1268,9 @@ export default function AdminPage() {
             shower={shower}
             activeRumbles={dedupedActiveRumbles}
             recentRumbles={recentRumbles}
+            runtimeHealth={dashboard?.runtimeHealth}
+            workerRuntime={dashboard?.workerRuntime}
+            workerLease={dashboard?.workerLease}
             stuckRumbles={dashboard?.stuckRumbles}
             onchainCreateFailures={dashboard?.runtimeHealth?.onchainCreateFailures}
             onchainHealth={dashboard?.onchainHealth}
@@ -1244,6 +1310,9 @@ function OverviewTab({
   shower,
   activeRumbles,
   recentRumbles,
+  runtimeHealth,
+  workerRuntime,
+  workerLease,
   stuckRumbles,
   onchainCreateFailures,
   onchainHealth,
@@ -1253,6 +1322,9 @@ function OverviewTab({
   shower: IchorShower | null;
   activeRumbles: Rumble[];
   recentRumbles: Rumble[];
+  runtimeHealth?: DashboardData["runtimeHealth"];
+  workerRuntime?: DashboardData["workerRuntime"];
+  workerLease?: DashboardData["workerLease"];
   stuckRumbles?: StuckRumble[];
   onchainCreateFailures?: DashboardData["runtimeHealth"] extends { onchainCreateFailures?: infer T } ? T : never;
   onchainHealth?: DashboardData["onchainHealth"];
@@ -1335,6 +1407,103 @@ function OverviewTab({
               </div>
             ))}
           </div>
+        )}
+      </Section>
+
+      {/* Lifecycle Report */}
+      <Section title="Lifecycle Report">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+          <StatCard label="Queue Length" value={workerRuntime?.queueLength ?? queue.length} />
+          <StatCard
+            label="Queue Lock"
+            value={
+              workerRuntime?.queueStartCountdownMs != null
+                ? formatDuration(workerRuntime.queueStartCountdownMs)
+                : "-"
+            }
+          />
+          <StatCard
+            label="Worker Seen"
+            value={workerRuntime?.updatedAt ? formatTime(workerRuntime.updatedAt) : "NO"}
+          />
+          <StatCard
+            label="Create Failures"
+            value={workerRuntime?.onchainCreateFailures?.length ?? onchainCreateFailures?.length ?? 0}
+          />
+        </div>
+        {workerRuntime?.slotReports?.length ? (
+          <div className="overflow-x-auto">
+            <table className="w-full font-mono text-xs">
+              <thead>
+                <tr className="text-stone-500 border-b border-stone-800">
+                  <th className="text-left py-2 px-2">Slot</th>
+                  <th className="text-left py-2 px-2">Stage</th>
+                  <th className="text-left py-2 px-2">Rumble</th>
+                  <th className="text-left py-2 px-2">Fighters</th>
+                  <th className="text-left py-2 px-2">Turn</th>
+                  <th className="text-left py-2 px-2">Alive</th>
+                  <th className="text-left py-2 px-2">Bet Deadline</th>
+                  <th className="text-left py-2 px-2">Flags</th>
+                </tr>
+              </thead>
+              <tbody>
+                {workerRuntime.slotReports.map((slot) => (
+                  <tr key={`${slot.slotIndex}-${slot.rumbleId}`} className="border-b border-stone-800/50 hover:bg-stone-900/40">
+                    <td className="py-2 px-2 text-stone-300">{slot.slotIndex}</td>
+                    <td className="py-2 px-2">
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-stone-900/70 border border-stone-700 rounded text-[10px] uppercase text-stone-200">
+                        {slot.stage.replaceAll("_", " ")}
+                      </span>
+                    </td>
+                    <td className="py-2 px-2 text-stone-400" title={slot.rumbleId}>
+                      {truncate(slot.rumbleId, 8)}
+                    </td>
+                    <td className="py-2 px-2 text-stone-300">{slot.fighterCount}</td>
+                    <td className="py-2 px-2 text-stone-300">
+                      {slot.lastOnchainTurnResolved > 0
+                        ? `${slot.lastOnchainTurnResolved} resolved`
+                        : slot.turnCount}
+                    </td>
+                    <td className="py-2 px-2 text-stone-300">{slot.remainingFighters}</td>
+                    <td className="py-2 px-2 text-stone-500">
+                      {slot.bettingDeadline ? formatTime(slot.bettingDeadline) : "not armed"}
+                    </td>
+                    <td className="py-2 px-2 text-stone-400">
+                      <div className="flex flex-wrap gap-1">
+                        {slot.waitingOnMainnetReady && (
+                          <span className="px-1.5 py-0.5 bg-amber-950/40 border border-amber-800/50 rounded text-[10px] text-amber-400">
+                            waiting mainnet
+                          </span>
+                        )}
+                        {slot.waitingOnMatchupVrf && (
+                          <span className="px-1.5 py-0.5 bg-blue-950/40 border border-blue-800/50 rounded text-[10px] text-blue-400">
+                            waiting VRF
+                          </span>
+                        )}
+                        {slot.erDelegated && (
+                          <span className="px-1.5 py-0.5 bg-purple-950/40 border border-purple-800/50 rounded text-[10px] text-purple-400">
+                            ER delegated
+                          </span>
+                        )}
+                        {slot.lastResolveSubmittedTurn != null && (
+                          <span className="px-1.5 py-0.5 bg-stone-900/70 border border-stone-700 rounded text-[10px] text-stone-300">
+                            resolve {slot.lastResolveSubmittedTurn}
+                          </span>
+                        )}
+                        {slot.lastAdvanceSubmittedTurn != null && (
+                          <span className="px-1.5 py-0.5 bg-stone-900/70 border border-stone-700 rounded text-[10px] text-stone-300">
+                            advance {slot.lastAdvanceSubmittedTurn}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="font-mono text-sm text-stone-600">No Railway worker lifecycle data available yet</p>
         )}
       </Section>
 

@@ -5,6 +5,7 @@ import {
   loadQueueState,
   getStats,
   getIchorShowerState,
+  getAdminConfig,
 } from "~~/lib/rumble-persistence";
 import { getOrchestrator } from "~~/lib/rumble-orchestrator";
 import { isAuthorizedAdminRequest } from "~~/lib/request-auth";
@@ -36,7 +37,7 @@ export async function GET(request: Request) {
     const sb = freshClient();
 
     // Run all queries in parallel
-    const [queue, stats, ichorShower, activeRumblesRaw, recentRumbles, fighters] =
+    const [queue, stats, ichorShower, activeRumblesRaw, recentRumbles, fighters, workerRuntime, workerLease] =
       await Promise.all([
         loadQueueState(),
         getStats(),
@@ -67,6 +68,13 @@ export async function GET(request: Request) {
           .eq("is_active", true)
           .order("name", { ascending: true })
           .then(({ data }) => data ?? []),
+        getAdminConfig("worker_runtime_health"),
+        sb
+          .from("worker_lease")
+          .select("worker_id, expires_at")
+          .limit(1)
+          .maybeSingle()
+          .then(({ data }) => data ?? null),
       ]);
 
     // Keep only the newest active rumble per slot for admin display.
@@ -86,6 +94,17 @@ export async function GET(request: Request) {
     const staleActiveRows = Math.max(0, activeRumblesRaw.length - activeRumbles.length);
     const runtimeHealth = getOrchestrator().getRuntimeHealth();
     const systemWarnings: string[] = [];
+    const workerRuntimeFreshMs =
+      typeof workerRuntime === "object" && workerRuntime && typeof (workerRuntime as any).updatedAt === "string"
+        ? Date.now() - new Date((workerRuntime as any).updatedAt).getTime()
+        : null;
+    if (workerRuntimeFreshMs == null) {
+      systemWarnings.push("Worker runtime heartbeat unavailable.");
+    } else if (workerRuntimeFreshMs > 30_000) {
+      systemWarnings.push(
+        `Worker heartbeat stale (${Math.round(workerRuntimeFreshMs / 1000)}s old).`,
+      );
+    }
     if (!runtimeHealth.onchainAdmin.ready && runtimeHealth.onchainAdmin.reason) {
       systemWarnings.push(`On-chain admin unavailable: ${runtimeHealth.onchainAdmin.reason}`);
     }
@@ -140,6 +159,8 @@ export async function GET(request: Request) {
       recentRumbles,
       fighters,
       runtimeHealth,
+      workerRuntime,
+      workerLease,
       systemWarnings,
       stuckRumbles,
       onchainHealth,

@@ -1395,7 +1395,11 @@ export async function getAdminConfig(key: string): Promise<unknown> {
   }
 }
 
-export async function setAdminConfig(key: string, value: unknown): Promise<void> {
+async function setAdminConfigInternal(
+  key: string,
+  value: unknown,
+  throwOnError: boolean,
+): Promise<void> {
   try {
     const sb = freshServiceClient();
     if (value === null || value === undefined) {
@@ -1415,7 +1419,65 @@ export async function setAdminConfig(key: string, value: unknown): Promise<void>
     if (error) throw error;
   } catch (err) {
     logError(`setAdminConfig(${key}) failed`, err);
+    if (throwOnError) throw err;
   }
+}
+
+export async function setAdminConfig(key: string, value: unknown): Promise<void> {
+  await setAdminConfigInternal(key, value, false);
+}
+
+export async function setAdminConfigStrict(key: string, value: unknown): Promise<void> {
+  await setAdminConfigInternal(key, value, true);
+}
+
+export interface BettingReadyMarker {
+  slotIndex: number;
+  rumbleId: string;
+  rumbleNumber: number | null;
+  fighterIds: string[];
+  bettingDeadlineIso: string;
+  armedAtIso: string;
+  updatedAt: string;
+}
+
+function bettingReadyAdminKey(slotIndex: number): string {
+  return `public_betting_ready_slot_${slotIndex}`;
+}
+
+export async function getBettingReadyMarker(
+  slotIndex: number,
+): Promise<BettingReadyMarker | null> {
+  const raw = await getAdminConfig(bettingReadyAdminKey(slotIndex));
+  if (!raw || typeof raw !== "object") return null;
+  const value = raw as Record<string, unknown>;
+  const rumbleId = String(value.rumbleId ?? "").trim();
+  const bettingDeadlineIso = String(value.bettingDeadlineIso ?? "").trim();
+  const armedAtIso = String(value.armedAtIso ?? "").trim();
+  if (!rumbleId || !bettingDeadlineIso || !armedAtIso) return null;
+  return {
+    slotIndex,
+    rumbleId,
+    rumbleNumber:
+      Number.isSafeInteger(Number(value.rumbleNumber)) && Number(value.rumbleNumber) >= 0
+        ? Number(value.rumbleNumber)
+        : null,
+    fighterIds: Array.isArray(value.fighterIds)
+      ? value.fighterIds.map((entry) => String(entry)).filter(Boolean)
+      : [],
+    bettingDeadlineIso,
+    armedAtIso,
+    updatedAt: String(value.updatedAt ?? armedAtIso),
+  };
+}
+
+export async function setBettingReadyMarker(
+  slotIndex: number,
+  marker: BettingReadyMarker | null,
+  options?: { throwOnError?: boolean },
+): Promise<void> {
+  const writer = options?.throwOnError ? setAdminConfigStrict : setAdminConfig;
+  await writer(bettingReadyAdminKey(slotIndex), marker);
 }
 
 /* ── Pending moves (polling-based move submission) ────────── */

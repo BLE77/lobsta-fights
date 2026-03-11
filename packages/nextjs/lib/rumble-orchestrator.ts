@@ -1678,6 +1678,26 @@ export class RumbleOrchestrator {
 
   getRuntimeHealth(): {
     onchainAdmin: OnchainAdminHealth;
+    queueLength: number;
+    queueStartCountdownMs: number | null;
+    slotReports: Array<{
+      slotIndex: number;
+      rumbleId: string;
+      state: SlotState;
+      stage: string;
+      fighterCount: number;
+      bettingDeadline: string | null;
+      bettingArmedAt: string | null;
+      combatStartedAt: string | null;
+      turnCount: number;
+      lastOnchainTurnResolved: number;
+      remainingFighters: number;
+      erDelegated: boolean;
+      waitingOnMainnetReady: boolean;
+      waitingOnMatchupVrf: boolean;
+      lastResolveSubmittedTurn: number | null;
+      lastAdvanceSubmittedTurn: number | null;
+    }>;
     onchainCreateFailures: Array<{
       rumbleId: string;
       slotIndex: number | null;
@@ -1689,6 +1709,55 @@ export class RumbleOrchestrator {
       nextRetryAt: string | null;
     }>;
   } {
+    const slots = this.queueManager.getSlots();
+    const slotReports = slots.map((slot) => {
+      const combatState = this.combatStates.get(slot.slotIndex);
+      const remainingFighters = combatState
+        ? combatState.fighters.filter((fighter) => fighter.hp > 0).length
+        : slot.fighters.length;
+      const turnCount = combatState?.turns.length ?? 0;
+      const waitingOnMainnetReady = slot.state === "betting" && !slot.bettingDeadline;
+      const waitingOnMatchupVrf =
+        slot.state === "combat" &&
+        this.requireMatchupVrf &&
+        turnCount === 0 &&
+        combatState?.matchupVrfRequestedAt !== undefined;
+
+      let stage: string = slot.state;
+      if (slot.state === "idle") {
+        stage = "idle";
+      } else if (slot.state === "betting") {
+        stage = waitingOnMainnetReady ? "waiting_mainnet_betting" : "betting_open";
+      } else if (slot.state === "combat") {
+        stage = waitingOnMatchupVrf
+          ? "waiting_matchup_vrf"
+          : turnCount === 0
+            ? "starting_combat"
+            : "combat_live";
+      } else if (slot.state === "payout") {
+        stage = "payout";
+      }
+
+      return {
+        slotIndex: slot.slotIndex,
+        rumbleId: slot.id,
+        state: slot.state,
+        stage,
+        fighterCount: slot.fighters.length,
+        bettingDeadline: slot.bettingDeadline?.toISOString() ?? null,
+        bettingArmedAt: slot.bettingArmedAt?.toISOString() ?? null,
+        combatStartedAt: slot.combatStartedAt?.toISOString() ?? null,
+        turnCount,
+        lastOnchainTurnResolved: combatState?.lastOnchainTurnResolved ?? 0,
+        remainingFighters,
+        erDelegated: combatState?.erDelegated ?? false,
+        waitingOnMainnetReady,
+        waitingOnMatchupVrf,
+        lastResolveSubmittedTurn: combatState?.lastResolveSubmittedTurn ?? null,
+        lastAdvanceSubmittedTurn: combatState?.lastAdvanceSubmittedTurn ?? null,
+      };
+    });
+
     const onchainCreateFailures = [...this.onchainRumbleCreateLastError.values()]
       .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
       .slice(0, 8)
@@ -1705,8 +1774,45 @@ export class RumbleOrchestrator {
 
     return {
       onchainAdmin: { ...this.onchainAdminHealth },
+      queueLength: this.queueManager.getQueueLength(),
+      queueStartCountdownMs: this.queueManager.getQueueStartCountdownMs(),
+      slotReports,
       onchainCreateFailures,
     };
+  }
+
+  private async publishBettingReadyMarker(
+    slot: RumbleSlot,
+    deadline: Date,
+  ): Promise<boolean> {
+    try {
+      await persist.setBettingReadyMarker(
+        slot.slotIndex,
+        {
+          slotIndex: slot.slotIndex,
+          rumbleId: slot.id,
+          rumbleNumber: this.resolveOnchainRumbleIdNumber(slot.id),
+          fighterIds: [...slot.fighters],
+          bettingDeadlineIso: deadline.toISOString(),
+          armedAtIso: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+        { throwOnError: true },
+      );
+      return true;
+    } catch (err) {
+      console.error(
+        `[Orchestrator] Failed to publish betting-ready marker for ${slot.id}; keeping betting closed:`,
+        err,
+      );
+      return false;
+    }
+  }
+
+  private async clearBettingReadyMarker(slotIndex: number): Promise<void> {
+    await persist.setBettingReadyMarker(slotIndex, null).catch((err) => {
+      console.warn(`[Orchestrator] Failed to clear betting-ready marker for slot ${slotIndex}:`, err);
+    });
   }
 
   private getHouseBotTargetPopulation(): number {
@@ -2696,6 +2802,12 @@ export class RumbleOrchestrator {
     if (!armed) return;
     const updated = this.queueManager.getSlot(slot.slotIndex);
     if (!updated?.bettingDeadline) return;
+    const markerPublished = await this.publishBettingReadyMarker(updated, updated.bettingDeadline);
+    if (!markerPublished) {
+      updated.bettingDeadline = null;
+      updated.bettingArmedAt = null;
+      return;
+    }
 
     console.log(`[Orchestrator] Betting window armed for ${slot.id}: deadline=${updated.bettingDeadline.toISOString()}`);
     this.emit("betting_open", {
@@ -2740,6 +2852,7 @@ export class RumbleOrchestrator {
     const rumbleId = slot.id;
     const slotIndex = slot.slotIndex;
     const fighters = this.queueManager.abortBettingSlot(slotIndex);
+    await this.clearBettingReadyMarker(slotIndex);
 
     this.onchainRumbleCreateRetryAt.delete(rumbleId);
     this.onchainRumbleCreateStartedAt.delete(rumbleId);
@@ -3422,6 +3535,7 @@ export class RumbleOrchestrator {
             odds: calculateOdds(pool),
           });
         }
+        await this.clearBettingReadyMarker(idx);
 
         // Persist status (also sets started_at) — AWAITED
         await persist.updateRumbleStatus(slot.id, "combat");
@@ -3620,6 +3734,7 @@ export class RumbleOrchestrator {
           odds: calculateOdds(pool),
         });
       }
+      await this.clearBettingReadyMarker(idx);
 
       try {
         await persist.updateRumbleStatus(slot.id, "combat");
@@ -6500,6 +6615,7 @@ export class RumbleOrchestrator {
     previousRumbleId: string,
   ): void {
     const cleanup = (async () => {
+      await this.clearBettingReadyMarker(slotIndex);
       // Mark rumble as "complete" in DB now that payout display window is over.
       // Even if DB write fails, continue cleaning up in-memory state to prevent
       // stale maps from blocking future slots.
