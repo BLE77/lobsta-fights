@@ -14,29 +14,21 @@ import { hasRecovered, recoverOrchestratorState } from "~~/lib/rumble-state-reco
 import { getBettingConnection } from "~~/lib/solana-connection";
 import { ensureRumblePublicHeartbeat } from "~~/lib/rumble-public-heartbeat";
 import {
-  loadActiveRumbles,
-  extractRumbleFighterIds,
-  hasMinimumRumbleFighters,
   MIN_ACTIVE_RUMBLE_FIGHTERS,
-  getBettingReadyMarker,
 } from "~~/lib/rumble-persistence";
 import { requireJsonContentType, sanitizeErrorResponse } from "~~/lib/api-middleware";
 import { flushRpcMetrics, runWithRpcMetrics } from "~~/lib/solana-rpc-metrics";
+import {
+  type BettingRumbleCandidate,
+  loadBettingRumbleCandidatesForSlot as loadSharedBettingRumbleCandidatesForSlot,
+  prependLocalBettingCandidate as prependSharedLocalBettingCandidate,
+} from "~~/lib/betting-rumble-candidates";
 
 export const dynamic = "force-dynamic";
 const BETTING_CLOSE_GUARD_MS = Math.max(1000, Number(process.env.RUMBLE_BETTING_CLOSE_GUARD_MS ?? "12000"));
 const SLOT_MS_ESTIMATE = Math.max(250, Number(process.env.RUMBLE_SLOT_MS_ESTIMATE ?? "400"));
 const BETTING_CLOSE_GUARD_SLOTS = Math.max(1, Math.ceil(BETTING_CLOSE_GUARD_MS / SLOT_MS_ESTIMATE));
 const ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD = 5_000_000n;
-const BET_PREPARE_ACTIVE_BETTING_MAX_AGE_MS = 10 * 60 * 1000;
-
-type BettingRumbleCandidate = {
-  rumbleId: string;
-  rumbleNumber: number | null;
-  fighterIds: string[];
-  createdAtMs: number;
-  source: "local" | "persisted";
-};
 
 async function ensureRecovered(): Promise<void> {
   if (hasRecovered()) return;
@@ -48,66 +40,14 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function loadBettingRumbleCandidatesForSlot(slotIndex: number): Promise<BettingRumbleCandidate[]> {
-  const marker = await getBettingReadyMarker(slotIndex);
-  const active = await loadActiveRumbles();
-  const candidates: BettingRumbleCandidate[] = [];
-  if (marker && marker.rumbleId) {
-    candidates.push({
-      rumbleId: marker.rumbleId,
-      rumbleNumber: marker.rumbleNumber,
-      fighterIds: marker.fighterIds,
-      createdAtMs: new Date(marker.armedAtIso).getTime() || Date.now(),
-      source: "persisted",
-    });
-  }
-  for (const row of active) {
-    if (Number(row.slot_index) !== slotIndex) continue;
-    if (String(row.status ?? "").toLowerCase() !== "betting") continue;
-    if (!hasMinimumRumbleFighters(row.fighters)) continue;
-    const createdAtMs = new Date(row.created_at).getTime();
-    if (!Number.isFinite(createdAtMs)) continue;
-    if (Date.now() - createdAtMs > BET_PREPARE_ACTIVE_BETTING_MAX_AGE_MS) continue;
-    candidates.push({
-      rumbleId: row.id,
-      createdAtMs,
-      fighterIds: extractRumbleFighterIds(row.fighters),
-      rumbleNumber:
-        Number.isSafeInteger(Number((row as any).rumble_number)) && Number((row as any).rumble_number) >= 0
-          ? Number((row as any).rumble_number)
-          : null,
-      source: "persisted",
-    });
-  }
-  const deduped = new Map<string, BettingRumbleCandidate>();
-  for (const candidate of candidates) {
-    if (!candidate.rumbleId) continue;
-    if (!deduped.has(candidate.rumbleId)) deduped.set(candidate.rumbleId, candidate);
-  }
-  return [...deduped.values()].sort((a, b) => b.createdAtMs - a.createdAtMs);
+  return loadSharedBettingRumbleCandidatesForSlot(slotIndex);
 }
 
 function prependLocalBettingCandidate(
   candidates: BettingRumbleCandidate[],
   localSlot: ReturnType<ReturnType<typeof getOrchestrator>["getStatus"]> extends Array<infer T> ? T | null : any,
 ): BettingRumbleCandidate[] {
-  if (
-    !localSlot ||
-    localSlot.state !== "betting" ||
-    !localSlot.rumbleId ||
-    !Array.isArray(localSlot.fighters) ||
-    localSlot.fighters.length < MIN_ACTIVE_RUMBLE_FIGHTERS
-  ) {
-    return candidates;
-  }
-  const localCandidate: BettingRumbleCandidate = {
-    rumbleId: localSlot.rumbleId,
-    rumbleNumber: parseOnchainRumbleIdNumber(localSlot.rumbleId),
-    fighterIds: localSlot.fighters,
-    createdAtMs: Date.now(),
-    source: "local",
-  };
-  const deduped = candidates.filter((candidate) => candidate.rumbleId !== localCandidate.rumbleId);
-  return [localCandidate, ...deduped];
+  return prependSharedLocalBettingCandidate(candidates, localSlot);
 }
 
 async function resolveBettableRumbleForSlot(

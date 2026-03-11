@@ -1707,8 +1707,8 @@ function RumbleNativeScreen() {
     }
 
     const slotData = (rumbleStatus?.slots ?? []).find(slot => safeNumber(slot.slotIndex, -1) === slotIndex);
-    if (!slotData || slotData.state !== "betting") {
-      throw new Error("Betting is not open for this slot.");
+    if (!slotData || slotData.state !== "betting" || !slotData.bettingDeadline) {
+      throw new Error("Betting slot is still syncing on-chain. Wait a moment and retry.");
     }
 
     setBetPending(true);
@@ -2122,7 +2122,9 @@ function RumbleNativeScreen() {
                     {featuredState === "betting" ? (
                       <>
                         <View style={styles.timerCard}>
-                          <Text style={styles.timerLabel}>BETTING OPEN</Text>
+                          <Text style={styles.timerLabel}>
+                            {featuredSlot?.bettingDeadline ? "BETTING OPEN" : "ARMING ON-CHAIN"}
+                          </Text>
                           <Text style={styles.timerValue}>{formatCountdown(featuredSlot?.bettingDeadline)}</Text>
                         </View>
                         {featuredOdds.length === 0 ? (
@@ -2221,10 +2223,20 @@ function RumbleNativeScreen() {
                         {selectedBets.length > 0 ? (
                           <Pressable
                             onPress={onDeploySelectedBets}
-                            disabled={isBusy || betPending || featuredSlot?.state !== "betting"}
+                            disabled={
+                              isBusy ||
+                              betPending ||
+                              featuredSlot?.state !== "betting" ||
+                              !featuredSlot?.bettingDeadline
+                            }
                             style={({ pressed }) => [
                               styles.deployBtn,
-                              (isBusy || betPending || featuredSlot?.state !== "betting") && styles.btnDisabled,
+                              (
+                                isBusy ||
+                                betPending ||
+                                featuredSlot?.state !== "betting" ||
+                                !featuredSlot?.bettingDeadline
+                              ) && styles.btnDisabled,
                               pressed ? styles.pressablePressed : null,
                             ]}
                           >
@@ -2237,7 +2249,7 @@ function RumbleNativeScreen() {
                             </Text>
                           </Pressable>
                         ) : null}
-                        <Text style={styles.panelFootnote}>Select one or more fighters · 1% admin + 5% sponsorship deducted.</Text>
+                        <Text style={styles.panelFootnote}>Select one or more fighters · 1% platform + 1% fighter support deducted · winners split losers pool after a 3% treasury cut.</Text>
                       </>
                     ) : null}
 

@@ -6382,7 +6382,7 @@ export class RumbleOrchestrator {
     // If the on-chain read fails, we throw so handlePayoutPhase does NOT mark
     // this rumble as processed — it will retry on the next tick.
     const LAMPORTS = 1_000_000_000;
-    const TREASURY_CUT_BPS = 1_000; // 10% — matches on-chain constant
+    const TREASURY_CUT_BPS = 300; // 3% — matches on-chain constant
 
     const rumbleIdNum = this.resolveOnchainRumbleIdNumber(slot.id);
     let onchainTotalPool = 0;

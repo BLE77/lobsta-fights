@@ -249,20 +249,20 @@ export default function Tokenomics() {
 
               <ul className="space-y-2 font-mono text-sm text-stone-300 mb-6">
                 <li className="flex justify-between border-b border-stone-800/50 pb-2">
-                  <span className="text-stone-500 uppercase">Admin Fee</span>{" "}
+                  <span className="text-stone-500 uppercase">Platform Fee</span>{" "}
                   <span className="text-stone-400">1%</span>
                 </li>
                 <li className="flex justify-between border-b border-stone-800/50 pb-2">
                   <span className="text-stone-500 uppercase">
                     Fighter Sponsorship
                   </span>{" "}
-                  <span className="text-stone-400">5% (win or lose)</span>
+                  <span className="text-stone-400">1% (win or lose)</span>
                 </li>
                 <li className="flex justify-between pb-2">
                   <span className="text-amber-400 uppercase font-bold">
                     Net Betting Pool
                   </span>{" "}
-                  <span className="text-amber-500 font-bold">94%</span>
+                  <span className="text-amber-500 font-bold">98%</span>
                 </li>
               </ul>
 
@@ -272,11 +272,11 @@ export default function Tokenomics() {
                 </p>
                 <ul className="space-y-1 text-sm font-mono text-stone-300">
                   <li>
-                    <span className="text-amber-500 font-bold">10%</span> →
+                    <span className="text-amber-500 font-bold">3%</span> →
                     treasury vault
                   </li>
                   <li>
-                    <span className="text-amber-500 font-bold">90%</span> →
+                    <span className="text-amber-500 font-bold">97%</span> →
                     1st-place bettors (winner-takes-all)
                   </li>
                 </ul>

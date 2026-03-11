@@ -883,12 +883,13 @@ export default function RumblePage() {
           const bettingDeadline =
             state === "betting"
               ? (() => {
-                  if (previous.state !== "betting" || !slot.bettingDeadline) return slot.bettingDeadline;
-                  const previousDeadlineMs = previous.bettingDeadline
-                    ? Date.parse(previous.bettingDeadline)
-                    : Number.NaN;
+                  if (!slot.bettingDeadline) return null;
                   const nextDeadlineMs = Date.parse(slot.bettingDeadline);
-                  if (!Number.isFinite(nextDeadlineMs)) return previous.bettingDeadline;
+                  if (!Number.isFinite(nextDeadlineMs)) return null;
+                  const previousDeadlineMs =
+                    previous.state === "betting" && previous.bettingDeadline
+                      ? Date.parse(previous.bettingDeadline)
+                      : Number.NaN;
                   if (!Number.isFinite(previousDeadlineMs) || nextDeadlineMs < previousDeadlineMs) {
                     return slot.bettingDeadline;
                   }
@@ -1707,8 +1708,8 @@ export default function RumblePage() {
 
     // 0. Pre-validate: check slot is still in betting state before sending SOL
     const slotData = status?.slots?.find((slot) => slot.slotIndex === slotIndex);
-    if (!slotData || slotData.state !== "betting") {
-      setBetError("Betting is not open for this slot right now.");
+    if (!slotData || slotData.state !== "betting" || !slotData.bettingDeadline) {
+      setBetError("Betting slot is still syncing on-chain. Wait a moment and retry.");
       setTimeout(() => setBetError(null), 5000);
       throw new Error("Betting closed");
     }

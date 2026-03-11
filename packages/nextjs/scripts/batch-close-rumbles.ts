@@ -108,7 +108,13 @@ async function main() {
   // Load IDL
   const idlPath = path.resolve(__dirname, "../lib/idl/rumble_engine.json");
   const idl = JSON.parse(fs.readFileSync(idlPath, "utf-8"));
-  const program = new anchor.Program(idl, provider);
+  const program = new anchor.Program(
+    {
+      ...idl,
+      address: PROGRAM_ID.toBase58(),
+    },
+    provider,
+  );
 
   const [configPda] = deriveConfigPda();
   const adminBalance = await conn.getBalance(admin.publicKey);
@@ -319,7 +325,14 @@ async function main() {
         const placements = Buffer.from(Array.from({ length: 16 }, (_, i) => i));
         method = (program.methods as any)
           .adminSetResult(placements, 0)
-          .accounts({ admin: admin.publicKey, config: configPda, rumble: rumblePda });
+          .accounts({
+            admin: admin.publicKey,
+            config: configPda,
+            rumble: rumblePda,
+            vault: vaultPda,
+            treasury,
+            systemProgram: SystemProgram.programId,
+          });
       } else if (step === "completeRumble") {
         method = (program.methods as any)
           .completeRumble()

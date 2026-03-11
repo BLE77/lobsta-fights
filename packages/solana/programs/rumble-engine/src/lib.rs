@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 #[cfg(not(feature = "mainnet"))]
 declare_id!("638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU");
 #[cfg(feature = "mainnet")]
-declare_id!("638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU");
+declare_id!("2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC");
 
 /// Maximum fighters per rumble
 const MAX_FIGHTERS: usize = 16;
@@ -43,7 +43,7 @@ const FIGHTER_ACCOUNT_DISCRIMINATOR: [u8; 8] = [24, 221, 27, 113, 60, 210, 101, 
 
 /// Fee basis points (out of 10_000)
 const ADMIN_FEE_BPS: u64 = 100; // 1%
-const SPONSORSHIP_FEE_BPS: u64 = 500; // 5%
+const SPONSORSHIP_FEE_BPS: u64 = 100; // 1%
 
 /// Winner-takes-all: 100% of losers' pool (after treasury cut) goes to 1st place bettors
 const FIRST_PLACE_BPS: u64 = 10_000; // 100%
@@ -51,9 +51,9 @@ const SECOND_PLACE_BPS: u64 = 0; // 0% — winner-takes-all
 const THIRD_PLACE_BPS: u64 = 0; // 0% — winner-takes-all
 
 /// Treasury cut from losers' pool before payout distribution
-const TREASURY_CUT_BPS: u64 = 1_000; // 10%
+const TREASURY_CUT_BPS: u64 = 300; // 3%
 
-/// Claim window after report_result before admin can finalize/sweep (24 hours).
+/// Post-result buffer before admin can mark payout phase complete (24 hours).
 const PAYOUT_CLAIM_WINDOW_SECONDS: i64 = 86_400;
 
 /// On-chain turn timing windows (slots).
@@ -595,7 +595,11 @@ pub mod rumble_engine {
     }
 
     /// Place a bet on a fighter in a rumble.
-    /// Transfers SOL from bettor to vault, deducting admin fee and sponsorship.
+    /// Transfers SOL from bettor to treasury, sponsorship PDA, and vault.
+    /// Current upfront economics:
+    /// - 1% platform fee to treasury
+    /// - 1% fighter sponsorship to the selected fighter PDA
+    /// - 98% to the rumble betting pool
     pub fn place_bet(
         ctx: Context<PlaceBet>,
         rumble_id: u64,
@@ -1537,6 +1541,14 @@ pub mod rumble_engine {
         rumble.state = RumbleState::Payout;
         rumble.completed_at = clock.unix_timestamp;
 
+        extract_result_treasury_cut(
+            rumble,
+            ctx.accounts.vault.to_account_info(),
+            ctx.accounts.treasury.to_account_info(),
+            ctx.accounts.system_program.to_account_info(),
+            ctx.bumps.vault,
+        )?;
+
         emit!(OnchainResultFinalizedEvent {
             rumble_id: rumble.id,
             winner_index: rumble.winner_index,
@@ -1559,7 +1571,7 @@ pub mod rumble_engine {
     /// Admin override to set rumble result directly.
     /// Bypasses combat state machine for off-chain resolution (mainnet betting).
     pub fn admin_set_result(
-        ctx: Context<AdminAction>,
+        ctx: Context<AdminSetResultAction>,
         placements: Vec<u8>,
         winner_index: u8,
     ) -> Result<()> {
@@ -1593,6 +1605,14 @@ pub mod rumble_engine {
         rumble.state = RumbleState::Payout;
         rumble.completed_at = clock.unix_timestamp;
 
+        extract_result_treasury_cut(
+            rumble,
+            ctx.accounts.vault.to_account_info(),
+            ctx.accounts.treasury.to_account_info(),
+            ctx.accounts.system_program.to_account_info(),
+            ctx.bumps.vault,
+        )?;
+
         msg!(
             "Admin set result for rumble {}: winner_index={}",
             rumble.id,
@@ -1606,7 +1626,7 @@ pub mod rumble_engine {
     ///
     /// Payout logic:
     /// 1. Sum all pools for fighters that did NOT place 1st = losers_pool
-    /// 2. Treasury cut = 10% of losers_pool
+    /// 2. Treasury cut = 3% of losers_pool
     /// 3. Distributable = losers_pool - treasury_cut
     /// 4. 1st place bettors split 100% of distributable (winner-takes-all)
     /// 5. Each winning bettor gets their original bet back + proportional share
@@ -1657,34 +1677,8 @@ pub mod rumble_engine {
             }
             require!(winning_deployed > 0, RumbleError::NotInPayoutRange);
 
-            // Calculate losers' pool (sum of pools for all fighters except 1st place)
-            let mut losers_pool: u64 = 0;
-            let mut first_pool: u64 = 0;
-
-            for i in 0..rumble.fighter_count as usize {
-                let p = rumble.placements[i];
-                let pool = rumble.betting_pools[i];
-                if p == 1 {
-                    first_pool = first_pool
-                        .checked_add(pool)
-                        .ok_or(RumbleError::MathOverflow)?;
-                } else {
-                    losers_pool = losers_pool
-                        .checked_add(pool)
-                        .ok_or(RumbleError::MathOverflow)?;
-                }
-            }
-
-            // Treasury cut from losers' pool
-            let treasury_cut = losers_pool
-                .checked_mul(TREASURY_CUT_BPS)
-                .ok_or(RumbleError::MathOverflow)?
-                .checked_div(10_000)
-                .ok_or(RumbleError::MathOverflow)?;
-
-            let distributable = losers_pool
-                .checked_sub(treasury_cut)
-                .ok_or(RumbleError::MathOverflow)?;
+            let (first_pool, _losers_pool, _treasury_cut, distributable) =
+                calculate_payout_breakdown(rumble)?;
 
             // Winner-takes-all: 100% of distributable goes to 1st place bettors
             let place_allocation = distributable;
@@ -1875,7 +1869,9 @@ pub mod rumble_engine {
     }
 
     /// Sweep remaining SOL from a completed Rumble's vault to the treasury.
-    /// Called by admin after all claims are processed.
+    /// Only valid for no-winner-bet rumbles. If anyone bet on the winner,
+    /// payout funds remain claimable indefinitely and the vault must not be
+    /// swept by treasury.
     pub fn sweep_treasury(ctx: Context<SweepTreasury>) -> Result<()> {
         let rumble = &ctx.accounts.rumble;
 
@@ -1884,20 +1880,11 @@ pub mod rumble_engine {
             RumbleError::InvalidStateTransition
         );
 
-        // If winners exist, enforce the 24hr claim window before sweeping.
-        // If no winning bets, sweep immediately (it's all house money).
-        let winner_pool = rumble.betting_pools[rumble.winner_index as usize];
-        if winner_pool > 0 {
-            let clock = Clock::get()?;
-            let claim_window_end = rumble
-                .completed_at
-                .checked_add(PAYOUT_CLAIM_WINDOW_SECONDS)
-                .ok_or(RumbleError::MathOverflow)?;
-            require!(
-                clock.unix_timestamp >= claim_window_end,
-                RumbleError::ClaimWindowActive
-            );
-        }
+        // No-winner-bet rumbles are pure house money and can be swept.
+        // Winner rumbles remain claimable indefinitely, so treasury sweeping is
+        // blocked entirely to avoid draining bettor funds.
+        let winner_pool = winner_pool_lamports(rumble)?;
+        require!(winner_pool == 0, RumbleError::OutstandingWinnerClaims);
 
         let vault_info = ctx.accounts.vault.to_account_info();
         let treasury_info = ctx.accounts.treasury.to_account_info();
@@ -2016,7 +2003,7 @@ pub mod rumble_engine {
             return Ok(());
         }
 
-        let winner_pool = rumble.betting_pools[rumble.winner_index as usize];
+        let winner_pool = winner_pool_lamports(rumble)?;
         if winner_pool == 0 {
             // No one bet on the winner → no valid claims, close immediately
             msg!("Rumble {} closed (no winning bets)", rumble.id);
@@ -2409,6 +2396,12 @@ pub struct FinalizeRumble<'info> {
     pub keeper: Signer<'info>,
 
     #[account(
+        seeds = [CONFIG_SEED],
+        bump = config.bump,
+    )]
+    pub config: Account<'info, RumbleConfig>,
+
+    #[account(
         mut,
         seeds = [RUMBLE_SEED, rumble.id.to_le_bytes().as_ref()],
         bump = rumble.bump,
@@ -2422,6 +2415,23 @@ pub struct FinalizeRumble<'info> {
         constraint = combat_state.rumble_id == rumble.id @ RumbleError::InvalidRumble,
     )]
     pub combat_state: Account<'info, RumbleCombatState>,
+
+    /// CHECK: Vault PDA holding payout SOL for this rumble.
+    #[account(
+        mut,
+        seeds = [VAULT_SEED, rumble.id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub vault: SystemAccount<'info>,
+
+    /// CHECK: Treasury address, must match config.
+    #[account(
+        mut,
+        constraint = treasury.key() == config.treasury @ RumbleError::InvalidTreasury,
+    )]
+    pub treasury: AccountInfo<'info>,
+
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -2501,6 +2511,45 @@ pub struct AdminAction<'info> {
         bump = rumble.bump,
     )]
     pub rumble: Account<'info, Rumble>,
+}
+
+#[derive(Accounts)]
+pub struct AdminSetResultAction<'info> {
+    #[account(
+        mut,
+        constraint = admin.key() == config.admin @ RumbleError::Unauthorized,
+    )]
+    pub admin: Signer<'info>,
+
+    #[account(
+        seeds = [CONFIG_SEED],
+        bump = config.bump,
+    )]
+    pub config: Account<'info, RumbleConfig>,
+
+    #[account(
+        mut,
+        seeds = [RUMBLE_SEED, rumble.id.to_le_bytes().as_ref()],
+        bump = rumble.bump,
+    )]
+    pub rumble: Account<'info, Rumble>,
+
+    /// CHECK: Vault PDA holding payout SOL for this rumble.
+    #[account(
+        mut,
+        seeds = [VAULT_SEED, rumble.id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub vault: SystemAccount<'info>,
+
+    /// CHECK: Treasury address, must match config.
+    #[account(
+        mut,
+        constraint = treasury.key() == config.treasury @ RumbleError::InvalidTreasury,
+    )]
+    pub treasury: AccountInfo<'info>,
+
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -2961,6 +3010,100 @@ impl Default for RumbleState {
     }
 }
 
+fn winner_pool_lamports(rumble: &Rumble) -> Result<u64> {
+    let winner_idx = rumble.winner_index as usize;
+    require!(
+        winner_idx < rumble.fighter_count as usize,
+        RumbleError::InvalidFighterIndex
+    );
+    Ok(rumble.betting_pools[winner_idx])
+}
+
+fn calculate_payout_breakdown(rumble: &Rumble) -> Result<(u64, u64, u64, u64)> {
+    let winner_idx = rumble.winner_index as usize;
+    require!(
+        winner_idx < rumble.fighter_count as usize,
+        RumbleError::InvalidFighterIndex
+    );
+    require!(
+        rumble.placements[winner_idx] == 1,
+        RumbleError::InvalidPlacement
+    );
+
+    let mut losers_pool: u64 = 0;
+    let mut first_pool: u64 = 0;
+
+    for i in 0..rumble.fighter_count as usize {
+        let placement = rumble.placements[i];
+        let pool = rumble.betting_pools[i];
+        if placement == 1 {
+            first_pool = first_pool
+                .checked_add(pool)
+                .ok_or(RumbleError::MathOverflow)?;
+        } else {
+            losers_pool = losers_pool
+                .checked_add(pool)
+                .ok_or(RumbleError::MathOverflow)?;
+        }
+    }
+
+    let treasury_cut = losers_pool
+        .checked_mul(TREASURY_CUT_BPS)
+        .ok_or(RumbleError::MathOverflow)?
+        .checked_div(10_000)
+        .ok_or(RumbleError::MathOverflow)?;
+    let distributable = losers_pool
+        .checked_sub(treasury_cut)
+        .ok_or(RumbleError::MathOverflow)?;
+
+    Ok((first_pool, losers_pool, treasury_cut, distributable))
+}
+
+fn extract_result_treasury_cut<'info>(
+    rumble: &Rumble,
+    vault_info: AccountInfo<'info>,
+    treasury_info: AccountInfo<'info>,
+    system_program_info: AccountInfo<'info>,
+    vault_bump: u8,
+) -> Result<()> {
+    let (_, _losers_pool, treasury_cut, _) = calculate_payout_breakdown(rumble)?;
+    if treasury_cut == 0 {
+        return Ok(());
+    }
+
+    let rent = Rent::get()?;
+    let min_balance = rent.minimum_balance(0);
+    let available = vault_info
+        .lamports()
+        .checked_sub(min_balance)
+        .ok_or(RumbleError::InsufficientVaultFunds)?;
+    require!(available >= treasury_cut, RumbleError::InsufficientVaultFunds);
+
+    let rumble_id_bytes = rumble.id.to_le_bytes();
+    let vault_seeds: &[&[u8]] = &[VAULT_SEED, rumble_id_bytes.as_ref(), &[vault_bump]];
+    let signer_seeds: &[&[&[u8]]] = &[vault_seeds];
+
+    system_program::transfer(
+        CpiContext::new_with_signer(
+            system_program_info,
+            system_program::Transfer {
+                from: vault_info,
+                to: treasury_info,
+            },
+            signer_seeds,
+        ),
+        treasury_cut,
+    )?;
+
+    msg!(
+        "Treasury cut extracted: {} lamports from rumble {}",
+        treasury_cut,
+        rumble.id
+    );
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
@@ -3194,4 +3337,48 @@ pub enum RumbleError {
 
     #[msg("VRF matchup seed already set")]
     VrfSeedAlreadySet,
+
+    #[msg("Winner claims are still outstanding")]
+    OutstandingWinnerClaims,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_rumble() -> Rumble {
+        Rumble {
+            id: 42,
+            state: RumbleState::Complete,
+            fighters: [Pubkey::default(); 16],
+            fighter_count: 4,
+            betting_pools: [0; 16],
+            total_deployed: 0,
+            admin_fee_collected: 0,
+            sponsorship_paid: 0,
+            placements: [0; 16],
+            winner_index: 0,
+            betting_deadline: 0,
+            combat_started_at: 0,
+            completed_at: 0,
+            bump: 0,
+        }
+    }
+
+    #[test]
+    fn winner_pool_reads_zero_when_no_one_backed_the_winner() {
+        let mut rumble = sample_rumble();
+        rumble.winner_index = 2;
+
+        assert_eq!(winner_pool_lamports(&rumble).unwrap(), 0);
+    }
+
+    #[test]
+    fn winner_pool_reads_positive_balance_when_winner_has_claims() {
+        let mut rumble = sample_rumble();
+        rumble.winner_index = 1;
+        rumble.betting_pools[1] = 980_000_000;
+
+        assert_eq!(winner_pool_lamports(&rumble).unwrap(), 980_000_000);
+    }
 }

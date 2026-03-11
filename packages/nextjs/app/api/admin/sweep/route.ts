@@ -88,8 +88,8 @@ async function getBettingSweepSafety(rumbleId: number): Promise<BettingSweepSafe
  *
  * Scans mainnet rumble accounts and:
  * 1. For rumbles in "betting" with no action: reports a dummy result + completes + sweeps
- * 2. For rumbles in "payout" past the claim window: completes + sweeps
- * 3. For rumbles in "complete" past the claim window: sweeps
+ * 2. For rumbles in "payout" past the claim window: completes, then only sweeps if no one bet on the winner
+ * 3. For rumbles in "complete": only sweeps no-winner-bet rumbles
  *
  * Body (optional):
  *   { "rumble_id": 12345 }  — sweep a specific rumble
@@ -154,6 +154,18 @@ export async function POST(request: Request) {
         actions: [] as string[],
       };
 
+      const payoutState =
+        state === "payout" || state === "complete"
+          ? await readMainnetRumbleAccountStateResilient(rumbleId).catch(() => null)
+          : null;
+      const payoutWinnerIndex = payoutState?.winnerIndex ?? null;
+      const winnerPoolLamports =
+        payoutWinnerIndex === null ? null : Number(payoutState?.bettingPools[payoutWinnerIndex] ?? 0n);
+      const hasWinningBets = winnerPoolLamports !== null && winnerPoolLamports > 0;
+      if (winnerPoolLamports !== null) {
+        entry.winner_pool_sol = winnerPoolLamports / LAMPORTS_PER_SOL;
+      }
+
       if (sweepableSol <= 0) {
         entry.actions.push("skip: no SOL to sweep");
         results.push(entry);
@@ -174,9 +186,17 @@ export async function POST(request: Request) {
             entry.actions.push(`BLOCKED: ${safety.reason}`);
           }
         } else if (state === "payout") {
-          entry.actions.push("would: completeRumble → sweepTreasury (if claim window expired)");
+          if (hasWinningBets) {
+            entry.actions.push("would: completeRumble only after 24h buffer; winner claims remain open");
+          } else {
+            entry.actions.push("would: completeRumble → sweepTreasury (no winning bets)");
+          }
         } else if (state === "complete") {
-          entry.actions.push("would: sweepTreasury (if claim window expired)");
+          if (hasWinningBets) {
+            entry.actions.push("skip: winner claims remain open; treasury sweep disabled");
+          } else {
+            entry.actions.push("would: sweepTreasury (no winning bets)");
+          }
         } else {
           entry.actions.push("skip: state not sweepable");
         }
@@ -239,6 +259,12 @@ export async function POST(request: Request) {
             results.push(entry);
             continue;
           }
+        }
+
+        if (hasWinningBets) {
+          entry.actions.push("skip: winner claims remain open; treasury sweep disabled");
+          results.push(entry);
+          continue;
         }
 
         // Sweep

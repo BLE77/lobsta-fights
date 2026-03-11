@@ -18,17 +18,17 @@ import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 import { hasRecovered, recoverOrchestratorState } from "~~/lib/rumble-state-recovery";
 import { ensureRumblePublicHeartbeat } from "~~/lib/rumble-public-heartbeat";
 import {
-  loadActiveRumbles,
-  hasMinimumRumbleFighters,
-  extractRumbleFighterIds,
   MIN_ACTIVE_RUMBLE_FIGHTERS,
   loadBetsForRumble,
   saveBets,
 } from "~~/lib/rumble-persistence";
+import {
+  type BettingRumbleCandidate,
+  loadBettingRumbleCandidatesForSlot,
+} from "~~/lib/betting-rumble-candidates";
 
 export const dynamic = "force-dynamic";
 const ALLOW_OFFCHAIN_BETS = String(process.env.RUMBLE_ALLOW_OFFCHAIN_BETS ?? "false").toLowerCase() === "true";
-const BET_POST_ACTIVE_BETTING_MAX_AGE_MS = 10 * 60 * 1000;
 
 async function ensureRecovered(): Promise<void> {
   if (hasRecovered()) return;
@@ -48,13 +48,38 @@ async function resolveOnchainRumbleIdForSlot(
   const parsed = parseOnchainRumbleIdNumber(slotRumbleId);
   if (parsed !== null) return parsed;
 
-  const active = await loadActiveRumbles();
-  const match = active.find(
-    (row) => Number(row.slot_index) === slotIndex && String(row.id) === slotRumbleId,
-  );
+  const active = await loadBettingRumbleCandidatesForSlot(slotIndex).catch(() => []);
+  const candidate = active.find((entry) => entry.rumbleId === slotRumbleId);
+  if (candidate && candidate.rumbleNumber !== null) {
+    return candidate.rumbleNumber;
+  }
+
+  const persistedRows = await freshSupabase()
+    .from("ucf_rumbles")
+    .select("id, fighters, rumble_number, slot_index")
+    .eq("slot_index", slotIndex)
+    .eq("id", slotRumbleId)
+    .limit(1);
+  const rows = persistedRows.data ?? [];
+  const match = rows.find((row) => Number((row as any).slot_index) === slotIndex && String((row as any).id) === slotRumbleId);
   if (!match) return null;
-  if (!hasMinimumRumbleFighters(match.fighters)) return null;
+  const fighterIds = Array.isArray((match as any).fighters)
+    ? (match as any).fighters.map((fighter: any) => String(fighter?.id ?? fighter)).filter(Boolean)
+    : [];
+  if (fighterIds.length < MIN_ACTIVE_RUMBLE_FIGHTERS) return null;
   return normalizeRumbleNumber((match as any).rumble_number);
+}
+
+function pickLatestBettingCandidate(
+  candidates: BettingRumbleCandidate[],
+): { rumbleId: string; rumbleNumber: number | null; fighterIds: string[] } | null {
+  const best = candidates.find((candidate) => candidate.fighterIds.length >= MIN_ACTIVE_RUMBLE_FIGHTERS) ?? null;
+  if (!best) return null;
+  return {
+    rumbleId: best.rumbleId,
+    rumbleNumber: best.rumbleNumber,
+    fighterIds: best.fighterIds,
+  };
 }
 
 async function loadLatestBettingRumbleForSlot(slotIndex: number): Promise<{
@@ -62,43 +87,8 @@ async function loadLatestBettingRumbleForSlot(slotIndex: number): Promise<{
   rumbleNumber: number | null;
   fighterIds: string[];
 } | null> {
-  const active = await loadActiveRumbles();
-  let best: {
-    id: string;
-    createdAtMs: number;
-    fighters: unknown;
-    rumbleNumber: number | null;
-  } | null = null;
-
-  for (const row of active) {
-    if (Number(row.slot_index) !== slotIndex) continue;
-    if (String(row.status ?? "").toLowerCase() !== "betting") continue;
-    if (!hasMinimumRumbleFighters(row.fighters)) continue;
-    const createdAtMs = new Date(row.created_at).getTime();
-    if (!Number.isFinite(createdAtMs)) continue;
-    if (Date.now() - createdAtMs > BET_POST_ACTIVE_BETTING_MAX_AGE_MS) continue;
-    if (!best || createdAtMs > best.createdAtMs) {
-      best = {
-        id: row.id,
-        createdAtMs,
-        fighters: row.fighters,
-        rumbleNumber:
-          Number.isSafeInteger(Number((row as any).rumble_number)) && Number((row as any).rumble_number) >= 0
-            ? Number((row as any).rumble_number)
-            : null,
-      };
-    }
-  }
-
-  if (!best) return null;
-  const fighterIds = extractRumbleFighterIds(best.fighters);
-  if (fighterIds.length < MIN_ACTIVE_RUMBLE_FIGHTERS) return null;
-
-  return {
-    rumbleId: best.id,
-    rumbleNumber: best.rumbleNumber,
-    fighterIds,
-  };
+  const candidates = await loadBettingRumbleCandidatesForSlot(slotIndex).catch(() => []);
+  return pickLatestBettingCandidate(candidates);
 }
 
 function isMissingTxSignatureTableError(err: unknown): boolean {
@@ -312,6 +302,16 @@ export async function POST(request: Request) {
 
     await ensureRecovered();
     await ensureRumblePublicHeartbeat("bet_post");
+    const requestedRumbleIdRaw = body.rumble_id ?? body.rumbleId;
+    const requestedRumbleId =
+      typeof requestedRumbleIdRaw === "string" && requestedRumbleIdRaw.trim().length > 0
+        ? requestedRumbleIdRaw.trim()
+        : null;
+    const bettingCandidates = await loadBettingRumbleCandidatesForSlot(parsedSlotIndex).catch(() => []);
+    const requestedBettingCandidate =
+      requestedRumbleId
+        ? bettingCandidates.find((candidate) => candidate.rumbleId === requestedRumbleId) ?? null
+        : null;
 
     let resolvedWallet: string;
     let verifiedRumbleId: string | null = null;
@@ -354,18 +354,15 @@ export async function POST(request: Request) {
       // For wallet+signature bets we require a rumble_engine place_bet instruction
       // and do not trust tx_kind from the request body.
       const verification = await (async () => {
-        const slotRumbleId = slotForVerification?.rumbleId;
+        const slotRumbleId =
+          requestedRumbleId ??
+          requestedBettingCandidate?.rumbleId ??
+          slotForVerification?.rumbleId ??
+          null;
         if (!slotRumbleId || typeof slotRumbleId !== "string") {
           return {
             valid: false,
             error: "No active rumble found for the provided slot.",
-          };
-        }
-        const requestedRumbleId = body.rumble_id || body.rumbleId;
-        if (requestedRumbleId && requestedRumbleId !== slotRumbleId) {
-          return {
-            valid: false,
-            error: `Requested rumble_id (${requestedRumbleId}) does not match slot rumble (${slotRumbleId}).`,
           };
         }
 
@@ -374,6 +371,7 @@ export async function POST(request: Request) {
         );
         const rumbleIdNum =
           requestedRumbleIdNum ??
+          requestedBettingCandidate?.rumbleNumber ??
           await resolveOnchainRumbleIdForSlot(parsedSlotIndex, slotRumbleId);
         if (rumbleIdNum === null) {
           return {
@@ -381,11 +379,15 @@ export async function POST(request: Request) {
             error: `Could not parse slot rumble id: ${slotRumbleId}`,
           };
         }
+        const verificationFighters =
+          requestedBettingCandidate?.fighterIds?.length
+            ? requestedBettingCandidate.fighterIds
+            : slotForVerification?.fighters ?? [];
         const verificationLegs = parsedBets.map((bet) => {
           const fighterIndexFromBody =
             typeof bet.fighterIndex === "number"
               ? bet.fighterIndex
-              : slotForVerification?.fighters.findIndex((f) => f === bet.fighterId) ?? -1;
+              : verificationFighters.findIndex((fighterId) => fighterId === bet.fighterId);
           return {
             fighterIndex: fighterIndexFromBody,
             amountSol: bet.solAmount,
@@ -434,11 +436,12 @@ export async function POST(request: Request) {
 
       if (verifiedRumbleId) {
         const liveSlot = orchestratorForVerification.getStatus().find((s) => s.slotIndex === parsedSlotIndex);
-        if (!liveSlot || liveSlot.rumbleId !== verifiedRumbleId) {
-          return NextResponse.json(
-            { error: "Slot rumble changed while processing this bet. Rebuild and re-sign a fresh bet transaction." },
-            { status: 409 },
-          );
+        if (liveSlot && liveSlot.rumbleId !== verifiedRumbleId) {
+          console.warn("[rumble/bet] verified rumble no longer matches live slot", {
+            slotIndex: parsedSlotIndex,
+            liveRumbleId: liveSlot.rumbleId,
+            verifiedRumbleId,
+          });
         }
       }
 
@@ -541,7 +544,14 @@ export async function POST(request: Request) {
 
     const orchestrator = getOrchestrator();
     const liveSlot = orchestrator.getStatus().find((s) => s.slotIndex === parsedSlotIndex) ?? null;
-    const persistedBetting = await loadLatestBettingRumbleForSlot(parsedSlotIndex).catch(() => null);
+    const persistedBetting =
+      requestedBettingCandidate
+        ? {
+            rumbleId: requestedBettingCandidate.rumbleId,
+            rumbleNumber: requestedBettingCandidate.rumbleNumber,
+            fighterIds: requestedBettingCandidate.fighterIds,
+          }
+        : await loadLatestBettingRumbleForSlot(parsedSlotIndex).catch(() => null);
     const authoritativeRumbleId =
       verifiedRumbleId ??
       persistedBetting?.rumbleId ??
@@ -569,8 +579,9 @@ export async function POST(request: Request) {
       );
     }
 
+    const shouldValidateFighterMembership = authoritativeFighters.length > 0 || !verifiedRumbleId;
     for (const bet of parsedBets) {
-      if (!authoritativeFighters.includes(bet.fighterId)) {
+      if (shouldValidateFighterMembership && !authoritativeFighters.includes(bet.fighterId)) {
         await releaseBetSignatureLock(signatureLock);
         signatureLock = null;
         return NextResponse.json(
@@ -612,7 +623,7 @@ export async function POST(request: Request) {
       const persisted = await saveBets(
         parsedBets.map((bet) => {
           const adminFee = bet.solAmount * 0.01;
-          const sponsorFee = bet.solAmount * 0.05;
+          const sponsorFee = bet.solAmount * 0.01;
           const netAmount = bet.solAmount - adminFee - sponsorFee;
           return {
             rumbleId: authoritativeRumbleId,

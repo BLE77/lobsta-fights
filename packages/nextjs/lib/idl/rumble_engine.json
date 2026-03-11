@@ -159,6 +159,37 @@
               }
             ]
           }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.id",
+                "account": "Rumble"
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
         }
       ],
       "args": [
@@ -301,7 +332,7 @@
         "",
         "Payout logic:",
         "1. Sum all pools for fighters that did NOT place 1st = losers_pool",
-        "2. Treasury cut = 10% of losers_pool",
+        "2. Treasury cut = 3% of losers_pool",
         "3. Distributable = losers_pool - treasury_cut",
         "4. 1st place bettors split 100% of distributable (winner-takes-all)",
         "5. Each winning bettor gets their original bet back + proportional share"
@@ -1379,6 +1410,31 @@
           "signer": true
         },
         {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  117,
+                  109,
+                  98,
+                  108,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
           "name": "rumble",
           "writable": true,
           "pda": {
@@ -1431,6 +1487,37 @@
               }
             ]
           }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rumble.id",
+                "account": "Rumble"
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
         }
       ],
       "args": []
@@ -1575,7 +1662,7 @@
       "name": "place_bet",
       "docs": [
         "Place a bet on a fighter in a rumble.",
-        "Transfers SOL from bettor to vault, deducting admin fee and sponsorship."
+        "Transfers SOL from bettor to treasury, sponsorship PDA, and vault using the current upfront fee split."
       ],
       "discriminator": [
         222,
@@ -2405,7 +2492,8 @@
       "name": "sweep_treasury",
       "docs": [
         "Sweep remaining SOL from a completed Rumble's vault to the treasury.",
-        "Called by admin after all claims are processed."
+        "Only valid for no-winner-bet rumbles.",
+        "If anyone bet on the winner, payout funds remain claimable indefinitely and the vault must not be swept by treasury."
       ],
       "discriminator": [
         125,
@@ -3146,6 +3234,11 @@
       "code": 6041,
       "name": "VrfSeedAlreadySet",
       "msg": "VRF matchup seed already set"
+    },
+    {
+      "code": 6042,
+      "name": "OutstandingWinnerClaims",
+      "msg": "Winner claims are still outstanding"
     }
   ],
   "types": [

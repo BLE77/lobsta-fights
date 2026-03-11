@@ -93,6 +93,9 @@ function getStatusResponseCacheTtlMs(body: StatusResponseBody): number {
   if (body.slots.some((slot) => slot?.state === "combat")) {
     return STATUS_RESPONSE_CACHE_MS.combat;
   }
+  if (body.slots.some((slot) => slot?.state === "betting" && !slot?.bettingDeadline)) {
+    return 1_000;
+  }
   if (body.slots.some((slot) => slot?.state === "betting")) {
     return STATUS_RESPONSE_CACHE_MS.betting;
   }
@@ -967,22 +970,15 @@ export async function GET(request: Request) {
                 return null;
               });
         let useDevnetSlotContext = slot.state !== "betting"; // non-betting reads already use devnet
-        // Fallback: if mainnet read failed during betting, try devnet
-        if (!onchain && slot.state === "betting") {
-          onchain = await getDevnetRumbleState(rumbleIdNum).catch((err) => {
-            console.warn("[StatusAPI] readRumbleAccountState fallback failed", {
-              rumbleIdNum,
-              state: slot.state,
-              slotIndex: slot.slotIndex,
-              useDevnetFallback: true,
-              error: String(err),
-            });
-            return null;
-          });
-          useDevnetSlotContext = true;
-        }
         if (!onchain) {
-          // Keep existing slot data as-is (don't null out deadline)
+          if (slot.state === "betting") {
+            return {
+              ...slot,
+              bettingDeadline: null,
+              nextTurnAt: null,
+              nextTurnTargetSlot: null,
+            };
+          }
           return slot;
         }
 
@@ -1010,7 +1006,7 @@ export async function GET(request: Request) {
             networkContext: useDevnetSlotContext ? "devnet" : "mainnet",
             effectiveCurrentSlot: useDevnetSlotContext ? currentClusterSlotBig : currentBettingSlotBig,
             closeToMs: useDevnetSlotContext ? slotsToMs : bettingSlotsToMs,
-            fallback: slot.bettingDeadline ?? null,
+            fallback: null,
           });
         }
 

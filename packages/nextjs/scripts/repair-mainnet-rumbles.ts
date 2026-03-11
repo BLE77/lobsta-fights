@@ -171,6 +171,12 @@ async function main() {
 
   const [configPda] = deriveConfigPda();
   console.log(`Config PDA: ${configPda.toBase58()}`);
+  const configInfo = await mainnetConn.getAccountInfo(configPda);
+  if (!configInfo) {
+    throw new Error("Mainnet config PDA not found");
+  }
+  const treasury = new PublicKey(configInfo.data.subarray(8 + 32, 8 + 32 + 32));
+  console.log(`Treasury: ${treasury.toBase58()}`);
 
   // 1. Fetch all rumble accounts on mainnet
   console.log("\n--- Scanning mainnet rumble accounts ---");
@@ -289,6 +295,7 @@ async function main() {
     // 4. Call admin_set_result on mainnet
     try {
       const [rumblePda] = deriveRumblePda(rumbleId);
+      const [vaultPda] = deriveVaultPda(rumbleId);
 
       const method = (program.methods as any)
         .adminSetResult(Buffer.from(devPlacements), devWinnerIndex)
@@ -296,6 +303,9 @@ async function main() {
           admin: admin.publicKey,
           config: configPda,
           rumble: rumblePda,
+          vault: vaultPda,
+          treasury,
+          systemProgram: SystemProgram.programId,
         });
 
       const tx: Transaction = await method.transaction();

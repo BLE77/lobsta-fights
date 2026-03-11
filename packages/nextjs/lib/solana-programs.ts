@@ -2787,20 +2787,30 @@ export async function finalizeRumbleOnChain(
   const admin = getAdminKeypair()!;
   const [rumblePda] = deriveRumblePda(rumbleId);
   const [combatStatePda] = deriveCombatStatePda(rumbleId);
+  const [rumbleConfigPda] = deriveRumbleConfigPda();
+  const [vaultPda] = deriveVaultPda(rumbleId);
+  const conn = connection ?? getConnection();
+  const configInfo = await conn.getAccountInfo(rumbleConfigPda);
+  if (!configInfo) throw new Error("Rumble config not found");
+  const treasury = new PublicKey(configInfo.data.subarray(8 + 32, 8 + 32 + 32));
 
   console.log(`[ONCHAIN-FINALIZE] Sending finalizeRumble for rumble ${rumbleId}...`);
   const method = (program.methods as any)
     .finalizeRumble()
     .accounts({
       keeper: admin.publicKey,
+      config: rumbleConfigPda,
       rumble: rumblePda,
       combatState: combatStatePda,
+      vault: vaultPda,
+      treasury,
+      systemProgram: SystemProgram.programId,
     })
     .preInstructions([
       ComputeBudgetProgram.setComputeUnitLimit({ units: HEAVY_ADMIN_TX_COMPUTE_LIMIT }),
     ]);
 
-  const sig = await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
+  const sig = await sendAdminTxFireAndForget(method, admin, conn);
   console.log(`[ONCHAIN-FINALIZE] finalizeRumble confirmed for rumble ${rumbleId}: ${sig}`);
   return sig;
 }
@@ -3152,6 +3162,11 @@ export async function reportResultMainnet(
 
   const [rumbleConfigPda] = deriveRumbleConfigPdaMainnet();
   const [rumblePda] = deriveRumblePdaMainnet(rumbleId);
+  const [vaultPda] = deriveVaultPdaMainnet(rumbleId);
+  const conn = getBettingConnection();
+  const configInfo = await conn.getAccountInfo(rumbleConfigPda);
+  if (!configInfo) throw new Error("Mainnet rumble config not found");
+  const treasury = new PublicKey(configInfo.data.subarray(8 + 32, 8 + 32 + 32));
 
   const method = (program.methods as any)
     .adminSetResult(Buffer.from(placements), winnerIndex)
@@ -3159,9 +3174,12 @@ export async function reportResultMainnet(
       admin: admin.publicKey,
       config: rumbleConfigPda,
       rumble: rumblePda,
+      vault: vaultPda,
+      treasury,
+      systemProgram: SystemProgram.programId,
     });
 
-  const { signature } = await sendAdminTxWithConfirmation(method, admin, getBettingConnection());
+  const { signature } = await sendAdminTxWithConfirmation(method, admin, conn);
   return signature;
 }
 
@@ -3201,7 +3219,8 @@ export async function completeRumbleMainnet(
 
 /**
  * Close a completed mainnet Rumble account to reclaim rent back to admin.
- * Requires the rumble to be in Complete state and claim window expired.
+ * Requires the rumble to be in Complete state. Winner rumbles are only closable
+ * after the vault is drained down to rent by bettor claims.
  */
 export async function closeRumbleMainnet(
   rumbleId: number,
@@ -3400,9 +3419,18 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
       try {
         await noteMutationAttempt();
         const dummyPlacements = Buffer.from(Array.from({ length: 16 }, (_, i) => i));
+        if (!treasury) throw new Error("treasury unavailable");
+        const [vaultPda] = deriveVaultPdaMainnet(rumbleId);
         const method = (program.methods as any)
           .adminSetResult(dummyPlacements, 0)
-          .accounts({ admin: admin.publicKey, config: configPda, rumble: rumblePda });
+          .accounts({
+            admin: admin.publicKey,
+            config: configPda,
+            rumble: rumblePda,
+            vault: vaultPda,
+            treasury,
+            systemProgram: SystemProgram.programId,
+          });
         const sig = await sendAdminTxFireAndForget(method, admin, conn);
         if (sig) {
           completed++;
@@ -3565,6 +3593,13 @@ export async function sweepTreasury(
   const [rumbleConfigPda] = deriveRumbleConfigPda();
   const [rumblePda] = deriveRumblePda(rumbleId);
   const [vaultPda] = deriveVaultPda(rumbleId);
+  const rumbleState = await readRumbleAccountState(rumbleId, connection ?? getConnection());
+  if (rumbleState?.winnerIndex !== null && rumbleState?.winnerIndex !== undefined) {
+    const winnerPool = rumbleState.bettingPools[rumbleState.winnerIndex] ?? 0n;
+    if (winnerPool > 0n) {
+      throw new Error("OutstandingWinnerClaims: winner rumbles remain claimable and cannot be swept");
+    }
+  }
 
   // Read treasury from config
   const conn = connection ?? getConnection();
@@ -3589,7 +3624,8 @@ export async function sweepTreasury(
 
 /**
  * Sweep remaining SOL from a completed mainnet Rumble's vault to the treasury.
- * Admin-only — requires mainnet admin keypair.
+ * Only valid for no-winner-bet rumbles. Winner rumbles stay claimable and are
+ * intentionally unsweepable until the vault accounting is redesigned.
  */
 export async function sweepTreasuryMainnet(
   rumbleId: number,
@@ -3610,6 +3646,17 @@ export async function sweepTreasuryMainnet(
   const [rumbleConfigPda] = deriveRumbleConfigPdaMainnet();
   const [rumblePda] = deriveRumblePdaMainnet(rumbleId);
   const [vaultPda] = deriveVaultPdaMainnet(rumbleId);
+  const rumbleState = await readRumbleAccountState(
+    rumbleId,
+    getBettingConnection(),
+    RUMBLE_ENGINE_ID_MAINNET,
+  );
+  if (rumbleState?.winnerIndex !== null && rumbleState?.winnerIndex !== undefined) {
+    const winnerPool = rumbleState.bettingPools[rumbleState.winnerIndex] ?? 0n;
+    if (winnerPool > 0n) {
+      throw new Error("OutstandingWinnerClaims: winner rumbles remain claimable and cannot be swept");
+    }
+  }
 
   // Read treasury from mainnet config
   const conn = getBettingConnection();

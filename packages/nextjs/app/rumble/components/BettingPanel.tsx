@@ -158,11 +158,8 @@ export default function BettingPanel({
   const deployableCount = [...bets.values()].filter(v => (parseFloat(v) || 0) > 0).length;
   const timeLeft = remainingMs === null ? "" : formatRemaining(remainingMs);
 
-  // Treat null deadline (on-chain not armed yet) as "open" rather than
-  // showing "Initializing On-Chain..." — the betting window IS open, we
-  // just don't have a precise countdown yet.
   const bettingInitialized = remainingMs !== null;
-  const isBetWindowOpen = bettingInitialized ? remainingMs > 0 : true;
+  const isBetWindowOpen = bettingInitialized ? remainingMs > 0 : false;
   const isClosed = bettingInitialized && !isBetWindowOpen;
   const canSubmitBets = isBetWindowOpen;
 
@@ -171,7 +168,12 @@ export default function BettingPanel({
       {/* Timer + Pool */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          {!isClosed ? (
+          {!bettingInitialized ? (
+            <span className="relative flex h-2 w-2">
+              <span className="animate-pulse absolute inline-flex h-full w-full rounded-sm bg-stone-500/60 opacity-75"></span>
+              <span className="relative inline-flex rounded-sm h-2 w-2 bg-stone-400" />
+            </span>
+          ) : !isClosed ? (
             <span className="relative flex h-2 w-2">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-sm bg-amber-400 opacity-75"></span>
               <span className="relative inline-flex rounded-sm h-2 w-2 bg-amber-500"></span>
@@ -179,13 +181,18 @@ export default function BettingPanel({
           ) : (
             <span className="inline-flex h-2 w-2 rounded-sm bg-red-500" />
           )}
-          <span className={`font-mono text-xs uppercase ${isClosed ? "text-red-500" : "text-amber-400"}`}>
-            {isClosed ? "Betting Closed" : "Betting Open"}
+          <span
+            className={`font-mono text-xs uppercase ${
+              !bettingInitialized ? "text-stone-400" : isClosed ? "text-red-500" : "text-amber-400"
+            }`}
+          >
+            {!bettingInitialized ? "Initializing On-Chain" : isClosed ? "Betting Closed" : "Betting Open"}
           </span>
         </div>
         <span
-          className={`font-mono text-sm font-bold ${isClosed ? "text-red-500" : "text-amber-400"
-            }`}
+          className={`font-mono text-sm font-bold ${
+            !bettingInitialized ? "text-stone-400" : isClosed ? "text-red-500" : "text-amber-400"
+          }`}
         >
           {timeLeft || "--:--"}
         </span>
@@ -387,7 +394,7 @@ export default function BettingPanel({
 
       <p className="text-[10px] text-stone-600 font-mono text-center">
         {bettingInitialized
-          ? "Select one or more fighters · 1% admin + 5% sponsorship deducted"
+          ? "Select one or more fighters · 1% platform + 1% fighter support deducted · winners split losers pool after a 3% treasury cut"
           : "Stand by while on-chain rumble initializes. Betting opens when timer appears."}
       </p>
     </div>

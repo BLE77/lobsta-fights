@@ -6,9 +6,8 @@
  * Does NOT touch the program binary or config PDA.
  *
  * Usage:
- *   npx tsx scripts/sweep-mainnet-accounts.ts              # dry-run (default, skips accounts with winning bets)
- *   npx tsx scripts/sweep-mainnet-accounts.ts --execute     # sweep no-winner accounts only
- *   npx tsx scripts/sweep-mainnet-accounts.ts --execute --force  # sweep ALL accounts (including winner vaults)
+ *   npx tsx scripts/sweep-mainnet-accounts.ts           # dry-run (default, winner rumbles protected)
+ *   npx tsx scripts/sweep-mainnet-accounts.ts --execute # sweep no-winner accounts only
  */
 
 import {
@@ -149,13 +148,12 @@ interface AccountInfo {
 async function main() {
   const args = process.argv.slice(2);
   const execute = args.includes("--execute");
-  const force = args.includes("--force");
 
   const rpcUrl = getRpcUrl();
 
   console.log("=".repeat(70));
   console.log("  UCF MAINNET Account Sweep");
-  console.log(`  Mode: ${execute ? (force ? "EXECUTE --force (sweeping ALL accounts)" : "EXECUTE (no-winner accounts only)") : "DRY RUN (scan only)"}`);
+  console.log(`  Mode: ${execute ? "EXECUTE (no-winner accounts only)" : "DRY RUN (scan only)"}`);
   console.log(`  Program: ${PROGRAM_ID.toBase58()}`);
   console.log(`  RPC: ${rpcUrl.replace(/api-key=.*/, "api-key=***")}`);
   console.log("=".repeat(70));
@@ -330,7 +328,7 @@ async function main() {
   if (withWinners.length > 0) {
     const winnerLamports = withWinners.reduce((s, r) => s + r.lamports, 0);
     console.log();
-    console.log(`  Accounts WITH winning bets (protected — use --force to override): ${withWinners.length}`);
+    console.log(`  Accounts WITH winning bets (protected — not sweepable): ${withWinners.length}`);
     for (const r of withWinners) {
       const addr = r.address.slice(0, 8) + ".." + r.address.slice(-4);
       console.log(
@@ -402,10 +400,10 @@ async function main() {
 
   // --- Sweep Rumble accounts ---
   const sweepableRumbles = reports.filter(
-    (r) => r.type === "Rumble" && r.sweepable && r.rumbleId !== undefined && (force || !r.hasWinningBets),
+    (r) => r.type === "Rumble" && r.sweepable && r.rumbleId !== undefined && !r.hasWinningBets,
   );
   const protectedCount = reports.filter((r) => r.type === "Rumble" && r.sweepable && r.hasWinningBets).length;
-  console.log(`\n  ${sweepableRumbles.length} sweepable Rumble accounts${!force && protectedCount > 0 ? ` (${protectedCount} with winners PROTECTED — use --force to include)` : ""}`);
+  console.log(`\n  ${sweepableRumbles.length} sweepable Rumble accounts${protectedCount > 0 ? ` (${protectedCount} with winners PROTECTED)` : ""}`);
 
   for (const report of sweepableRumbles) {
     const rumbleId = report.rumbleId!;

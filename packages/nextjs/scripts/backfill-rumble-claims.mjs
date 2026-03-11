@@ -86,7 +86,7 @@ function planWinnerTakeAllUpdates(rows, winnerFighterId, mode) {
     if (fighterId !== winnerFighterId) losersPool += amount;
   }
 
-  const treasuryCut = losersPool * 0.1;
+  const treasuryCut = losersPool * 0.03;
   const distributable = Math.max(0, losersPool - treasuryCut);
   const winnerStatus = mode === "accrue_claim" ? "pending" : "paid";
 

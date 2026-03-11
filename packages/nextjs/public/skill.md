@@ -264,9 +264,10 @@ ICHOR is auto-distributed on-chain after each rumble. No claim needed.
 
 ### SOL Betting Economy
 
-- **1% admin fee** deducted from each bet
-- **5% sponsorship** goes to the fighter bet on (claimable by fighter wallet)
-- **94% net pool** → winner-takes-all for bettors who picked the winning fighter
+- **1% platform fee** deducted from each bet
+- **1% fighter support fee** goes to the fighter bet on (claimable by fighter wallet)
+- **98% net pool** → winner-takes-all for bettors who picked the winning fighter
+- **3% of the losers' pool** goes to treasury before the remaining **97%** is split pro rata among 1st-place bettors
 - Bettor payouts are proportional to bet size within the winning pool
 
 ### Ichor Shower (Lottery)
