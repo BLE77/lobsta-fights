@@ -993,17 +993,9 @@ export async function GET(request: Request) {
         // showing "betting" indefinitely when combat is already running.
         const STATE_ORDER: Record<string, number> = { idle: 0, betting: 1, combat: 2, payout: 3 };
         let state: "idle" | "betting" | "combat" | "payout" = slot.state;
-        const inMemoryOrder = STATE_ORDER[slot.state] ?? 0;
-        let onchainOrder = 0;
-        if (onchain.state === "combat") onchainOrder = 2;
-        else if (onchain.state === "payout" || onchain.state === "complete") onchainOrder = 3;
-        else if (onchain.state === "betting") onchainOrder = 1;
-
-        if (onchainOrder > inMemoryOrder) {
-          if (onchainOrder === 2) state = "combat";
-          else if (onchainOrder === 3) state = "payout";
-          else if (onchainOrder === 1) state = "betting";
-        }
+        if (onchain.state === "combat") state = "combat";
+        else if (onchain.state === "payout" || onchain.state === "complete") state = "payout";
+        else if (onchain.state === "betting") state = "betting";
 
         let nextTurnAt = slot.nextTurnAt;
         let turnIntervalMs = slot.turnIntervalMs;
@@ -1028,33 +1020,15 @@ export async function GET(request: Request) {
         let remainingFighters = slot.remainingFighters;
         let turnPhase = slot.turnPhase;
 
-        if (state === "combat" && onchain.state === "betting") {
-          const closeRaw = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
-          const fallbackStartAt = getStableNextTurnAt(
-            rumbleIdNum,
-            currentTurn ?? 0,
-            "starting",
-            () => new Date(Date.now() + 3_000).toISOString(),
-          );
-          const combatStartAt = deriveOnchainBettingDeadlineIso({
-            rumbleIdNum,
-            closeRaw,
-            networkContext: useDevnetSlotContext ? "devnet" : "mainnet",
-            effectiveCurrentSlot: useDevnetSlotContext ? currentClusterSlotBig : currentBettingSlotBig,
-            closeToMs: useDevnetSlotContext ? slotsToMs : bettingSlotsToMs,
-            fallback: fallbackStartAt,
-          });
+        if (state === "betting") {
           return {
             ...slot,
-            state,
-            bettingDeadline: null,
-            currentTurn: currentTurn ?? 0,
-            remainingFighters: slot.fighters.length,
-            turnPhase: "starting",
-            nextTurnAt: combatStartAt,
+            state: "betting",
+            bettingDeadline,
+            currentTurn: 0,
+            turnPhase: null,
+            nextTurnAt: null,
             nextTurnTargetSlot: null,
-            currentSlot: currentClusterSlotBig !== null ? Number(currentClusterSlotBig) : null,
-            turnIntervalMs: turnIntervalMs ?? 24_000,
           };
         }
 
@@ -1392,16 +1366,7 @@ export async function GET(request: Request) {
             mergedState === "betting"
               ? (sameRumble
                   ? existing.bettingDeadline
-                  // For non-same-rumble betting slots (Vercel cold start), compute
-                  // a synthetic deadline from created_at so the BettingPanel shows
-                  // a countdown instead of "Initializing On-Chain...".
-                  : (() => {
-                      const createdMs = new Date(row.created_at).getTime();
-                      if (!Number.isFinite(createdMs)) return null;
-                      // Assume ~60s betting window from creation
-                      const syntheticDeadline = new Date(createdMs + 60_000).toISOString();
-                      return syntheticDeadline;
-                    })())
+                  : null)
               : null,
           nextTurnAt:
             mergedState === "combat"
@@ -1468,24 +1433,12 @@ export async function GET(request: Request) {
             });
             return null;
           });
-          let useDevnetSlotContext = false;
-          // Fallback: if mainnet failed, try devnet
-          if (!onchain) {
-            onchain = await getDevnetRumbleState(rumbleIdNum).catch((err) => {
-              console.warn("[StatusAPI] readRumbleAccountState failed", {
-                rumbleIdNum,
-                slotIndex: slot.slotIndex,
-                state: slot.state,
-                error: String(err),
-              });
-              return null;
-            });
-            useDevnetSlotContext = true;
-          }
 
-          // If neither network has the account, keep existing slot data as-is
+          // Money-side betting readiness is driven by mainnet only. If the
+          // mainnet account is unreadable or has not armed a close slot yet,
+          // keep the slot in "initializing" mode with no visible timer.
           if (!onchain) {
-            return slot;
+            return { ...slot, bettingDeadline: null };
           }
 
           // Case 2: On-chain has already transitioned past betting (Railway
@@ -1501,18 +1454,23 @@ export async function GET(request: Request) {
             const bettingDeadline = deriveOnchainBettingDeadlineIso({
               rumbleIdNum,
               closeRaw,
-              networkContext: useDevnetSlotContext ? "devnet" : "mainnet",
-              effectiveCurrentSlot: useDevnetSlotContext ? currentClusterSlotBig : currentBettingSlotBig,
-              closeToMs: useDevnetSlotContext ? slotsToMs : bettingSlotsToMs,
-              fallback: slot.bettingDeadline ?? null,
+              networkContext: "mainnet",
+              effectiveCurrentSlot: currentBettingSlotBig,
+              closeToMs: bettingSlotsToMs,
+              fallback: null,
             });
             if (!bettingDeadline) {
-              // On-chain betting but deadline not armed yet. Keep any
-              // existing synthetic deadline from the DB overlay so the
-              // BettingPanel shows "Betting Open" instead of null.
-              return slot;
+              return { ...slot, bettingDeadline: null };
             }
-            return { ...slot, bettingDeadline };
+            return {
+              ...slot,
+              state: "betting",
+              bettingDeadline,
+              currentTurn: 0,
+              turnPhase: null,
+              nextTurnAt: null,
+              nextTurnTargetSlot: null,
+            };
           }
         }
 
