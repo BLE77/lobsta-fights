@@ -1,6 +1,8 @@
-const CANONICAL_MAINNET_RUMBLE_ENGINE_ID = "638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU";
+// Mainnet betting lives on the dedicated 2Tv... deployment. Never rewrite that
+// configured program ID to the devnet/ER combat program.
+const CANONICAL_MAINNET_RUMBLE_ENGINE_ID = "2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC";
 const LEGACY_MAINNET_RUMBLE_ENGINE_IDS = new Set([
-  "2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC",
+  "638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU",
 ]);
 
 export function getCanonicalMainnetRumbleEngineId(): string {
