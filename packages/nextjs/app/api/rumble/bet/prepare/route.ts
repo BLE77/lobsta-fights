@@ -29,6 +29,14 @@ const BETTING_CLOSE_GUARD_SLOTS = Math.max(1, Math.ceil(BETTING_CLOSE_GUARD_MS /
 const ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD = 5_000_000n;
 const BET_PREPARE_ACTIVE_BETTING_MAX_AGE_MS = 10 * 60 * 1000;
 
+type BettingRumbleCandidate = {
+  rumbleId: string;
+  rumbleNumber: number | null;
+  fighterIds: string[];
+  createdAtMs: number;
+  source: "local" | "persisted";
+};
+
 async function ensureRecovered(): Promise<void> {
   if (hasRecovered()) return;
   await recoverOrchestratorState();
@@ -38,19 +46,9 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function loadLatestBettingRumbleForSlot(slotIndex: number): Promise<{
-  rumbleId: string;
-  rumbleNumber: number | null;
-  fighterIds: string[];
-} | null> {
+async function loadBettingRumbleCandidatesForSlot(slotIndex: number): Promise<BettingRumbleCandidate[]> {
   const active = await loadActiveRumbles();
-  let best: {
-    id: string;
-    createdAtMs: number;
-    fighters: unknown;
-    status: string;
-    rumbleNumber: number | null;
-  } | null = null;
+  const candidates: BettingRumbleCandidate[] = [];
   for (const row of active) {
     if (Number(row.slot_index) !== slotIndex) continue;
     if (String(row.status ?? "").toLowerCase() !== "betting") continue;
@@ -58,35 +56,106 @@ async function loadLatestBettingRumbleForSlot(slotIndex: number): Promise<{
     const createdAtMs = new Date(row.created_at).getTime();
     if (!Number.isFinite(createdAtMs)) continue;
     if (Date.now() - createdAtMs > BET_PREPARE_ACTIVE_BETTING_MAX_AGE_MS) continue;
-    if (!best || createdAtMs > best.createdAtMs) {
-      best = {
-        id: row.id,
-        createdAtMs,
-        fighters: row.fighters,
-        status: row.status,
-        rumbleNumber:
-          Number.isSafeInteger(Number((row as any).rumble_number)) && Number((row as any).rumble_number) >= 0
-            ? Number((row as any).rumble_number)
-            : null,
-      };
+    candidates.push({
+      rumbleId: row.id,
+      createdAtMs,
+      fighterIds: extractRumbleFighterIds(row.fighters),
+      rumbleNumber:
+        Number.isSafeInteger(Number((row as any).rumble_number)) && Number((row as any).rumble_number) >= 0
+          ? Number((row as any).rumble_number)
+          : null,
+      source: "persisted",
+    });
+  }
+  candidates.sort((a, b) => b.createdAtMs - a.createdAtMs);
+  return candidates;
+}
+
+function prependLocalBettingCandidate(
+  candidates: BettingRumbleCandidate[],
+  localSlot: ReturnType<ReturnType<typeof getOrchestrator>["getStatus"]> extends Array<infer T> ? T | null : any,
+): BettingRumbleCandidate[] {
+  if (
+    !localSlot ||
+    localSlot.state !== "betting" ||
+    !localSlot.rumbleId ||
+    !Array.isArray(localSlot.fighters) ||
+    localSlot.fighters.length < MIN_ACTIVE_RUMBLE_FIGHTERS
+  ) {
+    return candidates;
+  }
+  const localCandidate: BettingRumbleCandidate = {
+    rumbleId: localSlot.rumbleId,
+    rumbleNumber: parseOnchainRumbleIdNumber(localSlot.rumbleId),
+    fighterIds: localSlot.fighters,
+    createdAtMs: Date.now(),
+    source: "local",
+  };
+  const deduped = candidates.filter((candidate) => candidate.rumbleId !== localCandidate.rumbleId);
+  return [localCandidate, ...deduped];
+}
+
+async function resolveBettableRumbleForSlot(
+  slotIndex: number,
+  orchestrator: ReturnType<typeof getOrchestrator>,
+): Promise<{
+  candidate: BettingRumbleCandidate;
+  onchainRumble: Awaited<ReturnType<typeof readMainnetRumbleAccountStateResilient>>;
+} | null> {
+  const scanCandidates = async (): Promise<{
+    match: {
+      candidate: BettingRumbleCandidate;
+      onchainRumble: Awaited<ReturnType<typeof readMainnetRumbleAccountStateResilient>>;
+    } | null;
+    sawCandidate: boolean;
+    sawNonBettingOnchainState: string | null;
+  }> => {
+    const localSlot = orchestrator.getStatus().find((s) => s.slotIndex === slotIndex) ?? null;
+    const candidates = prependLocalBettingCandidate(
+      await loadBettingRumbleCandidatesForSlot(slotIndex),
+      localSlot,
+    ).slice(0, 5);
+    let sawCandidate = false;
+    let sawNonBettingOnchainState: string | null = null;
+    for (const candidate of candidates) {
+      if (candidate.fighterIds.length < MIN_ACTIVE_RUMBLE_FIGHTERS) continue;
+      sawCandidate = true;
+      const rumbleIdNum =
+        candidate.rumbleNumber ??
+        parseOnchainRumbleIdNumber(candidate.rumbleId);
+      if (rumbleIdNum === null) continue;
+      const onchainRumble = await readMainnetRumbleAccountStateResilient(rumbleIdNum, {
+        maxPasses: 2,
+        retryDelayMs: 100,
+      }).catch(() => null);
+      if (!onchainRumble) continue;
+      if (onchainRumble.state === "betting") {
+        return { match: { candidate, onchainRumble }, sawCandidate, sawNonBettingOnchainState };
+      }
+      sawNonBettingOnchainState ||= onchainRumble.state ?? null;
+    }
+    return { match: null, sawCandidate, sawNonBettingOnchainState };
+  };
+
+  let scanned = await scanCandidates();
+  if (scanned.match) return scanned.match;
+
+  if (scanned.sawCandidate) {
+    const recovered = await orchestrator.ensureOnchainRumbleForSlot(slotIndex).catch(() => false);
+    if (recovered) {
+      await sleep(250);
+      scanned = await scanCandidates();
+      if (scanned.match) return scanned.match;
     }
   }
-  if (!best) return null;
 
-  const fighterIds = extractRumbleFighterIds(best.fighters);
-  if (!hasMinimumRumbleFighters(best.fighters)) return null;
-
-  return {
-    rumbleId: best.id,
-    rumbleNumber: best.rumbleNumber,
-    fighterIds,
-  };
+  return null;
 }
 
 export async function POST(request: Request) {
   return runWithRpcMetrics("POST /api/rumble/bet/prepare", async () => {
     const rlKey = getRateLimitKey(request);
-    const rl = checkRateLimit("PUBLIC_WRITE", rlKey);
+    const rl = checkRateLimit("PUBLIC_WRITE", rlKey, "/api/rumble/bet/prepare");
     if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
     const contentTypeError = requireJsonContentType(request);
     if (contentTypeError) return contentTypeError;
@@ -119,26 +188,18 @@ export async function POST(request: Request) {
     await ensureRecovered();
     await ensureRumblePublicHeartbeat("bet_prepare");
     const orchestrator = getOrchestrator();
-    const localSlot = orchestrator.getStatus().find((s) => s.slotIndex === parsedSlotIndex) ?? null;
-    const persistedBetting = await loadLatestBettingRumbleForSlot(parsedSlotIndex).catch(() => null);
-
-    const slotRumbleId = (() => {
-      if (persistedBetting?.rumbleId) return persistedBetting.rumbleId;
-      if (localSlot?.state === "betting" && localSlot?.rumbleId) return localSlot.rumbleId;
-      return null;
-    })();
-    if (!slotRumbleId) {
+    const resolved = await resolveBettableRumbleForSlot(parsedSlotIndex, orchestrator);
+    if (!resolved) {
       return NextResponse.json(
         { error: "Betting is not open for this slot right now." },
         { status: 409 },
       );
     }
+    const { candidate: activeBettingRumble } = resolved;
+    const onchainRumble = resolved.onchainRumble!;
+    const slotRumbleId = activeBettingRumble.rumbleId;
 
-    const slotFighters = (() => {
-      if (persistedBetting?.fighterIds?.length) return persistedBetting.fighterIds;
-      if (localSlot?.fighters?.length) return localSlot.fighters;
-      return [];
-    })();
+    const slotFighters = activeBettingRumble.fighterIds;
     if (slotFighters.length < MIN_ACTIVE_RUMBLE_FIGHTERS) {
       return NextResponse.json(
         {
@@ -234,7 +295,7 @@ export async function POST(request: Request) {
     }
 
     const rumbleIdNum =
-      persistedBetting?.rumbleNumber ??
+      activeBettingRumble.rumbleNumber ??
       parseOnchainRumbleIdNumber(slotRumbleId);
     if (rumbleIdNum === null) {
       return NextResponse.json(
@@ -242,47 +303,7 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-
-    // Source of truth guard: do not return a signable tx unless this rumble is
-    // still open on-chain. Prevents stale UI/off-chain state from producing a
-    // tx that will immediately fail simulation with BettingClosed.
     const bettingConn = getBettingConnection();
-    let onchainRumble = await readMainnetRumbleAccountStateResilient(rumbleIdNum, {
-      maxPasses: 2,
-      retryDelayMs: 100,
-    }).catch(() => null);
-    if (!onchainRumble) {
-      // Self-heal: if this slot is betting but the on-chain account is missing,
-      // trigger orchestrator recovery/create once and re-read before failing.
-      const recovered = await orchestrator
-        .ensureOnchainRumbleForSlot(parsedSlotIndex)
-        .catch(() => false);
-      if (recovered) {
-        await sleep(250);
-        onchainRumble = await readMainnetRumbleAccountStateResilient(rumbleIdNum, {
-          maxPasses: 3,
-          retryDelayMs: 150,
-        }).catch(() => null);
-      }
-    }
-    if (!onchainRumble) {
-      return NextResponse.json(
-        {
-          error: "On-chain rumble is still initializing. Please retry in a few seconds.",
-          rumble_id: slotRumbleId,
-        },
-        { status: 409 },
-      );
-    }
-    if (onchainRumble.state !== "betting") {
-      return NextResponse.json(
-        {
-          error: `On-chain betting is closed for this rumble (state: ${onchainRumble.state}).`,
-          onchain_state: onchainRumble.state,
-        },
-        { status: 409 },
-      );
-    }
 
     const currentSlot = await bettingConn.getSlot("processed");
     const onchainCloseRaw = (() => {

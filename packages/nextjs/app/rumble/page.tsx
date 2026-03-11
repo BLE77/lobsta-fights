@@ -5,8 +5,6 @@ import Link from "next/link";
 import {
   PublicKey,
   Transaction,
-  LAMPORTS_PER_SOL,
-  Connection,
 } from "@solana/web3.js";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
@@ -27,11 +25,6 @@ import { BoltIcon, ChatBubbleLeftRightIcon, ListBulletIcon } from "@heroicons/re
 import AudioToggle from "~~/components/AudioToggle";
 import { useSolanaMobileContext } from "~~/lib/solana-mobile";
 import { usePageVisibility } from "~~/hooks/usePageVisibility";
-import { getCachedBalance } from "~~/lib/solana-connection";
-import {
-  getSafeClientBettingRpcEndpoint,
-  getSafeClientCombatRpcEndpoint,
-} from "~~/lib/client-solana-rpc";
 
 // ---------------------------------------------------------------------------
 // Types for the status API response
@@ -641,16 +634,6 @@ export default function RumblePage() {
   const hideBugCleaningOverlay = mobileContext.isStandaloneAppShell;
   const isPageVisible = usePageVisibility();
 
-  // RPC connection — betting is on mainnet, so prefer betting RPC for wallet balance
-  const rpcEndpoint = (() => {
-    if (process.env.NEXT_PUBLIC_BETTING_RPC_URL?.trim()) {
-      return getSafeClientBettingRpcEndpoint();
-    }
-    return getSafeClientCombatRpcEndpoint();
-  })();
-  const connectionRef = useRef(new Connection(rpcEndpoint, "confirmed"));
-  const connection = connectionRef.current;
-
   const dismissIntroOverlay = useCallback(() => {
     setShowIntroOverlay(false);
     try {
@@ -700,12 +683,20 @@ export default function RumblePage() {
 
       const promise = (async () => {
         try {
-          const lamports = await getCachedBalance(connection, publicKey, {
-            commitment: "confirmed",
-            ttlMs: options?.ttlMs ?? 20_000,
-            forceRefresh: options?.force === true,
+          const params = new URLSearchParams({
+            address: publicKey.toBase58(),
           });
-          const nextBalance = lamports / LAMPORTS_PER_SOL;
+          if (options?.force) {
+            params.set("_t", String(Date.now()));
+          }
+          const res = await fetch(`/api/rumble/sol-balance?${params.toString()}`, {
+            cache: options?.force ? "no-store" : "default",
+          });
+          if (!res.ok) {
+            throw new Error(`Balance ${res.status}`);
+          }
+          const payload = (await res.json()) as { sol?: number | null };
+          const nextBalance = typeof payload.sol === "number" ? payload.sol : null;
           setSolBalance(nextBalance);
           return nextBalance;
         } catch {
@@ -723,7 +714,7 @@ export default function RumblePage() {
         }
       }
     },
-    [connection, publicKey],
+    [publicKey],
   );
 
   const connectWallet = useCallback(async () => {
