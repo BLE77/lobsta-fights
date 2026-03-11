@@ -265,6 +265,10 @@ interface SlotCombatState {
   openTurnStartedAt?: number;
   /** Number of consecutive openTurn attempts while combat remains at turn 0. */
   openTurnAttemptCount?: number;
+  /** Last turn number for which advanceTurn already confirmed on-chain. */
+  lastAdvanceSubmittedTurn?: number;
+  /** Last turn number for which resolveTurn already confirmed on-chain. */
+  lastResolveSubmittedTurn?: number;
 }
 
 interface OnchainTurnDecision {
@@ -2427,6 +2431,7 @@ export class RumbleOrchestrator {
     const idx = slot.slotIndex;
     const rumbleId = slot.id;
     const now = Date.now();
+    const staleBettingConflictAgeMs = 5 * 60 * 1000;
 
     if (!this.onchainRumbleCreateStartedAt.has(rumbleId)) {
       this.onchainRumbleCreateStartedAt.set(rumbleId, now);
@@ -2451,12 +2456,57 @@ export class RumbleOrchestrator {
           const status = String(r.status ?? "").toLowerCase();
           return status === "betting" || status === "combat";
         });
+        const staleBettingRowsCleared = new Set<string>();
+
+        for (const row of slotRows) {
+          const status = String(row.status ?? "").toLowerCase();
+          if (status !== "betting") continue;
+
+          const createdAtMs = new Date(row.created_at).getTime();
+          if (!Number.isFinite(createdAtMs)) continue;
+          if (now - createdAtMs < staleBettingConflictAgeMs) continue;
+
+          const betCount = await persist.countBetsForRumble(row.id);
+          if (betCount > 0) {
+            console.warn(
+              `[Orchestrator] Keeping stale betting rumble ${row.id} blocked in slot ${idx} ` +
+                `because it has ${betCount} bet(s); manual review required.`,
+            );
+            continue;
+          }
+
+          staleBettingRowsCleared.add(row.id);
+          const fighterIds = persist.extractRumbleFighterIds(row.fighters);
+          console.warn(
+            `[Orchestrator] Clearing stale zero-bet betting rumble ${row.id} in slot ${idx} ` +
+              `(age=${Math.round((now - createdAtMs) / 1000)}s, fighters=${fighterIds.length}).`,
+          );
+
+          await persist.updateRumbleStatus(row.id, "complete");
+          await Promise.all(
+            fighterIds.map((fighterId) =>
+              persist.saveQueueFighter(fighterId, "waiting", false),
+            ),
+          );
+
+          for (const fighterId of fighterIds) {
+            try {
+              this.queueManager.addToQueue(fighterId, false);
+            } catch {
+              // Ignore queue duplicates or active-slot conflicts during cleanup.
+            }
+          }
+        }
+
+        const viableSlotRows = slotRows.filter(
+          (row) => !staleBettingRowsCleared.has(row.id),
+        );
 
         const minActiveFighters = persist.MIN_ACTIVE_RUMBLE_FIGHTERS;
         const hasMinimumFighters = (fighters: unknown): boolean =>
           persist.extractRumbleFighterIds(fighters).length >= minActiveFighters;
 
-        const underfilledRows = slotRows.filter(
+        const underfilledRows = viableSlotRows.filter(
           (row) => !hasMinimumFighters(row.fighters),
         );
         for (const row of underfilledRows) {
@@ -2471,7 +2521,7 @@ export class RumbleOrchestrator {
           void persist.updateRumbleStatus(row.id, "complete");
         }
 
-        const slotConflict = slotRows.find((row) =>
+        const slotConflict = viableSlotRows.find((row) =>
           hasMinimumFighters(row.fighters),
         );
         if (slotConflict) {
@@ -2525,15 +2575,18 @@ export class RumbleOrchestrator {
       slot.fighters,
       targetBettingDeadlineUnix,
     );
-    // Mainnet is best-effort — don't block devnet fights if mainnet wallet is broke
+    let mainnetReady = false;
     if (createdOrExists) {
-      this.ensureMainnetRumbleExists(
+      mainnetReady = await this.ensureMainnetRumbleExists(
         rumbleId,
         slot.fighters,
         targetBettingDeadlineUnix,
-      ).catch((err) => console.warn(`[OnChain:Mainnet] ensureMainnetRumbleExists non-blocking error:`, err));
+      ).catch((err) => {
+        console.warn(`[OnChain:Mainnet] ensureMainnetRumbleExists error:`, err);
+        return false;
+      });
     }
-    if (createdOrExists) {
+    if (createdOrExists && mainnetReady) {
       this.onchainRumbleCreateRetryAt.delete(rumbleId);
       this.onchainRumbleCreateStartedAt.delete(rumbleId);
       this.clearOnchainCreateFailure(rumbleId);
@@ -2561,13 +2614,16 @@ export class RumbleOrchestrator {
       slot.fighters,
       targetBettingDeadlineUnix,
     );
-    // Mainnet is best-effort — don't block devnet fights if mainnet wallet is broke
     if (exists) {
-      this.ensureMainnetRumbleExists(
+      const mainnetReady = await this.ensureMainnetRumbleExists(
         slot.id,
         slot.fighters,
         targetBettingDeadlineUnix,
-      ).catch((err) => console.warn(`[OnChain:Mainnet] ensureMainnetRumbleExists non-blocking error:`, err));
+      ).catch((err) => {
+        console.warn(`[OnChain:Mainnet] ensureMainnetRumbleExists error:`, err);
+        return false;
+      });
+      if (!mainnetReady) return false;
       await this.armBettingWindowIfReady(slot);
     }
     return exists;
@@ -2578,56 +2634,61 @@ export class RumbleOrchestrator {
     const rumbleIdNum = this.resolveOnchainRumbleIdNumber(slot.id);
     let deadline: Date | undefined;
     if (rumbleIdNum !== null) {
-      // Try mainnet first, fall back to devnet if mainnet unavailable
       invalidateReadCache(`rumble:mainnet:${rumbleIdNum}`);
-      let onchain = await readMainnetRumbleAccountStateResilient(rumbleIdNum, {
+      const onchain = await readMainnetRumbleAccountStateResilient(rumbleIdNum, {
         maxPasses: 2,
         retryDelayMs: 100,
       }).catch(() => null);
       if (!onchain) {
-        // Mainnet unavailable — fall back to devnet on-chain state
-        invalidateReadCache(`rumble:${rumbleIdNum}`);
-        onchain = await readRumbleAccountState(rumbleIdNum).catch(() => null);
-        if (!onchain) {
-          console.warn(`[Orchestrator] armBettingWindowIfReady: neither mainnet nor devnet on-chain state readable for ${slot.id}`);
-          return;
-        }
-        console.log(`[Orchestrator] armBettingWindowIfReady: using devnet on-chain state for ${slot.id} (mainnet unavailable)`);
-      }
-      if (onchain.state !== "betting") {
-        console.warn(`[Orchestrator] armBettingWindowIfReady: on-chain state is "${onchain.state}" (not betting) for ${slot.id}`);
+        console.warn(
+          `[Orchestrator] armBettingWindowIfReady: mainnet on-chain state is not readable for ${slot.id}; keeping betting closed until money-side is ready`,
+        );
         return;
       }
-      const closeRaw = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
-      if (closeRaw > 0n) {
-        const clusterSlot = await getBettingConnection().getSlot("processed").catch(() => null);
-        if (typeof clusterSlot === "number" && Number.isFinite(clusterSlot)) {
-          const clusterSlotBig = BigInt(clusterSlot);
-          const looksLikeUnix = closeRaw > clusterSlotBig + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD;
-          if (looksLikeUnix) {
-            const unixMs = Number(closeRaw) * 1_000;
-            if (Number.isFinite(unixMs) && unixMs > 0) {
-              // Ensure at least ONCHAIN_BETTING_DURATION_MS remaining
-              const remaining = unixMs - Date.now();
-              if (remaining < ONCHAIN_BETTING_DURATION_MS * 0.5) {
-                // On-chain deadline already partially elapsed — extend to give full window
-                deadline = new Date(Date.now() + ONCHAIN_BETTING_DURATION_MS);
-                console.log(`[Orchestrator] On-chain deadline partially elapsed (${Math.round(remaining / 1000)}s left), extending to full ${ONCHAIN_BETTING_DURATION_MS / 1000}s window`);
-              } else {
-                deadline = new Date(unixMs);
-              }
-            }
-          } else {
-            const remainingSlots = closeRaw > clusterSlotBig ? closeRaw - clusterSlotBig : 0n;
-            const capped = remainingSlots > 1_000_000n ? 1_000_000n : remainingSlots;
-            deadline = new Date(Date.now() + Number(capped) * SLOT_MS_ESTIMATE);
-          }
-        }
+      if (onchain.state !== "betting") {
+        console.warn(
+          `[Orchestrator] armBettingWindowIfReady: mainnet on-chain state is "${onchain.state}" (not betting) for ${slot.id}`,
+        );
+        return;
       }
-      // Fallback: on-chain exists but deadline wasn't parseable — give full window
-      if (!deadline) {
-        deadline = new Date(Date.now() + ONCHAIN_BETTING_DURATION_MS);
-        console.log(`[Orchestrator] On-chain deadline not parseable, using full ${ONCHAIN_BETTING_DURATION_MS / 1000}s window`);
+
+      const closeRaw = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
+      if (closeRaw <= 0n) {
+        console.warn(
+          `[Orchestrator] armBettingWindowIfReady: mainnet close slot/timestamp is not armed for ${slot.id}; keeping betting closed`,
+        );
+        return;
+      }
+      const clusterSlot = await getBettingConnection().getSlot("processed").catch(() => null);
+      if (typeof clusterSlot !== "number" || !Number.isFinite(clusterSlot)) {
+        console.warn(
+          `[Orchestrator] armBettingWindowIfReady: could not read mainnet cluster slot for ${slot.id}; keeping betting closed`,
+        );
+        return;
+      }
+
+
+      const clusterSlotBig = BigInt(clusterSlot);
+      const looksLikeUnix = closeRaw > clusterSlotBig + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD;
+      if (looksLikeUnix) {
+        const unixMs = Number(closeRaw) * 1_000;
+        if (!Number.isFinite(unixMs) || unixMs <= Date.now()) {
+          console.warn(
+            `[Orchestrator] armBettingWindowIfReady: mainnet unix betting deadline is invalid/elapsed for ${slot.id}; keeping betting closed`,
+          );
+          return;
+        }
+        deadline = new Date(unixMs);
+      } else {
+        const remainingSlots = closeRaw > clusterSlotBig ? closeRaw - clusterSlotBig : 0n;
+        if (remainingSlots <= 0n) {
+          console.warn(
+            `[Orchestrator] armBettingWindowIfReady: mainnet betting close slot already elapsed for ${slot.id}; keeping betting closed`,
+          );
+          return;
+        }
+        const capped = remainingSlots > 1_000_000n ? 1_000_000n : remainingSlots;
+        deadline = new Date(Date.now() + Number(capped) * SLOT_MS_ESTIMATE);
       }
     }
 
@@ -2973,19 +3034,16 @@ export class RumbleOrchestrator {
     try {
       const sig = await createRumbleMainnet(rumbleIdNum, fighterPubkeys, bettingDeadlineUnix);
       if (!sig) {
-        this.recordOnchainCreateFailure(
-          rumbleId,
-          "mainnet createRumble RPC returned null signature",
-          fighterIds.length,
-          slotIndex,
+        console.warn(
+          `[OnChain:Mainnet] createRumble returned null for ${rumbleId}; verifying PDA before failing closed`,
         );
-        return false;
+      } else {
+        console.log(`[OnChain:Mainnet] createRumble succeeded (self-heal): ${sig}`);
+        void persistWithRetry(
+          () => persist.updateRumbleTxSignature(rumbleId, "createRumble_mainnet", sig),
+          `updateRumbleTxSignature:createRumble_mainnet:${rumbleId}`,
+        );
       }
-      console.log(`[OnChain:Mainnet] createRumble succeeded (self-heal): ${sig}`);
-      void persistWithRetry(
-        () => persist.updateRumbleTxSignature(rumbleId, "createRumble_mainnet", sig),
-        `updateRumbleTxSignature:createRumble_mainnet:${rumbleId}`,
-      );
     } catch (err) {
       if (
         this.hasErrorTokenAny(err, [
@@ -3476,8 +3534,6 @@ export class RumbleOrchestrator {
       await this.runCombatTurn(slot, state);
       state.lastTickAt = Date.now();
       turnsThisInvocation++;
-      // runCombatTurn calls finishCombat when remaining <= 1
-      break;
     }
   }
 
@@ -3543,6 +3599,18 @@ export class RumbleOrchestrator {
     let justInitialized = false;
     if (!this.combatStates.has(idx) || this.combatStates.get(idx)!.rumbleId !== slot.id) {
       await this.initCombatState(slot);
+      await this.startCombatOnChain(slot);
+
+      invalidateReadCache(`rumble:${rumbleIdNum}`);
+      const postStartState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
+      if (!postStartState || postStartState.state !== "combat") {
+        if (postStartState?.state === "betting") {
+          console.log(
+            `[ONCHAIN-START] Waiting for on-chain combat readiness before delegating rumble ${rumbleIdNum}`,
+          );
+        }
+        return;
+      }
 
       const pool = this.bettingPools.get(idx);
       if (pool) {
@@ -3557,18 +3625,6 @@ export class RumbleOrchestrator {
         await persist.updateRumbleStatus(slot.id, "combat");
       } catch (err) {
         console.error(`[Orchestrator] Failed to persist combat status for rumble ${slot.id}:`, err);
-        return;
-      }
-      await this.startCombatOnChain(slot);
-
-      invalidateReadCache(`rumble:${rumbleIdNum}`);
-      const postStartState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
-      if (!postStartState || postStartState.state !== "combat") {
-        if (postStartState?.state === "betting") {
-          console.log(
-            `[ONCHAIN-START] Waiting for on-chain combat readiness before delegating rumble ${rumbleIdNum}`,
-          );
-        }
         return;
       }
 
@@ -3718,6 +3774,13 @@ export class RumbleOrchestrator {
       }
     }
     if (!combat) return;
+
+    if (
+      state.lastResolveSubmittedTurn !== undefined &&
+      combat.currentTurn > state.lastResolveSubmittedTurn
+    ) {
+      state.lastResolveSubmittedTurn = undefined;
+    }
 
     if (!(await this.ensureMatchupVrfReady(slot, state, combat, rumbleIdNum, now))) {
       return;
@@ -3903,6 +3966,9 @@ export class RumbleOrchestrator {
     // attempt resolve_turn. This handles serverless cold starts, instance churn,
     // and any gap where the keeper missed the window.
     if (!combat.turnResolved && currentSlotBig >= combat.revealCloseSlot) {
+      if (state.lastResolveSubmittedTurn === combat.currentTurn) {
+        return;
+      }
       // Try submitting any remaining moves first (commit/reveal may have been
       // missed on previous instances).
       await this.submitOnchainMovesForTurn(slot, state, combat, rumbleIdNum, currentSlotBig);
@@ -3917,6 +3983,7 @@ export class RumbleOrchestrator {
           );
           const sig = await resolveTurnOnChain(rumbleIdNum, commitmentAccounts, slotConn);
           if (sig) {
+            state.lastResolveSubmittedTurn = combat.currentTurn;
             console.log(`[ONCHAIN-RESOLVE] resolveTurn succeeded for rumble ${slot.id}: ${sig}`);
             void persistWithRetry(
               () => persist.updateRumbleTxSignature(slot.id, "resolveTurn", sig),
@@ -3993,6 +4060,7 @@ export class RumbleOrchestrator {
         };
         state.turns.push(turnPost);
         state.lastOnchainTurnResolved = combat.currentTurn;
+        state.lastResolveSubmittedTurn = undefined;
         await persist.updateRumbleTurnLog(slot.id, state.turns, state.turns.length);
 
         this.emit("turn_resolved", {
@@ -4025,6 +4093,7 @@ export class RumbleOrchestrator {
     }
 
     if (!combat.turnResolved) {
+      state.lastAdvanceSubmittedTurn = undefined;
       // Turn is still within commit/reveal window — submit moves and wait.
       await this.submitOnchainMovesForTurn(slot, state, combat, rumbleIdNum, currentSlotBig);
       return;
@@ -4082,14 +4151,19 @@ export class RumbleOrchestrator {
 
     // More than 1 fighter remains and turn is resolved — advance to next turn.
     if (currentSlotBig >= combat.revealCloseSlot) {
+      if (state.lastAdvanceSubmittedTurn === combat.currentTurn) {
+        return;
+      }
       try {
         const sig = await advanceTurnOnChain(rumbleIdNum, slotConn);
         if (sig) {
+          state.lastAdvanceSubmittedTurn = combat.currentTurn;
           console.log(`[ONCHAIN-ADVANCE] advanceTurn succeeded for rumble ${slot.id}: ${sig}`);
           void persistWithRetry(
             () => persist.updateRumbleTxSignature(slot.id, "advanceTurn", sig),
             `updateRumbleTxSignature:advanceTurn:${slot.id}`,
           );
+          invalidateReadCache(`combat:${rumbleIdNum}`);
         }
       } catch (err) {
         if (
@@ -4191,6 +4265,8 @@ export class RumbleOrchestrator {
       finalizeUndelegateStartedAt: undefined,
       openTurnStartedAt: undefined,
       openTurnAttemptCount: 0,
+      lastAdvanceSubmittedTurn: undefined,
+      lastResolveSubmittedTurn: undefined,
     });
     const state = this.combatStates.get(slot.slotIndex);
     if (state) {

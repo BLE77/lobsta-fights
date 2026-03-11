@@ -18,7 +18,7 @@ function includesIfPresent(haystack: string, needle?: string): boolean {
 
 export async function POST(request: NextRequest) {
   const rlKey = getRateLimitKey(request);
-  const rl = checkRateLimit("PUBLIC_WRITE", rlKey);
+  const rl = checkRateLimit("PUBLIC_WRITE", rlKey, "/api/mobile-auth/verify");
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
 
   let body: {

@@ -105,7 +105,7 @@ export async function GET(request: Request) {
  */
 export async function POST(request: Request) {
   const rlKey = getRateLimitKey(request);
-  const rl = checkRateLimit("AUTHENTICATED", rlKey);
+  const rl = checkRateLimit("AUTHENTICATED", rlKey, "/api/rumble/submit-tx");
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
   const contentTypeError = requireJsonContentType(request);
   if (contentTypeError) return contentTypeError;

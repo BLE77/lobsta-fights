@@ -17,10 +17,18 @@ import { hashApiKey } from "~~/lib/api-key";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 import { hasRecovered, recoverOrchestratorState } from "~~/lib/rumble-state-recovery";
 import { ensureRumblePublicHeartbeat } from "~~/lib/rumble-public-heartbeat";
-import { loadActiveRumbles, hasMinimumRumbleFighters } from "~~/lib/rumble-persistence";
+import {
+  loadActiveRumbles,
+  hasMinimumRumbleFighters,
+  extractRumbleFighterIds,
+  MIN_ACTIVE_RUMBLE_FIGHTERS,
+  loadBetsForRumble,
+  saveBets,
+} from "~~/lib/rumble-persistence";
 
 export const dynamic = "force-dynamic";
 const ALLOW_OFFCHAIN_BETS = String(process.env.RUMBLE_ALLOW_OFFCHAIN_BETS ?? "false").toLowerCase() === "true";
+const BET_POST_ACTIVE_BETTING_MAX_AGE_MS = 10 * 60 * 1000;
 
 async function ensureRecovered(): Promise<void> {
   if (hasRecovered()) return;
@@ -47,6 +55,50 @@ async function resolveOnchainRumbleIdForSlot(
   if (!match) return null;
   if (!hasMinimumRumbleFighters(match.fighters)) return null;
   return normalizeRumbleNumber((match as any).rumble_number);
+}
+
+async function loadLatestBettingRumbleForSlot(slotIndex: number): Promise<{
+  rumbleId: string;
+  rumbleNumber: number | null;
+  fighterIds: string[];
+} | null> {
+  const active = await loadActiveRumbles();
+  let best: {
+    id: string;
+    createdAtMs: number;
+    fighters: unknown;
+    rumbleNumber: number | null;
+  } | null = null;
+
+  for (const row of active) {
+    if (Number(row.slot_index) !== slotIndex) continue;
+    if (String(row.status ?? "").toLowerCase() !== "betting") continue;
+    if (!hasMinimumRumbleFighters(row.fighters)) continue;
+    const createdAtMs = new Date(row.created_at).getTime();
+    if (!Number.isFinite(createdAtMs)) continue;
+    if (Date.now() - createdAtMs > BET_POST_ACTIVE_BETTING_MAX_AGE_MS) continue;
+    if (!best || createdAtMs > best.createdAtMs) {
+      best = {
+        id: row.id,
+        createdAtMs,
+        fighters: row.fighters,
+        rumbleNumber:
+          Number.isSafeInteger(Number((row as any).rumble_number)) && Number((row as any).rumble_number) >= 0
+            ? Number((row as any).rumble_number)
+            : null,
+      };
+    }
+  }
+
+  if (!best) return null;
+  const fighterIds = extractRumbleFighterIds(best.fighters);
+  if (fighterIds.length < MIN_ACTIVE_RUMBLE_FIGHTERS) return null;
+
+  return {
+    rumbleId: best.id,
+    rumbleNumber: best.rumbleNumber,
+    fighterIds,
+  };
 }
 
 function isMissingTxSignatureTableError(err: unknown): boolean {
@@ -488,28 +540,109 @@ export async function POST(request: Request) {
     }
 
     const orchestrator = getOrchestrator();
-    if (verifiedRumbleId) {
-      const liveSlot = orchestrator.getStatus().find((s) => s.slotIndex === parsedSlotIndex);
-      if (!liveSlot || liveSlot.rumbleId !== verifiedRumbleId) {
+    const liveSlot = orchestrator.getStatus().find((s) => s.slotIndex === parsedSlotIndex) ?? null;
+    const persistedBetting = await loadLatestBettingRumbleForSlot(parsedSlotIndex).catch(() => null);
+    const authoritativeRumbleId =
+      verifiedRumbleId ??
+      persistedBetting?.rumbleId ??
+      (liveSlot?.state === "betting" ? liveSlot.rumbleId : null);
+    const authoritativeFighters =
+      persistedBetting?.fighterIds?.length
+        ? persistedBetting.fighterIds
+        : liveSlot?.fighters ?? [];
+
+    if (!authoritativeRumbleId) {
+      await releaseBetSignatureLock(signatureLock);
+      signatureLock = null;
+      return NextResponse.json({ error: "Betting is not open for this slot right now." }, { status: 409 });
+    }
+
+    if (
+      verifiedRumbleId &&
+      authoritativeRumbleId !== verifiedRumbleId
+    ) {
+      await releaseBetSignatureLock(signatureLock);
+      signatureLock = null;
+      return NextResponse.json(
+        { error: "Slot rumble changed while processing this bet. Rebuild and re-sign a fresh bet transaction." },
+        { status: 409 },
+      );
+    }
+
+    for (const bet of parsedBets) {
+      if (!authoritativeFighters.includes(bet.fighterId)) {
+        await releaseBetSignatureLock(signatureLock);
+        signatureLock = null;
         return NextResponse.json(
-          { error: "Slot rumble changed while processing this bet. Rebuild and re-sign a fresh bet transaction." },
-          { status: 409 },
+          { error: `Fighter ${bet.fighterId} is not in the current rumble.` },
+          { status: 400 },
         );
       }
     }
-    const result = await orchestrator.placeBets(
-      parsedSlotIndex,
-      resolvedWallet,
-      parsedBets.map((b) => ({ fighterId: b.fighterId, solAmount: b.solAmount })),
-    );
 
-    if (!result.accepted) {
+    const result =
+      liveSlot &&
+      liveSlot.state === "betting" &&
+      liveSlot.rumbleId === authoritativeRumbleId
+        ? await orchestrator.placeBets(
+            parsedSlotIndex,
+            resolvedWallet,
+            parsedBets.map((b) => ({ fighterId: b.fighterId, solAmount: b.solAmount })),
+          )
+        : { accepted: false as const, reason: "Betting pool not available." };
+
+    const canFallbackToPersistentRegistration =
+      !result.accepted &&
+      (
+        result.reason === "Slot not found." ||
+        result.reason === "Betting pool not available." ||
+        result.reason === "Betting is not open for this slot."
+      );
+
+    if (!result.accepted && !canFallbackToPersistentRegistration) {
       await releaseBetSignatureLock(signatureLock);
       signatureLock = null;
       return NextResponse.json(
         { error: result.reason ?? "Bet rejected." },
         { status: result.reason?.includes("retry with the same signed transaction") ? 503 : 400 },
       );
+    }
+
+    if (!result.accepted) {
+      const persisted = await saveBets(
+        parsedBets.map((bet) => {
+          const adminFee = bet.solAmount * 0.01;
+          const sponsorFee = bet.solAmount * 0.05;
+          const netAmount = bet.solAmount - adminFee - sponsorFee;
+          return {
+            rumbleId: authoritativeRumbleId,
+            walletAddress: resolvedWallet,
+            fighterId: bet.fighterId,
+            grossAmount: bet.solAmount,
+            netAmount,
+            adminFee,
+            sponsorFee,
+          };
+        }),
+      );
+
+      if (!persisted.ok) {
+        await releaseBetSignatureLock(signatureLock);
+        signatureLock = null;
+        return NextResponse.json(
+          { error: persisted.reason ?? "Bet registration failed." },
+          { status: persisted.reason?.includes("retry with the same signed transaction") ? 503 : 400 },
+        );
+      }
+
+      if (
+        liveSlot &&
+        liveSlot.state === "betting" &&
+        liveSlot.rumbleId === authoritativeRumbleId
+      ) {
+        const existingBets = await loadBetsForRumble(authoritativeRumbleId).catch(() => []);
+        orchestrator.restoreBettingPool(parsedSlotIndex, authoritativeRumbleId, existingBets);
+      }
     }
     betRegistered = true;
 

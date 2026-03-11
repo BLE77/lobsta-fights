@@ -611,6 +611,7 @@ export default function RumbleSlot({
               turns={[lastTurn]}
               currentTurn={lastTurn.turnNumber}
               fighterNames={fighterNames}
+              compact
             />
           </div>
         )}

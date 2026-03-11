@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
+import { resolveMainnetRumbleEngineId } from "~~/lib/rumble-program-id";
 import {
   getClientBettingNetwork,
   getSafeClientBettingRpcEndpoint,
@@ -15,10 +16,14 @@ import {
 // ---------------------------------------------------------------------------
 
 const RUMBLE_ENGINE_ID = new PublicKey(
-  process.env.NEXT_PUBLIC_RUMBLE_ENGINE_MAINNET?.trim() ||
-  process.env.NEXT_PUBLIC_RUMBLE_ENGINE_ID_MAINNET?.trim() ||
-  process.env.NEXT_PUBLIC_RUMBLE_ENGINE_PROGRAM?.trim() ||
-  "638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU"
+  resolveMainnetRumbleEngineId(
+    [
+      process.env.NEXT_PUBLIC_RUMBLE_ENGINE_MAINNET?.trim(),
+      process.env.NEXT_PUBLIC_RUMBLE_ENGINE_ID_MAINNET?.trim(),
+      process.env.NEXT_PUBLIC_RUMBLE_ENGINE_PROGRAM?.trim(),
+    ],
+    "638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU",
+  )
 );
 const RUMBLE_SEED = Buffer.from("rumble");
 

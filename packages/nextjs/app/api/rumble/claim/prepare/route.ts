@@ -35,7 +35,7 @@ function summarizeBuildError(err: unknown): string {
 
 export async function POST(request: Request) {
   const rlKey = getRateLimitKey(request);
-  const rl = checkRateLimit("PUBLIC_WRITE", rlKey);
+  const rl = checkRateLimit("PUBLIC_WRITE", rlKey, "/api/rumble/claim/prepare");
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
   const contentTypeError = requireJsonContentType(request);
   if (contentTypeError) return contentTypeError;

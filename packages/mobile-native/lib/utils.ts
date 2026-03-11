@@ -344,9 +344,13 @@ export function mergeRumbleStatusSnapshots(
     const previousFighters = Array.isArray(previousSlot.fighters) ? previousSlot.fighters : [];
     const nextOdds = Array.isArray(slot.odds) ? slot.odds : [];
     const previousOdds = Array.isArray(previousSlot.odds) ? previousSlot.odds : [];
+    const nextCommentary = Array.isArray(slot.commentary) ? slot.commentary : [];
+    const previousCommentary = Array.isArray(previousSlot.commentary) ? previousSlot.commentary : [];
     const mergedTurns = nextTurns.length >= previousTurns.length ? slot.turns : previousSlot.turns;
     const mergedFighters = nextFighters.length >= previousFighters.length ? slot.fighters : previousSlot.fighters;
     const mergedOdds = nextOdds.length >= previousOdds.length ? slot.odds : previousSlot.odds;
+    const mergedCommentary =
+      nextCommentary.length >= previousCommentary.length ? slot.commentary : previousSlot.commentary;
     const mergedState =
       getRumbleStateRank(slot.state) >= getRumbleStateRank(previousSlot.state)
         ? slot.state
@@ -374,6 +378,7 @@ export function mergeRumbleStatusSnapshots(
       turns: mergedTurns,
       fighters: mergedFighters,
       odds: mergedOdds,
+      commentary: mergedCommentary,
       fighterNames:
         slot.fighterNames && Object.keys(slot.fighterNames).length > 0
           ? slot.fighterNames

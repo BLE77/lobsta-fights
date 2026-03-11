@@ -35,7 +35,7 @@ export async function POST(request: Request) {
   if (ctCheck) return ctCheck;
 
   const rlKey = getRateLimitKey(request);
-  const rl = checkRateLimit("PUBLIC_WRITE", rlKey);
+  const rl = checkRateLimit("PUBLIC_WRITE", rlKey, "/api/rumble/submit-move");
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
 
   const apiKey = getApiKeyFromHeaders(request.headers);

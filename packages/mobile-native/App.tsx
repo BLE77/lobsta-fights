@@ -66,6 +66,7 @@ import type {
   RumbleSlot,
   RumbleSlotFighter,
   RumbleStatusResponse,
+  RumbleTurn,
   RumbleTurnPairing,
   SlotPayout,
   TabKey,
@@ -128,6 +129,14 @@ import { DamageNumberManager, type DamageNumberManagerHandle } from "./lib/Damag
 // Types are now in ./lib/types.ts
 // Utility functions are now in ./lib/utils.ts
 
+type UiToastTone = "info" | "success" | "error";
+
+type UiToast = {
+  id: string;
+  message: string;
+  tone: UiToastTone;
+};
+
 
 
 
@@ -165,16 +174,20 @@ function WalletHeader({
 }
 
 function SoundControls({
+  commentaryEnabled,
   musicEnabled,
   sfxEnabled,
   hapticsEnabled,
+  onToggleCommentary,
   onToggleMusic,
   onToggleSfx,
   onToggleHaptics,
 }: {
+  commentaryEnabled: boolean;
   musicEnabled: boolean;
   sfxEnabled: boolean;
   hapticsEnabled: boolean;
+  onToggleCommentary: () => void;
   onToggleMusic: () => void;
   onToggleSfx: () => void;
   onToggleHaptics: () => void;
@@ -198,6 +211,19 @@ function SoundControls({
 
       {menuOpen ? (
         <View style={styles.soundMenu}>
+          <Pressable
+            onPress={onToggleCommentary}
+            style={({ pressed }) => [
+              styles.soundMenuRow,
+              pressed ? styles.pressablePressed : null,
+            ]}
+          >
+            <Text style={styles.soundMenuLabel}>COMMENTARY</Text>
+            <Text style={[styles.soundMenuValue, commentaryEnabled ? styles.soundMenuValueOn : styles.soundMenuValueOff]}>
+              {commentaryEnabled ? "ON" : "OFF"}
+            </Text>
+          </Pressable>
+
           <Pressable
             onPress={onToggleSfx}
             style={({ pressed }) => [
@@ -320,7 +346,7 @@ function RumbleNativeScreen() {
   const [appState, setAppState] = useState<AppStateStatus>(AppState.currentState);
 
   const [busyAction, setBusyAction] = useState<string | null>(null);
-  const [statusText, setStatusText] = useState("Ready");
+  const [uiToasts, setUiToasts] = useState<UiToast[]>([]);
 
   const [rumbleStatus, setRumbleStatus] = useState<RumbleStatusResponse | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
@@ -348,14 +374,26 @@ function RumbleNativeScreen() {
   const [myBetsBySlot, setMyBetsBySlot] = useState<Record<number, Record<string, number>>>({});
   const [betDrafts, setBetDrafts] = useState<Record<string, string>>({});
   const [betPending, setBetPending] = useState(false);
-  const [betError, setBetError] = useState<string | null>(null);
   const [lastBetSig, setLastBetSig] = useState<string | null>(null);
+  const [commentaryEnabled, setCommentaryEnabled] = useState(true);
   const [musicEnabled, setMusicEnabled] = useState(true);
   const [sfxEnabled, setSfxEnabled] = useState(true);
   const [hapticsEnabled, setHapticsEnabled] = useState(true);
+  const [activeCommentaryText, setActiveCommentaryText] = useState<string | null>(null);
   const [turnAnimationTurn, setTurnAnimationTurn] = useState<number | null>(null);
   const [recentEliminations, setRecentEliminations] = useState<string[]>([]);
   const bgMusicRef = useRef<Audio.Sound | null>(null);
+  const commentarySoundRef = useRef<Audio.Sound | null>(null);
+  const commentaryQueueRef = useRef<Array<{ key: string; text: string; audioUrl: string; rumbleId: string }>>([]);
+  const commentaryPlayingRef = useRef(false);
+  const commentaryEnabledRef = useRef(commentaryEnabled);
+  const currentCommentaryKeyRef = useRef<string | null>(null);
+  const backgroundMusicWasPlayingRef = useRef(false);
+  const backgroundMusicVolumeBeforeCommentaryRef = useRef(0.3);
+  const seenCommentaryKeysRef = useRef<Set<string>>(new Set());
+  const seenCommentaryOrderRef = useRef<string[]>([]);
+  const lastCommentaryRumbleRef = useRef<string>("");
+  const toastTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const bgTrackIndexRef = useRef(0);
   const audioInitializedRef = useRef(false);
   const musicEnabledRef = useRef(musicEnabled);
@@ -370,6 +408,9 @@ function RumbleNativeScreen() {
   const lastNonIdleSlotRef = useRef<RumbleSlot | null>(null);
   const idleGraceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [idleGraceActive, setIdleGraceActive] = useState(false);
+  const lastCombatTurnsRef = useRef<RumbleTurn[]>([]);
+  const lastPayoutPlacementsRef = useRef<RumbleSlotFighter[]>([]);
+  const [clockTick, setClockTick] = useState(0);
   const [winnerPopup, setWinnerPopup] = useState<{ fighter: RumbleSlotFighter; payout: SlotPayout | null; rumbleNumber: number | null } | null>(null);
   const winnerPopupAnim = useRef(new Animated.Value(0)).current;
   const winnerPopupShownForRef = useRef<string>("");
@@ -453,9 +494,162 @@ function RumbleNativeScreen() {
     return fallbackSendConnectionRef.current;
   }, []);
 
+  const dismissToast = useCallback((toastId: string) => {
+    const timeout = toastTimeoutsRef.current.get(toastId);
+    if (timeout) {
+      clearTimeout(timeout);
+      toastTimeoutsRef.current.delete(toastId);
+    }
+    setUiToasts(previous => previous.filter(toast => toast.id !== toastId));
+  }, []);
+
+  const showToast = useCallback(
+    (message: string, tone: UiToastTone = "info", durationMs?: number) => {
+      const trimmed = message.trim();
+      if (!trimmed) return;
+
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const timeout = setTimeout(() => {
+        toastTimeoutsRef.current.delete(id);
+        setUiToasts(previous => previous.filter(toast => toast.id !== id));
+      }, durationMs ?? (tone === "error" ? 4200 : 2600));
+
+      toastTimeoutsRef.current.set(id, timeout);
+      setUiToasts(previous => [...previous.slice(-2), { id, message: trimmed, tone }]);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    commentaryEnabledRef.current = commentaryEnabled;
+  }, [commentaryEnabled]);
+
   useEffect(() => {
     musicEnabledRef.current = musicEnabled;
   }, [musicEnabled]);
+
+  const pauseBackgroundMusicForCommentary = useCallback(async () => {
+    const current = bgMusicRef.current;
+    if (!current) return;
+    try {
+      const status = await current.getStatusAsync();
+      if (!status.isLoaded) return;
+      backgroundMusicWasPlayingRef.current = status.isPlaying;
+      backgroundMusicVolumeBeforeCommentaryRef.current =
+        typeof status.volume === "number" ? status.volume : 0.3;
+      await current.setVolumeAsync(status.isPlaying ? 0.03 : 0);
+    } catch {
+      // Ignore transient background audio errors.
+    }
+  }, []);
+
+  const resumeBackgroundMusicAfterCommentary = useCallback(async () => {
+    const current = bgMusicRef.current;
+    if (!current) return;
+    try {
+      const volume = backgroundMusicVolumeBeforeCommentaryRef.current || 0.3;
+      if (musicEnabledRef.current) {
+        await current.setVolumeAsync(volume);
+        if (backgroundMusicWasPlayingRef.current) {
+          await current.playAsync();
+        }
+      }
+    } catch {
+      // Ignore transient background audio errors.
+    } finally {
+      backgroundMusicWasPlayingRef.current = false;
+    }
+  }, []);
+
+  const rememberCommentaryKey = useCallback((clipKey: string) => {
+    if (seenCommentaryKeysRef.current.has(clipKey)) return false;
+    seenCommentaryKeysRef.current.add(clipKey);
+    seenCommentaryOrderRef.current.push(clipKey);
+    if (seenCommentaryOrderRef.current.length > 200) {
+      const staleKey = seenCommentaryOrderRef.current.shift();
+      if (staleKey) seenCommentaryKeysRef.current.delete(staleKey);
+    }
+    return true;
+  }, []);
+
+  const stopCommentaryPlayback = useCallback(async () => {
+    commentaryQueueRef.current = [];
+    commentaryPlayingRef.current = false;
+    currentCommentaryKeyRef.current = null;
+    setActiveCommentaryText(null);
+    const current = commentarySoundRef.current;
+    commentarySoundRef.current = null;
+    if (current) {
+      try {
+        current.setOnPlaybackStatusUpdate(null);
+        await current.stopAsync().catch(() => undefined);
+        await current.unloadAsync().catch(() => undefined);
+      } catch {
+        // Ignore transient unload failures.
+      }
+    }
+    await resumeBackgroundMusicAfterCommentary();
+  }, [resumeBackgroundMusicAfterCommentary]);
+
+  const playNextCommentary = useCallback(async () => {
+    if (!commentaryEnabledRef.current || commentaryPlayingRef.current) return;
+
+    const nextClip = commentaryQueueRef.current.shift();
+    if (!nextClip) {
+      currentCommentaryKeyRef.current = null;
+      setActiveCommentaryText(null);
+      await resumeBackgroundMusicAfterCommentary();
+      return;
+    }
+
+    const currentRumbleId = lastCommentaryRumbleRef.current;
+    if (!currentRumbleId || nextClip.rumbleId !== currentRumbleId) {
+      currentCommentaryKeyRef.current = null;
+      void playNextCommentary();
+      return;
+    }
+
+    commentaryPlayingRef.current = true;
+    currentCommentaryKeyRef.current = nextClip.key;
+    setActiveCommentaryText(nextClip.text);
+    await pauseBackgroundMusicForCommentary();
+
+    try {
+      const { sound } = await Audio.Sound.createAsync(
+        { uri: nextClip.audioUrl },
+        {
+          shouldPlay: true,
+          volume: 1,
+          progressUpdateIntervalMillis: 250,
+        },
+      );
+      commentarySoundRef.current = sound;
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (!status.isLoaded) return;
+        if (status.didJustFinish) {
+          commentaryPlayingRef.current = false;
+          currentCommentaryKeyRef.current = null;
+          setActiveCommentaryText(null);
+          const finishedSound = commentarySoundRef.current;
+          commentarySoundRef.current = null;
+          if (finishedSound) {
+            finishedSound.setOnPlaybackStatusUpdate(null);
+            void finishedSound.unloadAsync().catch(() => undefined);
+          }
+          void resumeBackgroundMusicAfterCommentary();
+          void playNextCommentary();
+        }
+      });
+    } catch (error) {
+      console.warn("[commentary-mobile] playback failed", nextClip.key, error);
+      commentaryPlayingRef.current = false;
+      currentCommentaryKeyRef.current = null;
+      commentarySoundRef.current = null;
+      setActiveCommentaryText(null);
+      await resumeBackgroundMusicAfterCommentary();
+      void playNextCommentary();
+    }
+  }, [pauseBackgroundMusicForCommentary, resumeBackgroundMusicAfterCommentary]);
 
   const loadAndPlayTrack = useCallback(async (trackIndex: number, cancelled?: { current: boolean }) => {
     try {
@@ -576,6 +770,62 @@ function RumbleNativeScreen() {
     ? lastNonIdleSlotRef.current
     : rawFeaturedSlot;
 
+  useEffect(() => {
+    const rumbleId = String(featuredSlot?.rumbleId ?? "").trim();
+    if (lastCommentaryRumbleRef.current === rumbleId) return;
+    lastCommentaryRumbleRef.current = rumbleId;
+    seenCommentaryKeysRef.current.clear();
+    seenCommentaryOrderRef.current = [];
+    commentaryQueueRef.current = [];
+    void stopCommentaryPlayback();
+  }, [featuredSlot?.rumbleId, stopCommentaryPlayback]);
+
+  useEffect(() => {
+    if (!commentaryEnabled) {
+      void stopCommentaryPlayback();
+      return;
+    }
+    if (commentaryQueueRef.current.length > 0) {
+      void playNextCommentary();
+    }
+  }, [commentaryEnabled, playNextCommentary, stopCommentaryPlayback]);
+
+  useEffect(() => {
+    if (!isAppActive || !commentaryEnabled) return;
+    const rumbleId = String(featuredSlot?.rumbleId ?? "").trim();
+    const commentary = Array.isArray(featuredSlot?.commentary) ? featuredSlot.commentary : [];
+    if (!rumbleId || commentary.length === 0) return;
+
+    const freshClips = commentary
+      .map((clip, idx) => {
+        const audioUrl = String(clip?.audioUrl ?? "").trim();
+        const text = String(clip?.text ?? "").trim();
+        if (!audioUrl || !text) return null;
+        const rawKey =
+          String(clip?.clipKey ?? "").trim() ||
+          `${String(clip?.createdAt ?? "").trim()}:${idx}:${text.slice(0, 32)}`;
+        const fullKey = `${rumbleId}:${rawKey}`;
+        if (fullKey === currentCommentaryKeyRef.current) return null;
+        if (!rememberCommentaryKey(fullKey)) return null;
+        return {
+          key: fullKey,
+          text,
+          audioUrl,
+          rumbleId,
+          createdAt: safeNumber(clip?.createdAt, idx),
+        };
+      })
+      .filter((clip): clip is { key: string; text: string; audioUrl: string; rumbleId: string; createdAt: number } => !!clip)
+      .sort((a, b) => a.createdAt - b.createdAt);
+
+    if (freshClips.length === 0) return;
+
+    const latestClip = freshClips[freshClips.length - 1];
+    commentaryQueueRef.current = [latestClip];
+
+    void playNextCommentary();
+  }, [commentaryEnabled, featuredSlot?.commentary, featuredSlot?.rumbleId, isAppActive, playNextCommentary, rememberCommentaryKey]);
+
   const activeSlots = useMemo(
     () => (rumbleStatus?.slots ?? []).filter(slot => slot.state && slot.state !== "idle"),
     [rumbleStatus],
@@ -655,7 +905,11 @@ function RumbleNativeScreen() {
 
   const featuredTurns = useMemo(() => {
     const turns = Array.isArray(featuredSlot?.turns) ? featuredSlot.turns : [];
-    return turns.slice().sort((a, b) => safeNumber(a.turnNumber, 0) - safeNumber(b.turnNumber, 0));
+    const sorted = turns.slice().sort((a, b) => safeNumber(a.turnNumber, 0) - safeNumber(b.turnNumber, 0));
+    if (sorted.length > 0) {
+      lastCombatTurnsRef.current = sorted;
+    }
+    return sorted.length > 0 ? sorted : lastCombatTurnsRef.current;
   }, [featuredSlot]);
 
   const activeTurnData = useMemo(() => {
@@ -665,9 +919,11 @@ function RumbleNativeScreen() {
     return exact ?? featuredTurns[featuredTurns.length - 1] ?? null;
   }, [featuredTurns, featuredSlot]);
 
-  const activePairings = useMemo(() => {
+  const activePairings = useMemo<RumbleTurnPairing[]>(() => {
     if (!activeTurnData || !Array.isArray(activeTurnData.pairings)) return [];
-    return activeTurnData.pairings.filter(pair => getFighterId({ id: pair.fighterA }) && getFighterId({ id: pair.fighterB }));
+    return activeTurnData.pairings.filter(
+      (pair: RumbleTurnPairing) => getFighterId({ id: pair.fighterA }) && getFighterId({ id: pair.fighterB }),
+    );
   }, [activeTurnData]);
 
   const combatBench = useMemo(() => {
@@ -683,6 +939,17 @@ function RumbleNativeScreen() {
   }, [activePairings, featuredFighters]);
 
   const recentTurns = useMemo(() => featuredTurns.slice(-8).reverse(), [featuredTurns]);
+  const recentEliminationLabels = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          recentEliminations
+            .map(token => resolveFighterName(token).trim())
+            .filter(Boolean),
+        ),
+      ).slice(0, 2),
+    [recentEliminations, resolveFighterName],
+  );
 
   const recentEliminationTokenSet = useMemo(
     () => new Set(recentEliminations.map(value => String(value).trim().toLowerCase()).filter(Boolean)),
@@ -723,14 +990,16 @@ function RumbleNativeScreen() {
       }
     });
 
-    const pairings = Array.isArray(activeTurnData.pairings) ? activeTurnData.pairings : [];
-    const hasImpact = pairings.some(pair => safeNumber(pair.damageToA, 0) >= 10 || safeNumber(pair.damageToB, 0) >= 10);
-    const elimTokens = (activeTurnData.eliminations ?? []).map(value => String(value ?? "").trim()).filter(Boolean);
+    const pairings: RumbleTurnPairing[] = Array.isArray(activeTurnData.pairings) ? activeTurnData.pairings : [];
+    const hasImpact = pairings.some(
+      (pair: RumbleTurnPairing) => safeNumber(pair.damageToA, 0) >= 10 || safeNumber(pair.damageToB, 0) >= 10,
+    );
+    const elimTokens = (activeTurnData.eliminations ?? []).map((value: unknown) => String(value ?? "").trim()).filter(Boolean);
 
     if (elimTokens.length > 0) {
       void playSfx(SND_KO);
     } else if (pairings.length > 0) {
-      const loudestPairing = pairings.reduce((best, current) => {
+      const loudestPairing = pairings.reduce((best: RumbleTurnPairing, current: RumbleTurnPairing) => {
         const bestDamage = safeNumber(best.damageToA, 0) + safeNumber(best.damageToB, 0);
         const currentDamage = safeNumber(current.damageToA, 0) + safeNumber(current.damageToB, 0);
         return currentDamage > bestDamage ? current : best;
@@ -742,24 +1011,26 @@ function RumbleNativeScreen() {
 
     // Spawn floating damage numbers
     if (damageNumberManagerRef.current) {
-      for (const pair of pairings) {
+      pairings.forEach((pair: RumbleTurnPairing, pairIndex: number) => {
         const dmgA = safeNumber(pair.damageToA, 0);
         const dmgB = safeNumber(pair.damageToB, 0);
         if (dmgA > 0) {
-          damageNumberManagerRef.current.spawn({
+          damageNumberManagerRef.current!.spawn({
             damage: dmgA,
             fighterKey: String(pair.fighterA ?? ""),
             side: "left",
+            pairIndex,
           });
         }
         if (dmgB > 0) {
-          damageNumberManagerRef.current.spawn({
+          damageNumberManagerRef.current!.spawn({
             damage: dmgB,
             fighterKey: String(pair.fighterB ?? ""),
             side: "right",
+            pairIndex,
           });
         }
-      }
+      });
     }
 
     if (hasImpact || elimTokens.length > 0) {
@@ -845,7 +1116,18 @@ function RumbleNativeScreen() {
       if (clearElimsTimeoutRef.current) clearTimeout(clearElimsTimeoutRef.current);
       if (idleGraceTimeoutRef.current) clearTimeout(idleGraceTimeoutRef.current);
       if (winnerPopupDismissRef.current) clearTimeout(winnerPopupDismissRef.current);
+      for (const timeout of toastTimeoutsRef.current.values()) {
+        clearTimeout(timeout);
+      }
+      toastTimeoutsRef.current.clear();
+      void stopCommentaryPlayback();
     };
+  }, [stopCommentaryPlayback]);
+
+  // 1-second tick for live countdowns
+  useEffect(() => {
+    const interval = setInterval(() => setClockTick(t => t + 1), 1000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -859,11 +1141,17 @@ function RumbleNativeScreen() {
   }, [activeTab, contentRevealAnim]);
 
   const payoutPlacements = useMemo(() => {
-    if (!featuredSlot || !Array.isArray(featuredSlot.fighters)) return [];
-    return featuredSlot.fighters
+    if (!featuredSlot || !Array.isArray(featuredSlot.fighters)) {
+      return lastPayoutPlacementsRef.current;
+    }
+    const placements = featuredSlot.fighters
       .filter(fighter => safeNumber(fighter.placement, 0) > 0)
       .slice()
       .sort((a, b) => safeNumber(a.placement, 0) - safeNumber(b.placement, 0));
+    if (placements.length > 0) {
+      lastPayoutPlacementsRef.current = placements;
+    }
+    return placements.length > 0 ? placements : lastPayoutPlacementsRef.current;
   }, [featuredSlot]);
 
   const queuePreview = useMemo(() => {
@@ -981,17 +1269,17 @@ function RumbleNativeScreen() {
           raw: error,
         });
         if (isCancellationError(error)) {
-          setStatusText("Cancelled by user");
+          showToast("Cancelled by user");
           void triggerHaptic("selection");
           return;
         }
-        setStatusText(`Error: ${message}`);
+        showToast(message || "Something went wrong.", "error");
         void triggerHaptic("error");
       } finally {
         setBusyAction(null);
       }
     },
-    [isBusy, triggerHaptic],
+    [isBusy, showToast, triggerHaptic],
   );
 
   const fetchStatus = useCallback(async (force = false) => {
@@ -1006,9 +1294,6 @@ function RumbleNativeScreen() {
       setLastStatusAt(Date.now());
       setStatusError(null);
       statusRetryAfterRef.current = 0;
-      if (statusText.startsWith("Network issue:")) {
-        setStatusText("Ready");
-      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (isRateLimitError(error)) {
@@ -1021,13 +1306,12 @@ function RumbleNativeScreen() {
       // Only show error if we have no data at all
       if (!rumbleStatus) {
         setStatusError(message);
-        setStatusText(`Network issue: ${message}`);
       }
     } finally {
       statusRequestInFlightRef.current = false;
       setStatusLoading(false);
     }
-  }, [rumbleStatus, statusText]);
+  }, [rumbleStatus]);
 
   const scheduleStatusRefresh = useCallback((force = false, delayMs = STATUS_REALTIME_REFRESH_DEBOUNCE_MS) => {
     if (!isAppActive) return;
@@ -1283,29 +1567,31 @@ function RumbleNativeScreen() {
 
   useEffect(() => {
     setBetDrafts({});
+    lastCombatTurnsRef.current = [];
+    lastPayoutPlacementsRef.current = [];
   }, [featuredSlot?.rumbleId]);
 
   const onConnect = useCallback(() => {
     void runWalletAction("connect", async () => {
       const connected = await connect();
       const address = normalizeWalletAddress(connected);
-      setStatusText(address ? `Connected: ${shortAddress(address, 6, 6)}` : "Connected");
+      showToast(address ? `Connected: ${shortAddress(address, 6, 6)}` : "Connected", "success");
       void playSfx(SND_ROUND_START);
       void triggerHaptic("success");
       await Promise.all([fetchClaimBalance(), fetchMyBets(true), fetchSolBalance()]);
     });
-  }, [connect, runWalletAction, fetchClaimBalance, fetchMyBets, fetchSolBalance, playSfx, triggerHaptic]);
+  }, [connect, runWalletAction, fetchClaimBalance, fetchMyBets, fetchSolBalance, playSfx, showToast, triggerHaptic]);
 
   const onDisconnect = useCallback(() => {
     void runWalletAction("disconnect", async () => {
       await disconnect();
-      setStatusText("Disconnected");
+      showToast("Disconnected");
       setClaimBalance(null);
       setMyBetsBySlot({});
       setSolBalance(null);
       void triggerHaptic("selection");
     });
-  }, [disconnect, runWalletAction, triggerHaptic]);
+  }, [disconnect, runWalletAction, showToast, triggerHaptic]);
 
   const onSignMessage = useCallback(() => {
     void runWalletAction("sign-message", async () => {
@@ -1314,9 +1600,9 @@ function RumbleNativeScreen() {
       const bytes = new TextEncoder().encode(payload);
       const signature = await signMessage(bytes);
       const base64 = fromUint8Array(signature);
-      setStatusText(`Signed message: ${base64.slice(0, 24)}...`);
+      showToast(`Signed message: ${base64.slice(0, 24)}...`, "success");
     });
-  }, [walletAddress, signMessage, runWalletAction]);
+  }, [walletAddress, signMessage, runWalletAction, showToast]);
 
   const onSignIn = useCallback(() => {
     void runWalletAction("sign-in", async () => {
@@ -1361,9 +1647,9 @@ function RumbleNativeScreen() {
 
       const verifyPayload = (await verifyRes.json()) as VerifyResponse;
       if (!verifyPayload.ok) throw new Error("SIWS verification rejected");
-      setStatusText(`SIWS verified: ${shortAddress(verifyPayload.walletAddress, 6, 6)}`);
+      showToast(`SIWS verified: ${shortAddress(verifyPayload.walletAddress, 6, 6)}`, "success");
     });
-  }, [walletAddress, runWalletAction, store, connect]);
+  }, [walletAddress, runWalletAction, store, connect, showToast]);
 
   const onSendChat = useCallback(() => {
     void runWalletAction("chat-send", async () => {
@@ -1407,7 +1693,6 @@ function RumbleNativeScreen() {
 
   const submitBets = useCallback(async (slotIndex: number, bets: Array<{ fighterId: string; amount: number }>) => {
     if (!walletAddress) {
-      setBetError("Connect wallet first to place bets.");
       throw new Error("Wallet not connected");
     }
 
@@ -1427,7 +1712,6 @@ function RumbleNativeScreen() {
     }
 
     setBetPending(true);
-    setBetError(null);
 
     try {
       const prepareRes = await postJsonWithFallback("/api/rumble/bet/prepare", {
@@ -1500,7 +1784,7 @@ function RumbleNativeScreen() {
 
       setLastBetSig(txSig);
       setBetDrafts({});
-      setStatusText(`Bet placed: ${shortAddress(txSig, 8, 8)}`);
+      showToast(`Bet placed: ${shortAddress(txSig, 8, 8)}`, "success");
       void playSfx(SND_BET_PLACED);
       void triggerHaptic("success");
 
@@ -1511,13 +1795,11 @@ function RumbleNativeScreen() {
         fetchSolBalance(),
       ]);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setBetError(message || "Failed to place bet");
       throw error;
     } finally {
       setBetPending(false);
     }
-  }, [walletAddress, rumbleStatus, signTransaction, getSendConnection, fetchStatus, fetchClaimBalance, fetchMyBets, fetchSolBalance, playSfx, triggerHaptic]);
+  }, [walletAddress, rumbleStatus, signTransaction, getSendConnection, fetchStatus, fetchClaimBalance, fetchMyBets, fetchSolBalance, playSfx, showToast, triggerHaptic]);
 
   const onDeploySelectedBets = useCallback(() => {
     void runWalletAction("deploy-bets", async () => {
@@ -1595,7 +1877,7 @@ function RumbleNativeScreen() {
         }
 
         if (totalClaimed > 0) {
-          setStatusText(`Claimed ${totalClaimed} rumble payout(s)`);
+          showToast(`Claimed ${totalClaimed} rumble payout(s)`, "success");
           void playSfx(SND_CLAIM);
           void triggerHaptic("success");
         }
@@ -1607,7 +1889,7 @@ function RumbleNativeScreen() {
         await Promise.all([fetchClaimBalance(), fetchStatus(), fetchSolBalance()]);
       }
     });
-  }, [walletAddress, claimBalance, runWalletAction, getSendConnection, signTransaction, fetchClaimBalance, fetchStatus, fetchSolBalance, triggerHaptic]);
+  }, [walletAddress, claimBalance, runWalletAction, getSendConnection, signTransaction, fetchClaimBalance, fetchStatus, fetchSolBalance, showToast, triggerHaptic]);
 
   const setQuickBetAmount = useCallback((fighterId: string, amount: number) => {
     setBetDrafts(prev => ({ ...prev, [fighterId]: String(amount) }));
@@ -1630,8 +1912,6 @@ function RumbleNativeScreen() {
     setBetDrafts(prev => ({ ...prev, [fighterId]: normalized }));
   }, []);
 
-  const clearBetError = useCallback(() => setBetError(null), []);
-
   const handleTabChange = useCallback((tab: TabKey) => {
     setActiveTab(prev => {
       if (prev === tab) return prev;
@@ -1639,6 +1919,12 @@ function RumbleNativeScreen() {
       void triggerHaptic("selection");
       return tab;
     });
+  }, [playSfx, triggerHaptic]);
+
+  const handleToggleCommentary = useCallback(() => {
+    void playSfx(SND_CLICK);
+    void triggerHaptic("selection");
+    setCommentaryEnabled(prev => !prev);
   }, [playSfx, triggerHaptic]);
 
   const handleToggleMusic = useCallback(() => {
@@ -1732,9 +2018,11 @@ function RumbleNativeScreen() {
               </View>
               <View style={styles.headerGearSlot}>
                 <SoundControls
+                  commentaryEnabled={commentaryEnabled}
                   musicEnabled={musicEnabled}
                   sfxEnabled={sfxEnabled}
                   hapticsEnabled={hapticsEnabled}
+                  onToggleCommentary={handleToggleCommentary}
                   onToggleMusic={handleToggleMusic}
                   onToggleSfx={handleToggleSfx}
                   onToggleHaptics={handleToggleHaptics}
@@ -1743,12 +2031,6 @@ function RumbleNativeScreen() {
             </View>
           </View>
         </View>
-
-        {betError ? (
-          <Pressable onPress={clearBetError} style={({ pressed }) => [styles.betErrorToast, pressed ? styles.pressablePressed : null]}>
-            <Text style={styles.betErrorToastText}>{betError}</Text>
-          </Pressable>
-        ) : null}
 
         {statusLoading && !rumbleStatus ? (
           <View style={styles.statusBanner}>
@@ -1768,12 +2050,6 @@ function RumbleNativeScreen() {
             <Text style={styles.statusText}>Network issue. Tap to retry.</Text>
             <Text style={styles.statusErrorDetail} numberOfLines={2}>{statusError}</Text>
           </Pressable>
-        ) : null}
-
-        {statusText !== "Ready" && !statusError ? (
-          <View style={styles.statusBannerMuted}>
-            <Text style={styles.statusText}>{statusText}</Text>
-          </View>
         ) : null}
 
         <View style={styles.contentWrap}>
@@ -1974,8 +2250,14 @@ function RumbleNativeScreen() {
                           </View>
                         ) : (
                           <View style={styles.timerCard}>
-                            <Text style={styles.timerLabel}>LIVE MATCHUPS</Text>
-                            <Text style={styles.timerValue}>TURN {activeTurn}</Text>
+                            <Text style={styles.timerLabel}>TURN {activeTurn}</Text>
+                            <Text style={styles.timerValue}>
+                              {(() => {
+                                void clockTick;
+                                return formatCountdown(featuredSlot?.nextTurnAt);
+                              })()}
+                            </Text>
+                            <Text style={styles.timerSub}>NEXT TURN</Text>
                           </View>
                         )}
                         <View style={styles.combatHeaderRow}>
@@ -1986,19 +2268,6 @@ function RumbleNativeScreen() {
                           )}
                           <Text style={styles.panelMeta}>({combatAliveCount} alive)</Text>
                         </View>
-                        {recentEliminations.length > 0 ? (
-                          <View style={styles.eliminationFeed}>
-                            {recentEliminations.slice(0, 2).map((token, idx) => {
-                              const normalized = String(token).trim().toLowerCase();
-                              const label = resolveFighterName(token);
-                              return (
-                                <Text key={`${normalized}_${idx}`} style={styles.eliminationFeedItem}>
-                                  ELIMINATED // {label.toUpperCase()}
-                                </Text>
-                              );
-                            })}
-                          </View>
-                        ) : null}
                         {activePairings.length === 0 ? (
                           <View style={styles.combatStartingWrap}>
                             <Text style={styles.combatStartingText}>
@@ -2040,7 +2309,7 @@ function RumbleNativeScreen() {
                           <View style={{ position: "relative" }}>
                           <Animated.View style={{ transform: [{ translateX: combatShakeTranslateX }] }}>
                             <View style={styles.combatPairsStack}>
-                              {activePairings.map((pair, idx) => {
+                              {activePairings.map((pair: RumbleTurnPairing, idx: number) => {
                                 const leftId = String(pair.fighterA ?? "");
                                 const rightId = String(pair.fighterB ?? "");
                                 const left = featuredFightersById.get(leftId) ?? featuredFightersById.get(leftId.trim().toLowerCase());
@@ -2293,7 +2562,7 @@ function RumbleNativeScreen() {
                                 const pairings = Array.isArray(turn.pairings) ? turn.pairings : [];
                                 const eliminations = Array.isArray(turn.eliminations) ? turn.eliminations : [];
                                 const eliminationLabels = Array.from(
-                                  new Set(eliminations.map(entry => resolveFighterName(entry)).filter(Boolean)),
+                                  new Set(eliminations.map((entry: unknown) => resolveFighterName(entry)).filter(Boolean)),
                                 );
 
                                 return (
@@ -2306,7 +2575,7 @@ function RumbleNativeScreen() {
                                     </View>
                                     {pairings.length > 0 ? (
                                       <>
-                                        {pairings.slice(0, 3).map((pair, pairIdx) => {
+                                        {pairings.slice(0, 3).map((pair: RumbleTurnPairing, pairIdx: number) => {
                                           const leftId = String(pair.fighterA ?? "").trim();
                                           const rightId = String(pair.fighterB ?? "").trim();
                                           const left = featuredFightersById.get(leftId) ?? featuredFightersById.get(leftId.toLowerCase());
@@ -2676,6 +2945,28 @@ function RumbleNativeScreen() {
             ) : null}
             </Animated.View>
           </ScrollView>
+
+          {activeTab === "arena" && (activeCommentaryText || recentEliminationLabels.length > 0) ? (
+            <View pointerEvents="none" style={styles.fightOverlayLayer}>
+              {activeCommentaryText ? (
+                <View style={[styles.fightOverlayCard, styles.fightOverlayCommentaryCard]}>
+                  <Text style={styles.fightOverlayLabel}>COMMENTARY</Text>
+                  <Text style={styles.fightOverlayText} numberOfLines={3}>
+                    {activeCommentaryText}
+                  </Text>
+                </View>
+              ) : null}
+
+              {recentEliminationLabels.length > 0 ? (
+                <View style={[styles.fightOverlayCard, styles.fightOverlayEliminationCard]}>
+                  <Text style={styles.fightOverlayLabel}>ELIMINATIONS</Text>
+                  <Text style={styles.fightOverlayText} numberOfLines={2}>
+                    {recentEliminationLabels.join(" · ").toUpperCase()}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+          ) : null}
         </View>
 
         <View style={styles.bottomTabs}>
@@ -2698,6 +2989,33 @@ function RumbleNativeScreen() {
             <Text style={[styles.bottomTabText, activeTab === "queue" && styles.bottomTabTextActive]}>CLAIM</Text>
           </Pressable>
         </View>
+
+        {uiToasts.length > 0 ? (
+          <View pointerEvents="box-none" style={styles.toastLayer}>
+            {uiToasts.map(toast => (
+              <Pressable
+                key={toast.id}
+                onPress={() => dismissToast(toast.id)}
+                style={({ pressed }) => [
+                  styles.toastCard,
+                  toast.tone === "error"
+                    ? styles.toastCardError
+                    : toast.tone === "success"
+                      ? styles.toastCardSuccess
+                      : styles.toastCardInfo,
+                  pressed ? styles.pressablePressed : null,
+                ]}
+              >
+                <Text style={styles.toastLabel}>
+                  {toast.tone === "error" ? "ERROR" : toast.tone === "success" ? "DONE" : "NOTICE"}
+                </Text>
+                <Text style={styles.toastMessage} numberOfLines={3}>
+                  {toast.message}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
       </View>
 
       {winnerPopup ? (

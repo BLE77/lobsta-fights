@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 #[cfg(not(feature = "mainnet"))]
 declare_id!("638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU");
 #[cfg(feature = "mainnet")]
-declare_id!("2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC");
+declare_id!("638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU");
 
 /// Maximum fighters per rumble
 const MAX_FIGHTERS: usize = 16;

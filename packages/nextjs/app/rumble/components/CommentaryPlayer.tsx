@@ -41,12 +41,10 @@ const VOICE_GAIN = 1.0;
 
 /** SFX map: eventType (+ optional threshold) → mp3 file */
 const SFX_MAP: Record<string, string> = {
-  betting_open: "/sounds/walk-in.mp3",
-  combat_start: "/sounds/walk-in.mp3",
+  combat_start: "/sounds/round-start.mp3",
   elimination: "/sounds/eliminated.mp3",
   payout: "/sounds/claim.mp3",
   ichor_shower: "/sounds/floraphonic-90s-game-ui-4-185097.mp3",
-  fighter_intro: "/sounds/walk-in.mp3",
   big_hit_light: "/sounds/hit-3.mp3",
   big_hit_heavy: "/sounds/metal-hit-2.mp3",
 };
@@ -59,6 +57,7 @@ const AMBIENT_PLAYLIST = [
 
 const ALL_SOUND_URLS = [
   ...AMBIENT_PLAYLIST,
+  "/sounds/round-start.mp3",
   "/sounds/eliminated.mp3",
   "/sounds/hit-3.mp3",
   "/sounds/metal-hit-2.mp3",
@@ -105,6 +104,8 @@ class RadioMixer {
     allowedNames: string[];
     clipKey?: string;
     audioUrl?: string;
+    /** True when audioUrl is a pre-generated Supabase Storage clip (vs dynamically generated) */
+    isPregen?: boolean;
     retries: number;
     priority: boolean;
     enqueuedAt: number;
@@ -384,10 +385,23 @@ class RadioMixer {
     allowedNames: string[],
     clipKey?: string,
     audioUrl?: string,
+    isPregen?: boolean,
   ) {
     if (clipKey) {
       if (this.currentClipKey === clipKey) return;
-      if (this.voiceQueue.some((q) => q.clipKey === clipKey)) return;
+      const existingIdx = this.voiceQueue.findIndex((q) => q.clipKey === clipKey);
+      if (existingIdx >= 0) {
+        // Pre-gen clips take priority: evict a queued dynamic placeholder so the
+        // shared pre-gen clip plays instead. Without this, the local dynamic item
+        // (no audioUrl) always wins the clipKey dedupe race against the shared
+        // pre-gen clip that arrives later from the status API.
+        if (isPregen && !this.voiceQueue[existingIdx].isPregen) {
+          this.voiceQueue.splice(existingIdx, 1);
+          // fall through to enqueue the pre-gen version
+        } else {
+          return;
+        }
+      }
     }
     // Cap queue at 5
     if (this.voiceQueue.length >= 5) return;
@@ -400,6 +414,7 @@ class RadioMixer {
       allowedNames,
       clipKey,
       audioUrl,
+      isPregen,
       retries: 0,
       priority,
       enqueuedAt: Date.now(),
@@ -475,13 +490,27 @@ class RadioMixer {
       // If we have a pre-generated audio URL from the server, fetch that directly
       // instead of calling the commentary API (shared stream — all viewers hear same audio)
       if (item.audioUrl) {
+        if (item.isPregen) {
+          console.log(`[commentary] Playing pre-gen clip: ${item.clipKey ?? item.eventType}`);
+        } else {
+          console.log(`[commentary] Playing uploaded dynamic clip: ${item.clipKey ?? item.eventType}`);
+        }
         res = await fetch(item.audioUrl);
         if (!res.ok) {
+          if (item.isPregen) {
+            // Pre-gen clips use fighter voice line text as their "context", not a commentary
+            // prompt — falling back to the commentary API would generate nonsense. Skip instead.
+            console.warn(`[commentary] Pre-gen clip URL broken (${res.status}), skipping: ${item.clipKey ?? item.eventType}`);
+            this.unduckAmbient();
+            setTimeout(() => this.processNextVoice(), 100);
+            return;
+          }
           console.warn("[commentary] Pre-generated audio fetch failed, falling back to API");
-          // Fall through to API generation
+          // Fall through to API generation for dynamically-generated clips
           res = await this.fetchFromCommentaryApi(item);
         }
       } else {
+        console.log(`[commentary] Generating dynamic clip: ${item.clipKey ?? item.eventType}`);
         res = await this.fetchFromCommentaryApi(item);
       }
 
@@ -891,6 +920,8 @@ export default function CommentaryPlayer({
           audioUrl: string | null;
           eventType: string;
           createdAt: number;
+          /** Set by UCFA-31 backend to indicate this is a pre-generated fighter voice clip */
+          source?: "pregen" | "dynamic";
         }>;
       };
       const commentary = slotAny.commentary;
@@ -902,7 +933,12 @@ export default function CommentaryPlayer({
         if (playedSharedClipsRef.current.has(fullKey)) continue;
         playedSharedClipsRef.current.add(fullKey);
 
-        // Enqueue with the pre-generated audio URL — mixer will fetch it directly
+        // Use explicit source field — backend now always persists this.
+        // Heuristic URL sniffing is intentionally removed to avoid
+        // misclassifying uploaded dynamic clips as pre-gen.
+        const isPregen = clip.source === "pregen";
+
+        // Enqueue with the audio URL — mixer will fetch it directly
         mixer.enqueue(
           (clip.eventType as CommentaryEventType) ?? "big_hit",
           clip.text,
@@ -910,6 +946,7 @@ export default function CommentaryPlayer({
           [],
           clip.clipKey,
           clip.audioUrl,
+          isPregen,
         );
       }
     }
@@ -937,7 +974,18 @@ export default function CommentaryPlayer({
         }
       }
       const candidate = evaluateEvent(lastEvent, slot as CommentarySlotData | undefined);
-      enqueueCandidate(candidate);
+      // Skip dynamic generation if the shared commentary stream already has a
+      // pre-gen clip for this turn (same guard as the poll-based path).
+      const slotAny = slot as (CommentarySlotData & { commentary?: Array<{ clipKey: string; audioUrl: string | null }> }) | undefined;
+      const sharedCommentary = Array.isArray(slotAny?.commentary) ? slotAny!.commentary! : [];
+      const hasPregenForTurn = candidate != null && sharedCommentary.some(
+        (c) => c.clipKey === candidate.clipKey && c.audioUrl,
+      );
+      if (!hasPregenForTurn) {
+        enqueueCandidate(candidate);
+      } else {
+        console.log(`[commentary] SSE: Skipping dynamic generation for ${candidate.clipKey ?? "turn"} — pre-gen clip available`);
+      }
     } catch (err) {
       console.warn("[commentary] event handling skipped due to malformed payload", err);
     }
@@ -1057,7 +1105,22 @@ export default function CommentaryPlayer({
         },
         slotAny,
       );
-      enqueueCandidate(candidate);
+
+      // Skip dynamic generation if the shared commentary stream already has a
+      // pre-gen clip for this turn's clipKey. The shared stream effect will
+      // enqueue it. This prevents the poll-based path from "winning" the clipKey
+      // dedupe race in cases where both effects fire in the same render cycle.
+      const sharedCommentary = Array.isArray((slotAny as any).commentary)
+        ? ((slotAny as any).commentary as Array<{ clipKey: string; audioUrl: string | null; source?: string }>)
+        : [];
+      const hasPregenForTurn = candidate != null && sharedCommentary.some(
+        (c) => c.clipKey === candidate.clipKey && c.audioUrl,
+      );
+      if (!hasPregenForTurn) {
+        enqueueCandidate(candidate);
+      } else {
+        console.log(`[commentary] Skipping dynamic generation for ${candidate.clipKey ?? "turn"} — pre-gen clip available`);
+      }
     }
   }, [enabled, slots, enqueueCandidate]);
 

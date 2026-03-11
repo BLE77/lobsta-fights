@@ -18,6 +18,9 @@ export default function QueueSidebar({
   totalLength = 0,
   nextRumbleIn,
 }: QueueSidebarProps) {
+  const hasQueuedFighters = totalLength > 0;
+  const hasVisibleQueuePreview = queue.length > 0;
+
   return (
     <div className="bg-stone-950/60 border border-stone-700 rounded-sm p-4 backdrop-blur-md">
       <div className="flex items-center justify-between mb-3">
@@ -42,10 +45,19 @@ export default function QueueSidebar({
       )}
 
       {/* Queue list */}
-      {queue.length === 0 ? (
+      {!hasQueuedFighters ? (
         <div className="text-center py-4">
           <p className="font-mono text-xs text-stone-600">
             Queue empty. Fighters needed!
+          </p>
+        </div>
+      ) : !hasVisibleQueuePreview ? (
+        <div className="text-center py-4">
+          <p className="font-mono text-xs text-stone-500">
+            {totalLength} fighter{totalLength === 1 ? "" : "s"} in queue
+          </p>
+          <p className="font-mono text-[10px] text-stone-600 mt-1">
+            Preview syncing...
           </p>
         </div>
       ) : (
@@ -82,7 +94,7 @@ export default function QueueSidebar({
         </div>
       )}
 
-      {totalLength > queue.length && (
+      {hasVisibleQueuePreview && totalLength > queue.length && (
         <p className="font-mono text-[10px] text-stone-600 text-center mt-2">
           +{totalLength - queue.length} more in queue
         </p>

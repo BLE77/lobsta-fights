@@ -93,7 +93,7 @@ async function validateEndpointUrl(endpoint: string): Promise<string | null> {
 
 export async function POST(req: NextRequest) {
   const rlKey = getRateLimitKey(req);
-  const rl = checkRateLimit("PUBLIC_WRITE", rlKey);
+  const rl = checkRateLimit("PUBLIC_WRITE", rlKey, "/api/fighter/verify");
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
 
   try {

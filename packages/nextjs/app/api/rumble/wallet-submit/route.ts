@@ -40,10 +40,15 @@ function getInstructionProgramIds(transaction: Transaction): string[] {
   return transaction.instructions.map((instruction) => instruction.programId.toBase58());
 }
 
+function hasInstructionForProgram(transaction: Transaction, programId: string): boolean {
+  return getInstructionProgramIds(transaction).includes(programId);
+}
+
 function findUnexpectedProgramId(
   transaction: Transaction,
   network: WalletSubmitNetwork,
 ): string | null {
+  if (network === "betting") return null;
   const allowedPrograms = ALLOWED_PROGRAMS_BY_NETWORK[network];
   for (const programId of getInstructionProgramIds(transaction)) {
     if (!allowedPrograms.has(programId)) return programId;
@@ -53,7 +58,7 @@ function findUnexpectedProgramId(
 
 export async function POST(request: Request) {
   const rlKey = getRateLimitKey(request);
-  const rl = checkRateLimit("PUBLIC_WRITE", rlKey);
+  const rl = checkRateLimit("PUBLIC_WRITE", rlKey, "/api/rumble/wallet-submit");
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
   const contentTypeError = requireJsonContentType(request);
   if (contentTypeError) return contentTypeError;
@@ -104,6 +109,20 @@ export async function POST(request: Request) {
         {
           error: "Transaction includes a program that is not allowed for this relay.",
           program_id: unexpectedProgramId,
+        },
+        { status: 400 },
+      );
+    }
+
+    if (
+      network === "betting" &&
+      !hasInstructionForProgram(transaction, RUMBLE_ENGINE_ID_MAINNET.toBase58())
+    ) {
+      return NextResponse.json(
+        {
+          error: "Betting relay requires a mainnet rumble program instruction.",
+          required_program_id: RUMBLE_ENGINE_ID_MAINNET.toBase58(),
+          found_program_ids: getInstructionProgramIds(transaction),
         },
         { status: 400 },
       );

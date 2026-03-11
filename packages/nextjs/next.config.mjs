@@ -1,4 +1,8 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import withSerwistInit from "@serwist/next";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const withSerwist = withSerwistInit({
   swSrc: "app/sw.ts",
@@ -81,6 +85,7 @@ const nextConfig = {
     config.resolve.alias = {
       ...(config.resolve.alias ?? {}),
       "pino-pretty": false,
+      "~~": __dirname,
     };
     return config;
   },

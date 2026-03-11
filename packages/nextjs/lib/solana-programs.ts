@@ -34,6 +34,10 @@ import {
 } from "./solana-connection";
 import { createHash, randomBytes } from "node:crypto";
 import { keccak_256 } from "@noble/hashes/sha3";
+import {
+  getCanonicalMainnetRumbleEngineId,
+  resolveMainnetRumbleEngineId,
+} from "./rumble-program-id";
 
 // IDLs (imported as JSON)
 import fighterRegistryIdl from "./idl/fighter_registry.json";
@@ -86,13 +90,17 @@ export const RUMBLE_ENGINE_ID = new PublicKey(
 /**
  * Mainnet program ID for betting operations.
  * Same program deployed to mainnet-beta — only betting instructions are called there.
- * Falls back to devnet program ID if not configured (for testing).
+ * Never falls back to the devnet program ID.
  */
 export const RUMBLE_ENGINE_ID_MAINNET = new PublicKey(
-  readEnvTrimmed("NEXT_PUBLIC_RUMBLE_ENGINE_MAINNET") ||
-  readEnvTrimmed("RUMBLE_ENGINE_MAINNET_PROGRAM_ID") ||
-  readEnvTrimmed("NEXT_PUBLIC_RUMBLE_ENGINE_ID_MAINNET") ||
-  RUMBLE_ENGINE_ID.toBase58()
+  resolveMainnetRumbleEngineId(
+    [
+      readEnvTrimmed("NEXT_PUBLIC_RUMBLE_ENGINE_MAINNET"),
+      readEnvTrimmed("RUMBLE_ENGINE_MAINNET_PROGRAM_ID"),
+      readEnvTrimmed("NEXT_PUBLIC_RUMBLE_ENGINE_ID_MAINNET"),
+    ],
+    getCanonicalMainnetRumbleEngineId(),
+  )
 );
 
 export const ICHOR_TOKEN_ID_MAINNET = new PublicKey(
