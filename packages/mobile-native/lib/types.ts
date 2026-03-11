@@ -66,6 +66,14 @@ export type SlotPayout = {
   ichorShowerAmount?: number;
 };
 
+export type CommentaryClip = {
+  clipKey?: string;
+  text?: string;
+  audioUrl?: string | null;
+  eventType?: string;
+  createdAt?: number | string;
+};
+
 export type RumbleSlot = {
   slotIndex?: number;
   rumbleId?: string;
@@ -82,6 +90,7 @@ export type RumbleSlot = {
   turns?: RumbleTurn[];
   fighterNames?: Record<string, string>;
   payout?: SlotPayout | null;
+  commentary?: CommentaryClip[];
 };
 
 export type QueueFighter = {

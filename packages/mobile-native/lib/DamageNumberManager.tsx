@@ -14,6 +14,8 @@ const JITTER_RANGE = 24; // -12 to +12
 
 let nextId = 0;
 
+const PAIR_ROW_HEIGHT = 120;
+
 export type SpawnDamageNumberArgs = {
   damage: number;
   isHealing?: boolean;
@@ -21,6 +23,8 @@ export type SpawnDamageNumberArgs = {
   fighterKey: string;
   /** "left" or "right" side of the pairing card */
   side: "left" | "right";
+  /** Index of the pairing row (0-based) for vertical positioning */
+  pairIndex: number;
 };
 
 type Props = {
@@ -39,7 +43,7 @@ export const DamageNumberManager = React.forwardRef<DamageNumberManagerHandle, P
 
     const spawn = useCallback(
       (args: SpawnDamageNumberArgs) => {
-        const { damage, isHealing = false, fighterKey, side } = args;
+        const { damage, isHealing = false, fighterKey, side, pairIndex } = args;
         if (damage <= 0) return;
 
         const stackCount = fighterStackCount.current.get(fighterKey) ?? 0;
@@ -49,7 +53,9 @@ export const DamageNumberManager = React.forwardRef<DamageNumberManagerHandle, P
         const baseX = side === "left" ? containerWidth * 0.25 : containerWidth * 0.75;
         const jitter = (Math.random() - 0.5) * JITTER_RANGE;
         const offsetX = baseX + jitter - 30; // -30 to roughly center the text
-        const offsetY = -8 - stackCount * STACK_OFFSET_Y; // spawn above avatar top edge
+        // Position vertically relative to the pair row (avatar center area)
+        const rowTopY = pairIndex * PAIR_ROW_HEIGHT;
+        const offsetY = rowTopY + 30 - stackCount * STACK_OFFSET_Y;
 
         const id = `dmg_${++nextId}`;
         const entry: DamageNumberEntry = { id, damage, isHealing, offsetX, offsetY };
