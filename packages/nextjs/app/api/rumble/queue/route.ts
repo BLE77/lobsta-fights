@@ -140,7 +140,7 @@ export async function GET(request: Request) {
  */
 export async function POST(request: Request) {
   const rlKey = getRateLimitKey(request);
-  const rl = checkRateLimit("AUTHENTICATED", rlKey);
+  const rl = checkRateLimit("AUTHENTICATED", rlKey, "/api/rumble/queue:post");
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
   const contentTypeError = requireJsonContentType(request);
   if (contentTypeError) return contentTypeError;
@@ -292,7 +292,7 @@ export async function POST(request: Request) {
  */
 export async function DELETE(request: Request) {
   const rlKey = getRateLimitKey(request);
-  const rl = checkRateLimit("AUTHENTICATED", rlKey);
+  const rl = checkRateLimit("AUTHENTICATED", rlKey, "/api/rumble/queue:delete");
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
   const contentTypeError = requireJsonContentType(request);
   if (contentTypeError) return contentTypeError;

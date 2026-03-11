@@ -41,12 +41,10 @@ const VOICE_GAIN = 1.0;
 
 /** SFX map: eventType (+ optional threshold) → mp3 file */
 const SFX_MAP: Record<string, string> = {
-  betting_open: "/sounds/walk-in.mp3",
-  combat_start: "/sounds/walk-in.mp3",
+  combat_start: "/sounds/round-start.mp3",
   elimination: "/sounds/eliminated.mp3",
   payout: "/sounds/claim.mp3",
   ichor_shower: "/sounds/floraphonic-90s-game-ui-4-185097.mp3",
-  fighter_intro: "/sounds/walk-in.mp3",
   big_hit_light: "/sounds/hit-3.mp3",
   big_hit_heavy: "/sounds/metal-hit-2.mp3",
 };
@@ -59,6 +57,7 @@ const AMBIENT_PLAYLIST = [
 
 const ALL_SOUND_URLS = [
   ...AMBIENT_PLAYLIST,
+  "/sounds/round-start.mp3",
   "/sounds/eliminated.mp3",
   "/sounds/hit-3.mp3",
   "/sounds/metal-hit-2.mp3",

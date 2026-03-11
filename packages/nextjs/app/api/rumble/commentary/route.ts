@@ -248,7 +248,7 @@ const VALID_EVENT_TYPES = new Set<CommentaryEventType>([
 export async function POST(request: Request) {
   // No auth on this endpoint — use PUBLIC_WRITE tier (10/min).
   const rlKey = getRateLimitKey(request);
-  const rl = checkRateLimit("PUBLIC_WRITE", rlKey);
+  const rl = checkRateLimit("PUBLIC_WRITE", rlKey, "/api/rumble/commentary");
   if (!rl.allowed) {
     return rateLimitResponse(rl.retryAfterMs);
   }

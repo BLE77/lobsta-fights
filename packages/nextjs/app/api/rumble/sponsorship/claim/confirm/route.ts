@@ -29,7 +29,7 @@ function signerToBase58(signer: any): string | null {
 
 export async function POST(request: Request) {
   const rlKey = getRateLimitKey(request);
-  const rl = checkRateLimit("PUBLIC_WRITE", rlKey);
+  const rl = checkRateLimit("PUBLIC_WRITE", rlKey, "/api/rumble/sponsorship/claim/confirm");
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
 
   try {

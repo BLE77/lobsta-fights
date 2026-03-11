@@ -52,7 +52,7 @@ export async function POST(req: Request) {
   if (ctCheck) return ctCheck;
 
   const rlKey = getRateLimitKey(req);
-  const rl = checkRateLimit("PUBLIC_WRITE", rlKey);
+  const rl = checkRateLimit("PUBLIC_WRITE", rlKey, "/api/rumble/move/reveal/prepare");
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
 
   try {

@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   const rlKey = getRateLimitKey(request);
-  const rl = checkRateLimit("PUBLIC_WRITE", rlKey);
+  const rl = checkRateLimit("PUBLIC_WRITE", rlKey, "/api/rumble/sponsorship/claim/prepare");
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
 
   try {
