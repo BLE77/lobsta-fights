@@ -47,14 +47,23 @@ const TIER_CONFIG: Record<RateLimitTier, { maxRequests: number; windowMs: number
   SSE: { maxRequests: 5, windowMs: 60_000 },
 };
 
-// Separate bucket per tier so read limits don't eat into write limits
-const buckets = new Map<RateLimitTier, Map<string, RateLimitEntry>>();
+const DEFAULT_SCOPE = "__shared__";
 
-function getBucket(tier: RateLimitTier): Map<string, RateLimitEntry> {
-  let bucket = buckets.get(tier);
+// Separate bucket per tier + optional route scope so multi-step flows
+// (prepare -> submit -> confirm) do not consume a single global write bucket.
+// Callers should pass a stable route identifier for scoped limits.
+const buckets = new Map<string, Map<string, RateLimitEntry>>();
+
+function getBucketId(tier: RateLimitTier, scope = DEFAULT_SCOPE): string {
+  return `${tier}:${scope}`;
+}
+
+function getBucket(tier: RateLimitTier, scope = DEFAULT_SCOPE): Map<string, RateLimitEntry> {
+  const bucketId = getBucketId(tier, scope);
+  let bucket = buckets.get(bucketId);
   if (!bucket) {
     bucket = new Map();
-    buckets.set(tier, bucket);
+    buckets.set(bucketId, bucket);
   }
   return bucket;
 }
@@ -103,14 +112,16 @@ export function getRateLimitKey(request: Request): string {
 
 /**
  * Check whether a request is allowed under the given rate-limit tier.
+ * Pass `scope` to isolate buckets for individual routes or workflows.
  * Returns `{ allowed, retryAfterMs }`.
  */
 export function checkRateLimit(
   tier: RateLimitTier,
   key: string,
+  scope = DEFAULT_SCOPE,
 ): { allowed: boolean; retryAfterMs: number } {
   const config = TIER_CONFIG[tier];
-  const bucket = getBucket(tier);
+  const bucket = getBucket(tier, scope);
   const now = Date.now();
 
   // Evict if bucket grows too large (safety valve)
