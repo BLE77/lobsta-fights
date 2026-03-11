@@ -2599,35 +2599,40 @@ export class RumbleOrchestrator {
         return;
       }
       const closeRaw = ((onchain as any).bettingCloseSlot ?? onchain.bettingDeadlineTs ?? 0n) as bigint;
-      if (closeRaw > 0n) {
-        const clusterSlot = await getBettingConnection().getSlot("processed").catch(() => null);
-        if (typeof clusterSlot === "number" && Number.isFinite(clusterSlot)) {
-          const clusterSlotBig = BigInt(clusterSlot);
-          const looksLikeUnix = closeRaw > clusterSlotBig + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD;
-          if (looksLikeUnix) {
-            const unixMs = Number(closeRaw) * 1_000;
-            if (Number.isFinite(unixMs) && unixMs > 0) {
-              // Ensure at least ONCHAIN_BETTING_DURATION_MS remaining
-              const remaining = unixMs - Date.now();
-              if (remaining < ONCHAIN_BETTING_DURATION_MS * 0.5) {
-                // On-chain deadline already partially elapsed — extend to give full window
-                deadline = new Date(Date.now() + ONCHAIN_BETTING_DURATION_MS);
-                console.log(`[Orchestrator] On-chain deadline partially elapsed (${Math.round(remaining / 1000)}s left), extending to full ${ONCHAIN_BETTING_DURATION_MS / 1000}s window`);
-              } else {
-                deadline = new Date(unixMs);
-              }
-            }
-          } else {
-            const remainingSlots = closeRaw > clusterSlotBig ? closeRaw - clusterSlotBig : 0n;
-            const capped = remainingSlots > 1_000_000n ? 1_000_000n : remainingSlots;
-            deadline = new Date(Date.now() + Number(capped) * SLOT_MS_ESTIMATE);
-          }
-        }
+      if (closeRaw <= 0n) {
+        console.warn(
+          `[Orchestrator] armBettingWindowIfReady: mainnet close slot/timestamp is not armed for ${slot.id}; keeping betting closed`,
+        );
+        return;
       }
-      // Fallback: on-chain exists but deadline wasn't parseable — give full window
-      if (!deadline) {
-        deadline = new Date(Date.now() + ONCHAIN_BETTING_DURATION_MS);
-        console.log(`[Orchestrator] On-chain deadline not parseable, using full ${ONCHAIN_BETTING_DURATION_MS / 1000}s window`);
+      const clusterSlot = await getBettingConnection().getSlot("processed").catch(() => null);
+      if (typeof clusterSlot !== "number" || !Number.isFinite(clusterSlot)) {
+        console.warn(
+          `[Orchestrator] armBettingWindowIfReady: could not read mainnet cluster slot for ${slot.id}; keeping betting closed`,
+        );
+        return;
+      }
+      const clusterSlotBig = BigInt(clusterSlot);
+      const looksLikeUnix = closeRaw > clusterSlotBig + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD;
+      if (looksLikeUnix) {
+        const unixMs = Number(closeRaw) * 1_000;
+        if (!Number.isFinite(unixMs) || unixMs <= Date.now()) {
+          console.warn(
+            `[Orchestrator] armBettingWindowIfReady: mainnet unix betting deadline is invalid/elapsed for ${slot.id}; keeping betting closed`,
+          );
+          return;
+        }
+        deadline = new Date(unixMs);
+      } else {
+        const remainingSlots = closeRaw > clusterSlotBig ? closeRaw - clusterSlotBig : 0n;
+        if (remainingSlots <= 0n) {
+          console.warn(
+            `[Orchestrator] armBettingWindowIfReady: mainnet betting close slot already elapsed for ${slot.id}; keeping betting closed`,
+          );
+          return;
+        }
+        const capped = remainingSlots > 1_000_000n ? 1_000_000n : remainingSlots;
+        deadline = new Date(Date.now() + Number(capped) * SLOT_MS_ESTIMATE);
       }
     }
 
@@ -2973,19 +2978,16 @@ export class RumbleOrchestrator {
     try {
       const sig = await createRumbleMainnet(rumbleIdNum, fighterPubkeys, bettingDeadlineUnix);
       if (!sig) {
-        this.recordOnchainCreateFailure(
-          rumbleId,
-          "mainnet createRumble RPC returned null signature",
-          fighterIds.length,
-          slotIndex,
+        console.warn(
+          `[OnChain:Mainnet] createRumble returned null for ${rumbleId}; verifying PDA before failing closed`,
         );
-        return false;
+      } else {
+        console.log(`[OnChain:Mainnet] createRumble succeeded (self-heal): ${sig}`);
+        void persistWithRetry(
+          () => persist.updateRumbleTxSignature(rumbleId, "createRumble_mainnet", sig),
+          `updateRumbleTxSignature:createRumble_mainnet:${rumbleId}`,
+        );
       }
-      console.log(`[OnChain:Mainnet] createRumble succeeded (self-heal): ${sig}`);
-      void persistWithRetry(
-        () => persist.updateRumbleTxSignature(rumbleId, "createRumble_mainnet", sig),
-        `updateRumbleTxSignature:createRumble_mainnet:${rumbleId}`,
-      );
     } catch (err) {
       if (
         this.hasErrorTokenAny(err, [
