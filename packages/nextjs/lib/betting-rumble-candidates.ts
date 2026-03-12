@@ -1,8 +1,11 @@
+import { PublicKey } from "@solana/web3.js";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 import {
   extractRumbleFighterIds,
+  type BettingReadyMarker,
   getBettingReadyMarker,
   hasMinimumRumbleFighters,
+  lookupFighterWallets,
   loadActiveRumbles,
   MIN_ACTIVE_RUMBLE_FIGHTERS,
 } from "~~/lib/rumble-persistence";
@@ -22,6 +25,71 @@ type LocalBettingSlotCandidate = {
   fighters?: unknown;
 };
 
+const BETTING_READY_MARKER_GRACE_MS = Math.max(
+  30_000,
+  Number(process.env.RUMBLE_BETTING_READY_MARKER_GRACE_MS ?? "600000"),
+);
+
+function parseIsoMs(value: string | null | undefined): number {
+  if (!value) return Number.NaN;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function normalizeWalletAddress(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    return new PublicKey(value).toBase58();
+  } catch {
+    return null;
+  }
+}
+
+export function isBettingReadyMarkerCurrent(
+  marker: Pick<BettingReadyMarker, "armedAtIso" | "bettingDeadlineIso">,
+  nowMs: number = Date.now(),
+): boolean {
+  const armedAtMs = parseIsoMs(marker.armedAtIso);
+  const bettingDeadlineMs = parseIsoMs(marker.bettingDeadlineIso);
+  if (!Number.isFinite(armedAtMs) || !Number.isFinite(bettingDeadlineMs)) return false;
+  if (bettingDeadlineMs < armedAtMs) return false;
+  if (armedAtMs > nowMs + BETTING_READY_MARKER_GRACE_MS) return false;
+  return nowMs <= bettingDeadlineMs + BETTING_READY_MARKER_GRACE_MS;
+}
+
+export async function reconcileOnchainFighterIds(
+  candidateFighterIds: string[],
+  onchainFighterWallets: Array<PublicKey | string>,
+): Promise<string[] | null> {
+  if (candidateFighterIds.length === 0 || onchainFighterWallets.length === 0) return null;
+
+  const walletLookup = await lookupFighterWallets(candidateFighterIds);
+  const fighterIdByWallet = new Map<string, string>();
+
+  for (const fighterId of candidateFighterIds) {
+    const normalizedWallet =
+      normalizeWalletAddress(fighterId) ??
+      normalizeWalletAddress(walletLookup.get(fighterId));
+    if (!normalizedWallet) return null;
+    if (fighterIdByWallet.has(normalizedWallet)) return null;
+    fighterIdByWallet.set(normalizedWallet, fighterId);
+  }
+
+  const resolvedFighterIds: string[] = [];
+  for (const wallet of onchainFighterWallets) {
+    const normalizedWallet =
+      typeof wallet === "string"
+        ? normalizeWalletAddress(wallet)
+        : wallet.toBase58();
+    if (!normalizedWallet) return null;
+    const fighterId = fighterIdByWallet.get(normalizedWallet);
+    if (!fighterId) return null;
+    resolvedFighterIds.push(fighterId);
+  }
+
+  return resolvedFighterIds.length === onchainFighterWallets.length ? resolvedFighterIds : null;
+}
+
 export function compareBettingRumbleCandidates(
   a: BettingRumbleCandidate,
   b: BettingRumbleCandidate,
@@ -40,7 +108,11 @@ export async function loadBettingRumbleCandidatesForSlot(
   const candidates: BettingRumbleCandidate[] = [];
   const marker = await getBettingReadyMarker(slotIndex).catch(() => null);
 
-  if (marker?.rumbleId && marker.fighterIds.length >= MIN_ACTIVE_RUMBLE_FIGHTERS) {
+  if (
+    marker?.rumbleId &&
+    marker.fighterIds.length >= MIN_ACTIVE_RUMBLE_FIGHTERS &&
+    isBettingReadyMarkerCurrent(marker)
+  ) {
     candidates.push({
       rumbleId: marker.rumbleId,
       rumbleNumber: marker.rumbleNumber,

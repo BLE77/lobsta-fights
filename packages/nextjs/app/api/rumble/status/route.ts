@@ -67,7 +67,7 @@ const STATUS_CACHE_TTLS_MS = {
 };
 const STATUS_RESPONSE_CACHE_MS = {
   combat: Math.max(1_500, Number(process.env.RUMBLE_STATUS_RESPONSE_CACHE_COMBAT_MS ?? "2000")),
-  betting: Math.max(6_000, Number(process.env.RUMBLE_STATUS_RESPONSE_CACHE_BETTING_MS ?? "12000")),
+  betting: Math.max(1_500, Number(process.env.RUMBLE_STATUS_RESPONSE_CACHE_BETTING_MS ?? "2000")),
   idle: Math.max(10_000, Number(process.env.RUMBLE_STATUS_RESPONSE_CACHE_IDLE_MS ?? "30000")),
 };
 
@@ -247,7 +247,13 @@ function getStableBettingDeadline(
     }
   }
   const iso = computeIso();
-  _bettingDeadlineCache.set(key, { iso, expiresAt: now + 60_000 });
+  _bettingDeadlineCache.set(
+    key,
+    {
+      iso,
+      expiresAt: now + Math.max(1_500, Number(process.env.RUMBLE_STATUS_BETTING_DEADLINE_CACHE_MS ?? "5000")),
+    },
+  );
   return iso;
 }
 

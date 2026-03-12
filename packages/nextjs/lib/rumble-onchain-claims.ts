@@ -249,6 +249,34 @@ interface MinimalRumbleState {
   bettingPools: bigint[];
 }
 
+const TREASURY_CUT_BPS = 300n;
+const BPS_DENOMINATOR = 10_000n;
+
+export function inferWinnerTakeAllClaimableLamports(
+  rumbleState: Pick<MinimalRumbleState, "winnerIndex" | "bettingPools">,
+  winnerDeploymentLamports: bigint,
+): bigint {
+  if (winnerDeploymentLamports <= 0n) return 0n;
+
+  const winnerIndex = rumbleState.winnerIndex;
+  if (typeof winnerIndex !== "number" || !Number.isInteger(winnerIndex) || winnerIndex < 0) return 0n;
+
+  const winnerPool = rumbleState.bettingPools[winnerIndex] ?? 0n;
+  if (winnerPool <= 0n) return 0n;
+
+  let losersPool = 0n;
+  for (let i = 0; i < rumbleState.bettingPools.length; i++) {
+    if (i === winnerIndex) continue;
+    losersPool += rumbleState.bettingPools[i] ?? 0n;
+  }
+
+  const treasuryCut = (losersPool * TREASURY_CUT_BPS) / BPS_DENOMINATOR;
+  const distributable = losersPool - treasuryCut;
+  const winnings = (distributable * winnerDeploymentLamports) / winnerPool;
+
+  return winnerDeploymentLamports + winnings;
+}
+
 /**
  * Batch-read rumble account states using getMultipleAccountsInfo.
  * 1 RPC call for ALL rumble IDs instead of N individual calls.
@@ -505,14 +533,15 @@ export async function discoverOnchainWalletPayoutSnapshot(
     const winnerIndex = rumbleState.winnerIndex!;
     const winnerDeploymentLamports = bettor.fighterDeploymentsLamports[winnerIndex] ?? 0n;
     const onchainClaimableLamports = bettor.claimableLamports;
+    const inferredClaimableLamports = onchainClaimableLamports > 0n
+      ? onchainClaimableLamports
+      : inferWinnerTakeAllClaimableLamports(rumbleState, winnerDeploymentLamports);
 
     const vaultBalance = vaultBalances.get(bettor.rumbleIdNum) ?? 0;
-    const estimatedPayoutLamports = onchainClaimableLamports > 0n
-      ? onchainClaimableLamports
-      : winnerDeploymentLamports;
+    const estimatedPayoutLamports = inferredClaimableLamports;
     // Vault PDAs are ephemeral and can be fully drained (no rent reserve needed).
     // Only skip if vault literally can't cover the estimated payout.
-    if (vaultBalance < Number(estimatedPayoutLamports)) continue;
+    if (estimatedPayoutLamports <= 0n || vaultBalance < Number(estimatedPayoutLamports)) continue;
 
     const onchainClaimableSol = Number(onchainClaimableLamports) / LAMPORTS_PER_SOL;
 
@@ -521,17 +550,7 @@ export async function discoverOnchainWalletPayoutSnapshot(
     if (onchainClaimableSol > 0) {
       inferredClaimableSol = onchainClaimableSol;
     } else {
-      const totalWinnerPool = rumbleState.bettingPools?.[winnerIndex] ?? 0n;
-      const netPrizePool = rumbleState.totalDeployedLamports
-        - rumbleState.adminFeeCollectedLamports
-        - rumbleState.sponsorshipPaidLamports;
-
-      if (totalWinnerPool > 0n && netPrizePool > 0n) {
-        const payoutLamports = (winnerDeploymentLamports * netPrizePool) / totalWinnerPool;
-        inferredClaimableSol = Number(payoutLamports) / LAMPORTS_PER_SOL;
-      } else {
-        inferredClaimableSol = Number(winnerDeploymentLamports) / LAMPORTS_PER_SOL;
-      }
+      inferredClaimableSol = Number(inferredClaimableLamports) / LAMPORTS_PER_SOL;
     }
 
     claimableRumbles.push({

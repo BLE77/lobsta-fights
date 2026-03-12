@@ -883,17 +883,27 @@ export default function RumblePage() {
           const bettingDeadline =
             state === "betting"
               ? (() => {
-                  if (!slot.bettingDeadline) return null;
-                  const nextDeadlineMs = Date.parse(slot.bettingDeadline);
-                  if (!Number.isFinite(nextDeadlineMs)) return null;
+                  const nextDeadlineMs = slot.bettingDeadline
+                    ? Date.parse(slot.bettingDeadline)
+                    : Number.NaN;
                   const previousDeadlineMs =
                     previous.state === "betting" && previous.bettingDeadline
                       ? Date.parse(previous.bettingDeadline)
                       : Number.NaN;
-                  if (!Number.isFinite(previousDeadlineMs) || nextDeadlineMs < previousDeadlineMs) {
+                  const hasNextDeadline = Number.isFinite(nextDeadlineMs);
+                  const hasPreviousDeadline = Number.isFinite(previousDeadlineMs);
+                  if (hasNextDeadline && hasPreviousDeadline) {
+                    return nextDeadlineMs >= previousDeadlineMs
+                      ? slot.bettingDeadline
+                      : previous.bettingDeadline;
+                  }
+                  if (hasNextDeadline) {
                     return slot.bettingDeadline;
                   }
-                  return previous.bettingDeadline;
+                  if (hasPreviousDeadline) {
+                    return previous.bettingDeadline;
+                  }
+                  return null;
                 })()
               : slot.bettingDeadline;
 
@@ -1699,7 +1709,7 @@ export default function RumblePage() {
       throw new Error("No bets selected.");
     }
     for (const bet of bets) {
-      if (!Number.isFinite(bet.amount) || bet.amount <= 0 || bet.amount > 10) {
+      if (!Number.isFinite(bet.amount) || bet.amount < 0.02 || bet.amount > 10) {
         setBetError("Each bet must be between 0.02 and 10 SOL");
         setTimeout(() => setBetError(null), 5000);
         throw new Error("Invalid amount");
@@ -1732,6 +1742,7 @@ export default function RumblePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           slot_index: slotIndex,
+          rumble_id: slotData.rumbleId ?? undefined,
           wallet_address: publicKey.toBase58(),
           bets: bets.map((b) => ({
             fighter_id: b.fighterId,
@@ -2186,7 +2197,17 @@ export default function RumblePage() {
                         {/* Show last completed result if available */}
                         {(() => {
                           const lastResult = lastCompletedBySlot.size > 0
-                            ? [...lastCompletedBySlot.values()][0]
+                            ? [...lastCompletedBySlot.values()].reduce<LastCompletedSlotResult | null>((latest, current) => {
+                                if (!latest) return current;
+                                const latestSettledAt = Date.parse(latest.settledAtIso);
+                                const currentSettledAt = Date.parse(current.settledAtIso);
+                                if (Number.isFinite(latestSettledAt) && Number.isFinite(currentSettledAt)) {
+                                  if (currentSettledAt !== latestSettledAt) {
+                                    return currentSettledAt > latestSettledAt ? current : latest;
+                                  }
+                                }
+                                return current.capturedAt > latest.capturedAt ? current : latest;
+                              }, null)
                             : null;
                           if (!lastResult) return null;
                           return (

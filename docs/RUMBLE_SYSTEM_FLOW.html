@@ -1,0 +1,696 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>UCF Rumble System Flow</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b0f12;
+        --bg-2: #12181f;
+        --panel: rgba(18, 24, 31, 0.92);
+        --panel-2: rgba(24, 32, 41, 0.96);
+        --text: #edf4fb;
+        --muted: #95a7b8;
+        --line: rgba(255, 255, 255, 0.08);
+        --cyan: #65d8ff;
+        --amber: #ffcc66;
+        --green: #7ce38b;
+        --red: #ff7f7f;
+        --blue: #8db8ff;
+        --shadow: 0 20px 80px rgba(0, 0, 0, 0.35);
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        font-family: "SF Mono", "JetBrains Mono", Menlo, monospace;
+        background:
+          radial-gradient(circle at top left, rgba(101, 216, 255, 0.12), transparent 34%),
+          radial-gradient(circle at top right, rgba(255, 204, 102, 0.12), transparent 28%),
+          linear-gradient(180deg, #0d1319 0%, var(--bg) 100%);
+        color: var(--text);
+      }
+
+      main {
+        width: min(1220px, calc(100vw - 32px));
+        margin: 0 auto;
+        padding: 32px 0 56px;
+      }
+
+      h1, h2, h3, p { margin: 0; }
+
+      .hero,
+      .panel {
+        border: 1px solid var(--line);
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02));
+        border-radius: 24px;
+        box-shadow: var(--shadow);
+      }
+
+      .hero {
+        padding: 28px;
+        display: grid;
+        gap: 18px;
+        margin-bottom: 18px;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--cyan);
+      }
+
+      .eyebrow::before {
+        content: "";
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        background: linear-gradient(135deg, var(--cyan), var(--amber));
+        box-shadow: 0 0 18px rgba(101, 216, 255, 0.55);
+      }
+
+      .hero-grid,
+      .ownership-grid,
+      .gap-grid {
+        display: grid;
+        gap: 14px;
+      }
+
+      .hero-grid {
+        grid-template-columns: 1.5fr 1fr;
+      }
+
+      .ownership-grid {
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      }
+
+      .gap-grid {
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      }
+
+      .callout,
+      .owner-card,
+      .gap-card,
+      .stage-card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 20px;
+      }
+
+      .callout,
+      .owner-card,
+      .gap-card {
+        padding: 18px;
+      }
+
+      .hero h1 {
+        font-size: clamp(28px, 4vw, 44px);
+        line-height: 1.05;
+      }
+
+      .hero p,
+      .panel p,
+      .owner-card p,
+      .gap-card p,
+      .note,
+      li {
+        color: var(--muted);
+        line-height: 1.55;
+      }
+
+      .metrics {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .metric {
+        padding: 10px 12px;
+        border-radius: 14px;
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        font-size: 12px;
+        color: var(--text);
+      }
+
+      .metric strong {
+        color: var(--amber);
+      }
+
+      .panel {
+        padding: 22px;
+        margin-bottom: 18px;
+      }
+
+      .panel-title {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        margin-bottom: 18px;
+      }
+
+      .panel-title h2 {
+        font-size: 20px;
+      }
+
+      .caption {
+        font-size: 12px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+      }
+
+      .flow {
+        display: grid;
+        gap: 14px;
+      }
+
+      .stage-card {
+        padding: 18px;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .stage-card::after {
+        content: "";
+        position: absolute;
+        inset: auto 16px -10px 16px;
+        height: 20px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, rgba(101, 216, 255, 0.16), rgba(255, 204, 102, 0.1));
+        filter: blur(12px);
+        pointer-events: none;
+      }
+
+      .stage-header {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+
+      .stage-index {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 34px;
+        height: 34px;
+        border-radius: 12px;
+        background: linear-gradient(135deg, rgba(101, 216, 255, 0.18), rgba(141, 184, 255, 0.12));
+        color: var(--cyan);
+        border: 1px solid rgba(101, 216, 255, 0.18);
+      }
+
+      .stage-name {
+        font-size: 18px;
+      }
+
+      .stage-timing {
+        padding: 8px 10px;
+        border-radius: 999px;
+        background: rgba(255, 204, 102, 0.12);
+        color: var(--amber);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
+      .stage-grid {
+        display: grid;
+        grid-template-columns: 1.2fr 1fr;
+        gap: 14px;
+      }
+
+      .stage-block {
+        padding: 14px;
+        border-radius: 16px;
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+      }
+
+      .stage-block h3 {
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-bottom: 8px;
+      }
+
+      .stage-block.target h3 { color: var(--green); }
+      .stage-block.current h3 { color: var(--blue); }
+
+      ul {
+        padding-left: 18px;
+        margin: 0;
+      }
+
+      .badge-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 12px;
+      }
+
+      .badge {
+        padding: 6px 9px;
+        border-radius: 999px;
+        font-size: 11px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.03);
+        color: var(--text);
+      }
+
+      .badge.good {
+        color: var(--green);
+        background: rgba(124, 227, 139, 0.1);
+      }
+
+      .badge.warn {
+        color: var(--amber);
+        background: rgba(255, 204, 102, 0.1);
+      }
+
+      .badge.bad {
+        color: var(--red);
+        background: rgba(255, 127, 127, 0.1);
+      }
+
+      .owner-card h3,
+      .gap-card h3 {
+        margin-bottom: 8px;
+        font-size: 16px;
+      }
+
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .legend-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .swatch {
+        width: 12px;
+        height: 12px;
+        border-radius: 999px;
+      }
+
+      .note {
+        margin-top: 10px;
+        font-size: 12px;
+      }
+
+      a { color: var(--amber); }
+
+      @media (max-width: 860px) {
+        .hero-grid,
+        .stage-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <div class="eyebrow">Rumble Flow Map</div>
+        <div class="hero-grid">
+          <div class="callout">
+            <h1>Underground Claw Fights: target state machine and current alignment</h1>
+            <p>
+              This map turns the current codebase into a visual workflow reference.
+              It shows the ideal stage flow, who owns each part of the system, and
+              where the current implementation still disagrees with the intended product.
+              The target side is the intended source of truth, including both desired
+              behavior and accepted operating constraints that are already true today.
+            </p>
+            <p style="margin-top: 10px; color: var(--muted); font-size: 13px;">
+              Detailed companion doc:
+              <a href="./RUMBLE_SYSTEMS_SOURCE_OF_TRUTH.md">RUMBLE_SYSTEMS_SOURCE_OF_TRUTH.md</a>
+            </p>
+          </div>
+          <div class="callout">
+            <div class="metrics">
+              <div class="metric"><strong>Authority:</strong> Railway workers</div>
+              <div class="metric"><strong>Public app:</strong> Vercel</div>
+              <div class="metric"><strong>Money:</strong> Mainnet betting</div>
+              <div class="metric"><strong>Economics:</strong> 1% + 1% upfront, 3% losers pool</div>
+              <div class="metric"><strong>Combat:</strong> Devnet / ER hybrid</div>
+              <div class="metric"><strong>Slot model:</strong> 1 active slot</div>
+            </div>
+            <p class="note">
+              Based on current <code>main</code> plus checked-in app config and live deploy checks.
+              Public UI/API are Vercel-served, while Railway owns the background mutating runtime.
+              Railway env can still override the timing and fighter-count values shown here.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">
+          <h2>System Ownership</h2>
+          <div class="legend">
+            <span class="legend-item"><span class="swatch" style="background: var(--cyan)"></span> source of truth</span>
+            <span class="legend-item"><span class="swatch" style="background: var(--amber)"></span> user-facing stage</span>
+            <span class="legend-item"><span class="swatch" style="background: var(--red)"></span> alignment gap</span>
+          </div>
+        </div>
+        <div class="ownership-grid">
+          <article class="owner-card">
+            <h3>Railway Worker</h3>
+            <p>Owns the queue manager, orchestrator, stage transitions, on-chain create/start/finalize flow, and mutation authority.</p>
+          </article>
+          <article class="owner-card">
+            <h3>Vercel App + API</h3>
+            <p>Serves <code>clawfights.xyz</code>, public UI, and public API routes. It reads shared state, but it should not own lifecycle mutation in production.</p>
+          </article>
+          <article class="owner-card">
+            <h3>Supabase</h3>
+            <p>Durable memory for active rumbles, turn logs, bet records, payout records, claim state, and betting-ready markers.</p>
+          </article>
+          <article class="owner-card">
+            <h3>Mainnet</h3>
+            <p>Betting readiness, live betting, fee collection, claimability, vault balances, and bettor payout truth.</p>
+          </article>
+          <article class="owner-card">
+            <h3>Devnet / ER</h3>
+            <p>Combat turn state, commit/reveal windows, duel resolution, and combat pacing.</p>
+          </article>
+          <article class="owner-card">
+            <h3>Web + Mobile</h3>
+            <p>Render and wallet UX only. They should never invent stage readiness or fee math that Railway, Vercel status, and chain have not confirmed.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">
+          <h2>Canonical Stage Flow</h2>
+          <div class="caption">Target on the left. Current implementation snapshot on the right.</div>
+        </div>
+        <div class="flow">
+          <article class="stage-card">
+            <div class="stage-header">
+              <div style="display: flex; gap: 12px; align-items: center;">
+                <div class="stage-index">1</div>
+                <div class="stage-name">Queue</div>
+              </div>
+              <div class="stage-timing">Target: 12 start / 16 cap / 10s lock</div>
+            </div>
+            <div class="stage-grid">
+              <div class="stage-block target">
+                <h3>Target</h3>
+                <ul>
+                  <li>One active rumble runs at a time.</li>
+                  <li>Fighters enter queue continuously.</li>
+                  <li>When queue reaches 12, start a 10-second lock timer.</li>
+                  <li>During those 10 seconds, keep accepting fighters up to 16.</li>
+                  <li>Start the rumble when the timer ends or the queue hits 16.</li>
+                </ul>
+              </div>
+              <div class="stage-block current">
+                <h3>Current</h3>
+                <ul>
+                  <li>Minimum start is 12.</li>
+                  <li>Default full bracket is also 12 unless env overrides it to 16.</li>
+                  <li>Default lock countdown is 30 seconds.</li>
+                  <li>Only one active slot exists in runtime.</li>
+                </ul>
+                <div class="badge-row">
+                  <span class="badge bad">default cap mismatch</span>
+                  <span class="badge bad">default countdown mismatch</span>
+                  <span class="badge warn">single-slot runtime</span>
+                </div>
+              </div>
+            </div>
+          </article>
+
+          <article class="stage-card">
+            <div class="stage-header">
+              <div style="display: flex; gap: 12px; align-items: center;">
+                <div class="stage-index">2</div>
+                <div class="stage-name">Betting Arming</div>
+              </div>
+              <div class="stage-timing">Internal only</div>
+            </div>
+            <div class="stage-grid">
+              <div class="stage-block target">
+                <h3>Target</h3>
+                <ul>
+                  <li>This is a real backend stage, but it stays hidden in product UX.</li>
+                  <li>No public timer yet.</li>
+                  <li>No public bet button yet.</li>
+                  <li>Mainnet readiness is the gate before betting becomes public.</li>
+                  <li>Wait until mainnet rumble is readable and betting can actually be prepared on-chain.</li>
+                  <li>Users should never see a fake open betting stage here.</li>
+                </ul>
+              </div>
+              <div class="stage-block current">
+                <h3>Current</h3>
+                <ul>
+                  <li>Queue manager already has this concept: betting exists before the public deadline is armed.</li>
+                  <li>Status and UI now fail closed instead of showing stale live betting.</li>
+                  <li>This stage should still be treated as hidden/internal in product UX.</li>
+                </ul>
+                <div class="badge-row">
+                  <span class="badge good">logic exists</span>
+                  <span class="badge warn">UX should stay invisible</span>
+                </div>
+              </div>
+            </div>
+          </article>
+
+          <article class="stage-card">
+            <div class="stage-header">
+              <div style="display: flex; gap: 12px; align-items: center;">
+                <div class="stage-index">3</div>
+                <div class="stage-name">Betting Live</div>
+              </div>
+              <div class="stage-timing">Target: exactly 60s</div>
+            </div>
+            <div class="stage-grid">
+              <div class="stage-block target">
+                <h3>Target</h3>
+                <ul>
+                  <li>This stage belongs to the single active rumble only.</li>
+                  <li>Public timer starts only when on-chain betting is definitely live.</li>
+                  <li>Bet button works immediately.</li>
+                  <li>No "betting not initialized" or "slot unavailable" while timer is running.</li>
+                  <li>Users can place bets until the minute ends.</li>
+                  <li>Each bet takes 1% platform + 1% fighter sponsorship upfront, with 98% entering the pool.</li>
+                  <li>No other hidden upfront fee path should exist.</li>
+                </ul>
+              </div>
+              <div class="stage-block current">
+                <h3>Current</h3>
+                <ul>
+                  <li>Code default is 60s, but checked-in app env currently sets 120s.</li>
+                  <li>Queue manager also enforces a minimum visible betting window, default 45s.</li>
+                  <li>Mainnet is the money-side readiness source.</li>
+                  <li>On-chain fee split is now 1% treasury, 1% fighter sponsorship, 98% net pool.</li>
+                </ul>
+                <div class="badge-row">
+                  <span class="badge bad">current env says 120s</span>
+                  <span class="badge good">mainnet-only readiness</span>
+                  <span class="badge good">2% upfront total</span>
+                </div>
+              </div>
+            </div>
+          </article>
+
+          <article class="stage-card">
+            <div class="stage-header">
+              <div style="display: flex; gap: 12px; align-items: center;">
+                <div class="stage-index">4</div>
+                <div class="stage-name">Fight Commit</div>
+              </div>
+              <div class="stage-timing">Target: 30 slots ~= 12s for now</div>
+            </div>
+            <div class="stage-grid">
+              <div class="stage-block target">
+                <h3>Target</h3>
+                <ul>
+                  <li>Commit window is 30 slots, about 12 seconds at the current slot estimate.</li>
+                  <li>Fighters/agents choose moves in a clearly defined commit window.</li>
+                  <li>The phase must be visible and predictable.</li>
+                  <li>Late or missing agent input should fall back cleanly.</li>
+                </ul>
+              </div>
+              <div class="stage-block current">
+                <h3>Current</h3>
+                <ul>
+                  <li>Commit window is 30 slots.</li>
+                  <li>At the current 400ms slot estimate, that is about 12 seconds.</li>
+                  <li>Internal agent timeout is 3500ms before fallback logic kicks in.</li>
+                </ul>
+                <div class="badge-row">
+                  <span class="badge good">timed window exists</span>
+                  <span class="badge warn">agent timeout is shorter than turn window</span>
+                </div>
+              </div>
+            </div>
+          </article>
+
+          <article class="stage-card">
+            <div class="stage-header">
+              <div style="display: flex; gap: 12px; align-items: center;">
+                <div class="stage-index">5</div>
+                <div class="stage-name">Fight Reveal</div>
+              </div>
+              <div class="stage-timing">Target: 30 slots ~= 12s for now</div>
+            </div>
+            <div class="stage-grid">
+              <div class="stage-block target">
+                <h3>Target</h3>
+                <ul>
+                  <li>Reveal window is 30 slots, about 12 seconds at the current slot estimate.</li>
+                  <li>Moves are revealed and commentary reacts to what actually happened.</li>
+                  <li>This phase should be legible to spectators.</li>
+                  <li>Next commit starts only after reveal resolves.</li>
+                  <li>The next turn should not make the current reveal unreadable.</li>
+                </ul>
+              </div>
+              <div class="stage-block current">
+                <h3>Current</h3>
+                <ul>
+                  <li>Reveal window is also 30 slots, about 12 seconds.</li>
+                  <li>Next commit does not currently start during reveal.</li>
+                  <li>Turn resolves first, then the next turn opens.</li>
+                </ul>
+                <div class="badge-row">
+                  <span class="badge good">non-overlapping phases</span>
+                </div>
+              </div>
+            </div>
+          </article>
+
+          <article class="stage-card">
+            <div class="stage-header">
+              <div style="display: flex; gap: 12px; align-items: center;">
+                <div class="stage-index">6</div>
+                <div class="stage-name">Final Hold</div>
+              </div>
+              <div class="stage-timing">Target: 5s hard hold minimum</div>
+            </div>
+            <div class="stage-grid">
+              <div class="stage-block target">
+                <h3>Target</h3>
+                <ul>
+                  <li>The last resolved move must stay visible before payout.</li>
+                  <li>Winner and finishing blow must be readable.</li>
+                  <li>Use a 5-second minimum hard hold unless the product chooses a longer value.</li>
+                  <li>This should be guaranteed on every client, every time.</li>
+                </ul>
+              </div>
+              <div class="stage-block current">
+                <h3>Current</h3>
+                <ul>
+                  <li>Web client already holds the final combat turn for 5 seconds.</li>
+                  <li>Mobile does not have the same dedicated final-turn hold path.</li>
+                  <li>This is still one of the major alignment gaps.</li>
+                </ul>
+                <div class="badge-row">
+                  <span class="badge warn">web only</span>
+                  <span class="badge bad">not guaranteed on mobile</span>
+                </div>
+              </div>
+            </div>
+          </article>
+
+          <article class="stage-card">
+            <div class="stage-header">
+              <div style="display: flex; gap: 12px; align-items: center;">
+                <div class="stage-index">7</div>
+                <div class="stage-name">Payout</div>
+              </div>
+              <div class="stage-timing">Display ~= 60s, claims stay open</div>
+            </div>
+            <div class="stage-grid">
+              <div class="stage-block target">
+                <h3>Target</h3>
+                <ul>
+                  <li>Keep the payout/result view stable for about 60 seconds.</li>
+                  <li>Only first-place bettors are paid.</li>
+                  <li>Winners receive their winning stake back plus their pro-rata share of the losers pool.</li>
+                  <li>On-chain claims stay available until claimed.</li>
+                  <li>The 3% losers-pool treasury cut is extracted once when result is finalized.</li>
+                  <li>That 3% comes only from losers pool, not from winning capital.</li>
+                  <li>Users can claim now or later.</li>
+                  <li>Fighters get paid out cleanly.</li>
+                  <li>The stage should feel stable, not rushed.</li>
+                </ul>
+              </div>
+              <div class="stage-block current">
+                <h3>Current</h3>
+                <ul>
+                  <li>Checked-in app env currently sets payout display to 60 seconds.</li>
+                  <li>24h now acts as a completion buffer, not a claim expiry.</li>
+                  <li>Only first-place bettors are eligible in the winner-takes-all model.</li>
+                  <li>Winner-takes-all treasury cut is moved once at result finalization.</li>
+                  <li>Payout state is already durable through Supabase + chain.</li>
+                </ul>
+                <div class="badge-row">
+                  <span class="badge good">durable claims</span>
+                  <span class="badge good">3% extracted once</span>
+                  <span class="badge good">60s display configured locally</span>
+                </div>
+              </div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">
+          <h2>Top Alignment Gaps</h2>
+          <div class="caption">What still needs to become explicit in code + Railway env</div>
+        </div>
+        <div class="gap-grid">
+          <article class="gap-card">
+            <h3>Queue spec is not locked</h3>
+            <p>
+              If Railway does not set <code>FIGHTERS_PER_RUMBLE=16</code> and
+              <code>RUMBLE_QUEUE_LOCK_COUNTDOWN_MS=10000</code>, the live queue
+              behavior still does not match the intended 12-to-start / 16-cap / 10-second flow.
+            </p>
+          </article>
+          <article class="gap-card">
+            <h3>Betting duration mismatch</h3>
+            <p>
+              Product target says 60 seconds. Checked-in app env says 120 seconds.
+              That needs one canonical value.
+            </p>
+          </article>
+          <article class="gap-card">
+            <h3>Final move is not guaranteed everywhere</h3>
+            <p>
+              Web tries to hold the last turn. Mobile still needs the same hard
+              final-turn hold before payout replaces the fight view.
+            </p>
+          </article>
+          <article class="gap-card">
+            <h3>Spec still lives in multiple places</h3>
+            <p>
+              The chosen flow now exists in this map, but runtime behavior can still drift if
+              Railway env values and code constants are not pinned to the same numbers.
+            </p>
+          </article>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

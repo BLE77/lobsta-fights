@@ -359,17 +359,27 @@ export function mergeRumbleStatusSnapshots(
     const mergedDeadline =
       mergedState === "betting"
         ? (() => {
-            if (!slot.bettingDeadline) return null;
-            const nextDeadlineMs = Date.parse(slot.bettingDeadline);
-            if (!Number.isFinite(nextDeadlineMs)) return null;
+            const nextDeadlineMs = slot.bettingDeadline
+              ? Date.parse(slot.bettingDeadline)
+              : Number.NaN;
             const previousDeadlineMs =
               previousSlot.state === "betting" && previousSlot.bettingDeadline
                 ? Date.parse(previousSlot.bettingDeadline)
                 : Number.NaN;
-            if (!Number.isFinite(previousDeadlineMs) || nextDeadlineMs < previousDeadlineMs) {
+            const hasNextDeadline = Number.isFinite(nextDeadlineMs);
+            const hasPreviousDeadline = Number.isFinite(previousDeadlineMs);
+            if (hasNextDeadline && hasPreviousDeadline) {
+              return nextDeadlineMs >= previousDeadlineMs
+                ? slot.bettingDeadline
+                : previousSlot.bettingDeadline;
+            }
+            if (hasNextDeadline) {
               return slot.bettingDeadline;
             }
-            return previousSlot.bettingDeadline;
+            if (hasPreviousDeadline) {
+              return previousSlot.bettingDeadline;
+            }
+            return null;
           })()
         : slot.bettingDeadline;
 

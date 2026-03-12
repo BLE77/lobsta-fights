@@ -17,6 +17,7 @@ import { hashApiKey } from "~~/lib/api-key";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 import { hasRecovered, recoverOrchestratorState } from "~~/lib/rumble-state-recovery";
 import { ensureRumblePublicHeartbeat } from "~~/lib/rumble-public-heartbeat";
+import { readMainnetRumbleAccountStateResilient } from "~~/lib/solana-programs";
 import {
   MIN_ACTIVE_RUMBLE_FIGHTERS,
   loadBetsForRumble,
@@ -25,6 +26,7 @@ import {
 import {
   type BettingRumbleCandidate,
   loadBettingRumbleCandidatesForSlot,
+  reconcileOnchainFighterIds,
 } from "~~/lib/betting-rumble-candidates";
 
 export const dynamic = "force-dynamic";
@@ -315,6 +317,7 @@ export async function POST(request: Request) {
 
     let resolvedWallet: string;
     let verifiedRumbleId: string | null = null;
+    let verifiedFighterIds: string[] = [];
     let useMemoryReplayGuard = false;
 
     // --- Auth mode 1: Wallet + tx_signature (spectator betting) ---
@@ -379,8 +382,23 @@ export async function POST(request: Request) {
             error: `Could not parse slot rumble id: ${slotRumbleId}`,
           };
         }
+        const onchainRumble = await readMainnetRumbleAccountStateResilient(rumbleIdNum, {
+          maxPasses: 2,
+          retryDelayMs: 100,
+        }).catch(() => null);
+        const onchainFighterIds =
+          onchainRumble?.fighters?.length
+            ? await reconcileOnchainFighterIds(
+                requestedBettingCandidate?.fighterIds?.length
+                  ? requestedBettingCandidate.fighterIds
+                  : slotForVerification?.fighters ?? [],
+                onchainRumble.fighters,
+              )
+            : null;
         const verificationFighters =
-          requestedBettingCandidate?.fighterIds?.length
+          onchainFighterIds && onchainFighterIds.length > 0
+            ? onchainFighterIds
+            : requestedBettingCandidate?.fighterIds?.length
             ? requestedBettingCandidate.fighterIds
             : slotForVerification?.fighters ?? [];
         const verificationLegs = parsedBets.map((bet) => {
@@ -407,7 +425,10 @@ export async function POST(request: Request) {
             verificationLegs[0].fighterIndex,
             verificationLegs[0].amountSol,
           );
-          if (singleLeg.valid) verifiedRumbleId = slotRumbleId;
+          if (singleLeg.valid) {
+            verifiedRumbleId = slotRumbleId;
+            verifiedFighterIds = verificationFighters;
+          }
           return singleLeg;
         }
         const batch = await verifyRumblePlaceBetBatchTransaction(
@@ -416,7 +437,10 @@ export async function POST(request: Request) {
           rumbleIdNum,
           verificationLegs,
         );
-        if (batch.valid) verifiedRumbleId = slotRumbleId;
+        if (batch.valid) {
+          verifiedRumbleId = slotRumbleId;
+          verifiedFighterIds = verificationFighters;
+        }
         return batch;
       })();
       if (!verification.valid) {
@@ -557,7 +581,9 @@ export async function POST(request: Request) {
       persistedBetting?.rumbleId ??
       (liveSlot?.state === "betting" ? liveSlot.rumbleId : null);
     const authoritativeFighters =
-      persistedBetting?.fighterIds?.length
+      verifiedFighterIds.length > 0
+        ? verifiedFighterIds
+        : persistedBetting?.fighterIds?.length
         ? persistedBetting.fighterIds
         : liveSlot?.fighters ?? [];
 
@@ -579,7 +605,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const shouldValidateFighterMembership = authoritativeFighters.length > 0 || !verifiedRumbleId;
+    const shouldValidateFighterMembership = !verifiedRumbleId && authoritativeFighters.length > 0;
     for (const bet of parsedBets) {
       if (shouldValidateFighterMembership && !authoritativeFighters.includes(bet.fighterId)) {
         await releaseBetSignatureLock(signatureLock);

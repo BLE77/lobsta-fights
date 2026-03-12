@@ -74,7 +74,14 @@ export default function BettingPanel({
     return () => clearInterval(interval);
   }, [closeGuardMs, deadline]);
 
+  const bettingInitialized = remainingMs !== null;
+  const isBetWindowOpen = bettingInitialized ? remainingMs > 0 : false;
+  const isClosed = bettingInitialized && !isBetWindowOpen;
+  const canSubmitBets = isBetWindowOpen;
+  const canInteractWithControls = isBetWindowOpen && deploying.size === 0;
+
   const toggleFighter = (fighterId: string) => {
+    if (!canInteractWithControls) return;
     setBets((prev) => {
       const next = new Map(prev);
       if (prev.has(fighterId)) {
@@ -87,6 +94,7 @@ export default function BettingPanel({
   };
 
   const updateAmount = (fighterId: string, amount: string) => {
+    if (!canInteractWithControls) return;
     setBets((prev) => {
       const next = new Map(prev);
       next.set(fighterId, amount);
@@ -98,7 +106,7 @@ export default function BettingPanel({
     const amountStr = bets.get(fighterId);
     if (!amountStr || !onPlaceBet) return;
     const amount = parseFloat(amountStr);
-    if (isNaN(amount) || amount <= 0) return;
+    if (isNaN(amount) || amount < 0.02) return;
 
     setDeploying((prev) => new Set(prev).add(fighterId));
     try {
@@ -123,12 +131,13 @@ export default function BettingPanel({
   };
 
   const handleDeployAll = async () => {
+    if (!canSubmitBets) return;
     const entries = [...bets.entries()]
       .map(([fighterId, amountStr]) => ({
         fighterId,
         amount: parseFloat(amountStr),
       }))
-      .filter((e) => Number.isFinite(e.amount) && e.amount > 0);
+      .filter((e) => Number.isFinite(e.amount) && e.amount >= 0.02);
     if (entries.length === 0) return;
 
     setDeploying(new Set(entries.map((e) => e.fighterId)));
@@ -155,13 +164,8 @@ export default function BettingPanel({
   );
   const myStakeEntries = myBetAmounts ? [...myBetAmounts.entries()] : [];
   const myStakeTotal = myStakeEntries.reduce((sum, [, amount]) => sum + amount, 0);
-  const deployableCount = [...bets.values()].filter(v => (parseFloat(v) || 0) > 0).length;
+  const deployableCount = [...bets.values()].filter(v => (parseFloat(v) || 0) >= 0.02).length;
   const timeLeft = remainingMs === null ? "" : formatRemaining(remainingMs);
-
-  const bettingInitialized = remainingMs !== null;
-  const isBetWindowOpen = bettingInitialized ? remainingMs > 0 : false;
-  const isClosed = bettingInitialized && !isBetWindowOpen;
-  const canSubmitBets = isBetWindowOpen;
 
   return (
     <div className="space-y-3">
@@ -272,12 +276,13 @@ export default function BettingPanel({
             <div key={f.fighterId} className="flex flex-col h-full bg-stone-900/50 rounded-sm">
               <button
                 onClick={() => toggleFighter(f.fighterId)}
-                className={`flex-1 flex flex-col p-2 rounded-t-sm border transition-all text-left hover:scale-[1.02] hover:ring-1 hover:ring-amber-500/50 relative overflow-hidden ${successFighterId === f.fighterId
+                disabled={!canInteractWithControls}
+                className={`flex-1 flex flex-col p-2 rounded-t-sm border transition-all text-left relative overflow-hidden ${successFighterId === f.fighterId
                   ? "border-green-500 bg-green-900/20"
                   : isSelected
                     ? "border-amber-500 bg-amber-900/20 border-b-0"
-                    : "border-stone-800 bg-transparent hover:border-stone-600"
-                  } ${!isSelected ? "rounded-b-sm" : ""}`}
+                    : "border-stone-800 bg-transparent"
+                  } ${!isSelected ? "rounded-b-sm" : ""} ${canInteractWithControls ? "hover:scale-[1.02] hover:ring-1 hover:ring-amber-500/50 hover:border-stone-600" : "cursor-not-allowed opacity-70"}`}
               >
                 {/* Large Tile Avatar */}
                 <div className="w-full aspect-square mb-2 rounded-sm overflow-hidden border border-stone-800 bg-stone-900 relative">
@@ -349,10 +354,11 @@ export default function BettingPanel({
                       <button
                         key={amt}
                         onClick={() => updateAmount(f.fighterId, String(amt))}
+                        disabled={!canInteractWithControls}
                         className={`text-[10px] font-mono py-1 rounded-sm border transition-all ${bets.get(f.fighterId) === String(amt)
                           ? "bg-amber-600 text-stone-950 border-amber-500"
                           : "bg-stone-950 hover:bg-stone-800 text-stone-400 border-stone-800 hover:border-stone-600"
-                          }`}
+                          } ${!canInteractWithControls ? "cursor-not-allowed opacity-60" : ""}`}
                       >
                         {amt}
                       </button>
@@ -364,10 +370,11 @@ export default function BettingPanel({
                       type="number"
                       value={bets.get(f.fighterId) ?? ""}
                       onChange={(e) => updateAmount(f.fighterId, e.target.value)}
+                      disabled={!canInteractWithControls}
                       placeholder="SOL..."
                       min="0.02"
                       step="0.01"
-                      className="flex-1 min-w-0 bg-stone-950 border border-stone-800 rounded-sm px-2 py-1 text-stone-200 font-mono text-xs focus:outline-none focus:border-amber-600 transition-colors"
+                      className={`flex-1 min-w-0 bg-stone-950 border border-stone-800 rounded-sm px-2 py-1 text-stone-200 font-mono text-xs transition-colors ${canInteractWithControls ? "focus:outline-none focus:border-amber-600" : "cursor-not-allowed opacity-60"}`}
                     />
                   </div>
                 </div>

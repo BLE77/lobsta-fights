@@ -1081,9 +1081,12 @@ function RumbleNativeScreen() {
     if (state !== "payout" || !rumbleId) return;
     if (winnerPopupShownForRef.current === rumbleId) return;
 
-    const placements = (featuredSlot?.fighters ?? [])
+    const placementsFromFeatured = (featuredSlot?.fighters ?? [])
       .filter(f => safeNumber(f.placement, 0) > 0)
       .sort((a, b) => safeNumber(a.placement, 0) - safeNumber(b.placement, 0));
+    const placements = placementsFromFeatured.length > 0
+      ? placementsFromFeatured
+      : lastPayoutPlacementsRef.current;
     const winner = placements[0];
     if (!winner) return;
 
@@ -1238,6 +1241,15 @@ function RumbleNativeScreen() {
     () => selectedBets.reduce((sum, bet) => sum + bet.amount, 0),
     [selectedBets],
   );
+  const featuredBettingDeadlineMs = useMemo(() => {
+    if (!featuredSlot?.bettingDeadline) return Number.NaN;
+    return new Date(featuredSlot.bettingDeadline).getTime();
+  }, [featuredSlot?.bettingDeadline]);
+  const isFeaturedBettingLive =
+    String(featuredSlot?.state ?? "idle") === "betting" &&
+    Number.isFinite(featuredBettingDeadlineMs) &&
+    featuredBettingDeadlineMs > Date.now();
+  const bettingUiInteractive = isFeaturedBettingLive && !isBusy && !betPending;
 
   const featuredSlotIndex = safeNumber(featuredSlot?.slotIndex, 0);
   const myBetsInFeaturedSlot = myBetsBySlot[featuredSlotIndex] ?? {};
@@ -1716,6 +1728,7 @@ function RumbleNativeScreen() {
     try {
       const prepareRes = await postJsonWithFallback("/api/rumble/bet/prepare", {
         slot_index: slotIndex,
+        rumble_id: slotData.rumbleId ?? undefined,
         wallet_address: walletAddress,
         bets: bets.map(bet => ({ fighter_id: bet.fighterId, sol_amount: bet.amount })),
       });
@@ -2169,9 +2182,13 @@ function RumbleNativeScreen() {
                                 >
                                   <Pressable
                                     onPress={() => toggleBetSelection(fighterId)}
+                                    disabled={!bettingUiInteractive}
                                     onPressIn={() => handleBetTilePressIn(fighterId)}
                                     onPressOut={() => handleBetTilePressOut(fighterId)}
-                                    style={styles.betTileTap}
+                                    style={[
+                                      styles.betTileTap,
+                                      !bettingUiInteractive ? { opacity: 0.6 } : null,
+                                    ]}
                                   >
                                     <ExpoImage
                                       source={odd.imageUrl ? { uri: odd.imageUrl } : BOT_AVATAR_IMG}
@@ -2196,9 +2213,11 @@ function RumbleNativeScreen() {
                                           <Pressable
                                             key={`${fighterId}_${amount}`}
                                             onPress={() => setQuickBetAmount(fighterId, amount)}
+                                            disabled={!bettingUiInteractive}
                                             style={[
                                               styles.quickAmountBtn,
                                               Number(amountText) === amount ? styles.quickAmountBtnActive : null,
+                                              !bettingUiInteractive ? { opacity: 0.6 } : null,
                                             ]}
                                           >
                                             <Text style={styles.quickAmountText}>{amount}</Text>
@@ -2208,10 +2227,14 @@ function RumbleNativeScreen() {
                                       <TextInput
                                         value={amountText}
                                         onChangeText={text => updateBetAmount(fighterId, text)}
+                                        editable={bettingUiInteractive}
                                         keyboardType="decimal-pad"
                                         placeholder="SOL..."
                                         placeholderTextColor="#57534e"
-                                        style={styles.betAmountInput}
+                                        style={[
+                                          styles.betAmountInput,
+                                          !bettingUiInteractive ? { opacity: 0.6 } : null,
+                                        ]}
                                       />
                                     </View>
                                   ) : null}

@@ -22,6 +22,7 @@ import {
   type BettingRumbleCandidate,
   loadBettingRumbleCandidatesForSlot as loadSharedBettingRumbleCandidatesForSlot,
   prependLocalBettingCandidate as prependSharedLocalBettingCandidate,
+  reconcileOnchainFighterIds,
 } from "~~/lib/betting-rumble-candidates";
 
 export const dynamic = "force-dynamic";
@@ -53,6 +54,7 @@ function prependLocalBettingCandidate(
 async function resolveBettableRumbleForSlot(
   slotIndex: number,
   orchestrator: ReturnType<typeof getOrchestrator>,
+  requestedRumbleId?: string | null,
 ): Promise<{
   candidate: BettingRumbleCandidate;
   onchainRumble: Awaited<ReturnType<typeof readMainnetRumbleAccountStateResilient>>;
@@ -64,12 +66,18 @@ async function resolveBettableRumbleForSlot(
     } | null;
     sawCandidate: boolean;
     sawNonBettingOnchainState: string | null;
-  }> => {
-    const localSlot = orchestrator.getStatus().find((s) => s.slotIndex === slotIndex) ?? null;
-    const candidates = prependLocalBettingCandidate(
-      await loadBettingRumbleCandidatesForSlot(slotIndex),
-      localSlot,
-    ).slice(0, 5);
+    }> => {
+      const localSlot = orchestrator.getStatus().find((s) => s.slotIndex === slotIndex) ?? null;
+      const requestedId =
+        typeof requestedRumbleId === "string" && requestedRumbleId.trim().length > 0
+          ? requestedRumbleId.trim()
+          : null;
+      const candidates = prependLocalBettingCandidate(
+        await loadBettingRumbleCandidatesForSlot(slotIndex),
+        localSlot,
+      )
+        .filter((candidate) => !requestedId || candidate.rumbleId === requestedId)
+        .slice(0, 5);
     let sawCandidate = false;
     let sawNonBettingOnchainState: string | null = null;
     for (const candidate of candidates) {
@@ -119,6 +127,11 @@ export async function POST(request: Request) {
       const body = await request.json().catch(() => ({}));
       const slotIndex = body.slot_index ?? body.slotIndex;
       const walletAddress = body.wallet_address ?? body.walletAddress;
+      const requestedRumbleIdRaw = body.rumble_id ?? body.rumbleId;
+      const requestedRumbleId =
+        typeof requestedRumbleIdRaw === "string" && requestedRumbleIdRaw.trim().length > 0
+          ? requestedRumbleIdRaw.trim()
+          : null;
       const rawBatch = Array.isArray(body.bets) ? body.bets : null;
 
     if (rawBatch && rawBatch.length > 16) {
@@ -143,10 +156,14 @@ export async function POST(request: Request) {
     await ensureRecovered();
     await ensureRumblePublicHeartbeat("bet_prepare");
     const orchestrator = getOrchestrator();
-    const resolved = await resolveBettableRumbleForSlot(parsedSlotIndex, orchestrator);
+    const resolved = await resolveBettableRumbleForSlot(parsedSlotIndex, orchestrator, requestedRumbleId);
     if (!resolved) {
       return NextResponse.json(
-        { error: "Betting is not open for this slot right now." },
+        {
+          error: requestedRumbleId
+            ? "The requested rumble is no longer the active bettable rumble. Refresh and place the bet again."
+            : "Betting is not open for this slot right now.",
+        },
         { status: 409 },
       );
     }
@@ -154,7 +171,23 @@ export async function POST(request: Request) {
     const onchainRumble = resolved.onchainRumble!;
     const slotRumbleId = activeBettingRumble.rumbleId;
 
-    const slotFighters = activeBettingRumble.fighterIds;
+    const onchainFighterIds = await reconcileOnchainFighterIds(
+      activeBettingRumble.fighterIds,
+      onchainRumble.fighters,
+    );
+    const slotFighters =
+      onchainFighterIds && onchainFighterIds.length >= MIN_ACTIVE_RUMBLE_FIGHTERS
+        ? onchainFighterIds
+        : activeBettingRumble.fighterIds;
+    if (onchainRumble.fighters.length >= MIN_ACTIVE_RUMBLE_FIGHTERS && !onchainFighterIds) {
+      return NextResponse.json(
+        {
+          error: "Rumble fighter order changed on-chain. Refresh and place the bet again.",
+          rumble_id: slotRumbleId,
+        },
+        { status: 409 },
+      );
+    }
     if (slotFighters.length < MIN_ACTIVE_RUMBLE_FIGHTERS) {
       return NextResponse.json(
         {

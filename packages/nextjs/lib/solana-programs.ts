@@ -38,6 +38,7 @@ import {
   getCanonicalMainnetRumbleEngineId,
   resolveMainnetRumbleEngineId,
 } from "./rumble-program-id";
+import { getMainnetTreasuryAddress } from "./treasury";
 
 // IDLs (imported as JSON)
 import fighterRegistryIdl from "./idl/fighter_registry.json";
@@ -777,9 +778,10 @@ export async function readRumbleAccountState(
   const conn = connection ?? (useMainnet ? getBettingConnection() : getConnection());
   const endpointKey = getConnectionCacheKey(conn);
   const key = `rumble:${useMainnet ? "mainnet:" : ""}${rumbleId}:${endpointKey}`;
-  // 10s cache — rumble state (betting/combat/payout) doesn't change faster than this.
-  // Saves ~70% of getAccountInfo calls vs the previous 3s cache.
-  return cachedRead(key, 10_000, async () => {
+  // Keep the on-chain rumble cache short enough that betting windows stay in sync
+  // with mainnet, while still absorbing bursty spectator polling.
+  const cacheTtlMs = Math.max(1_500, Number(process.env.RUMBLE_ONCHAIN_RUMBLE_CACHE_MS ?? "3000"));
+  return cachedRead(key, cacheTtlMs, async () => {
     const [rumblePda] = useMainnet ? deriveRumblePdaMainnet(rumbleId) : deriveRumblePda(rumbleId);
     const MIN_RUMBLE_ACCOUNT_LEN = 724;
     // Use processed commitment to minimize stale reads around betting close.
@@ -3219,8 +3221,8 @@ export async function completeRumbleMainnet(
 
 /**
  * Close a completed mainnet Rumble account to reclaim rent back to admin.
- * Requires the rumble to be in Complete state. Winner rumbles are only closable
- * after the vault is drained down to rent by bettor claims.
+ * Requires the rumble to be in Complete state. Close now drains any
+ * non-claimable vault balance to treasury before reclaiming the rumble rent.
  */
 export async function closeRumbleMainnet(
   rumbleId: number,
@@ -3235,7 +3237,6 @@ export async function closeRumbleMainnet(
 
   const [rumbleConfigPda] = deriveRumbleConfigPdaMainnet();
   const [rumblePda] = deriveRumblePdaMainnet(rumbleId);
-
   const [vaultPda] = deriveVaultPdaMainnet(rumbleId);
   const method = (program.methods as any)
     .closeRumble()
@@ -3244,6 +3245,8 @@ export async function closeRumbleMainnet(
       config: rumbleConfigPda,
       rumble: rumblePda,
       vault: vaultPda,
+      treasury: new PublicKey(getMainnetTreasuryAddress()),
+      systemProgram: SystemProgram.programId,
     });
 
   const { signature } = await sendAdminTxWithConfirmation(method, admin, getBettingConnection());
@@ -3535,7 +3538,12 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
         try {
           await noteMutationAttempt();
           const method = (program.methods as any).closeRumble().accounts({
-            admin: admin.publicKey, config: configPda, rumble: rumblePda, vault: vaultPda,
+            admin: admin.publicKey,
+            config: configPda,
+            rumble: rumblePda,
+            vault: vaultPda,
+            treasury: new PublicKey(getMainnetTreasuryAddress()),
+            systemProgram: SystemProgram.programId,
           });
           const { signature } = await sendAdminTxWithConfirmation(method, admin, conn);
           if (signature) {
