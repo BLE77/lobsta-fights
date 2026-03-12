@@ -267,8 +267,12 @@ interface SlotCombatState {
   openTurnAttemptCount?: number;
   /** Last turn number for which advanceTurn already confirmed on-chain. */
   lastAdvanceSubmittedTurn?: number;
+  /** When the most recent advanceTurn for lastAdvanceSubmittedTurn was submitted. */
+  lastAdvanceSubmittedAt?: number;
   /** Last turn number for which resolveTurn already confirmed on-chain. */
   lastResolveSubmittedTurn?: number;
+  /** When the most recent resolveTurn for lastResolveSubmittedTurn was submitted. */
+  lastResolveSubmittedAt?: number;
 }
 
 interface OnchainTurnDecision {
@@ -305,6 +309,12 @@ interface CombatWakeSubscription {
 // ---------------------------------------------------------------------------
 
 const NUM_SLOTS = 1;
+const ONCHAIN_TURN_TX_RETRY_MS = readIntervalMs(
+  "RUMBLE_ONCHAIN_TURN_TX_RETRY_MS",
+  8_000,
+  2_000,
+  60_000,
+);
 
 function readIntervalMs(
   envName: string,
@@ -1865,6 +1875,29 @@ export class RumbleOrchestrator {
 
   private clearOnchainCreateFailure(rumbleId: string): void {
     this.onchainRumbleCreateLastError.delete(rumbleId);
+  }
+
+  private shouldRetryTurnSubmission(
+    slot: RumbleSlot,
+    kind: "resolve" | "advance",
+    submittedTurn: number | undefined,
+    submittedAt: number | undefined,
+    currentTurn: number,
+    now: number,
+  ): boolean {
+    if (submittedTurn === undefined || submittedTurn !== currentTurn) {
+      return true;
+    }
+    if (submittedAt === undefined) {
+      return false;
+    }
+    if (now - submittedAt < ONCHAIN_TURN_TX_RETRY_MS) {
+      return false;
+    }
+    console.warn(
+      `[ONCHAIN-${kind.toUpperCase()}] Retrying ${kind}Turn for rumble ${slot.id} on turn ${currentTurn} after ${now - submittedAt}ms without visible chain progress`,
+    );
+    return true;
   }
 
   getRuntimeHealth(): {
@@ -4176,6 +4209,14 @@ export class RumbleOrchestrator {
       combat.currentTurn > state.lastResolveSubmittedTurn
     ) {
       state.lastResolveSubmittedTurn = undefined;
+      state.lastResolveSubmittedAt = undefined;
+    }
+    if (
+      state.lastAdvanceSubmittedTurn !== undefined &&
+      combat.currentTurn > state.lastAdvanceSubmittedTurn
+    ) {
+      state.lastAdvanceSubmittedTurn = undefined;
+      state.lastAdvanceSubmittedAt = undefined;
     }
 
     if (!(await this.ensureMatchupVrfReady(slot, state, combat, rumbleIdNum, now))) {
@@ -4251,6 +4292,8 @@ export class RumbleOrchestrator {
       };
       state.turns.push(turn);
       state.lastOnchainTurnResolved = combat.currentTurn;
+      state.lastResolveSubmittedTurn = undefined;
+      state.lastResolveSubmittedAt = undefined;
       state.turnDecisions.delete(turnNum);
       await persist.updateRumbleTurnLog(slot.id, state.turns, state.turns.length);
       this.persistTurnDecisions(slot.id, state);
@@ -4374,7 +4417,16 @@ export class RumbleOrchestrator {
     // attempt resolve_turn. This handles serverless cold starts, instance churn,
     // and any gap where the keeper missed the window.
     if (!combat.turnResolved && currentSlotBig >= combat.revealCloseSlot) {
-      if (state.lastResolveSubmittedTurn === combat.currentTurn) {
+      if (
+        !this.shouldRetryTurnSubmission(
+          slot,
+          "resolve",
+          state.lastResolveSubmittedTurn,
+          state.lastResolveSubmittedAt,
+          combat.currentTurn,
+          now,
+        )
+      ) {
         return;
       }
       // Try submitting any remaining moves first (commit/reveal may have been
@@ -4392,6 +4444,7 @@ export class RumbleOrchestrator {
           const sig = await resolveTurnOnChain(rumbleIdNum, commitmentAccounts, slotConn);
           if (sig) {
             state.lastResolveSubmittedTurn = combat.currentTurn;
+            state.lastResolveSubmittedAt = now;
             console.log(`[ONCHAIN-RESOLVE] resolveTurn succeeded for rumble ${slot.id}: ${sig}`);
             void persistWithRetry(
               () => persist.updateRumbleTxSignature(slot.id, "resolveTurn", sig),
@@ -4476,6 +4529,7 @@ export class RumbleOrchestrator {
         state.turns.push(turnPost);
         state.lastOnchainTurnResolved = combat.currentTurn;
         state.lastResolveSubmittedTurn = undefined;
+        state.lastResolveSubmittedAt = undefined;
         state.turnDecisions.delete(turnNumPost);
         await persist.updateRumbleTurnLog(slot.id, state.turns, state.turns.length);
         this.persistTurnDecisions(slot.id, state);
@@ -4486,6 +4540,12 @@ export class RumbleOrchestrator {
           turn: turnPost,
           remainingFighters: combat.remainingFighters,
         });
+
+        if (state.erDelegated && combat.turnResolved) {
+          commitCombatFromEr(rumbleIdNum).catch((err) =>
+            console.warn(`[ER-COMMIT] commitCombat failed for rumble ${rumbleIdNum}:`, err)
+          );
+        }
 
         // Close MoveCommitment PDAs for the resolved turn (fire-and-forget).
         // Returns rent to each fighter so wallets don't drain over many rumbles.
@@ -4511,6 +4571,7 @@ export class RumbleOrchestrator {
 
     if (!combat.turnResolved) {
       state.lastAdvanceSubmittedTurn = undefined;
+      state.lastAdvanceSubmittedAt = undefined;
       // Turn is still within commit/reveal window — submit moves and wait.
       await this.submitOnchainMovesForTurn(slot, state, combat, rumbleIdNum, currentSlotBig);
       return;
@@ -4568,13 +4629,23 @@ export class RumbleOrchestrator {
 
     // More than 1 fighter remains and turn is resolved — advance to next turn.
     if (currentSlotBig >= combat.revealCloseSlot) {
-      if (state.lastAdvanceSubmittedTurn === combat.currentTurn) {
+      if (
+        !this.shouldRetryTurnSubmission(
+          slot,
+          "advance",
+          state.lastAdvanceSubmittedTurn,
+          state.lastAdvanceSubmittedAt,
+          combat.currentTurn,
+          now,
+        )
+      ) {
         return;
       }
       try {
         const sig = await advanceTurnOnChain(rumbleIdNum, slotConn);
         if (sig) {
           state.lastAdvanceSubmittedTurn = combat.currentTurn;
+          state.lastAdvanceSubmittedAt = now;
           console.log(`[ONCHAIN-ADVANCE] advanceTurn succeeded for rumble ${slot.id}: ${sig}`);
           void persistWithRetry(
             () => persist.updateRumbleTxSignature(slot.id, "advanceTurn", sig),
@@ -4683,7 +4754,9 @@ export class RumbleOrchestrator {
       openTurnStartedAt: undefined,
       openTurnAttemptCount: 0,
       lastAdvanceSubmittedTurn: undefined,
+      lastAdvanceSubmittedAt: undefined,
       lastResolveSubmittedTurn: undefined,
+      lastResolveSubmittedAt: undefined,
     });
     const state = this.combatStates.get(slot.slotIndex);
     if (state) {
