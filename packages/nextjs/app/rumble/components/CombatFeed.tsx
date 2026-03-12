@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 interface Pairing {
   fighterA: string;
@@ -25,6 +25,22 @@ interface CombatFeedProps {
   currentTurn: number;
   fighterNames: Record<string, string>;
   compact?: boolean;
+}
+
+function isOpaqueFighterToken(value: string | undefined | null): boolean {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw) return false;
+  return (
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(raw) ||
+    /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(raw)
+  );
+}
+
+function formatFallbackFighterLabel(value: string | undefined | null): string {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw) return "UNKNOWN FIGHTER";
+  if (isOpaqueFighterToken(raw)) return "UNKNOWN FIGHTER";
+  return raw;
 }
 
 function getMoveLabel(move: string | undefined | null): string {
@@ -84,7 +100,7 @@ function describeDamage(
   if (isStrike(attackerMove) && isGuard(defenderMove) && isMatchingGuard(attackerMove, defenderMove)) {
     return { label: "BLOCKED", className: "text-blue-400 font-semibold" };
   }
-  return { label: "MISS", className: "text-stone-600" };
+  return { label: "NO HIT", className: "text-stone-500" };
 }
 
 export default function CombatFeed({
@@ -96,6 +112,41 @@ export default function CombatFeed({
   const feedRef = useRef<HTMLDivElement>(null);
   const latestResolvedTurnNumber = turns.length > 0 ? turns[turns.length - 1].turnNumber : 0;
   const showingPendingTurn = currentTurn > latestResolvedTurnNumber;
+  const fighterNameLookup = useMemo(() => {
+    const lookup = new Map<string, string>();
+    for (const [fighterId, fighterName] of Object.entries(fighterNames)) {
+      const id = String(fighterId ?? "").trim();
+      const name = String(fighterName ?? "").trim();
+      if (!id || !name || isOpaqueFighterToken(name)) continue;
+      lookup.set(id, name);
+      lookup.set(id.toLowerCase(), name);
+    }
+    for (const turn of turns) {
+      for (const pairing of turn.pairings) {
+        const candidates: Array<[string, string]> = [
+          [pairing.fighterA, pairing.fighterAName],
+          [pairing.fighterB, pairing.fighterBName],
+        ];
+        for (const [fighterId, fighterName] of candidates) {
+          const id = String(fighterId ?? "").trim();
+          const name = String(fighterName ?? "").trim();
+          if (!id || !name || isOpaqueFighterToken(name)) continue;
+          lookup.set(id, name);
+          lookup.set(id.toLowerCase(), name);
+        }
+      }
+    }
+    return lookup;
+  }, [fighterNames, turns]);
+
+  const resolveFighterLabel = (fighterId: string | undefined, fallbackName?: string): string => {
+    const id = String(fighterId ?? "").trim();
+    const fallback = String(fallbackName ?? "").trim();
+    const fromLookup = fighterNameLookup.get(id) || fighterNameLookup.get(id.toLowerCase());
+    if (fromLookup) return fromLookup;
+    if (fallback && !isOpaqueFighterToken(fallback)) return fallback;
+    return formatFallbackFighterLabel(id || fallback);
+  };
 
   // Newest turns first — scroll to top when new turns arrive
   useEffect(() => {
@@ -195,13 +246,15 @@ export default function CombatFeed({
           {turn.pairings.map((p, i) => {
             const aTook = describeDamage(p.damageToA, p.moveB, p.moveA);
             const bTook = describeDamage(p.damageToB, p.moveA, p.moveB);
+            const fighterAName = resolveFighterLabel(p.fighterA, p.fighterAName);
+            const fighterBName = resolveFighterLabel(p.fighterB, p.fighterBName);
             return (
               <div
                 key={`${turn.turnNumber}-${i}`}
                 className={`font-mono text-center py-0.5 ${compact ? "text-[11px]" : "text-xs"}`}
               >
                 {/* Fighter A: name + move + received outcome */}
-                <span className="text-stone-300">{p.fighterAName}</span>
+                <span className="text-stone-300">{fighterAName}</span>
                 {" "}
                 <span className={`${getMoveColor(p.moveA)} ${compact ? "text-[9px]" : "text-[10px]"}`}>
                   {getMoveLabel(p.moveA)}
@@ -222,7 +275,7 @@ export default function CombatFeed({
                   {getMoveLabel(p.moveB)}
                 </span>
                 {" "}
-                <span className="text-stone-300">{p.fighterBName}</span>
+                <span className="text-stone-300">{fighterBName}</span>
               </div>
             );
           })}
@@ -230,7 +283,7 @@ export default function CombatFeed({
           {/* Bye */}
           {turn.bye && (
             <div className={`font-mono text-stone-600 text-center ${compact ? "text-[9px]" : "text-[10px]"}`}>
-              {fighterNames[turn.bye] || turn.bye} gets a bye
+              {resolveFighterLabel(turn.bye)} gets a bye
             </div>
           )}
 
@@ -240,7 +293,7 @@ export default function CombatFeed({
               key={`elim-${turn.turnNumber}-${elim}`}
               className={`font-mono text-red-500 py-0.5 bg-red-950/30 border-l-2 border-red-600 text-center animate-elimination ${compact ? "text-[10px]" : "text-xs"}`}
             >
-              {involvedFighters.has(elim) ? "ELIMINATED" : "ALSO ELIMINATED THIS TURN"}: {fighterNames[elim] || elim}
+              {involvedFighters.has(elim) ? "ELIMINATED" : "ALSO ELIMINATED THIS TURN"}: {resolveFighterLabel(elim)}
             </div>
           ))}
               </>
