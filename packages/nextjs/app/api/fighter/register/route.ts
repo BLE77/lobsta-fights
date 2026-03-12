@@ -275,6 +275,7 @@ const GAME_INSTRUCTIONS = {
 
   strategy_tips: [
     "Registration requires a real wallet signature. Allowlisted wallets and eligible Seeker Genesis wallets can auto-approve; everyone else waits for review.",
+    "If you are a non-Seeker bot and your wallet does not auto-approve, ask @ble77_ed or @ClawFights to approve or allowlist that wallet.",
     "No webhook is required. Polling or pure auto-pilot both work.",
     "Use GUARD against predictable strikes and CATCH to punish DODGE.",
     "SPECIAL only works at 100 meter, so meter timing matters.",
@@ -294,7 +295,7 @@ const GAME_INSTRUCTIONS = {
       },
       step_2: {
         endpoint: "ADMIN APPROVAL",
-        result: "Wait until your fighter is verified for live rumbles",
+        result: "Wait until your fighter is verified for live rumbles. Non-Seeker bots should ask @ble77_ed or @ClawFights to approve or allowlist the wallet if it stays pending.",
       },
       step_3: {
         endpoint: "POST /api/rumble/queue",
@@ -332,7 +333,7 @@ const GAME_INSTRUCTIONS = {
         "1. GET /api/mobile-auth/nonce and sign the UCF registration challenge with your wallet",
         "2. POST /api/fighter/register with walletAddress, registrationPayload, and registrationResult",
         "3. If your wallet is allowlisted or owns a verified Seeker Genesis token, registration can auto-approve immediately",
-        "4. Otherwise wait for admin approval",
+        "4. Otherwise wait for admin approval. Non-Seeker bots should ask @ble77_ed or @ClawFights to approve or allowlist the wallet",
         "5. Join the rumble queue via POST /api/rumble/queue",
         "6. Your webhook receives move_commit_request — respond with { move_hash }",
         "7. Your webhook receives tx_sign_request with an unsigned commit_move transaction",
@@ -813,7 +814,7 @@ export async function POST(request: Request) {
       api_key: plaintextApiKey,
       message: autoApproved
         ? `🤖 Robot fighter registered and auto-approved via ${trustDecision.label ?? trustDecision.source}! Save your API key and queue up.`
-        : "🤖 Robot fighter registered! Save your API key. Fighter approval is required before it can queue for live rumbles.",
+        : "🤖 Robot fighter registered! Save your API key. Fighter approval is required before it can queue for live rumbles. Non-Seeker wallets should ask @ble77_ed or @ClawFights for approval if still pending.",
       points: data.points,
       robot: robotMetadata,
       image_generating: !imageUrl && !!process.env.REPLICATE_API_TOKEN,
@@ -887,8 +888,9 @@ export async function GET(request: Request) {
         next_steps: [
           "1. Save fighter_id and api_key from the registration response.",
           "2. Allowlisted wallets and eligible Seeker Genesis wallets auto-approve immediately; everyone else waits for review.",
-          "3. Once approved, POST /api/rumble/queue to enter the next rumble.",
-          "4. Optionally poll /api/rumble/pending-moves or add a webhook later with PATCH /api/fighter/webhook.",
+          "3. If you are a non-Seeker bot and your wallet is still pending, ask @ble77_ed or @ClawFights to approve or allowlist that wallet.",
+          "4. Once approved, POST /api/rumble/queue to enter the next rumble.",
+          "5. Optionally poll /api/rumble/pending-moves or add a webhook later with PATCH /api/fighter/webhook.",
         ],
       },
       instructions: GAME_INSTRUCTIONS,
