@@ -118,12 +118,32 @@ function decodeBettorAccountData(data: Buffer): BettorAccountDecoded | null {
 // Falls back to regular getProgramAccounts if V2 fails.
 // ---------------------------------------------------------------------------
 
+interface GpaV2AccountInfo {
+  lamports?: number;
+  owner?: string;
+  data?: string | [string, string];
+  space?: number;
+}
+
 interface GpaV2Account {
   pubkey: string;
-  lamports: number;
-  owner: string;
-  data: string; // base64-encoded
-  space: number;
+  lamports?: number;
+  owner?: string;
+  data?: string | [string, string];
+  space?: number;
+  account?: GpaV2AccountInfo;
+}
+
+export function extractGpaV2Base64Data(account: GpaV2Account): string | null {
+  const direct = account.data;
+  if (typeof direct === "string") return direct;
+  if (Array.isArray(direct) && typeof direct[0] === "string") return direct[0];
+
+  const nested = account.account?.data;
+  if (typeof nested === "string") return nested;
+  if (Array.isArray(nested) && typeof nested[0] === "string") return nested[0];
+
+  return null;
 }
 
 async function listBettorAccountsV2(
@@ -169,10 +189,16 @@ async function listBettorAccountsV2(
   const json = await res.json();
   if (json.error) throw new Error(json.error.message ?? "V2 RPC error");
 
-  const accounts: GpaV2Account[] = json.result?.accounts ?? [];
+  const accounts: GpaV2Account[] = Array.isArray(json.result?.accounts)
+    ? json.result.accounts
+    : Array.isArray(json.result)
+      ? json.result
+      : [];
   const decoded: BettorAccountDecoded[] = [];
   for (const acct of accounts) {
-    const buf = Buffer.from(acct.data, "base64");
+    const base64 = extractGpaV2Base64Data(acct);
+    if (!base64) continue;
+    const buf = Buffer.from(base64, "base64");
     const row = decodeBettorAccountData(buf);
     if (row) decoded.push(row);
   }
@@ -251,6 +277,60 @@ interface MinimalRumbleState {
 
 const TREASURY_CUT_BPS = 300n;
 const BPS_DENOMINATOR = 10_000n;
+
+async function filterBettorRowsBySessionFloor(
+  bettorRowsRaw: BettorAccountDecoded[],
+  minTimestampMs: number | null,
+): Promise<BettorAccountDecoded[]> {
+  if (minTimestampMs === null || bettorRowsRaw.length === 0) return bettorRowsRaw;
+
+  const directTimestamps = new Map<number, number | null>();
+  const unresolvedRumbleIds = new Set<number>();
+
+  for (const row of bettorRowsRaw) {
+    const ts = deriveRumbleTimestampMs(row.rumbleIdNum);
+    directTimestamps.set(row.rumbleIdNum, ts);
+    if (ts === null) {
+      unresolvedRumbleIds.add(row.rumbleIdNum);
+    }
+  }
+
+  const dbTimestamps = new Map<number, number | null>();
+  if (unresolvedRumbleIds.size > 0) {
+    try {
+      const sb = freshSupabase();
+      const unresolved = [...unresolvedRumbleIds];
+      const CHUNK = 200;
+      for (let i = 0; i < unresolved.length; i += CHUNK) {
+        const chunk = unresolved.slice(i, i + CHUNK);
+        const { data, error } = await sb
+          .from("ucf_rumbles")
+          .select("id, rumble_number")
+          .in("rumble_number", chunk);
+        if (error) throw error;
+        for (const row of data ?? []) {
+          const rumbleIdNum = Number((row as any).rumble_number ?? -1);
+          if (!Number.isSafeInteger(rumbleIdNum) || rumbleIdNum < 0) continue;
+          dbTimestamps.set(rumbleIdNum, deriveRumbleTimestampMs(String((row as any).id ?? "")));
+        }
+      }
+    } catch (err) {
+      console.warn("[claims] session floor DB lookup failed; keeping unresolved rumble IDs:", err);
+    }
+  }
+
+  return bettorRowsRaw.filter((row) => {
+    const directTs = directTimestamps.get(row.rumbleIdNum) ?? null;
+    if (directTs !== null) return directTs >= minTimestampMs;
+
+    const dbTs = dbTimestamps.get(row.rumbleIdNum);
+    if (typeof dbTs === "number") return dbTs >= minTimestampMs;
+
+    // Fail open for unresolved numeric on-chain IDs so valid claimable/claimed
+    // rumbles are not hidden just because their ID is not timestamp-encoded.
+    return true;
+  });
+}
 
 export function inferWinnerTakeAllClaimableLamports(
   rumbleState: Pick<MinimalRumbleState, "winnerIndex" | "bettingPools">,
@@ -463,13 +543,7 @@ export async function discoverOnchainWalletPayoutSnapshot(
   const connection = getBettingConnection();
   const minTimestampMs = getRumbleSessionMinTimestampMs();
   const bettorRowsRaw = await listBettorAccountsForWallet(wallet, connection);
-  const bettorRows =
-    minTimestampMs === null
-      ? bettorRowsRaw
-      : bettorRowsRaw.filter((row) => {
-          const ts = deriveRumbleTimestampMs(row.rumbleIdNum);
-          return ts !== null && ts >= minTimestampMs;
-        });
+  const bettorRows = await filterBettorRowsBySessionFloor(bettorRowsRaw, minTimestampMs);
 
   // Batch-read all rumble states in 1 RPC call
   const rumbleIds = [...new Set(bettorRows.map((row) => row.rumbleIdNum))];
@@ -583,10 +657,12 @@ export async function discoverOnchainClaimableRumbles(
   const snapshot = await discoverOnchainWalletPayoutSnapshot(wallet, limit);
   return snapshot.claimableRumbles;
 }
-function deriveRumbleTimestampMs(rumbleIdNum: number): number | null {
-  const raw = String(rumbleIdNum);
-  if (raw.length < 13) return null;
-  const ts = Number(raw.slice(0, 13));
+export function deriveRumbleTimestampMs(rumbleIdNum: number | string): number | null {
+  const raw = String(rumbleIdNum).trim();
+  const timestampToken = raw.match(/^rumble[_-](\d{13,})[_-]\d+$/i)?.[1] ?? raw;
+  const numeric = /^\d+$/.test(timestampToken) ? timestampToken : "";
+  if (numeric.length < 13) return null;
+  const ts = Number(numeric.slice(0, 13));
   if (!Number.isSafeInteger(ts) || ts < 1_600_000_000_000) return null;
   return ts;
 }

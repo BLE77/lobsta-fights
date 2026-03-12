@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { inferWinnerTakeAllClaimableLamports } from "../lib/rumble-onchain-claims";
+import {
+  deriveRumbleTimestampMs,
+  extractGpaV2Base64Data,
+  inferWinnerTakeAllClaimableLamports,
+} from "../lib/rumble-onchain-claims";
 
 describe("inferWinnerTakeAllClaimableLamports", () => {
   it("returns original winning stake plus pro-rata losers-pool share after the 3% treasury cut", () => {
@@ -56,5 +60,36 @@ describe("inferWinnerTakeAllClaimableLamports", () => {
     );
 
     expect(payoutLamports).toBe(0n);
+  });
+});
+
+describe("deriveRumbleTimestampMs", () => {
+  it("parses timestamp-style rumble ids", () => {
+    expect(deriveRumbleTimestampMs("rumble_1773287959941_1")).toBe(1773287959941);
+    expect(deriveRumbleTimestampMs(1773287959941)).toBe(1773287959941);
+  });
+
+  it("returns null for sequential on-chain rumble numbers", () => {
+    expect(deriveRumbleTimestampMs(6975)).toBeNull();
+    expect(deriveRumbleTimestampMs("6975")).toBeNull();
+  });
+});
+
+describe("extractGpaV2Base64Data", () => {
+  it("reads the nested Helius V2 account.data tuple shape", () => {
+    expect(extractGpaV2Base64Data({
+      pubkey: "bettor",
+      account: {
+        data: ["Zm9v", "base64"],
+      },
+    })).toBe("Zm9v");
+  });
+
+  it("reads direct base64 payloads and ignores missing data", () => {
+    expect(extractGpaV2Base64Data({
+      pubkey: "bettor",
+      data: "YmFy",
+    })).toBe("YmFy");
+    expect(extractGpaV2Base64Data({ pubkey: "bettor" })).toBeNull();
   });
 });
