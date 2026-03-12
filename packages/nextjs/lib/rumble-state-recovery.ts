@@ -111,6 +111,9 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
     // ---- Step 1: Recover queue ------------------------------------------------
     const queueEntries = await persist.loadQueueState();
     const qm = getQueueManager();
+    const clearRecoveredQueueEntries = async (fighterIds: string[]): Promise<void> => {
+      await Promise.allSettled(fighterIds.map((fighterId) => persist.removeQueueFighter(fighterId)));
+    };
     const requeueFighters = async (fighterIds: string[]): Promise<void> => {
       for (const fighterId of fighterIds) {
         try {
@@ -218,6 +221,7 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
           }
           const existingBets = await persist.loadBetsForRumble(rumble.id);
           orchestrator.restoreBettingPool(slotIndex, rumble.id, existingBets);
+          await clearRecoveredQueueEntries(fighterIds);
           console.log(
             `[StateRecovery] RESTORED combat rumble ${rumble.id} in slot ${slotIndex} ` +
               `with ${fighterIds.length} fighters, ${existingBets.length} bets`,
@@ -256,9 +260,11 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
           const createdAt = new Date(rumble.created_at).getTime();
           const age = Date.now() - createdAt;
           const fighterIds = fighters.map((f) => f.id);
+          const existingBets = await persist.loadBetsForRumble(rumble.id);
+          const hasExistingBets = existingBets.length > 0;
 
-          if (age > MAX_BETTING_AGE_MS) {
-            // Too old — something went wrong. Mark stale and re-queue.
+          if (age > MAX_BETTING_AGE_MS && !hasExistingBets) {
+            // Too old with no money at risk — recycle it and re-queue fighters.
             console.log(
               `[StateRecovery] Rumble ${rumble.id} betting is ${Math.round(age / 1000)}s old (stale) — marking complete`
             );
@@ -267,11 +273,14 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
             continue;
           }
 
+          if (age > MAX_BETTING_AGE_MS && hasExistingBets) {
+            console.warn(
+              `[StateRecovery] Rumble ${rumble.id} betting is ${Math.round(age / 1000)}s old but has ${existingBets.length} bet(s); restoring and forcing combat transition instead of auto-completing`,
+            );
+          }
+
           // Restore this betting rumble into the correct slot
           const slotIndex = rumble.slot_index;
-
-          // Load any existing bets from Supabase and restore the betting pool
-          const existingBets = await persist.loadBetsForRumble(rumble.id);
 
           // If bets already exist, the betting window was previously armed and
           // likely expired. Set deadline to "now" so advanceSlots() can
@@ -290,6 +299,7 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
             continue;
           }
           orchestrator.restoreBettingPool(slotIndex, rumble.id, existingBets);
+          await clearRecoveredQueueEntries(fighterIds);
 
           console.log(
             `[StateRecovery] RESTORED betting rumble ${rumble.id} in slot ${slotIndex} ` +
