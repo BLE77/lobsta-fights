@@ -946,6 +946,53 @@ export const styles = StyleSheet.create({
   turnFeedPairRow: {
     gap: 3,
   },
+  turnFeedMatchupText: {
+    color: "#e7e5e4",
+    fontSize: 11,
+    fontWeight: "700",
+    textAlign: "center",
+    lineHeight: 16,
+  },
+  turnFeedOutcome: {
+    color: "#d6d3d1",
+    fontSize: 10,
+    fontWeight: "600",
+    textAlign: "center",
+    lineHeight: 14,
+  },
+  turnFeedOutcomeName: {
+    color: "#d6d3d1",
+    fontWeight: "700",
+  },
+  turnFeedOutcomeAction: {
+    fontWeight: "800",
+  },
+  turnFeedOutcomeTrade: {
+    color: "#fbbf24",
+    fontWeight: "800",
+  },
+  turnFeedOutcomeCounter: {
+    color: "#60a5fa",
+    fontWeight: "800",
+  },
+  turnFeedOutcomeCatch: {
+    color: "#c084fc",
+    fontWeight: "800",
+  },
+  turnFeedOutcomeDodge: {
+    color: "#4ade80",
+    fontSize: 10,
+    fontWeight: "800",
+    textAlign: "center",
+    lineHeight: 14,
+  },
+  turnFeedOutcomeMuted: {
+    color: "#78716c",
+    fontSize: 10,
+    fontWeight: "600",
+    textAlign: "center",
+    lineHeight: 14,
+  },
   turnFeedHpRow: {
     flexDirection: "row",
     gap: 6,

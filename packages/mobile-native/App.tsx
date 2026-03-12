@@ -170,6 +170,125 @@ function WalletHeader({
   );
 }
 
+function isMatchingGuardMove(strike: string, guard: string): boolean {
+  return (
+    (strike === "HIGH_STRIKE" && guard === "GUARD_HIGH") ||
+    (strike === "MID_STRIKE" && guard === "GUARD_MID") ||
+    (strike === "LOW_STRIKE" && guard === "GUARD_LOW")
+  );
+}
+
+function renderTurnFeedDamage(damage: number): React.ReactNode {
+  if (damage <= 0) return null;
+  return <Text style={styles.turnFeedDmgReceived}>-{damage.toFixed(0)}</Text>;
+}
+
+function renderTurnFeedOutcomeSummary(
+  pair: RumbleTurnPairing,
+  leftName: string,
+  rightName: string,
+): React.ReactNode {
+  const leftMove = String(pair.moveA ?? "").toUpperCase();
+  const rightMove = String(pair.moveB ?? "").toUpperCase();
+  const damageToA = safeNumber(pair.damageToA, 0);
+  const damageToB = safeNumber(pair.damageToB, 0);
+
+  if (damageToA > 0 && damageToB > 0) {
+    return (
+      <Text style={styles.turnFeedOutcome}>
+        <Text style={styles.turnFeedOutcomeTrade}>Trade hits.</Text>{" "}
+        <Text style={styles.turnFeedOutcomeName}>{leftName}</Text>{" "}
+        {renderTurnFeedDamage(damageToA)}
+        <Text style={styles.turnFeedOutcomeMuted}>, </Text>
+        <Text style={styles.turnFeedOutcomeName}>{rightName}</Text>{" "}
+        {renderTurnFeedDamage(damageToB)}
+      </Text>
+    );
+  }
+
+  if (damageToA > 0 && isStrikeMove(leftMove) && isMatchingGuardMove(leftMove, rightMove)) {
+    return (
+      <Text style={styles.turnFeedOutcome}>
+        <Text style={styles.turnFeedOutcomeCounter}>{rightName} blocks and counters.</Text>{" "}
+        <Text style={styles.turnFeedOutcomeName}>{leftName}</Text>{" "}
+        {renderTurnFeedDamage(damageToA)}
+      </Text>
+    );
+  }
+
+  if (damageToB > 0 && isStrikeMove(rightMove) && isMatchingGuardMove(rightMove, leftMove)) {
+    return (
+      <Text style={styles.turnFeedOutcome}>
+        <Text style={styles.turnFeedOutcomeCounter}>{leftName} blocks and counters.</Text>{" "}
+        <Text style={styles.turnFeedOutcomeName}>{rightName}</Text>{" "}
+        {renderTurnFeedDamage(damageToB)}
+      </Text>
+    );
+  }
+
+  if (damageToA > 0 && rightMove === "CATCH" && leftMove === "DODGE") {
+    return (
+      <Text style={styles.turnFeedOutcome}>
+        <Text style={styles.turnFeedOutcomeCatch}>{rightName} catches the dodge.</Text>{" "}
+        <Text style={styles.turnFeedOutcomeName}>{leftName}</Text>{" "}
+        {renderTurnFeedDamage(damageToA)}
+      </Text>
+    );
+  }
+
+  if (damageToB > 0 && leftMove === "CATCH" && rightMove === "DODGE") {
+    return (
+      <Text style={styles.turnFeedOutcome}>
+        <Text style={styles.turnFeedOutcomeCatch}>{leftName} catches the dodge.</Text>{" "}
+        <Text style={styles.turnFeedOutcomeName}>{rightName}</Text>{" "}
+        {renderTurnFeedDamage(damageToB)}
+      </Text>
+    );
+  }
+
+  if (damageToA > 0) {
+    return (
+      <Text style={styles.turnFeedOutcome}>
+        <Text style={[styles.turnFeedOutcomeAction, { color: getMoveColor(rightMove) }]}>
+          {rightName} lands {formatMove(rightMove)}.
+        </Text>{" "}
+        <Text style={styles.turnFeedOutcomeName}>{leftName}</Text>{" "}
+        {renderTurnFeedDamage(damageToA)}
+      </Text>
+    );
+  }
+
+  if (damageToB > 0) {
+    return (
+      <Text style={styles.turnFeedOutcome}>
+        <Text style={[styles.turnFeedOutcomeAction, { color: getMoveColor(leftMove) }]}>
+          {leftName} lands {formatMove(leftMove)}.
+        </Text>{" "}
+        <Text style={styles.turnFeedOutcomeName}>{rightName}</Text>{" "}
+        {renderTurnFeedDamage(damageToB)}
+      </Text>
+    );
+  }
+
+  if (leftMove === "DODGE" && rightMove === "DODGE") {
+    return <Text style={styles.turnFeedOutcomeDodge}>Both evade. No damage.</Text>;
+  }
+
+  if (isStrikeMove(leftMove) && rightMove === "DODGE") {
+    return <Text style={styles.turnFeedOutcomeDodge}>{rightName} dodges clean. No damage.</Text>;
+  }
+
+  if (isStrikeMove(rightMove) && leftMove === "DODGE") {
+    return <Text style={styles.turnFeedOutcomeDodge}>{leftName} dodges clean. No damage.</Text>;
+  }
+
+  if (isGuardMove(leftMove) && isGuardMove(rightMove)) {
+    return <Text style={styles.turnFeedOutcomeCounter}>Both defend. No damage.</Text>;
+  }
+
+  return <Text style={styles.turnFeedOutcomeMuted}>No contact. No damage.</Text>;
+}
+
 function SoundControls({
   commentaryEnabled,
   musicEnabled,
@@ -2593,8 +2712,6 @@ function RumbleNativeScreen() {
                                           const right = featuredFightersById.get(rightId) ?? featuredFightersById.get(rightId.toLowerCase());
                                           const leftName = left ? getFighterName(left) : resolveFighterDisplayName(leftId, pair.fighterAName);
                                           const rightName = right ? getFighterName(right) : resolveFighterDisplayName(rightId, pair.fighterBName);
-                                          const dmgToA = safeNumber(pair.damageToA, 0).toFixed(0);
-                                          const dmgToB = safeNumber(pair.damageToB, 0).toFixed(0);
                                           const leftHp = Math.max(0, safeNumber(left?.hp, 0));
                                           const rightHp = Math.max(0, safeNumber(right?.hp, 0));
                                           const leftMax = Math.max(1, safeNumber(left?.maxHp, 100));
@@ -2603,23 +2720,20 @@ function RumbleNativeScreen() {
                                           const rightHpPct = Math.max(0, Math.min(100, (rightHp / rightMax) * 100));
                                           const leftMove = String(pair.moveA ?? "").toUpperCase();
                                           const rightMove = String(pair.moveB ?? "").toUpperCase();
-                                          const leftTookDmg = safeNumber(pair.damageToA, 0);
-                                          const rightTookDmg = safeNumber(pair.damageToB, 0);
                                           return (
                                             <View key={`pair_${pairIdx}`} style={styles.turnFeedPairRow}>
-                                              <View style={styles.turnFeedMatchup}>
-                                                <View style={styles.turnFeedFighterCol}>
-                                                  <Text style={styles.turnFeedFighterName} numberOfLines={1}>{leftName}</Text>
-                                                  <Text style={[styles.turnFeedMoveTag, { color: getMoveColor(leftMove) }]}>{formatMove(leftMove)}</Text>
-                                                  {leftTookDmg > 0 ? <Text style={styles.turnFeedDmgReceived}>-{leftTookDmg.toFixed(0)}</Text> : null}
-                                                </View>
-                                                <Text style={styles.turnFeedMoveSep}>vs</Text>
-                                                <View style={styles.turnFeedFighterCol}>
-                                                  <Text style={styles.turnFeedFighterName} numberOfLines={1}>{rightName}</Text>
-                                                  <Text style={[styles.turnFeedMoveTag, { color: getMoveColor(rightMove) }]}>{formatMove(rightMove)}</Text>
-                                                  {rightTookDmg > 0 ? <Text style={styles.turnFeedDmgReceived}>-{rightTookDmg.toFixed(0)}</Text> : null}
-                                                </View>
-                                              </View>
+                                              <Text style={styles.turnFeedMatchupText}>
+                                                <Text style={styles.turnFeedOutcomeName}>{leftName}</Text>{" "}
+                                                <Text style={[styles.turnFeedMoveTag, { color: getMoveColor(leftMove) }]}>
+                                                  [{formatMove(leftMove)}]
+                                                </Text>
+                                                <Text style={styles.turnFeedMoveSep}> vs </Text>
+                                                <Text style={styles.turnFeedOutcomeName}>{rightName}</Text>{" "}
+                                                <Text style={[styles.turnFeedMoveTag, { color: getMoveColor(rightMove) }]}>
+                                                  [{formatMove(rightMove)}]
+                                                </Text>
+                                              </Text>
+                                              {renderTurnFeedOutcomeSummary(pair, leftName, rightName)}
                                               <View style={styles.turnFeedHpRow}>
                                                 <View style={styles.turnFeedHpTrack}>
                                                   <View
