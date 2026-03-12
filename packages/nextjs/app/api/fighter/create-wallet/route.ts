@@ -116,8 +116,9 @@ export async function POST(request: Request) {
         ...(airdropWarning ? [airdropWarning] : []),
       ],
       next_steps: {
-        register: "POST /api/fighter/register with { walletAddress, name, robotType, chassisDescription, fistsDescription, ... }",
-        queue: "POST /api/rumble/queue with { fighter_id, api_key, auto_requeue: true }",
+        register: "GET /api/mobile-auth/nonce, sign the registration challenge, then POST /api/fighter/register",
+        approval: "Wait for admin approval before trying to queue this fighter into live rumbles",
+        queue: "After approval, POST /api/rumble/queue with { fighter_id, api_key, auto_requeue: true }",
         docs: "GET /skill.md for full documentation",
       },
     });

@@ -176,9 +176,18 @@ export async function POST(request: Request) {
     // Full on-chain mode requires each queued fighter to have a valid Solana wallet.
     const { data: fighterRow } = await freshSupabase()
       .from("ucf_fighters")
-      .select("wallet_address")
+      .select("wallet_address, verified")
       .eq("id", fighterId)
       .maybeSingle();
+    if (!fighterRow?.verified) {
+      return NextResponse.json(
+        {
+          error: "Fighter is pending approval. Verified fighters only can join live rumbles.",
+          approval_required: true,
+        },
+        { status: 403 },
+      );
+    }
     const walletAddress = String((fighterRow as any)?.wallet_address ?? "").trim();
     if (!walletAddress) {
       return NextResponse.json(

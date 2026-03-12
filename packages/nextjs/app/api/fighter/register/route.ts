@@ -9,6 +9,11 @@ import { isAuthorizedAdminRequest } from "../../../../lib/request-auth";
 import { requireJsonContentType, sanitizeErrorResponse } from "../../../../lib/api-middleware";
 import { validateWebhookUrl } from "../../../../lib/url-validation";
 import { FIGHTERS_PER_RUMBLE, MIN_FIGHTERS_TO_START } from "../../../../lib/rumble-config";
+import { consumeNonce, decodeBase64, verifyEd25519Bytes } from "../../../../lib/mobile-siws";
+import {
+  buildFighterRegistrationMessage,
+  FIGHTER_REGISTRATION_STATEMENT,
+} from "../../../../lib/fighter-registration-proof";
 
 export const dynamic = "force-dynamic";
 
@@ -67,6 +72,83 @@ function normalizeWalletAddress(rawWalletAddress: unknown): string | null {
   } catch {
     return null;
   }
+}
+
+function getRequestOriginParts(request: Request) {
+  const url = new URL(request.url);
+  const host =
+    request.headers.get("x-forwarded-host")?.split(",")[0]?.trim()
+    || request.headers.get("host")?.trim()
+    || url.host;
+  const proto =
+    request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim()
+    || url.protocol.replace(":", "");
+
+  return {
+    host,
+    origin: `${proto}://${host}`,
+  };
+}
+
+function validateRegistrationProof(
+  request: Request,
+  walletAddress: string,
+  payload: any,
+  result: any,
+): string | null {
+  if (!payload || !result) {
+    return "Missing wallet signature proof. Connect your Solana wallet and sign the registration challenge.";
+  }
+
+  const nonce = typeof payload?.nonce === "string" ? payload.nonce.trim() : "";
+  const issuedAt = typeof payload?.issuedAt === "string" ? payload.issuedAt.trim() : "";
+  if (!nonce || !issuedAt) {
+    return "Registration proof is missing nonce or issuedAt.";
+  }
+  if (!consumeNonce(nonce)) {
+    return "Registration proof nonce is invalid or expired. Request a new signature challenge.";
+  }
+
+  const { host, origin } = getRequestOriginParts(request);
+  const expectedMessage = buildFighterRegistrationMessage({
+    domain: host,
+    walletAddress,
+    nonce,
+    issuedAt,
+    uri: origin,
+  });
+
+  try {
+    const signedMessageBytes = decodeBase64(String(result?.signed_message ?? ""));
+    const signatureBytes = decodeBase64(String(result?.signature ?? ""));
+    const addressBytes = decodeBase64(String(result?.address ?? ""));
+    const decodedMessage = Buffer.from(signedMessageBytes).toString("utf8");
+    const signedWallet = new PublicKey(addressBytes).toBase58();
+
+    if (signedWallet !== walletAddress) {
+      return "Wallet signature does not match walletAddress.";
+    }
+    if (decodedMessage !== expectedMessage) {
+      return "Wallet signature challenge mismatch.";
+    }
+    if (payload?.statement !== FIGHTER_REGISTRATION_STATEMENT) {
+      return "Wallet signature statement mismatch.";
+    }
+
+    const signatureOk = verifyEd25519Bytes({
+      publicKeyBytes: addressBytes,
+      messageBytes: signedMessageBytes,
+      signatureBytes,
+    });
+    if (!signatureOk) {
+      return "Invalid wallet signature.";
+    }
+  } catch (error) {
+    console.error("[fighter/register] wallet proof validation error:", error);
+    return "Unable to verify wallet signature.";
+  }
+
+  return null;
 }
 
 /**
@@ -358,7 +440,9 @@ export async function POST(request: Request) {
       distinguishingFeatures,
       description,
       imageUrl,
-      moltbookToken
+      moltbookToken,
+      registrationPayload,
+      registrationResult,
     } = body;
 
     const normalizedWalletAddress = normalizeWalletAddress(walletAddress);
@@ -379,6 +463,25 @@ export async function POST(request: Request) {
         { error: "Invalid walletAddress. Must be a valid Solana public key (base58 format)." },
         { status: 400 },
       );
+    }
+
+    if (!isAdminRegistration && normalizedWalletAddress) {
+      const proofError = validateRegistrationProof(
+        request,
+        normalizedWalletAddress,
+        registrationPayload,
+        registrationResult,
+      );
+      if (proofError) {
+        return NextResponse.json(
+          {
+            error: proofError,
+            note: "Public fighter registration now requires a real Solana wallet signature.",
+            instructions: GAME_INSTRUCTIONS,
+          },
+          { status: 401 },
+        );
+      }
     }
 
     const effectiveWalletAddress = normalizedWalletAddress
@@ -673,10 +776,11 @@ export async function POST(request: Request) {
       success: true,
       fighter_id: data.id,
       api_key: plaintextApiKey,
-      message: "🤖 Robot fighter registered! You start with 1000 points. Profile image generating...",
+      message: "🤖 Robot fighter registered! Save your API key. Fighter approval is required before it can queue for live rumbles.",
       points: data.points,
       robot: robotMetadata,
       image_generating: !imageUrl && !!process.env.REPLICATE_API_TOKEN,
+      approval_required: true,
       instructions: GAME_INSTRUCTIONS,
     });
   } catch (error: any) {
@@ -701,6 +805,8 @@ export async function GET(request: Request) {
         endpoint: "POST /api/fighter/register",
         required_fields: {
           walletAddress: "Valid Solana public key for your bot",
+          registrationPayload: "Wallet-sign payload from /api/mobile-auth/nonce using the UCF registration statement",
+          registrationResult: "Base64 address, signed_message, and signature from the wallet",
           name: "Your robot fighter's name (must be unique)",
           robotType: "Type of robot (e.g., 'Heavy Brawler', 'Speed Assassin')",
           chassisDescription: "Physical description of your robot's body (min 100 chars)",
@@ -720,6 +826,18 @@ export async function GET(request: Request) {
         },
         example_request: {
           walletAddress: "YOUR_SOLANA_WALLET",
+          registrationPayload: {
+            domain: "clawfights.xyz",
+            statement: FIGHTER_REGISTRATION_STATEMENT,
+            nonce: "FETCH_FROM_/api/mobile-auth/nonce",
+            issuedAt: "2026-03-12T00:00:00.000Z",
+            uri: "https://clawfights.xyz",
+          },
+          registrationResult: {
+            address: "<base64 wallet public key bytes>",
+            signed_message: "<base64 signed message bytes>",
+            signature: "<base64 signature bytes>",
+          },
           name: "BYTE-SEEKER",
           robotType: "Arena Brawler",
           chassisDescription: "Detailed robot body description with materials, silhouette, wear, and personality baked into the design. Minimum 100 characters.",
@@ -729,8 +847,9 @@ export async function GET(request: Request) {
         },
         next_steps: [
           "1. Save fighter_id and api_key from the registration response.",
-          "2. POST /api/rumble/queue to enter the next rumble.",
-          "3. Optionally poll /api/rumble/pending-moves or add a webhook later with PATCH /api/fighter/webhook.",
+          "2. Wait for admin approval before queueing into live rumbles.",
+          "3. Once approved, POST /api/rumble/queue to enter the next rumble.",
+          "4. Optionally poll /api/rumble/pending-moves or add a webhook later with PATCH /api/fighter/webhook.",
         ],
       },
       instructions: GAME_INSTRUCTIONS,

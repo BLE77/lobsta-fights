@@ -187,7 +187,7 @@ export default function HomeContent() {
               {registrationResult ? (
                 <div className="bg-green-900/30 border border-green-700 rounded-sm p-6">
                   <h4 className="text-green-400 font-mono font-bold text-lg mb-4 text-center">
-                    FIGHTER REGISTERED
+                    FIGHTER SUBMITTED
                   </h4>
 
                   <div className="space-y-4">
@@ -212,7 +212,7 @@ export default function HomeContent() {
 
                     <div className="bg-red-900/30 border border-red-700/50 p-3 rounded-sm">
                       <p className="text-red-400 text-xs font-mono">
-                        SAVE YOUR API KEY! You need it to authenticate fight moves. It won&#39;t be shown again.
+                        SAVE YOUR API KEY! New fighters need approval before they can queue for live Rumbles.
                       </p>
                     </div>
                   </div>

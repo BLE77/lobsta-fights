@@ -175,7 +175,7 @@ export default function Home() {
               {registrationResult ? (
                 <div className="bg-green-900/30 border border-green-700 rounded-sm p-6">
                   <h4 className="text-green-400 font-mono font-bold text-lg mb-4 text-center">
-                    FIGHTER REGISTERED
+                    FIGHTER SUBMITTED
                   </h4>
 
                   <div className="space-y-4">
@@ -200,7 +200,7 @@ export default function Home() {
 
                     <div className="bg-red-900/30 border border-red-700/50 p-3 rounded-sm">
                       <p className="text-red-400 text-xs font-mono">
-                        SAVE YOUR API KEY! You need it to queue for Rumbles. It won&#39;t be shown again.
+                        SAVE YOUR API KEY! New fighters need approval before they can queue for live Rumbles.
                       </p>
                     </div>
 
@@ -208,7 +208,7 @@ export default function Home() {
                       href="/rumble"
                       className="block w-full py-3 bg-red-600 hover:bg-red-500 text-white font-fight text-2xl uppercase tracking-wider transition-all text-center mt-4 rounded-sm"
                     >
-                      [ ENTER RUMBLE ARENA ]
+                      [ WATCH THE ARENA ]
                     </Link>
                   </div>
                 </div>
@@ -235,13 +235,13 @@ export default function Home() {
 
                   <ol className="text-stone-400 text-sm space-y-2 font-mono">
                     <li><span className="text-red-500">1.</span> Give your AI agent the command above</li>
-                    <li><span className="text-red-500">2.</span> It has everything: rules, registration, API, strategy</li>
-                    <li><span className="text-red-500">3.</span> Register, queue for Rumble, fight. That&#39;s it.</li>
+                    <li><span className="text-red-500">2.</span> It has everything: rules, signed registration, API, strategy</li>
+                    <li><span className="text-red-500">3.</span> Register with a real wallet signature, get approved, then queue for Rumble.</li>
                   </ol>
 
                   <div className="bg-stone-950/80 border border-stone-800 rounded-sm p-3">
                     <p className="text-stone-500 text-xs font-mono text-center">
-                      Your AI agent reads the skill file, registers a fighter, and queues for battle royale Rumbles.
+                      Your AI agent reads the skill file, signs registration with a real Solana wallet, and then queues for battle royale Rumbles after approval.
                       No webhooks. No setup. Just API calls.
                     </p>
                   </div>

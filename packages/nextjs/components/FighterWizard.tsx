@@ -1,6 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import { useWallet } from "@solana/wallet-adapter-react";
+import { useWalletModal } from "@solana/wallet-adapter-react-ui";
+import { buildFighterRegistrationMessage, FIGHTER_REGISTRATION_STATEMENT } from "~~/lib/fighter-registration-proof";
 
 type WizardStep = 1 | 2 | 3;
 type Archetype = "heavy_brawler" | "speed_demon" | "tank" | "berserker" | "tactical" | "balanced";
@@ -51,7 +54,15 @@ interface Props {
   onRegistered: (result: RegistrationResult) => void;
 }
 
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
 export default function FighterWizard({ onRegistered }: Props) {
+  const { publicKey, connected, signMessage } = useWallet();
+  const { setVisible: setWalletModalVisible } = useWalletModal();
   const [step, setStep] = useState<WizardStep>(1);
   const [archetype, setArchetype] = useState<Archetype | null>(null);
   const [robotName, setRobotName] = useState("");
@@ -70,6 +81,7 @@ export default function FighterWizard({ onRegistered }: Props) {
   const [imageGenStatus, setImageGenStatus] = useState<"idle" | "generating" | "complete" | "error">("idle");
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [registering, setRegistering] = useState(false);
+  const [registrationError, setRegistrationError] = useState("");
 
   const selectArchetype = (a: Archetype) => {
     setArchetype(a);
@@ -135,14 +147,55 @@ export default function FighterWizard({ onRegistered }: Props) {
   };
 
   const register = async () => {
+    setRegistrationError("");
+    if (!connected || !publicKey) {
+      setRegistrationError("Connect a Solana wallet before registering.");
+      return;
+    }
+    if (!signMessage) {
+      setRegistrationError("This wallet does not support message signing.");
+      return;
+    }
+
     setRegistering(true);
     try {
       const arc = ARCHETYPES.find((x) => x.id === archetype);
+      const nonceRes = await fetch("/api/mobile-auth/nonce");
+      const nonceData = await nonceRes.json();
+      if (!nonceRes.ok || !nonceData?.nonce) {
+        throw new Error(nonceData?.error || "Failed to fetch wallet signature challenge");
+      }
+
+      const issuedAt = new Date().toISOString();
+      const registrationPayload = {
+        domain: window.location.host,
+        statement: FIGHTER_REGISTRATION_STATEMENT,
+        nonce: String(nonceData.nonce),
+        issuedAt,
+        uri: window.location.origin,
+      };
+      const message = buildFighterRegistrationMessage({
+        domain: registrationPayload.domain,
+        walletAddress: publicKey.toBase58(),
+        nonce: registrationPayload.nonce,
+        issuedAt: registrationPayload.issuedAt,
+        uri: registrationPayload.uri,
+      });
+      const encodedMessage = new TextEncoder().encode(message);
+      const signature = await signMessage(encodedMessage);
+      const registrationResult = {
+        address: bytesToBase64(publicKey.toBytes()),
+        signed_message: bytesToBase64(encodedMessage),
+        signature: bytesToBase64(signature),
+      };
+
       const res = await fetch("/api/fighter/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          walletAddress: `wizard-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          walletAddress: publicKey.toBase58(),
+          registrationPayload,
+          registrationResult,
           name: robotName.toUpperCase(),
           webhookUrl: apiEndpoint,
           robotType: arc?.name || "Balanced Fighter",
@@ -160,10 +213,10 @@ export default function FighterWizard({ onRegistered }: Props) {
       if (res.ok) {
         onRegistered({ fighter_id: data.fighter_id, api_key: data.api_key, name: robotName });
       } else {
-        alert(`Registration failed: ${data.error}`);
+        setRegistrationError(data.error || "Registration failed");
       }
     } catch (e: any) {
-      alert(`Error: ${e.message}`);
+      setRegistrationError(e.message || "Registration failed");
     } finally {
       setRegistering(false);
     }
@@ -492,6 +545,33 @@ export default function FighterWizard({ onRegistered }: Props) {
 
           {/* API Endpoint */}
           <div className="border-t border-stone-800 pt-4">
+            <label className="block text-stone-500 text-xs font-mono uppercase mb-2">Wallet Signature *</label>
+            <div className="bg-stone-950/80 border border-stone-700 rounded-sm p-3">
+              {connected && publicKey ? (
+                <>
+                  <p className="text-green-400 text-sm font-mono break-all">{publicKey.toBase58()}</p>
+                  <p className="text-stone-500 text-[10px] mt-1 font-mono">
+                    This wallet will sign the fighter registration challenge.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <button
+                    onClick={() => setWalletModalVisible(true)}
+                    className="w-full py-3 bg-stone-700 hover:bg-stone-600 text-stone-200 font-mono uppercase tracking-wider transition-all"
+                  >
+                    [ CONNECT SOLANA WALLET ]
+                  </button>
+                  <p className="text-stone-600 text-[10px] mt-2 font-mono text-center">
+                    Public fighter registration now requires a real wallet signature.
+                  </p>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* API Endpoint */}
+          <div className="border-t border-stone-800 pt-4">
             <label className="block text-stone-500 text-xs font-mono uppercase mb-2">Agent API Endpoint *</label>
             <input
               type="url"
@@ -520,6 +600,12 @@ export default function FighterWizard({ onRegistered }: Props) {
               {responseTime && <p className="text-green-500 text-xs mt-1 font-mono">Response time: {responseTime}ms</p>}
             </div>
           )}
+
+          {registrationError ? (
+            <div className="p-3 rounded-sm border border-red-700 bg-red-950/40">
+              <span className="text-red-400 text-sm font-mono font-bold">[FAIL] {registrationError}</span>
+            </div>
+          ) : null}
 
           <button
             onClick={verifyEndpoint}
@@ -554,9 +640,9 @@ export default function FighterWizard({ onRegistered }: Props) {
             </button>
             <button
               onClick={register}
-              disabled={registering || verificationStatus !== "verified"}
+              disabled={registering || verificationStatus !== "verified" || !connected || !publicKey || !signMessage}
               className={`flex-1 py-3 font-bold font-mono uppercase tracking-wider transition-all ${
-                registering || verificationStatus !== "verified"
+                registering || verificationStatus !== "verified" || !connected || !publicKey || !signMessage
                   ? "bg-stone-800 text-stone-600 cursor-not-allowed"
                   : "bg-red-600 hover:bg-red-500 text-white"
               }`}
@@ -566,9 +652,11 @@ export default function FighterWizard({ onRegistered }: Props) {
           </div>
 
           <p className="text-stone-600 text-xs font-mono text-center">
-            {verificationStatus !== "verified"
+            {!connected || !publicKey
+              ? "Connect a wallet to sign the registration challenge"
+              : verificationStatus !== "verified"
               ? "Verify your endpoint first"
-              : "Free to register - start with 1,000 points!"}
+              : "Registration submits your fighter for approval before live queue access."}
           </p>
         </div>
       )}
