@@ -2551,9 +2551,9 @@ export async function startCombat(
       systemProgram: SystemProgram.programId,
     });
 
-  const sig = await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
-  console.log(`[ONCHAIN-START] startCombat confirmed for rumble ${rumbleId}: ${sig}`);
-  return sig;
+  const { signature } = await sendAdminTxWithConfirmation(method, admin, connection ?? getConnection());
+  console.log(`[ONCHAIN-START] startCombat confirmed for rumble ${rumbleId}: ${signature}`);
+  return signature;
 }
 
 /**
@@ -2725,9 +2725,9 @@ export async function openTurn(
       combatState: combatStatePda,
     });
 
-  const sig = await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
-  console.log(`[ONCHAIN-OPEN-TURN] openTurn confirmed for rumble ${rumbleId}: ${sig}`);
-  return sig;
+  const { signature } = await sendAdminTxWithConfirmation(method, admin, connection ?? getConnection());
+  console.log(`[ONCHAIN-OPEN-TURN] openTurn confirmed for rumble ${rumbleId}: ${signature}`);
+  return signature;
 }
 
 /**
@@ -2771,9 +2771,9 @@ export async function resolveTurnOnChain(
       ComputeBudgetProgram.setComputeUnitLimit({ units: HEAVY_ADMIN_TX_COMPUTE_LIMIT }),
     ]);
 
-  const sig = await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
-  console.log(`[ONCHAIN-RESOLVE] resolveTurn confirmed for rumble ${rumbleId}: ${sig}`);
-  return sig;
+  const { signature } = await sendAdminTxWithConfirmation(method, admin, connection ?? getConnection());
+  console.log(`[ONCHAIN-RESOLVE] resolveTurn confirmed for rumble ${rumbleId}: ${signature}`);
+  return signature;
 }
 
 /**
@@ -2802,9 +2802,9 @@ export async function advanceTurnOnChain(
       combatState: combatStatePda,
     });
 
-  const sig = await sendAdminTxFireAndForget(method, admin, connection ?? getConnection());
-  console.log(`[ONCHAIN-ADVANCE] advanceTurn confirmed for rumble ${rumbleId}: ${sig}`);
-  return sig;
+  const { signature } = await sendAdminTxWithConfirmation(method, admin, connection ?? getConnection());
+  console.log(`[ONCHAIN-ADVANCE] advanceTurn confirmed for rumble ${rumbleId}: ${signature}`);
+  return signature;
 }
 
 /**
@@ -2846,9 +2846,9 @@ export async function finalizeRumbleOnChain(
       ComputeBudgetProgram.setComputeUnitLimit({ units: HEAVY_ADMIN_TX_COMPUTE_LIMIT }),
     ]);
 
-  const sig = await sendAdminTxFireAndForget(method, admin, conn);
-  console.log(`[ONCHAIN-FINALIZE] finalizeRumble confirmed for rumble ${rumbleId}: ${sig}`);
-  return sig;
+  const { signature } = await sendAdminTxWithConfirmation(method, admin, conn);
+  console.log(`[ONCHAIN-FINALIZE] finalizeRumble confirmed for rumble ${rumbleId}: ${signature}`);
+  return signature;
 }
 
 /**
