@@ -190,8 +190,8 @@ interface TransitionLastMatchSnapshot {
   fighterNames: Record<string, string>;
 }
 
-function deriveWinnerFromSlot(slot: SlotData): CompactLastMatchWinner | null {
-  const placed = slot.fighters
+function deriveWinnerFromFighters(fighters: SlotFighter[]): CompactLastMatchWinner | null {
+  const placed = fighters
     .filter((fighter) => fighter.placement > 0)
     .sort((a, b) => a.placement - b.placement);
   const winner = placed[0];
@@ -205,7 +205,7 @@ function deriveWinnerFromSlot(slot: SlotData): CompactLastMatchWinner | null {
     };
   }
 
-  const survivors = slot.fighters.filter(
+  const survivors = fighters.filter(
     (fighter) => fighter.eliminatedOnTurn == null && fighter.hp > 0,
   );
   if (survivors.length === 1) {
@@ -220,6 +220,10 @@ function deriveWinnerFromSlot(slot: SlotData): CompactLastMatchWinner | null {
   }
 
   return null;
+}
+
+function deriveWinnerFromSlot(slot: SlotData): CompactLastMatchWinner | null {
+  return deriveWinnerFromFighters(slot.fighters);
 }
 
 export default function RumbleSlot({
@@ -271,13 +275,15 @@ export default function RumbleSlot({
   const [heldTurns, setHeldTurns] = useState<SlotTurn[]>([]);
   const [heldFighters, setHeldFighters] = useState<SlotFighter[]>([]);
   const [heldCurrentTurn, setHeldCurrentTurn] = useState(0);
-  const heldSnapshotRef = useRef<{ rumbleId: string; turnCount: number } | null>(null);
+  const heldSnapshotRef = useRef<{ rumbleId: string; turnCount: number; finalTurnNumber: number } | null>(null);
   const prevStateRef = useRef<string>(slot.state);
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previousSlotRef = useRef<SlotData>(slot);
   const [transitionLastMatch, setTransitionLastMatch] = useState<TransitionLastMatchSnapshot | null>(null);
 
   useEffect(() => {
+    const latestTurnNumber = slot.turns.length > 0 ? slot.turns[slot.turns.length - 1].turnNumber : 0;
+    const heldFinalTurnNumber = heldSnapshotRef.current?.finalTurnNumber ?? 0;
     const shouldCaptureFinalTurn =
       slot.state === "payout" &&
       slot.turns.length > 0 &&
@@ -285,7 +291,7 @@ export default function RumbleSlot({
         prevStateRef.current === "combat" ||
         prevStateRef.current === "betting" ||
         heldSnapshotRef.current?.rumbleId !== slot.rumbleId ||
-        (heldSnapshotRef.current?.turnCount ?? 0) < slot.turns.length
+        heldFinalTurnNumber < latestTurnNumber
       );
 
     if (shouldCaptureFinalTurn) {
@@ -294,7 +300,11 @@ export default function RumbleSlot({
       setHeldTurns(slot.turns);
       setHeldFighters(slot.fighters);
       setHeldCurrentTurn(slot.currentTurn);
-      heldSnapshotRef.current = { rumbleId: slot.rumbleId, turnCount: slot.turns.length };
+      heldSnapshotRef.current = {
+        rumbleId: slot.rumbleId,
+        turnCount: slot.turns.length,
+        finalTurnNumber: latestTurnNumber,
+      };
       setHoldingFinalTurn(true);
       holdingFinalTurnRef.current = true;
       if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
@@ -554,6 +564,7 @@ export default function RumbleSlot({
   const fallbackLastMatchTurn = lastCompletedResult?.lastTurn ?? transitionLastMatch?.lastTurn ?? null;
   const fallbackLastMatchNames =
     lastCompletedResult?.fighterNames ?? transitionLastMatch?.fighterNames ?? slot.fighterNames;
+  const heldFinalWinner = deriveWinnerFromFighters(heldFighters) ?? payoutWinner ?? fallbackLastMatchWinner;
 
   const renderCompactLastMatch = ({
     title,
@@ -965,6 +976,32 @@ export default function RumbleSlot({
         {/* PAYOUT state — hold final turn visible before showing results */}
         {effectiveState === "payout" && holdingFinalTurn && heldTurns.length > 0 && (
           <div className="animate-fade-in-up space-y-3">
+            {heldFinalWinner && (
+              <div className="border border-amber-500/40 bg-gradient-to-r from-amber-950/35 via-stone-950/60 to-red-950/35 rounded-sm p-3 shadow-[0_0_40px_rgba(245,158,11,0.18)]">
+                <div className="flex items-center gap-3">
+                  {heldFinalWinner.imageUrl ? (
+                    <img
+                      src={heldFinalWinner.imageUrl}
+                      alt={heldFinalWinner.fighterName}
+                      className="w-12 h-12 rounded-sm border border-amber-500/60 object-cover flex-shrink-0"
+                    />
+                  ) : (
+                    <div className="w-12 h-12 rounded-sm bg-stone-800 border border-amber-500/60 flex items-center justify-center flex-shrink-0">
+                      <span className="text-amber-400 font-mono text-[9px]">WIN</span>
+                    </div>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="font-mono text-[10px] uppercase tracking-[0.24em] text-amber-400">Winner Locked</p>
+                    <p className="font-fight text-2xl text-amber-300 truncate animate-pulse">
+                      {heldFinalWinner.fighterName}
+                    </p>
+                    <p className="font-mono text-[10px] text-stone-400 uppercase">
+                      Final survivor // HP {heldFinalWinner.hp} // DMG {heldFinalWinner.damageDealt}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
             {/* Final combat matchups */}
             {(() => {
               const finalTurn = heldTurns[heldTurns.length - 1];
