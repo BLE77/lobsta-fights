@@ -1652,6 +1652,101 @@ export async function GET(request: Request) {
               : runtimeHealthLocal.slotReports,
         }
       : runtimeHealthLocal;
+    const runtimeSlotReports = Array.isArray(runtimeHealth.slotReports) ? runtimeHealth.slotReports : [];
+    const runtimeSlotReportsByIndex = new Map<number, any>();
+    for (const report of runtimeSlotReports) {
+      const slotIndex = Number(report?.slotIndex);
+      if (!Number.isInteger(slotIndex)) continue;
+      runtimeSlotReportsByIndex.set(slotIndex, report);
+    }
+    const freshPersistedById = new Map(
+      freshPersisted.map(row => [row.id, row] as const),
+    );
+    slots = slots.map((slot) => {
+      const report = runtimeSlotReportsByIndex.get(slot.slotIndex);
+      if (!report) return slot;
+
+      const reportedRumbleId =
+        typeof report.rumbleId === "string" && report.rumbleId.trim().length > 0
+          ? report.rumbleId.trim()
+          : null;
+      const reportedState =
+        report.state === "betting" || report.state === "combat" || report.state === "payout"
+          ? report.state
+          : null;
+      if (!reportedRumbleId || !reportedState) return slot;
+
+      const runtimeAhead =
+        slot.rumbleId !== reportedRumbleId ||
+        slot.state === "idle" ||
+        (slot.state === "betting" && reportedState === "combat");
+      if (!runtimeAhead) return slot;
+
+      const persisted = freshPersistedById.get(reportedRumbleId);
+      if (!persisted) {
+        return {
+          ...slot,
+          rumbleId: reportedRumbleId,
+          state: reportedState,
+          currentTurn:
+            typeof report.turnCount === "number" ? Math.max(slot.currentTurn ?? 0, report.turnCount) : slot.currentTurn,
+          remainingFighters:
+            typeof report.remainingFighters === "number" ? report.remainingFighters : slot.remainingFighters,
+        };
+      }
+
+      const fighterIds = extractRumbleFighterIds(persisted.fighters);
+      const fighterNames: Record<string, string> = {};
+      for (const fighterId of fighterIds) {
+        fighterNames[fighterId] = fighterName(lookup, fighterId);
+      }
+      const turns = Array.isArray(persisted.turn_log)
+        ? (persisted.turn_log as Array<any>).map((turn: any) => ({
+            turnNumber: turn.turnNumber ?? 0,
+            pairings: (turn.pairings ?? []).map((pairing: any) => ({
+              fighterA: pairing.fighterA ?? "",
+              fighterB: pairing.fighterB ?? "",
+              fighterAName: fighterName(lookup, pairing.fighterA ?? ""),
+              fighterBName: fighterName(lookup, pairing.fighterB ?? ""),
+              moveA: pairing.moveA ?? "",
+              moveB: pairing.moveB ?? "",
+              damageToA: pairing.damageToA ?? 0,
+              damageToB: pairing.damageToB ?? 0,
+            })),
+            eliminations: turn.eliminations ?? [],
+            bye: turn.bye,
+          }))
+        : slot.turns;
+
+      return {
+        ...slot,
+        rumbleId: persisted.id,
+        rumbleNumber: (persisted as any).rumble_number ?? slot.rumbleNumber ?? null,
+        state: reportedState,
+        fighters: fighterIds.map((fighterId) => ({
+          id: fighterId,
+          name: fighterName(lookup, fighterId),
+          hp: 100,
+          maxHp: 100,
+          imageUrl: fighterImage(lookup, fighterId),
+          robotMeta: fighterRobotMeta(lookup, fighterId),
+          meter: 0,
+          totalDamageDealt: 0,
+          totalDamageTaken: 0,
+          eliminatedOnTurn: null,
+          placement: 0,
+        })),
+        fighterNames,
+        currentTurn:
+          typeof report.turnCount === "number"
+            ? Math.max(slot.currentTurn ?? 0, report.turnCount, turns.length)
+            : slot.currentTurn,
+        turns,
+        remainingFighters:
+          typeof report.remainingFighters === "number" ? report.remainingFighters : slot.remainingFighters,
+        payout: (persisted as any).payout_result ?? slot.payout,
+      };
+    });
     const systemWarnings: string[] = [];
     if (workerRuntimeFreshMs == null) {
       systemWarnings.push("Worker runtime heartbeat unavailable.");
