@@ -3955,21 +3955,31 @@ export class RumbleOrchestrator {
       state.openTurnAttemptCount = 0;
     }
 
+    const preResolvedAliveFighterIds =
+      combat.turnResolved && combat.currentTurn > state.lastOnchainTurnResolved
+        ? this.snapshotAliveFighterIdsForResolvedTurn(state)
+        : undefined;
     const sync = this.syncLocalFightersFromOnchain(slot, state, combat);
     if (combat.turnResolved && combat.currentTurn > state.lastOnchainTurnResolved) {
       // Build pairings from on-chain data: derive who fought whom, look up
       // moves from turnDecisions, and compute per-fighter damage deltas.
       const turnPairings: RumblePairing[] = [];
       const turnNum = combat.currentTurn;
-      const pairs = this.deriveOnchainPairings(slot, state, combat, rumbleIdNum);
+      const pairs = this.deriveOnchainPairings(
+        slot,
+        state,
+        combat,
+        rumbleIdNum,
+        preResolvedAliveFighterIds,
+      );
       const decisions = state.turnDecisions.get(turnNum);
       let bye: string | undefined;
 
       // Find bye fighter (odd one out)
       const pairedFighters = new Set(pairs.flat());
-      for (const f of state.fighters) {
-        if (f.hp > 0 && !pairedFighters.has(f.id)) {
-          bye = f.id;
+      for (const fighterId of preResolvedAliveFighterIds ?? []) {
+        if (!pairedFighters.has(fighterId)) {
+          bye = fighterId;
           break;
         }
       }
@@ -4175,17 +4185,24 @@ export class RumbleOrchestrator {
       // Without this, the final killing-blow turn is never saved to state.turns
       // because the initial read at the top of this function had turnResolved=false.
       if (combat.turnResolved && combat.currentTurn > state.lastOnchainTurnResolved) {
+        const preResolvedAliveFighterIdsPost = this.snapshotAliveFighterIdsForResolvedTurn(state);
         const syncAfterResolve = this.syncLocalFightersFromOnchain(slot, state, combat);
         const turnPairingsPost: RumblePairing[] = [];
         const turnNumPost = combat.currentTurn;
-        const pairsPost = this.deriveOnchainPairings(slot, state, combat, rumbleIdNum);
+        const pairsPost = this.deriveOnchainPairings(
+          slot,
+          state,
+          combat,
+          rumbleIdNum,
+          preResolvedAliveFighterIdsPost,
+        );
         const decisionsPost = state.turnDecisions.get(turnNumPost);
         let byePost: string | undefined;
 
         const pairedFightersPost = new Set(pairsPost.flat());
-        for (const f of state.fighters) {
-          if (f.hp > 0 && !pairedFightersPost.has(f.id)) {
-            byePost = f.id;
+        for (const fighterId of preResolvedAliveFighterIdsPost) {
+          if (!pairedFightersPost.has(fighterId)) {
+            byePost = fighterId;
             break;
           }
         }
@@ -4619,6 +4636,7 @@ export class RumbleOrchestrator {
     state: SlotCombatState,
     combat: RumbleCombatAccountState,
     rumbleIdNum: number,
+    aliveFighterIds?: readonly string[],
   ): Array<[string, string]> {
     const fighterCount = Math.min(slot.fighters.length, combat.fighterCount);
     const turn = combat.currentTurn;
@@ -4632,10 +4650,17 @@ export class RumbleOrchestrator {
     const vrfSeedBuf = hasVrfSeed ? Buffer.from(combat.vrfSeed) : null;
 
     const aliveIndices: number[] = [];
-    for (let i = 0; i < fighterCount; i++) {
-      const hp = combat.hp[i] ?? 0;
-      const eliminated = (combat.eliminationRank[i] ?? 0) > 0;
-      if (hp > 0 && !eliminated) aliveIndices.push(i);
+    if (aliveFighterIds !== undefined) {
+      const allowed = new Set(aliveFighterIds);
+      for (let i = 0; i < fighterCount; i++) {
+        if (allowed.has(slot.fighters[i])) aliveIndices.push(i);
+      }
+    } else {
+      for (let i = 0; i < fighterCount; i++) {
+        const hp = combat.hp[i] ?? 0;
+        const eliminated = (combat.eliminationRank[i] ?? 0) > 0;
+        if (hp > 0 && !eliminated) aliveIndices.push(i);
+      }
     }
 
     aliveIndices.sort((a, b) => {
@@ -4664,6 +4689,14 @@ export class RumbleOrchestrator {
       pairs.push([slot.fighters[aliveIndices[i]], slot.fighters[aliveIndices[i + 1]]]);
     }
     return pairs;
+  }
+
+  private snapshotAliveFighterIdsForResolvedTurn(
+    state: SlotCombatState,
+  ): string[] {
+    return state.fighters
+      .filter((fighter) => fighter.hp > 0 && fighter.eliminatedOnTurn === null)
+      .map((fighter) => fighter.id);
   }
 
   private syncLocalFightersFromOnchain(
