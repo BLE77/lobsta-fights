@@ -1,6 +1,13 @@
 import "server-only";
 
-import { PublicKey } from "@solana/web3.js";
+import {
+  getMetadataPointerState,
+  getMint,
+  getTokenGroupMemberState,
+  getTokenMetadata,
+  TOKEN_2022_PROGRAM_ID,
+} from "@solana/spl-token";
+import { Connection, PublicKey } from "@solana/web3.js";
 import { getAdminConfig, setAdminConfig } from "~~/lib/rumble-persistence";
 
 const WALLET_ALLOWLIST_ADMIN_KEY = "wallet_allowlist_v1";
@@ -37,6 +44,7 @@ interface UsedSeekerAssetRecord {
 
 interface SeekerGenesisConfig {
   collectionMint: string | null;
+  metadataAddress: string | null;
   verifiedCreator: string | null;
   updateAuthority: string | null;
 }
@@ -61,14 +69,23 @@ export function normalizeTrustedWalletAddress(raw: unknown): string | null {
 
 function readSeekerGenesisConfig(): SeekerGenesisConfig {
   return {
-    collectionMint: normalizeTrustedWalletAddress(process.env.SEEKER_GENESIS_COLLECTION_MINT),
+    collectionMint: normalizeTrustedWalletAddress(
+      process.env.SEEKER_GENESIS_GROUP_ADDRESS
+      || process.env.SEEKER_GENESIS_COLLECTION_MINT,
+    ),
+    metadataAddress: normalizeTrustedWalletAddress(process.env.SEEKER_GENESIS_METADATA_ADDRESS),
     verifiedCreator: normalizeTrustedWalletAddress(process.env.SEEKER_GENESIS_VERIFIED_CREATOR),
     updateAuthority: normalizeTrustedWalletAddress(process.env.SEEKER_GENESIS_UPDATE_AUTHORITY),
   };
 }
 
 function hasSeekerGenesisConfig(config: SeekerGenesisConfig): boolean {
-  return Boolean(config.collectionMint || config.verifiedCreator || config.updateAuthority);
+  return Boolean(
+    config.collectionMint
+    || config.metadataAddress
+    || config.verifiedCreator
+    || config.updateAuthority,
+  );
 }
 
 function getHeliusMainnetRpcUrl(): string | null {
@@ -194,6 +211,127 @@ export function seekerAssetMatchesConfig(
   return false;
 }
 
+function positiveRawTokenAmount(raw: unknown): boolean {
+  try {
+    return BigInt(typeof raw === "string" ? raw : String(raw ?? "0")) > 0n;
+  } catch {
+    return false;
+  }
+}
+
+async function listOwnedToken2022Mints(walletAddress: string, rpcUrl: string): Promise<string[]> {
+  const ownedMints = new Set<string>();
+  let paginationKey: string | null = null;
+
+  do {
+    const response: Response = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "seeker-token-accounts",
+        method: "getTokenAccountsByOwnerV2",
+        params: [
+          walletAddress,
+          { programId: TOKEN_2022_PROGRAM_ID.toBase58() },
+          {
+            encoding: "jsonParsed",
+            limit: 1000,
+            ...(paginationKey ? { paginationKey } : {}),
+          },
+        ],
+      }),
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(`Helius getTokenAccountsByOwnerV2 failed (${response.status}): ${text}`);
+    }
+
+    const payload: any = await response.json();
+    const items = Array.isArray(payload?.result?.value) ? payload.result.value : [];
+    for (const item of items) {
+      const mint = normalizeTrustedWalletAddress(item?.account?.data?.parsed?.info?.mint);
+      const amount = item?.account?.data?.parsed?.info?.tokenAmount?.amount;
+      if (!mint || !positiveRawTokenAmount(amount)) continue;
+      ownedMints.add(mint);
+    }
+
+    paginationKey =
+      typeof payload?.result?.paginationKey === "string" && payload.result.paginationKey.trim()
+        ? payload.result.paginationKey.trim()
+        : null;
+  } while (paginationKey);
+
+  return [...ownedMints];
+}
+
+async function fetchHeliusAssetByMint(rpcUrl: string, mintAddress: string): Promise<any | null> {
+  const response: Response = await fetch(rpcUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: "seeker-asset",
+      method: "getAsset",
+      params: { id: mintAddress },
+    }),
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Helius getAsset failed (${response.status}): ${text}`);
+  }
+
+  const payload: any = await response.json();
+  return payload?.result ?? null;
+}
+
+async function mintMatchesSeekerGenesis(
+  connection: Connection,
+  mintAddress: string,
+  config: SeekerGenesisConfig,
+): Promise<boolean> {
+  const mintKey = new PublicKey(mintAddress);
+  const mintInfo = await getMint(connection, mintKey, "confirmed", TOKEN_2022_PROGRAM_ID);
+  const metadataPointerState = getMetadataPointerState(mintInfo);
+  const groupMemberState = getTokenGroupMemberState(mintInfo);
+
+  if (
+    config.metadataAddress
+    && metadataPointerState?.metadataAddress?.toBase58() === config.metadataAddress
+  ) {
+    return true;
+  }
+
+  if (
+    config.collectionMint
+    && groupMemberState?.group?.toBase58() === config.collectionMint
+  ) {
+    return true;
+  }
+
+  if (config.updateAuthority) {
+    const tokenMetadata = await getTokenMetadata(
+      connection,
+      mintKey,
+      "confirmed",
+      TOKEN_2022_PROGRAM_ID,
+    ).catch(() => null);
+    const updateAuthority = normalizeTrustedWalletAddress(
+      tokenMetadata?.updateAuthority?.toBase58?.()
+      ?? tokenMetadata?.updateAuthority,
+    );
+    if (updateAuthority === config.updateAuthority) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 export async function listWalletAllowlistEntries(): Promise<WalletAllowlistEntry[]> {
   const envEntries = [...getEnvAllowlistSet()].map<WalletAllowlistEntry>((walletAddress) => {
     const now = new Date().toISOString();
@@ -291,37 +429,33 @@ async function findSeekerGenesisAsset(walletAddress: string): Promise<{ assetId:
   if (!hasSeekerGenesisConfig(config)) return null;
   const rpcUrl = getHeliusMainnetRpcUrl();
   if (!rpcUrl) return null;
+  const connection = new Connection(rpcUrl, "confirmed");
+  const ownedMints = await listOwnedToken2022Mints(walletAddress, rpcUrl);
 
-  const res = await fetch(rpcUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: "seeker-genesis",
-      method: "getAssetsByOwner",
-      params: {
-        ownerAddress: walletAddress,
-        page: 1,
-        limit: 100,
-        displayOptions: {
-          showCollectionMetadata: true,
-          showUnverifiedCollections: true,
-        },
-      },
-    }),
-    cache: "no-store",
-  });
+  for (const mintAddress of ownedMints) {
+    try {
+      if (await mintMatchesSeekerGenesis(connection, mintAddress, config)) {
+        return { assetId: mintAddress };
+      }
+    } catch {
+      // Ignore parse issues for non-matching Token-2022 assets and keep scanning.
+    }
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Helius getAssetsByOwner failed (${res.status}): ${text}`);
+    if (!config.verifiedCreator && !config.collectionMint && !config.updateAuthority) {
+      continue;
+    }
+
+    try {
+      const asset = await fetchHeliusAssetByMint(rpcUrl, mintAddress);
+      if (asset && seekerAssetMatchesConfig(asset, config)) {
+        return { assetId: mintAddress };
+      }
+    } catch {
+      // Ignore fallback lookup failures and keep scanning other mints.
+    }
   }
 
-  const payload = await res.json();
-  const items = Array.isArray(payload?.result?.items) ? payload.result.items : [];
-  const match = items.find((asset: any) => seekerAssetMatchesConfig(asset, config));
-  if (!match?.id) return null;
-  return { assetId: String(match.id) };
+  return null;
 }
 
 export async function getWalletTrustDecision(walletAddressRaw: string): Promise<WalletTrustDecision> {
