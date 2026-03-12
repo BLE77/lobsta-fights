@@ -177,7 +177,26 @@ async function getCachedSlotForConnection(
   if (cached && now - cached.at < ttlMs) {
     return cached.slot;
   }
-  const slot = await connection.getSlot(commitment).catch(() => null);
+  const commitmentFallbacks: Commitment[] = [commitment];
+  if (commitment !== "confirmed") commitmentFallbacks.push("confirmed");
+  if (commitment !== "finalized") commitmentFallbacks.push("finalized");
+
+  let slot: number | null = null;
+  for (const level of commitmentFallbacks) {
+    slot = await connection.getSlot(level).catch(() => null);
+    if (slot !== null) break;
+  }
+
+  if (slot === null) {
+    if (cached) return cached.slot;
+    const staleFallback = [..._slotCache.entries()]
+      .filter(([candidateKey]) => candidateKey.startsWith(`${cacheKey}:`))
+      .sort((a, b) => b[1].at - a[1].at)[0]?.[1];
+    if (staleFallback) {
+      return staleFallback.slot;
+    }
+  }
+
   if (slot !== null) {
     _slotCache.set(key, { slot, at: now });
   }
