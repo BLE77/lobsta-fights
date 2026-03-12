@@ -166,6 +166,16 @@ export default function CombatFeed({
 
       {turns.slice().reverse().map((turn) => (
         <div key={turn.turnNumber} className="space-y-1.5">
+          {(() => {
+            const involvedFighters = new Set<string>();
+            for (const pairing of turn.pairings) {
+              involvedFighters.add(pairing.fighterA);
+              involvedFighters.add(pairing.fighterB);
+            }
+            if (turn.bye) involvedFighters.add(turn.bye);
+
+            return (
+              <>
           {/* Turn separator */}
           {compact ? (
             <div className="font-mono text-[10px] text-stone-500 uppercase">
@@ -230,9 +240,12 @@ export default function CombatFeed({
               key={`elim-${turn.turnNumber}-${elim}`}
               className={`font-mono text-red-500 py-0.5 bg-red-950/30 border-l-2 border-red-600 text-center animate-elimination ${compact ? "text-[10px]" : "text-xs"}`}
             >
-              ELIMINATED: {fighterNames[elim] || elim}
+              {involvedFighters.has(elim) ? "ELIMINATED" : "ALSO ELIMINATED THIS TURN"}: {fighterNames[elim] || elim}
             </div>
           ))}
+              </>
+            );
+          })()}
         </div>
       ))}
     </div>

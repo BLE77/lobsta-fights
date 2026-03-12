@@ -2553,8 +2553,27 @@ function RumbleNativeScreen() {
                                 const turnNumber = safeNumber(turn.turnNumber, recentTurns.length - idx);
                                 const pairings = Array.isArray(turn.pairings) ? turn.pairings : [];
                                 const eliminations = Array.isArray(turn.eliminations) ? turn.eliminations : [];
+                                const involvedFighters = new Set<string>();
+                                pairings.forEach((pair: RumbleTurnPairing) => {
+                                  const leftId = String(pair.fighterA ?? "").trim();
+                                  const rightId = String(pair.fighterB ?? "").trim();
+                                  if (leftId) involvedFighters.add(leftId);
+                                  if (rightId) involvedFighters.add(rightId);
+                                });
+                                if (typeof turn.bye === "string" && turn.bye.trim()) {
+                                  involvedFighters.add(turn.bye.trim());
+                                }
                                 const eliminationLabels = Array.from(
-                                  new Set(eliminations.map((entry: unknown) => resolveFighterName(entry)).filter(Boolean)),
+                                  new Set(
+                                    eliminations.map((entry: unknown) => {
+                                      const fighterId = String(entry ?? "").trim();
+                                      const label = resolveFighterName(entry);
+                                      if (!label) return null;
+                                      return involvedFighters.has(fighterId)
+                                        ? `ELIMINATED: ${label.toUpperCase()}`
+                                        : `ALSO ELIMINATED THIS TURN: ${label.toUpperCase()}`;
+                                    }).filter(Boolean),
+                                  ),
                                 );
 
                                 return (
@@ -2630,7 +2649,7 @@ function RumbleNativeScreen() {
                                     )}
                                     {eliminationLabels.length > 0 ? (
                                       <Text style={styles.turnFeedElims} numberOfLines={2}>
-                                        ELIMS: {eliminationLabels.join(" · ").toUpperCase()}
+                                        {eliminationLabels.join(" · ")}
                                       </Text>
                                     ) : null}
                                   </View>
