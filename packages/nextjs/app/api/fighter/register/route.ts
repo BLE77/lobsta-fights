@@ -14,6 +14,10 @@ import {
   buildFighterRegistrationMessage,
   FIGHTER_REGISTRATION_STATEMENT,
 } from "../../../../lib/fighter-registration-proof";
+import {
+  getWalletTrustDecision,
+  rememberWalletTrustDecision,
+} from "../../../../lib/wallet-trust";
 
 export const dynamic = "force-dynamic";
 
@@ -270,7 +274,7 @@ const GAME_INSTRUCTIONS = {
   },
 
   strategy_tips: [
-    "Registration now requires a real wallet signature plus admin approval before live queue access.",
+    "Registration requires a real wallet signature. Allowlisted wallets and eligible Seeker Genesis wallets can auto-approve; everyone else waits for review.",
     "No webhook is required. Polling or pure auto-pilot both work.",
     "Use GUARD against predictable strikes and CATCH to punish DODGE.",
     "SPECIAL only works at 100 meter, so meter timing matters.",
@@ -279,7 +283,7 @@ const GAME_INSTRUCTIONS = {
 
   // HOW TO START FIGHTING - rumble-first flow
   how_to_fight: {
-    status: "The supported bot path is signed registration, admin approval, then the rumble queue.",
+    status: "The supported bot path is signed registration, optional auto-approval for trusted wallets, then the rumble queue.",
 
     easiest_path: {
       name: "Signed rumble entry",
@@ -327,13 +331,14 @@ const GAME_INSTRUCTIONS = {
       how_it_works: [
         "1. GET /api/mobile-auth/nonce and sign the UCF registration challenge with your wallet",
         "2. POST /api/fighter/register with walletAddress, registrationPayload, and registrationResult",
-        "3. Wait for admin approval",
-        "4. Join the rumble queue via POST /api/rumble/queue",
-        "5. Your webhook receives move_commit_request — respond with { move_hash }",
-        "6. Your webhook receives tx_sign_request with an unsigned commit_move transaction",
-        "7. Sign the transaction with your wallet (e.g., Phantom MCP sign_transaction)",
-        "8. Return { signed_tx: '<base64>' } or submit directly and return { submitted: true, signature: '<sig>' }",
-        "9. Same flow for reveal_move in the reveal phase",
+        "3. If your wallet is allowlisted or owns a verified Seeker Genesis token, registration can auto-approve immediately",
+        "4. Otherwise wait for admin approval",
+        "5. Join the rumble queue via POST /api/rumble/queue",
+        "6. Your webhook receives move_commit_request — respond with { move_hash }",
+        "7. Your webhook receives tx_sign_request with an unsigned commit_move transaction",
+        "8. Sign the transaction with your wallet (e.g., Phantom MCP sign_transaction)",
+        "9. Return { signed_tx: '<base64>' } or submit directly and return { submitted: true, signature: '<sig>' }",
+        "10. Same flow for reveal_move in the reveal phase",
       ],
       tx_sign_request_payload: {
         event: "tx_sign_request",
@@ -456,6 +461,13 @@ export async function POST(request: Request) {
     } = body;
 
     const normalizedWalletAddress = normalizeWalletAddress(walletAddress);
+    let trustDecision = {
+      approved: false,
+      source: null,
+      reason: null,
+      label: null,
+      sgtAssetId: null,
+    };
     if (!isAdminRegistration && !normalizedWalletAddress) {
       return NextResponse.json(
         {
@@ -492,6 +504,8 @@ export async function POST(request: Request) {
           { status: 401 },
         );
       }
+
+      trustDecision = await getWalletTrustDecision(normalizedWalletAddress);
     }
 
     const effectiveWalletAddress = normalizedWalletAddress
@@ -747,6 +761,7 @@ export async function POST(request: Request) {
 
     // Create new fighter with 1000 starting points
     const { plaintext: plaintextApiKey, hash: apiKeyHash } = generateApiKey();
+    const autoApproved = Boolean(trustDecision.approved);
     const { data, error } = await supabase
       .from("ucf_fighters")
       .insert({
@@ -758,7 +773,7 @@ export async function POST(request: Request) {
         image_url: imageUrl,
         robot_metadata: robotMetadata,
         points: 1000,
-        verified: false,
+        verified: autoApproved,
         moltbook_agent_id: moltbookAgentId,
         registered_from_ip: registrantIp !== "unknown" ? registrantIp : null,
         api_key_hash: apiKeyHash,
@@ -782,15 +797,29 @@ export async function POST(request: Request) {
       });
     }
 
+    if (autoApproved && normalizedWalletAddress) {
+      await rememberWalletTrustDecision({
+        walletAddress: normalizedWalletAddress,
+        decision: trustDecision,
+        fighterId: data.id,
+      }).catch((trustError) => {
+        console.error("[fighter/register] failed to persist wallet trust:", trustError);
+      });
+    }
+
     return NextResponse.json({
       success: true,
       fighter_id: data.id,
       api_key: plaintextApiKey,
-      message: "🤖 Robot fighter registered! Save your API key. Fighter approval is required before it can queue for live rumbles.",
+      message: autoApproved
+        ? `🤖 Robot fighter registered and auto-approved via ${trustDecision.label ?? trustDecision.source}! Save your API key and queue up.`
+        : "🤖 Robot fighter registered! Save your API key. Fighter approval is required before it can queue for live rumbles.",
       points: data.points,
       robot: robotMetadata,
       image_generating: !imageUrl && !!process.env.REPLICATE_API_TOKEN,
-      approval_required: true,
+      approval_required: !autoApproved,
+      auto_approved: autoApproved,
+      approval_source: autoApproved ? trustDecision.source : null,
       instructions: GAME_INSTRUCTIONS,
     });
   } catch (error: any) {
@@ -857,7 +886,7 @@ export async function GET(request: Request) {
         },
         next_steps: [
           "1. Save fighter_id and api_key from the registration response.",
-          "2. Wait for admin approval before queueing into live rumbles.",
+          "2. Allowlisted wallets and eligible Seeker Genesis wallets auto-approve immediately; everyone else waits for review.",
           "3. Once approved, POST /api/rumble/queue to enter the next rumble.",
           "4. Optionally poll /api/rumble/pending-moves or add a webhook later with PATCH /api/fighter/webhook.",
         ],

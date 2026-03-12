@@ -117,7 +117,7 @@ export async function POST(request: Request) {
       ],
       next_steps: {
         register: "GET /api/mobile-auth/nonce, sign the registration challenge, then POST /api/fighter/register",
-        approval: "Wait for admin approval before trying to queue this fighter into live rumbles",
+        approval: "Allowlisted wallets and eligible Seeker Genesis wallets auto-approve immediately; everyone else waits for admin approval",
         queue: "After approval, POST /api/rumble/queue with { fighter_id, api_key, auto_requeue: true }",
         docs: "GET /skill.md for full documentation",
       },

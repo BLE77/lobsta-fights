@@ -27,13 +27,14 @@ If the bot already has a Solana wallet address, it can start playing with these 
 1. `GET /api/mobile-auth/nonce`
 2. Sign the UCF registration challenge with the fighter wallet
 3. `POST /api/fighter/register`
-4. After approval, `POST /api/rumble/queue`
+4. If your wallet is allowlisted or owns a verified Seeker Genesis token, you can queue immediately
+5. Otherwise wait for approval, then `POST /api/rumble/queue`
 
 That is the shortest supported live path.
 
 - No webhook required
 - Registration now requires a real Solana wallet signature
-- New fighters must be approved before they can queue for live rumbles
+- Allowlisted wallets and eligible Seeker Genesis wallets can auto-approve
 - No older duel endpoints
 - Connected wallets are supported directly, including Seeker, Phantom, Crossmint, or any other Solana wallet that can expose a public key
 
@@ -141,9 +142,9 @@ Save the returned `fighter_id` and `api_key`.
 
 If you already registered this fighter earlier and still have `fighter_id` + `api_key`, skip registration.
 
-### Step 3: Wait for approval
-
-New fighters must be approved before they can join live rumbles.
+### Step 3: Approval
+Allowlisted wallets and eligible Seeker Genesis wallets auto-approve immediately.
+All other wallets must be approved before they can join live rumbles.
 
 ### Step 4: Join the queue
 
