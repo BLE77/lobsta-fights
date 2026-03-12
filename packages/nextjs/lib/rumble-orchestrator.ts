@@ -273,6 +273,12 @@ interface SlotCombatState {
   lastResolveSubmittedTurn?: number;
   /** When the most recent resolveTurn for lastResolveSubmittedTurn was submitted. */
   lastResolveSubmittedAt?: number;
+  /** Consecutive fatal finalize failures while the winner is already known. */
+  finalizeFatalFailureCount?: number;
+  /** When the first fatal finalize failure in the current streak occurred. */
+  finalizeFatalFailureStartedAt?: number;
+  /** Allow payout to continue even if devnet finalize is permanently broken. */
+  allowFinalizeFallback?: boolean;
 }
 
 interface OnchainTurnDecision {
@@ -457,6 +463,12 @@ const OPEN_TURN_STUCK_MAX_ATTEMPTS = readInt(
   10,
   3,
   120,
+);
+const FINALIZE_STUCK_MAX_ATTEMPTS = readInt(
+  "RUMBLE_FINALIZE_STUCK_MAX_ATTEMPTS",
+  3,
+  1,
+  20,
 );
 const FINALIZE_UNDELEGATE_TIMEOUT_MS = readIntervalMs(
   "RUMBLE_FINALIZE_UNDELEGATE_TIMEOUT_MS",
@@ -4590,6 +4602,9 @@ export class RumbleOrchestrator {
       invalidateReadCache(`rumble:${rumbleIdNum}`);
       onchainState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
       if (onchainState?.state === "payout" || onchainState?.state === "complete") {
+        state.finalizeFatalFailureCount = 0;
+        state.finalizeFatalFailureStartedAt = undefined;
+        state.allowFinalizeFallback = false;
         await this.finishCombatFromOnchain(slot, state, rumbleIdNum);
         return;
       }
@@ -4597,6 +4612,9 @@ export class RumbleOrchestrator {
       try {
         const sig = await finalizeRumbleOnChainTx(rumbleIdNum, getConnection());
         if (sig) {
+          state.finalizeFatalFailureCount = 0;
+          state.finalizeFatalFailureStartedAt = undefined;
+          state.allowFinalizeFallback = false;
           console.log(`[ONCHAIN-FINALIZE] finalizeRumble succeeded for rumble ${slot.id}: ${sig}`);
           await persistWithRetry(
             () => persist.updateRumbleTxSignature(slot.id, "reportResult", sig),
@@ -4607,11 +4625,31 @@ export class RumbleOrchestrator {
         invalidateReadCache(`rumble:${rumbleIdNum}`);
         const latestOnchainState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
         if (latestOnchainState?.state === "payout" || latestOnchainState?.state === "complete") {
+          state.finalizeFatalFailureCount = 0;
+          state.finalizeFatalFailureStartedAt = undefined;
+          state.allowFinalizeFallback = false;
           console.log(
             `[ONCHAIN-FINALIZE] finalizeRumble already settled for rumble ${slot.id} (state=${latestOnchainState.state})`,
           );
           await this.finishCombatFromOnchain(slot, state, rumbleIdNum);
           return;
+        }
+        if (this.isFatalFinalizeError(err)) {
+          state.finalizeFatalFailureCount = (state.finalizeFatalFailureCount ?? 0) + 1;
+          state.finalizeFatalFailureStartedAt ??= now;
+          console.warn(
+            `[ONCHAIN-FINALIZE] Fatal finalize failure ${state.finalizeFatalFailureCount}/${FINALIZE_STUCK_MAX_ATTEMPTS} ` +
+            `for rumble ${slot.id}: ${formatError(err)}`,
+          );
+          if ((state.finalizeFatalFailureCount ?? 0) >= FINALIZE_STUCK_MAX_ATTEMPTS) {
+            state.allowFinalizeFallback = true;
+            console.error(
+              `[ONCHAIN-FINALIZE] Falling back to local payout flow for ${slot.id} after ` +
+              `${now - (state.finalizeFatalFailureStartedAt ?? now)}ms of fatal finalize failures`,
+            );
+            await this.finishCombat(slot, state);
+            return;
+          }
         }
         console.warn(`[ONCHAIN-FINALIZE] finalizeRumble failed for rumble ${slot.id}: ${formatError(err)}`);
       }
@@ -4619,6 +4657,9 @@ export class RumbleOrchestrator {
       invalidateReadCache(`rumble:${rumbleIdNum}`);
       onchainState = await readRumbleAccountState(rumbleIdNum).catch(() => null);
       if (onchainState?.state === "payout" || onchainState?.state === "complete") {
+        state.finalizeFatalFailureCount = 0;
+        state.finalizeFatalFailureStartedAt = undefined;
+        state.allowFinalizeFallback = false;
         await this.finishCombatFromOnchain(slot, state, rumbleIdNum);
         return;
       }
@@ -4757,6 +4798,9 @@ export class RumbleOrchestrator {
       lastAdvanceSubmittedAt: undefined,
       lastResolveSubmittedTurn: undefined,
       lastResolveSubmittedAt: undefined,
+      finalizeFatalFailureCount: 0,
+      finalizeFatalFailureStartedAt: undefined,
+      allowFinalizeFallback: false,
     });
     const state = this.combatStates.get(slot.slotIndex);
     if (state) {
@@ -5139,6 +5183,15 @@ export class RumbleOrchestrator {
       "claimwindowactive",
       "error number: 6018",
       "custom program error: 0x1782",
+    ]);
+  }
+
+  private isFatalFinalizeError(err: unknown): boolean {
+    return this.hasErrorTokenAny(err, [
+      "accountdiscriminatormismatch",
+      "account discriminator did not match",
+      "declaredprogramidmismatch",
+      "declared program id mismatch",
     ]);
   }
 
@@ -6194,6 +6247,7 @@ export class RumbleOrchestrator {
     placements: Array<{ id: string; placement: number }>,
     payoutResult: PayoutResult,
     fighterOrder: string[],
+    allowFinalizeFallback = false,
   ): Promise<void> {
     const rumbleIdNum = this.resolveOnchainRumbleIdNumber(rumbleId);
     if (rumbleIdNum === null) {
@@ -6329,10 +6383,14 @@ export class RumbleOrchestrator {
     if (!devnetPayoutReady) {
       const message =
         `[OnChain] Devnet rumble ${rumbleId} is not payout-ready; delaying ICHOR settlement until finalize catches up`;
-      if (this.strictOnchainMode) {
+      if (this.strictOnchainMode && !allowFinalizeFallback) {
         throw new Error(message);
       }
-      console.warn(message);
+      if (allowFinalizeFallback) {
+        console.warn(`${message} (continuing with payout fallback)`);
+      } else {
+        console.warn(message);
+      }
     } else {
       try {
         const ichorMint = getIchorMint();
@@ -6989,6 +7047,7 @@ export class RumbleOrchestrator {
         placements,
         payoutResult,
         slot.fighters,
+        combatState?.allowFinalizeFallback === true,
       );
     }
 
