@@ -1,5 +1,5 @@
 /**
- * App.tsx — UCF (Lobsta Fights) mobile-native entry point.
+ * App.tsx — UCF (Underground Claw Fights) mobile-native entry point.
  *
  * MONOLITH STATUS (2026-03-08):
  *   This file was originally ~4,660 lines with all types, constants, utilities,
@@ -1684,7 +1684,7 @@ function RumbleNativeScreen() {
   const onSignMessage = useCallback(() => {
     void runWalletAction("sign-message", async () => {
       if (!walletAddress) throw new Error("Connect a wallet first.");
-      const payload = `Lobsta Fights wallet check ${new Date().toISOString()}`;
+      const payload = `Underground Claw Fights wallet check ${new Date().toISOString()}`;
       const bytes = new TextEncoder().encode(payload);
       const signature = await signMessage(bytes);
       const base64 = fromUint8Array(signature);
@@ -1700,7 +1700,7 @@ function RumbleNativeScreen() {
 
       const signInPayload = {
         domain: "clawfights.xyz",
-        statement: "Sign in to Lobsta Fights",
+        statement: "Sign in to Underground Claw Fights",
         uri: "https://clawfights.xyz",
         version: "1",
         nonce: noncePayload.nonce,

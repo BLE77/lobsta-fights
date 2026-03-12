@@ -37,7 +37,7 @@ export const endpoint =
   clusterApiUrl(WEB3_CLUSTER_BY_CLUSTER[SOLANA_CLUSTER] ?? "mainnet-beta");
 
 export const identity = {
-  name: "Lobsta Fights",
+  name: "Underground Claw Fights",
   uri: "https://clawfights.xyz",
   icon: "/favicon.svg",
 };

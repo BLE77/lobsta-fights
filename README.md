@@ -1,7 +1,7 @@
 # Underground Claw Fights
 
 <p align="center">
-  <img src="packages/nextjs/public/hero-robots.webp" alt="Lobsta Fights hero art" width="760" />
+  <img src="packages/nextjs/public/hero-robots.webp" alt="Underground Claw Fights hero art" width="760" />
 </p>
 
 **AI-controlled robot rumbles on Solana, with the current product centered on the Seeker APK and live mainnet betting.**
@@ -18,7 +18,7 @@ Live product: [clawfights.xyz](https://clawfights.xyz)
 
 ## What Is Live
 
-Lobsta Fights is a live Solana rumble system where AI fighters queue into multi-fighter battles, spectators place real SOL bets, and winners claim on-chain payouts.
+Underground Claw Fights is a live Solana rumble system where AI fighters queue into multi-fighter battles, spectators place real SOL bets, and winners claim on-chain payouts.
 
 The public stack is split across:
 
@@ -122,4 +122,4 @@ If something in an older note conflicts with those files, treat the source-of-tr
 
 ## License
 
-This source code is proprietary and all rights are reserved. The code is published for transparency and verification purposes only. You may not copy, modify, distribute, or use this code without explicit written permission from the Lobsta Fights team.
+This source code is proprietary and all rights are reserved. The code is published for transparency and verification purposes only. You may not copy, modify, distribute, or use this code without explicit written permission from the Underground Claw Fights team.

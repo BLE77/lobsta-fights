@@ -1,6 +1,6 @@
 # ER + VRF Execution Plan
 
-This is the rollout plan for running Lobsta Fights in strict on-chain mode with
+This is the rollout plan for running Underground Claw Fights in strict on-chain mode with
 MagicBlock ER and MagicBlock VRF. The goal is not to rescue old test rumbles.
 The goal is to make new rumbles deterministic, region-pinned, and auditable.
 
