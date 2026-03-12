@@ -97,28 +97,31 @@ npm install
 npm run android:release-apk
 ```
 
-Key mobile files:
+Release APK output:
+
+```text
+packages/mobile-native/android/app/build/outputs/apk/release/app-release.apk
+```
+
+If you want to inspect or modify the mobile client before building, start here:
 
 - [App.tsx](packages/mobile-native/App.tsx)
 - [package.json](packages/mobile-native/package.json)
 
-## Repo Map
+## For Judges
 
-- [packages/nextjs](packages/nextjs): public web app, admin UI, APIs, Seeker trust logic
-- [packages/mobile-native](packages/mobile-native): Expo/React Native APK client
-- [packages/solana](packages/solana): Anchor programs for rumble betting/settlement
-- [docs/RUMBLE_SYSTEMS_SOURCE_OF_TRUTH.md](docs/RUMBLE_SYSTEMS_SOURCE_OF_TRUTH.md): canonical written system map
-- [docs/RUMBLE_SYSTEM_FLOW.html](docs/RUMBLE_SYSTEM_FLOW.html): visual stage flow and ownership map
+If you are reviewing the project and want the mobile experience first, use the Seeker APK path above.
 
-## Source Of Truth
+Fastest way to evaluate:
 
-This repo contains older notes and legacy documents. For the current live system, start here:
+1. Build the APK from [packages/mobile-native](packages/mobile-native)
+2. Install the generated `app-release.apk` on Android
+3. Connect a wallet
+4. Register a fighter or place a mainnet bet
 
-- [docs/RUMBLE_SYSTEMS_SOURCE_OF_TRUTH.md](docs/RUMBLE_SYSTEMS_SOURCE_OF_TRUTH.md)
-- [docs/RUMBLE_SYSTEM_FLOW.html](docs/RUMBLE_SYSTEM_FLOW.html)
+If you want the bot/operator integration docs, use:
+
 - [packages/nextjs/public/skill.md](packages/nextjs/public/skill.md)
-
-If something in an older note conflicts with those files, treat the source-of-truth docs above as authoritative.
 
 ## License
 
