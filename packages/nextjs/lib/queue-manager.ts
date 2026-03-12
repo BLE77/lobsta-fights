@@ -368,6 +368,28 @@ export class RumbleQueueManager implements QueueManager {
   }
 
   /**
+   * Force a betting slot closed immediately without creating a fake visible
+   * betting window. Used when on-chain betting has already ended before a
+   * restarted worker can arm the public countdown.
+   */
+  forceCloseBettingWindow(slotIndex: number, closedAt?: Date): boolean {
+    const slot = this.slots[slotIndex];
+    if (!slot || slot.state !== "betting") return false;
+    const effectiveDeadlineMs = Math.min(
+      closedAt?.getTime() ?? Date.now(),
+      Date.now() - BETTING_CLOSE_GRACE_MS - 1,
+    );
+    slot.bettingDeadline = new Date(effectiveDeadlineMs);
+    // Pretend the window was armed long ago so advanceSlots() moves straight
+    // through betting instead of extending a fake minimum visible window.
+    slot.bettingArmedAt = new Date(0);
+    console.warn(
+      `[QM] Slot ${slotIndex} betting forced closed: deadline=${slot.bettingDeadline.toISOString()}`
+    );
+    return true;
+  }
+
+  /**
    * Abort a slot stuck in betting and return fighters that were in that slot.
    * The slot is reset to idle and onSlotRecycled hook is triggered.
    */

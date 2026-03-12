@@ -2735,6 +2735,32 @@ export class RumbleOrchestrator {
     return exists;
   }
 
+  private async resolveRecoveredBetCount(slot: RumbleSlot): Promise<number> {
+    const pool = this.bettingPools.get(slot.slotIndex);
+    if (pool && pool.rumbleId === slot.id) {
+      return pool.bets.length;
+    }
+    return await persist.countBetsForRumble(slot.id);
+  }
+
+  private async resolveExpiredUnarmedBettingSlot(slot: RumbleSlot, closedAt?: Date): Promise<void> {
+    const betCount = await this.resolveRecoveredBetCount(slot);
+    if (betCount > 0) {
+      const forced = this.queueManager.forceCloseBettingWindow(slot.slotIndex, closedAt);
+      if (forced) {
+        console.warn(
+          `[Orchestrator] Betting window already ended for ${slot.id}; ` +
+            `${betCount} verified bet(s) exist, forcing betting→combat catch-up`,
+        );
+      }
+      return;
+    }
+    await this.abortStalledBettingSlot(
+      slot,
+      "mainnet betting deadline elapsed before betting could be armed",
+    );
+  }
+
   private async armBettingWindowIfReady(slot: RumbleSlot): Promise<void> {
     if (slot.state !== "betting" || slot.bettingDeadline) return;
     const rumbleIdNum = this.resolveOnchainRumbleIdNumber(slot.id);
@@ -2752,6 +2778,15 @@ export class RumbleOrchestrator {
         return;
       }
       if (onchain.state !== "betting") {
+        if (onchain.state === "combat" || onchain.state === "payout" || onchain.state === "complete") {
+          const forced = this.queueManager.forceCloseBettingWindow(slot.slotIndex, new Date());
+          if (forced) {
+            console.warn(
+              `[Orchestrator] armBettingWindowIfReady: mainnet state is already "${onchain.state}" for ${slot.id}; forcing local betting closed to catch up`,
+            );
+          }
+          return;
+        }
         console.warn(
           `[Orchestrator] armBettingWindowIfReady: mainnet on-chain state is "${onchain.state}" (not betting) for ${slot.id}`,
         );
@@ -2779,8 +2814,9 @@ export class RumbleOrchestrator {
       if (looksLikeUnix) {
         const unixMs = Number(closeRaw) * 1_000;
         if (!Number.isFinite(unixMs) || unixMs <= Date.now()) {
-          console.warn(
-            `[Orchestrator] armBettingWindowIfReady: mainnet unix betting deadline is invalid/elapsed for ${slot.id}; keeping betting closed`,
+          await this.resolveExpiredUnarmedBettingSlot(
+            slot,
+            Number.isFinite(unixMs) ? new Date(unixMs) : undefined,
           );
           return;
         }
@@ -2788,9 +2824,7 @@ export class RumbleOrchestrator {
       } else {
         const remainingSlots = closeRaw > clusterSlotBig ? closeRaw - clusterSlotBig : 0n;
         if (remainingSlots <= 0n) {
-          console.warn(
-            `[Orchestrator] armBettingWindowIfReady: mainnet betting close slot already elapsed for ${slot.id}; keeping betting closed`,
-          );
+          await this.resolveExpiredUnarmedBettingSlot(slot, new Date());
           return;
         }
         const capped = remainingSlots > 1_000_000n ? 1_000_000n : remainingSlots;
