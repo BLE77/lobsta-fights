@@ -70,7 +70,6 @@ import type {
   RumbleTurnPairing,
   SlotPayout,
   TabKey,
-  TxEntry,
   VerifyResponse,
 } from "./lib/types";
 
@@ -91,7 +90,6 @@ import {
   SND_ROUND_START,
   STATE_PRIORITY,
   STATUS_REALTIME_REFRESH_DEBOUNCE_MS,
-  TX_FEED_POLL_ACTIVE_MS,
   WALLET_POLL_ACTIVE_MS,
   chain,
   endpoint,
@@ -105,7 +103,6 @@ import {
   formatCountdown,
   formatMove,
   formatPct,
-  formatTxAge,
   getFighterId,
   getFighterName,
   getMoveColor,
@@ -364,12 +361,6 @@ function RumbleNativeScreen() {
   const [chatSending, setChatSending] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
 
-  const [txFeed, setTxFeed] = useState<TxEntry[]>([]);
-  const [txLoading, setTxLoading] = useState(true);
-  const [txError, setTxError] = useState<string | null>(null);
-  const [txFeedMinimized, setTxFeedMinimized] = useState(true);
-  const [txFeedNetwork, setTxFeedNetwork] = useState<"mainnet" | "devnet">("mainnet");
-
   const [solBalance, setSolBalance] = useState<number | null>(null);
   const [myBetsBySlot, setMyBetsBySlot] = useState<Record<number, Record<string, number>>>({});
   const [betDrafts, setBetDrafts] = useState<Record<string, string>>({});
@@ -422,7 +413,6 @@ function RumbleNativeScreen() {
   const chatRetryAfterRef = useRef(0);
   const statusRealtimeChannelRef = useRef<RealtimeChannel | null>(null);
   const statusRealtimeRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const txRetryAfterRef = useRef(0);
   const balanceRetryAfterRef = useRef(0);
   const fallbackSendConnectionRef = useRef<Connection | null>(null);
   const isAppActive = appState === "active";
@@ -1408,28 +1398,6 @@ function RumbleNativeScreen() {
     }
   }, []);
 
-  const fetchTxFeed = useCallback(async () => {
-    const now = Date.now();
-    if (now < txRetryAfterRef.current) return;
-
-    try {
-      const data = await fetchJsonFromCandidates<{ signatures: TxEntry[] }>(`/api/rumble/tx-feed?network=${txFeedNetwork}&_t=${Date.now()}`);
-      setTxFeed(Array.isArray(data.signatures) ? data.signatures : []);
-      setTxError(null);
-      txRetryAfterRef.current = 0;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (isRateLimitError(error)) {
-        txRetryAfterRef.current = Date.now() + RPC_RATE_LIMIT_COOLDOWN_MS;
-        setTxError(`Rate limited. Retrying in ${Math.ceil(RPC_RATE_LIMIT_COOLDOWN_MS / 1000)}s.`);
-        return;
-      }
-      setTxError(message);
-    } finally {
-      setTxLoading(false);
-    }
-  }, [txFeedNetwork]);
-
   const fetchSolBalance = useCallback(async () => {
     if (!walletAddress) {
       setSolBalance(null);
@@ -1538,17 +1506,6 @@ function RumbleNativeScreen() {
     const timer = setTimeout(() => void fetchChat(), CHAT_POLL_ACTIVE_MS);
     return () => clearTimeout(timer);
   }, [activeTab, fetchChat, isAppActive, messages.length, chatError]);
-
-  useEffect(() => {
-    if (!isAppActive || activeTab !== "queue" || txFeedMinimized) return;
-    void fetchTxFeed();
-  }, [activeTab, fetchTxFeed, isAppActive, txFeedMinimized]);
-
-  useEffect(() => {
-    if (!isAppActive || activeTab !== "queue" || txFeedMinimized) return;
-    const timer = setTimeout(() => void fetchTxFeed(), TX_FEED_POLL_ACTIVE_MS);
-    return () => clearTimeout(timer);
-  }, [activeTab, fetchTxFeed, isAppActive, txFeedMinimized, txFeed.length, txError]);
 
   useEffect(() => {
     if (!walletAddress || !isAppActive) return;
@@ -2916,64 +2873,6 @@ function RumbleNativeScreen() {
                   <Text style={styles.panelMuted}>Pool grows with every rumble.</Text>
                   <Text style={styles.panelMuted}>When it triggers, one lucky winner takes it all.</Text>
                   <Text style={styles.ichorWarningText}>All $ICHOR functions are on Devnet. Only SOL betting is live on Mainnet.</Text>
-                </View>
-
-                <View style={styles.panel}>
-                  <Pressable
-                    onPress={() => setTxFeedMinimized(prev => !prev)}
-                    style={({ pressed }) => [
-                      styles.panelTopRow,
-                      styles.panelToggleRow,
-                      pressed ? styles.pressablePressed : null,
-                    ]}
-                  >
-                    <Text style={styles.panelLabel}>On-Chain Feed</Text>
-                    <View style={styles.panelMetaGroup}>
-                      <Text style={styles.panelCollapseText}>{txFeedMinimized ? "SHOW" : "HIDE"}</Text>
-                    </View>
-                  </Pressable>
-                  {!txFeedMinimized ? (
-                    <View style={styles.networkToggleRow}>
-                      <Pressable
-                        onPress={() => { setTxFeed([]); setTxLoading(true); setTxFeedNetwork("mainnet"); }}
-                        style={[styles.networkToggleBtn, txFeedNetwork === "mainnet" ? styles.networkToggleBtnActive : null]}
-                      >
-                        <Text style={[styles.networkToggleText, txFeedNetwork === "mainnet" ? styles.networkToggleTextActive : null]}>MAINNET</Text>
-                      </Pressable>
-                      <Pressable
-                        onPress={() => { setTxFeed([]); setTxLoading(true); setTxFeedNetwork("devnet"); }}
-                        style={[styles.networkToggleBtn, txFeedNetwork === "devnet" ? styles.networkToggleBtnActive : null]}
-                      >
-                        <Text style={[styles.networkToggleText, txFeedNetwork === "devnet" ? styles.networkToggleTextActive : null]}>DEVNET</Text>
-                      </Pressable>
-                    </View>
-                  ) : null}
-                  {txFeedMinimized ? (
-                    <Text style={styles.panelMuted}>Minimized. Tap to expand.</Text>
-                  ) : txLoading ? (
-                    <ActivityIndicator color="#f59e0b" />
-                  ) : txError ? (
-                    <Text style={styles.errorText}>{txError}</Text>
-                  ) : txFeed.length === 0 ? (
-                    <Text style={styles.emptyText}>No transactions yet</Text>
-                  ) : (
-                    <View style={styles.listStack}>
-                      {txFeed.slice(0, 14).map(tx => (
-                        <Pressable
-                          key={tx.signature}
-                          onPress={() => {}}
-                          style={({ pressed }) => [styles.rowCard, pressed ? styles.pressablePressed : null]}
-                        >
-                          <View style={[styles.txDot, tx.err ? styles.txDotErr : styles.txDotOk]} />
-                          <View style={styles.rowMain}>
-                            <Text style={styles.rowName}>{shortAddress(tx.signature, 6, 6)}</Text>
-                            <Text style={styles.rowSub}>{formatTxAge(tx.blockTime)} ago</Text>
-                          </View>
-                          <Text style={styles.rowMeta}>{(tx.confirmationStatus ?? "-").slice(0, 4).toUpperCase()}</Text>
-                        </Pressable>
-                      ))}
-                    </View>
-                  )}
                 </View>
 
               </>

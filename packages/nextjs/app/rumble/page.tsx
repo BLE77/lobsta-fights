@@ -15,7 +15,6 @@ import IchorShowerPool from "./components/IchorShowerPool";
 import ClaimBalancePanel from "./components/ClaimBalancePanel";
 import ChatPanel from "./components/ChatPanel";
 import CommentaryPlayer from "./components/CommentaryPlayer";
-import OnChainTxFeed from "./components/OnChainTxFeed";
 import WinnerPopup from "./components/WinnerPopup";
 import { useBetConfirmation } from "./hooks/useBetConfirmation";
 import { useRumbleStatusRealtime } from "./hooks/useRumbleStatusRealtime";
@@ -2264,10 +2263,6 @@ export default function RumblePage() {
                       <IchorShowerPool
                         currentPool={ichorShower.currentPool}
                       />
-                    </div>
-
-                    <div className="animate-fade-in-up" style={{ animationDelay: '300ms', animationFillMode: 'both' }}>
-                      <OnChainTxFeed />
                     </div>
                   </div>
                 </div>

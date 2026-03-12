@@ -4,6 +4,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { buildVoiceLinePrompts as _buildVoiceLinePrompts, type VoiceLine } from "../../lib/voice-line-prompts";
+import OnChainTxFeedPanel from "./components/OnChainTxFeedPanel";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -2342,6 +2343,10 @@ function OnChainTab({ data }: { data: OnChainData | null }) {
             Could not read RegistryConfig from chain
           </p>
         )}
+      </Section>
+
+      <Section title="Transaction Feed">
+        <OnChainTxFeedPanel />
       </Section>
 
       <p className="font-mono text-[10px] text-stone-600 text-right">
