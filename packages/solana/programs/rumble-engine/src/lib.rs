@@ -3527,4 +3527,16 @@ mod tests {
         assert_eq!(treasury_cut, 29_400_000);
         assert_eq!(distributable, 950_600_000);
     }
+
+    #[cfg(feature = "mainnet")]
+    #[test]
+    fn mainnet_feature_selects_mainnet_program_id() {
+        assert_eq!(crate::ID.to_string(), "2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC");
+    }
+
+    #[cfg(not(feature = "mainnet"))]
+    #[test]
+    fn default_build_selects_devnet_program_id() {
+        assert_eq!(crate::ID.to_string(), "638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU");
+    }
 }
