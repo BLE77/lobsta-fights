@@ -198,17 +198,6 @@ async function run(): Promise<void> {
   orchestratorInstance = orchestrator;
   startHealthServer(orchestrator);
 
-  // ---- Initial recovery ---------------------------------------------------
-  if (!hasRecovered()) {
-    console.log(`[${ts()}] [worker] Running initial state recovery...`);
-    try {
-      const result = await recoverOrchestratorState();
-      console.log(`[${ts()}] [worker] Recovery complete:`, JSON.stringify(result));
-    } catch (err) {
-      console.error(`[${ts()}] [worker] Recovery error (continuing):`, err);
-    }
-  }
-
   // ---- Tick loop ----------------------------------------------------------
   while (running) {
     const tickStart = Date.now();
@@ -230,26 +219,14 @@ async function run(): Promise<void> {
     }
 
     try {
-      // Periodic reconciliation (on-chain + payout)
-      if (Date.now() - lastReconcileAt > RECONCILE_INTERVAL_MS) {
-        await reconcileOnchainReportResults().catch((e) =>
-          console.error(`[${ts()}] [worker] on-chain reconcile error:`, e),
-        );
-        await reconcileStalePendingPayouts().catch((e) =>
-          console.error(`[${ts()}] [worker] payout reconcile error:`, e),
-        );
-        await reconcileQueueFromDb().catch((e) =>
-          console.error(`[${ts()}] [worker] queue reconcile error:`, e),
-        );
-        lastReconcileAt = Date.now();
-      }
-
-      // Periodic retries for failed mainnet operations.
-      if (Date.now() - lastMainnetRetryAt > MAINNET_RETRY_INTERVAL_MS) {
-        await retryPendingMainnetOps().catch((e) =>
-          console.error(`[${ts()}] [worker] mainnet retry error:`, e),
-        );
-        lastMainnetRetryAt = Date.now();
+      if (!hasRecovered()) {
+        console.log(`[${ts()}] [worker] Running initial state recovery...`);
+        try {
+          const result = await recoverOrchestratorState();
+          console.log(`[${ts()}] [worker] Recovery complete:`, JSON.stringify(result));
+        } catch (err) {
+          console.error(`[${ts()}] [worker] Recovery error (continuing):`, err);
+        }
       }
 
       // Run one tick
@@ -259,6 +236,9 @@ async function run(): Promise<void> {
 
       // Log status periodically
       const status = orchestrator.getStatus();
+      const hasPriorityActiveSlot = status.some(
+        (slot) => slot.state === "betting" || slot.state === "combat",
+      );
       if (
         tickCount === 1 ||
         Date.now() - lastHealthPersistAt >= WORKER_RUNTIME_HEALTH_INTERVAL_MS
@@ -272,6 +252,28 @@ async function run(): Promise<void> {
         console.log(
           `[${ts()}] [worker] tick#${tickCount} ${summarizeSlots(status)}`,
         );
+      }
+
+      // Heavy recovery/reconcile work should never outrun the live arena.
+      // Process it only when no betting/combat slot is active.
+      if (!hasPriorityActiveSlot && Date.now() - lastReconcileAt > RECONCILE_INTERVAL_MS) {
+        await reconcileOnchainReportResults({ limit: 2 }).catch((e) =>
+          console.error(`[${ts()}] [worker] on-chain reconcile error:`, e),
+        );
+        await reconcileStalePendingPayouts().catch((e) =>
+          console.error(`[${ts()}] [worker] payout reconcile error:`, e),
+        );
+        await reconcileQueueFromDb().catch((e) =>
+          console.error(`[${ts()}] [worker] queue reconcile error:`, e),
+        );
+        lastReconcileAt = Date.now();
+      }
+
+      if (!hasPriorityActiveSlot && Date.now() - lastMainnetRetryAt > MAINNET_RETRY_INTERVAL_MS) {
+        await retryPendingMainnetOps().catch((e) =>
+          console.error(`[${ts()}] [worker] mainnet retry error:`, e),
+        );
+        lastMainnetRetryAt = Date.now();
       }
     } catch (err) {
       consecutiveErrors++;

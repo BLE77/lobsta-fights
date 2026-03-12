@@ -16,6 +16,7 @@ import { getCachedCombatSlot, getConnection } from "./solana-connection";
 
 const g = globalThis as unknown as { __rumbleOnchainReconcileLastRunMs?: number };
 const MIN_INTERVAL_MS = process.env.NODE_ENV === "production" ? 60_000 : 20_000;
+const DEFAULT_RECONCILE_LIMIT = process.env.NODE_ENV === "production" ? 2 : 5;
 
 function resolveOnchainRumbleIdNumber(row: {
   id: string;
@@ -49,7 +50,7 @@ export async function reconcileOnchainReportResults(options?: {
   limit?: number;
 }): Promise<OnchainReconcileResult> {
   const force = options?.force === true;
-  const limit = options?.limit ?? 10;
+  const limit = options?.limit ?? DEFAULT_RECONCILE_LIMIT;
 
   const now = Date.now();
   const lastRun = g.__rumbleOnchainReconcileLastRunMs ?? 0;
@@ -269,6 +270,9 @@ export async function reconcileOnchainReportResults(options?: {
         stateAfter: null,
         error: String(error),
       });
+      if (/429|too many requests|rate limit/i.test(String(error))) {
+        break;
+      }
     }
   }
 

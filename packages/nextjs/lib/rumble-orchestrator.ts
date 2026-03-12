@@ -456,6 +456,24 @@ const FINALIZE_UNDELEGATE_TIMEOUT_MS = readIntervalMs(
 );
 const ONCHAIN_FINALIZATION_DELAY_MS = 30_000; // completeRumble after 30s claim window (sweep disabled)
 const ONCHAIN_FINALIZATION_RETRY_MS = 10_000;
+const ONCHAIN_FINALIZATION_RATE_LIMIT_RETRY_BASE_MS = readIntervalMs(
+  "RUMBLE_FINALIZATION_RATE_LIMIT_RETRY_BASE_MS",
+  60_000,
+  10_000,
+  15 * 60_000,
+);
+const ONCHAIN_FINALIZATION_RATE_LIMIT_RETRY_MAX_MS = readIntervalMs(
+  "RUMBLE_FINALIZATION_RATE_LIMIT_RETRY_MAX_MS",
+  5 * 60_000,
+  30_000,
+  60 * 60_000,
+);
+const MAX_FINALIZATIONS_PER_IDLE_TICK = readInt(
+  "RUMBLE_MAX_FINALIZATIONS_PER_IDLE_TICK",
+  1,
+  1,
+  5,
+);
 const ONCHAIN_CREATE_RETRY_MS = 5_000;
 const ONCHAIN_CREATE_STALL_TIMEOUT_MS = readIntervalMs(
   "RUMBLE_ONCHAIN_CREATE_STALL_TIMEOUT_MS",
@@ -550,6 +568,27 @@ interface PendingFinalization {
   nextAttemptAt: number;
   attempts: number;
   completeDone: boolean;
+}
+
+interface PersistedOnchainTurnDecision {
+  fighterId: string;
+  move: MoveType;
+  moveCode: number;
+  salt32Hex: string;
+  commitmentHex: string;
+  commitSubmitted: boolean;
+  revealSubmitted: boolean;
+  hasSigner: boolean;
+  commitDisabledReason?: string;
+  revealDisabledReason?: string;
+}
+
+interface PersistedOnchainTurnDecisionState {
+  rumbleId: string;
+  turns: Array<{
+    turn: number;
+    decisions: PersistedOnchainTurnDecision[];
+  }>;
 }
 
 interface PendingSweep {
@@ -790,6 +829,7 @@ export class RumbleOrchestrator {
   private settlingRumbleIds: Set<string> = new Set(); // rumble IDs currently attempting on-chain settlement
   private pendingFinalizations: Map<string, PendingFinalization> = new Map();
   private pendingSweeps: Map<string, PendingSweep> = new Map();
+  private turnDecisionPersistChains: Map<string, Promise<void>> = new Map();
   private lastRentReclaimAt = 0;
   private rentReclaimInFlight = false;
   private mainnetResultRetryQueue: Map<string, {
@@ -913,6 +953,155 @@ export class RumbleOrchestrator {
       this.pendingVrfShowerResult = parsed;
     }
     return parsed;
+  }
+
+  private turnDecisionAdminKey(rumbleId: string): string {
+    return `combat_turn_decisions:${rumbleId}`;
+  }
+
+  private serializeTurnDecisions(
+    turnDecisions: Map<number, Map<string, OnchainTurnDecision>>,
+    rumbleId: string,
+  ): PersistedOnchainTurnDecisionState {
+    return {
+      rumbleId,
+      turns: [...turnDecisions.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([turn, decisions]) => ({
+          turn,
+          decisions: [...decisions.entries()].map(([fighterId, decision]) => ({
+            fighterId,
+            move: decision.move,
+            moveCode: decision.moveCode,
+            salt32Hex: decision.salt32Hex,
+            commitmentHex: decision.commitmentHex,
+            commitSubmitted: decision.commitSubmitted,
+            revealSubmitted: decision.revealSubmitted,
+            hasSigner: decision.hasSigner,
+            commitDisabledReason: decision.commitDisabledReason,
+            revealDisabledReason: decision.revealDisabledReason,
+          })),
+        })),
+    };
+  }
+
+  private parsePersistedTurnDecisions(
+    raw: unknown,
+  ): Map<number, Map<string, OnchainTurnDecision>> {
+    const parsed = new Map<number, Map<string, OnchainTurnDecision>>();
+    if (!raw || typeof raw !== "object") return parsed;
+
+    const turns = Array.isArray((raw as PersistedOnchainTurnDecisionState).turns)
+      ? (raw as PersistedOnchainTurnDecisionState).turns
+      : [];
+
+    for (const entry of turns) {
+      const turn = Number(entry?.turn);
+      if (!Number.isInteger(turn) || turn <= 0) continue;
+      const decisions = new Map<string, OnchainTurnDecision>();
+      const rows = Array.isArray(entry?.decisions) ? entry.decisions : [];
+      for (const row of rows) {
+        const fighterId = typeof row?.fighterId === "string" ? row.fighterId.trim() : "";
+        if (!fighterId) continue;
+        const move = typeof row?.move === "string" ? (row.move as MoveType) : null;
+        const moveCode = Number(row?.moveCode);
+        const salt32Hex = typeof row?.salt32Hex === "string" ? row.salt32Hex : "";
+        const commitmentHex = typeof row?.commitmentHex === "string" ? row.commitmentHex : "";
+        if (!move || !Number.isInteger(moveCode) || !salt32Hex || !commitmentHex) continue;
+        decisions.set(fighterId, {
+          move,
+          moveCode,
+          salt32Hex,
+          commitmentHex,
+          commitSubmitted: row?.commitSubmitted === true,
+          revealSubmitted: row?.revealSubmitted === true,
+          hasSigner: row?.hasSigner === true,
+          commitDisabledReason:
+            typeof row?.commitDisabledReason === "string" && row.commitDisabledReason.length > 0
+              ? row.commitDisabledReason
+              : undefined,
+          revealDisabledReason:
+            typeof row?.revealDisabledReason === "string" && row.revealDisabledReason.length > 0
+              ? row.revealDisabledReason
+              : undefined,
+        });
+      }
+      if (decisions.size > 0) {
+        parsed.set(turn, decisions);
+      }
+    }
+
+    return parsed;
+  }
+
+  private async loadPersistedTurnDecisions(
+    rumbleId: string,
+    state: SlotCombatState,
+  ): Promise<number> {
+    const raw = await persist.getAdminConfig(this.turnDecisionAdminKey(rumbleId));
+    const parsed = this.parsePersistedTurnDecisions(raw);
+    if (parsed.size === 0) return 0;
+    state.turnDecisions = parsed;
+    return parsed.size;
+  }
+
+  private queuePersistedTurnDecisionWrite(
+    rumbleId: string,
+    payload: PersistedOnchainTurnDecisionState | null,
+  ): void {
+    const persistKey = this.turnDecisionAdminKey(rumbleId);
+    const previous = this.turnDecisionPersistChains.get(rumbleId) ?? Promise.resolve();
+    const next = previous
+      .catch(() => {})
+      .then(() => persist.setAdminConfig(persistKey, payload))
+      .catch((err) => {
+        console.warn(`[Orchestrator] Failed to persist combat turn decisions for ${rumbleId}:`, err);
+      })
+      .finally(() => {
+        if (this.turnDecisionPersistChains.get(rumbleId) === next) {
+          this.turnDecisionPersistChains.delete(rumbleId);
+        }
+      });
+    this.turnDecisionPersistChains.set(rumbleId, next);
+  }
+
+  private persistTurnDecisions(rumbleId: string, state: SlotCombatState): void {
+    const payload =
+      state.turnDecisions.size > 0
+        ? this.serializeTurnDecisions(state.turnDecisions, rumbleId)
+        : null;
+    this.queuePersistedTurnDecisionWrite(rumbleId, payload);
+  }
+
+  private clearPersistedTurnDecisions(rumbleId: string): void {
+    this.queuePersistedTurnDecisionWrite(rumbleId, null);
+  }
+
+  private pruneTurnDecisionsBefore(
+    rumbleId: string,
+    state: SlotCombatState,
+    minTurnInclusive: number,
+  ): void {
+    let changed = false;
+    for (const turn of [...state.turnDecisions.keys()]) {
+      if (turn >= minTurnInclusive) continue;
+      state.turnDecisions.delete(turn);
+      changed = true;
+    }
+    if (changed) {
+      this.persistTurnDecisions(rumbleId, state);
+    }
+  }
+
+  private getCombatTurnCount(state: SlotCombatState | null | undefined): number {
+    if (!state) return 0;
+    return Math.max(state.turns.length, state.lastOnchainTurnResolved ?? 0);
+  }
+
+  private hasPriorityActiveSlot(): boolean {
+    return this.queueManager
+      .getSlots()
+      .some((slot) => slot.state === "betting" || slot.state === "combat");
   }
 
   /**
@@ -1329,10 +1518,12 @@ export class RumbleOrchestrator {
     await Promise.all(slotPromises);
 
     await this.processPendingRumbleFinalizations();
-    await this.processPendingSweeps();
-    this.pollPendingIchorShower();
-    this.periodicRentReclaim();
-    this.processMainnetResultRetries();
+    if (!this.hasPriorityActiveSlot()) {
+      await this.processPendingSweeps();
+      this.pollPendingIchorShower();
+      this.periodicRentReclaim();
+      this.processMainnetResultRetries();
+    }
     this.processWorkerCommands();
   }
 
@@ -1715,7 +1906,7 @@ export class RumbleOrchestrator {
       const remainingFighters = combatState
         ? combatState.fighters.filter((fighter) => fighter.hp > 0).length
         : slot.fighters.length;
-      const turnCount = combatState?.turns.length ?? 0;
+      const turnCount = this.getCombatTurnCount(combatState);
       const waitingOnMainnetReady = slot.state === "betting" && !slot.bettingDeadline;
       const waitingOnMatchupVrf =
         slot.state === "combat" &&
@@ -2061,10 +2252,15 @@ export class RumbleOrchestrator {
 
   private async processPendingRumbleFinalizations(): Promise<void> {
     if (this.pendingFinalizations.size === 0) return;
+    if (this.hasPriorityActiveSlot()) return;
     const now = Date.now();
-    const due = [...this.pendingFinalizations.values()].filter((entry) => entry.nextAttemptAt <= now);
+    const due = [...this.pendingFinalizations.values()]
+      .filter((entry) => entry.nextAttemptAt <= now)
+      .sort((a, b) => a.nextAttemptAt - b.nextAttemptAt || a.attempts - b.attempts);
     if (due.length === 0) return;
-    await Promise.all(due.map((entry) => this.finalizeRumbleOnChain(entry)));
+    for (const entry of due.slice(0, MAX_FINALIZATIONS_PER_IDLE_TICK)) {
+      await this.finalizeRumbleOnChain(entry);
+    }
   }
 
   private async finalizeRumbleOnChain(entry: PendingFinalization): Promise<void> {
@@ -2106,9 +2302,10 @@ export class RumbleOrchestrator {
             console.error(`[ONCHAIN-COMPLETE] completeRumble failed permanently for rumble ${entry.rumbleId}:`, err);
             return;
           }
-          entry.nextAttemptAt = Date.now() + ONCHAIN_FINALIZATION_RETRY_MS;
+          const retryDelayMs = this.getFinalizationRetryDelayMs(entry.attempts, err);
+          entry.nextAttemptAt = Date.now() + retryDelayMs;
           console.warn(
-            `[ONCHAIN-COMPLETE] completeRumble retry ${entry.attempts}/${MAX_FINALIZATION_ATTEMPTS} for rumble ${entry.rumbleId} (${formatError(err)})`
+            `[ONCHAIN-COMPLETE] completeRumble retry ${entry.attempts}/${MAX_FINALIZATION_ATTEMPTS} for rumble ${entry.rumbleId} in ${Math.round(retryDelayMs / 1000)}s (${formatError(err)})`
           );
           return;
         }
@@ -2952,6 +3149,7 @@ export class RumbleOrchestrator {
 
     // Clean up tracking maps
     this.openTurnFatalFailures.delete(rumbleId);
+    this.clearPersistedTurnDecisions(rumbleId);
     await this.clearCombatWakeSubscription(slotIndex);
     this.combatStates.delete(slotIndex);
 
@@ -3542,10 +3740,8 @@ export class RumbleOrchestrator {
       const state = this.combatStates.get(idx)!;
 
       // Check if this combat already has saved progress in the DB
-      const savedTurnLog = await persist.loadRumbleTurnLog(slot.id);
-      if (savedTurnLog && savedTurnLog.length > 0) {
-        // COLD-START RESUME: Replay saved turns to reconstruct fighter state
-        this.replaySavedTurns(state, savedTurnLog as RumbleTurn[]);
+      const restoredTurnCount = await this.restorePersistedCombatProgress(slot, state);
+      if (restoredTurnCount > 0) {
         console.log(
           `[Orchestrator] Slot ${idx} resumed combat from turn ${state.turns.length} ` +
             `(${state.fighters.filter(f => f.hp > 0).length} alive)`,
@@ -3707,8 +3903,10 @@ export class RumbleOrchestrator {
    */
   private replaySavedTurns(state: SlotCombatState, savedTurns: RumbleTurn[]): void {
     const fighterMap = new Map(state.fighters.map(f => [f.id, f]));
+    let lastResolvedTurn = 0;
 
     for (const turn of savedTurns) {
+      lastResolvedTurn = Math.max(lastResolvedTurn, turn.turnNumber);
       // Apply damage from each pairing
       for (const p of turn.pairings) {
         const fA = fighterMap.get(p.fighterA);
@@ -3747,6 +3945,27 @@ export class RumbleOrchestrator {
 
     // Restore turn history
     state.turns = savedTurns;
+    state.lastOnchainTurnResolved = Math.max(state.lastOnchainTurnResolved, lastResolvedTurn);
+    for (const fighter of state.fighters) {
+      state.previousDamageTaken.set(fighter.id, fighter.totalDamageTaken);
+    }
+  }
+
+  private async restorePersistedCombatProgress(
+    slot: RumbleSlot,
+    state: SlotCombatState,
+  ): Promise<number> {
+    const savedTurnLog = await persist.loadRumbleTurnLog(slot.id);
+    if (!savedTurnLog || savedTurnLog.length === 0) {
+      return 0;
+    }
+    this.replaySavedTurns(state, savedTurnLog as RumbleTurn[]);
+    const restoredTurns = this.getCombatTurnCount(state);
+    console.log(
+      `[Orchestrator] Slot ${slot.slotIndex} restored combat progress for ${slot.id} ` +
+        `from turn ${restoredTurns} (${state.fighters.filter((fighter) => fighter.hp > 0).length} alive)`,
+    );
+    return restoredTurns;
   }
 
   private async handleCombatPhaseOnchain(slot: RumbleSlot): Promise<void> {
@@ -3762,6 +3981,14 @@ export class RumbleOrchestrator {
     let justInitialized = false;
     if (!this.combatStates.has(idx) || this.combatStates.get(idx)!.rumbleId !== slot.id) {
       await this.initCombatState(slot);
+      const initializedState = this.combatStates.get(idx)!;
+      const restoredTurnCount = await this.restorePersistedCombatProgress(slot, initializedState);
+      const restoredDecisionTurns = await this.loadPersistedTurnDecisions(slot.id, initializedState);
+      if (restoredDecisionTurns > 0) {
+        console.log(
+          `[Orchestrator] Slot ${idx} restored ${restoredDecisionTurns} persisted turn decision turn(s) for ${slot.id}`,
+        );
+      }
       await this.startCombatOnChain(slot);
 
       invalidateReadCache(`rumble:${rumbleIdNum}`);
@@ -3776,7 +4003,7 @@ export class RumbleOrchestrator {
       }
 
       const pool = this.bettingPools.get(idx);
-      if (pool) {
+      if (pool && restoredTurnCount === 0) {
         this.emit("betting_closed", {
           slotIndex: idx,
           rumbleId: slot.id,
@@ -3844,11 +4071,13 @@ export class RumbleOrchestrator {
         await this.syncCombatWakeSubscription(idx, updatedState);
       }
 
-      this.emit("combat_started", {
-        slotIndex: idx,
-        rumbleId: slot.id,
-        fighters: [...slot.fighters],
-      });
+      if (restoredTurnCount === 0) {
+        this.emit("combat_started", {
+          slotIndex: idx,
+          rumbleId: slot.id,
+          fighters: [...slot.fighters],
+        });
+      }
       justInitialized = true;
       // Fall through — proceed to combat processing in same tick
     }
@@ -3938,6 +4167,9 @@ export class RumbleOrchestrator {
       }
     }
     if (!combat) return;
+    if (combat.currentTurn > 0) {
+      this.pruneTurnDecisionsBefore(slot.id, state, combat.currentTurn);
+    }
 
     if (
       state.lastResolveSubmittedTurn !== undefined &&
@@ -4019,7 +4251,9 @@ export class RumbleOrchestrator {
       };
       state.turns.push(turn);
       state.lastOnchainTurnResolved = combat.currentTurn;
+      state.turnDecisions.delete(turnNum);
       await persist.updateRumbleTurnLog(slot.id, state.turns, state.turns.length);
+      this.persistTurnDecisions(slot.id, state);
 
       this.emit("turn_resolved", {
         slotIndex: idx,
@@ -4242,7 +4476,9 @@ export class RumbleOrchestrator {
         state.turns.push(turnPost);
         state.lastOnchainTurnResolved = combat.currentTurn;
         state.lastResolveSubmittedTurn = undefined;
+        state.turnDecisions.delete(turnNumPost);
         await persist.updateRumbleTurnLog(slot.id, state.turns, state.turns.length);
+        this.persistTurnDecisions(slot.id, state);
 
         this.emit("turn_resolved", {
           slotIndex: idx,
@@ -4797,6 +5033,17 @@ export class RumbleOrchestrator {
     ]);
   }
 
+  private getFinalizationRetryDelayMs(attempts: number, err: unknown): number {
+    if (!this.isRpcRateLimitError(err)) {
+      return ONCHAIN_FINALIZATION_RETRY_MS;
+    }
+    const exponent = Math.min(4, Math.max(0, attempts - 1));
+    return Math.min(
+      ONCHAIN_FINALIZATION_RATE_LIMIT_RETRY_MAX_MS,
+      ONCHAIN_FINALIZATION_RATE_LIMIT_RETRY_BASE_MS * 2 ** exponent,
+    );
+  }
+
   private isCommitMissingFundsError(err: unknown): boolean {
     return this.hasErrorTokenAny(err, [
       "insufficient funds for rent",
@@ -4845,9 +5092,13 @@ export class RumbleOrchestrator {
         this.ensureOnchainTurnDecision(slot, state, fighterB, fighterA, rumbleIdNum, turn),
       ]);
     }
+    if (state.turnDecisions.has(turn)) {
+      this.persistTurnDecisions(slot.id, state);
+    }
 
     const decisionsByFighter = state.turnDecisions.get(turn);
     if (!decisionsByFighter) return;
+    let decisionsDirty = false;
 
     for (const [fighterId, decision] of decisionsByFighter.entries()) {
       const fighterWallet = state.fighterWallets.get(fighterId) ?? null;
@@ -4904,12 +5155,14 @@ export class RumbleOrchestrator {
             decision.commitSubmitted = true;
             decision.commitErrorCount = 0;
             decision.nextCommitRetryAtSlot = undefined;
+            decisionsDirty = true;
             console.log(`[OnChain] commitMove ${fighterId} turn ${turn}: ${sig}`);
           }
         } catch (err) {
           if (this.isCommitMissingFundsError(err)) {
             decision.commitDisabledReason = "insufficient_funds";
             decision.nextCommitRetryAtSlot = combat.revealCloseSlot + 1n;
+            decisionsDirty = true;
             console.warn(
               `[OnChain] commitMove disabled for fighter ${fighterId} turn ${turn}: ${formatError(err)}`,
             );
@@ -4925,8 +5178,10 @@ export class RumbleOrchestrator {
             decision.commitSubmitted = true;
             decision.commitErrorCount = 0;
             decision.nextCommitRetryAtSlot = undefined;
+            decisionsDirty = true;
           } else if (this.isRpcRateLimitError(err)) {
             decision.nextCommitRetryAtSlot = currentSlot + 3n;
+            decisionsDirty = true;
             console.warn(
               `[OnChain] commitMove rate-limited for fighter ${fighterId} turn ${turn}; backing off 3 slots`,
             );
@@ -4935,6 +5190,7 @@ export class RumbleOrchestrator {
             decision.commitErrorCount = nextErrors;
             const backoffSlots = BigInt(Math.min(12, Math.max(1, nextErrors)));
             decision.nextCommitRetryAtSlot = currentSlot + backoffSlots;
+            decisionsDirty = true;
             console.warn(
               `[OnChain] commitMove failed for fighter ${fighterId} turn ${turn}: ${formatError(err)}`,
             );
@@ -4988,12 +5244,14 @@ export class RumbleOrchestrator {
             decision.revealSubmitted = true;
             decision.revealErrorCount = 0;
             decision.nextRevealRetryAtSlot = undefined;
+            decisionsDirty = true;
             console.log(`[OnChain] revealMove ${fighterId} turn ${turn}: ${sig}`);
           }
         } catch (err) {
           if (this.isRevealMissingCommitmentError(err)) {
             decision.revealDisabledReason = "commitment_missing";
             decision.nextRevealRetryAtSlot = combat.revealCloseSlot + 1n;
+            decisionsDirty = true;
             console.warn(
               `[OnChain] revealMove disabled for fighter ${fighterId} turn ${turn}: commitment missing`,
             );
@@ -5008,8 +5266,10 @@ export class RumbleOrchestrator {
             decision.revealSubmitted = true;
             decision.revealErrorCount = 0;
             decision.nextRevealRetryAtSlot = undefined;
+            decisionsDirty = true;
           } else if (this.isRpcRateLimitError(err)) {
             decision.nextRevealRetryAtSlot = currentSlot + 3n;
+            decisionsDirty = true;
             console.warn(
               `[OnChain] revealMove rate-limited for fighter ${fighterId} turn ${turn}; backing off 3 slots`,
             );
@@ -5018,12 +5278,17 @@ export class RumbleOrchestrator {
             decision.revealErrorCount = nextErrors;
             const backoffSlots = BigInt(Math.min(12, Math.max(1, nextErrors)));
             decision.nextRevealRetryAtSlot = currentSlot + backoffSlots;
+            decisionsDirty = true;
             console.warn(
               `[OnChain] revealMove failed for fighter ${fighterId} turn ${turn}: ${formatError(err)}`,
             );
           }
         }
       }
+    }
+
+    if (decisionsDirty) {
+      this.persistTurnDecisions(slot.id, state);
     }
   }
 
@@ -5169,7 +5434,9 @@ export class RumbleOrchestrator {
     if (byeFighterId) localTurn.bye = byeFighterId;
     state.turns.push(localTurn);
     state.lastOnchainTurnResolved = turn;
+    state.turnDecisions.delete(turn);
     await persist.updateRumbleTurnLog(slot.id, state.turns, state.turns.length);
+    this.persistTurnDecisions(slot.id, state);
 
     // Compute remaining fighters after this turn's eliminations
     const remainingAfterTurn = aliveIndices.length - turnEliminations.length;
@@ -6715,6 +6982,7 @@ export class RumbleOrchestrator {
       this.onchainRumbleCreateStartedAt.delete(previousRumbleId);
       this.onchainRumbleNumberById.delete(previousRumbleId);
       this.clearOnchainCreateFailure(previousRumbleId);
+      this.clearPersistedTurnDecisions(previousRumbleId);
       await this.clearCombatWakeSubscription(slotIndex);
       this.combatStates.delete(slotIndex);
       this.payoutResults.delete(slotIndex);
@@ -6906,7 +7174,7 @@ export class RumbleOrchestrator {
         state: slot.state,
         rumbleId: slot.id,
         fighters: [...slot.fighters],
-        turnCount: combatState?.turns.length ?? 0,
+        turnCount: this.getCombatTurnCount(combatState),
         remainingFighters: remaining,
         bettingDeadline: slot.bettingDeadline,
         nextTurnAt,
