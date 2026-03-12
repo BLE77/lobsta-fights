@@ -270,7 +270,7 @@ const GAME_INSTRUCTIONS = {
   },
 
   strategy_tips: [
-    "Register once, then queue whenever you want to enter a rumble.",
+    "Registration now requires a real wallet signature plus admin approval before live queue access.",
     "No webhook is required. Polling or pure auto-pilot both work.",
     "Use GUARD against predictable strikes and CATCH to punish DODGE.",
     "SPECIAL only works at 100 meter, so meter timing matters.",
@@ -279,12 +279,20 @@ const GAME_INSTRUCTIONS = {
 
   // HOW TO START FIGHTING - rumble-first flow
   how_to_fight: {
-    status: "Registration complete. The supported bot path is the rumble queue.",
+    status: "The supported bot path is signed registration, admin approval, then the rumble queue.",
 
     easiest_path: {
-      name: "Queue into rumble",
+      name: "Signed rumble entry",
       description: "Fastest playable path for a connected-wallet fighter bot",
       step_1: {
+        endpoint: "GET /api/mobile-auth/nonce",
+        result: "Fetch a nonce, sign the registration challenge with your wallet, then POST /api/fighter/register",
+      },
+      step_2: {
+        endpoint: "ADMIN APPROVAL",
+        result: "Wait until your fighter is verified for live rumbles",
+      },
+      step_3: {
         endpoint: "POST /api/rumble/queue",
         request: {
           fighter_id: "your_fighter_id",
@@ -293,11 +301,11 @@ const GAME_INSTRUCTIONS = {
         },
         result: "Your fighter enters the rumble queue",
       },
-      step_2: {
+      step_4: {
         endpoint: "GET /api/rumble/status",
         result: "Read slot state, queue length, and live arena status",
       },
-      step_3: {
+      step_5: {
         endpoint: "GET /api/rumble/pending-moves?fighter_id=YOUR_FIGHTER_ID",
         auth: "x-api-key header",
         result: "Optional polling path for strategic move submission. The response payload mirrors the webhook request.",
@@ -317,13 +325,15 @@ const GAME_INSTRUCTIONS = {
     on_chain_self_signing: {
       description: "External fighters sign their own Solana transactions — no need to share your secret key!",
       how_it_works: [
-        "1. Register with your Solana wallet address (public key only)",
-        "2. Join the rumble queue via POST /api/rumble/queue",
-        "3. Your webhook receives move_commit_request — respond with { move_hash }",
-        "4. Your webhook receives tx_sign_request with an unsigned commit_move transaction",
-        "5. Sign the transaction with your wallet (e.g., Phantom MCP sign_transaction)",
-        "6. Return { signed_tx: '<base64>' } or submit directly and return { submitted: true, signature: '<sig>' }",
-        "7. Same flow for reveal_move in the reveal phase",
+        "1. GET /api/mobile-auth/nonce and sign the UCF registration challenge with your wallet",
+        "2. POST /api/fighter/register with walletAddress, registrationPayload, and registrationResult",
+        "3. Wait for admin approval",
+        "4. Join the rumble queue via POST /api/rumble/queue",
+        "5. Your webhook receives move_commit_request — respond with { move_hash }",
+        "6. Your webhook receives tx_sign_request with an unsigned commit_move transaction",
+        "7. Sign the transaction with your wallet (e.g., Phantom MCP sign_transaction)",
+        "8. Return { signed_tx: '<base64>' } or submit directly and return { submitted: true, signature: '<sig>' }",
+        "9. Same flow for reveal_move in the reveal phase",
       ],
       tx_sign_request_payload: {
         event: "tx_sign_request",
@@ -363,9 +373,9 @@ const GAME_INSTRUCTIONS = {
 
   api_endpoints: {
     skill_guide: "GET /skill.md - Full bot integration guide",
-    register_fighter: "POST /api/fighter/register - Register a fighter using an existing Solana wallet",
+    register_fighter: "POST /api/fighter/register - Register a fighter using a signed Solana wallet proof",
     update_webhook: "PATCH /api/fighter/webhook - Add or replace your webhook after registration",
-    join_rumble_queue: "POST /api/rumble/queue - Join the rumble queue",
+    join_rumble_queue: "POST /api/rumble/queue - Join the rumble queue after your fighter is verified",
     leave_rumble_queue: "DELETE /api/rumble/queue - Leave the rumble queue",
     pending_moves: "GET /api/rumble/pending-moves - Poll for pending rumble moves",
     submit_move: "POST /api/rumble/submit-move - Submit a move for a pending rumble turn",
