@@ -3001,12 +3001,27 @@ export class RumbleOrchestrator {
             const mainnetSig = await createRumbleMainnet(rumbleIdNum, fighterPubkeys, bettingDeadlineUnix);
             if (mainnetSig) {
               console.log(`[OnChain:Mainnet] createRumble succeeded: ${mainnetSig}`);
+              this.clearOnchainCreateFailure(rumbleId);
               await markOpComplete(rumbleId, "createRumble", mainnetSig);
             } else {
+              const reason = "mainnet betting init failed: createRumbleMainnet returned null";
+              this.recordOnchainCreateFailure(
+                rumbleId,
+                reason,
+                fighterIds.length,
+                slotIndex,
+              );
               await markOpFailed(rumbleId, "createRumble", "createRumbleMainnet returned null");
-              console.warn(`[OnChain:Mainnet] createRumble returned null — mainnet betting unavailable for ${rumbleId}`);
+              console.warn(`[OnChain:Mainnet] ${reason} for ${rumbleId}`);
             }
           } catch (err) {
+            const reason = `mainnet betting init failed: ${formatError(err)}`;
+            this.recordOnchainCreateFailure(
+              rumbleId,
+              reason,
+              fighterIds.length,
+              slotIndex,
+            );
             console.error(`[OnChain:Mainnet] createRumble error (non-blocking):`, err);
             await markOpFailed(rumbleId, "createRumble", formatError(err));
           }

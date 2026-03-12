@@ -14,6 +14,7 @@ import {
   Keypair,
   LAMPORTS_PER_SOL,
   PublicKey,
+  SendTransactionError,
   SystemProgram,
   TransactionInstruction,
   Transaction,
@@ -2591,6 +2592,39 @@ async function sendAdminTxFireAndForget(
     tx.lastValidBlockHeight = lastValidBlockHeight;
   };
 
+  const enrichSendError = async (error: unknown): Promise<unknown> => {
+    if (!(error instanceof SendTransactionError)) return error;
+
+    let logs = Array.isArray(error.logs)
+      ? error.logs.filter((line): line is string => typeof line === "string" && line.trim().length > 0)
+      : [];
+    if (logs.length === 0) {
+      try {
+        const fetchedLogs = await error.getLogs(conn);
+        if (Array.isArray(fetchedLogs)) {
+          logs = fetchedLogs.filter((line): line is string => typeof line === "string" && line.trim().length > 0);
+        }
+      } catch {
+        // Ignore secondary log-fetch failures and preserve the original error.
+      }
+    }
+
+    const detail = typeof error.transactionError?.message === "string"
+      ? error.transactionError.message.trim()
+      : "";
+    const segments = [error.message];
+    if (detail && !segments.some((segment) => segment.includes(detail))) {
+      segments.push(detail);
+    }
+    if (logs.length > 0) {
+      segments.push(`logs=${logs.slice(-8).join(" || ")}`);
+    }
+
+    const wrapped = new Error(segments.join(" | "));
+    wrapped.name = error.name;
+    return wrapped;
+  };
+
   const maxAttempts = isEr ? 3 : 2;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const tx: Transaction = await method.transaction();
@@ -2611,7 +2645,7 @@ async function sendAdminTxFireAndForget(
       });
     } catch (error) {
       const retryable = shouldRetryBlockhash(error) && attempt < maxAttempts;
-      if (!retryable) throw error;
+      if (!retryable) throw await enrichSendError(error);
       const waitMs = 150 * attempt;
       console.warn(
         `[TxSend] Retrying admin tx after blockhash error (attempt ${attempt}/${maxAttempts}):`,

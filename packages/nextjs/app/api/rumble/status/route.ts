@@ -13,6 +13,7 @@ import {
   loadPayoutResult,
   getIchorShowerState,
   getStats,
+  getAdminConfig,
   hasMinimumRumbleFighters,
   extractRumbleFighterIds,
   MIN_ACTIVE_RUMBLE_FIGHTERS,
@@ -1612,8 +1613,51 @@ export async function GET(request: Request) {
       (sum, s) => sum + (s.state !== "idle" ? s.fighters.length : 0),
       0,
     );
-    const runtimeHealth = orchestrator.getRuntimeHealth();
+    const workerRuntime = await getAdminConfig("worker_runtime_health");
+    const runtimeHealthLocal = orchestrator.getRuntimeHealth();
+    const workerRuntimeFreshMs =
+      typeof workerRuntime === "object" && workerRuntime && typeof (workerRuntime as any).updatedAt === "string"
+        ? Date.now() - new Date((workerRuntime as any).updatedAt).getTime()
+        : null;
+    const workerRuntimeHealthy =
+      workerRuntimeFreshMs !== null &&
+      Number.isFinite(workerRuntimeFreshMs) &&
+      workerRuntimeFreshMs <= 30_000 &&
+      typeof workerRuntime === "object" &&
+      workerRuntime !== null;
+    const workerSnapshot = workerRuntimeHealthy ? (workerRuntime as any) : null;
+    const runtimeHealth = workerSnapshot
+      ? {
+          ...runtimeHealthLocal,
+          onchainAdmin:
+            typeof workerSnapshot.onchainAdmin === "object" && workerSnapshot.onchainAdmin
+              ? workerSnapshot.onchainAdmin
+              : runtimeHealthLocal.onchainAdmin,
+          queueLength:
+            typeof workerSnapshot.queueLength === "number"
+              ? workerSnapshot.queueLength
+              : runtimeHealthLocal.queueLength,
+          queueStartCountdownMs:
+            typeof workerSnapshot.queueStartCountdownMs === "number" ||
+            workerSnapshot.queueStartCountdownMs === null
+              ? workerSnapshot.queueStartCountdownMs
+              : runtimeHealthLocal.queueStartCountdownMs,
+          onchainCreateFailures:
+            Array.isArray(workerSnapshot.onchainCreateFailures)
+              ? workerSnapshot.onchainCreateFailures
+              : runtimeHealthLocal.onchainCreateFailures,
+          slotReports:
+            Array.isArray(workerSnapshot.slotReports)
+              ? workerSnapshot.slotReports
+              : runtimeHealthLocal.slotReports,
+        }
+      : runtimeHealthLocal;
     const systemWarnings: string[] = [];
+    if (workerRuntimeFreshMs == null) {
+      systemWarnings.push("Worker runtime heartbeat unavailable.");
+    } else if (workerRuntimeFreshMs > 30_000) {
+      systemWarnings.push(`Worker heartbeat stale (${Math.round(workerRuntimeFreshMs / 1000)}s old).`);
+    }
     if (!runtimeHealth.onchainAdmin.ready && runtimeHealth.onchainAdmin.reason) {
       systemWarnings.push(`On-chain admin unavailable: ${runtimeHealth.onchainAdmin.reason}`);
     }

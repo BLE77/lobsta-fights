@@ -92,12 +92,45 @@ export async function GET(request: Request) {
       (a, b) => Number(a.slot_index) - Number(b.slot_index),
     );
     const staleActiveRows = Math.max(0, activeRumblesRaw.length - activeRumbles.length);
-    const runtimeHealth = getOrchestrator().getRuntimeHealth();
+    const runtimeHealthLocal = getOrchestrator().getRuntimeHealth();
     const systemWarnings: string[] = [];
     const workerRuntimeFreshMs =
       typeof workerRuntime === "object" && workerRuntime && typeof (workerRuntime as any).updatedAt === "string"
         ? Date.now() - new Date((workerRuntime as any).updatedAt).getTime()
         : null;
+    const workerRuntimeHealthy =
+      workerRuntimeFreshMs !== null &&
+      Number.isFinite(workerRuntimeFreshMs) &&
+      workerRuntimeFreshMs <= 30_000 &&
+      typeof workerRuntime === "object" &&
+      workerRuntime !== null;
+    const workerSnapshot = workerRuntimeHealthy ? (workerRuntime as any) : null;
+    const runtimeHealth = workerSnapshot
+      ? {
+          ...runtimeHealthLocal,
+          onchainAdmin:
+            typeof workerSnapshot.onchainAdmin === "object" && workerSnapshot.onchainAdmin
+              ? workerSnapshot.onchainAdmin
+              : runtimeHealthLocal.onchainAdmin,
+          queueLength:
+            typeof workerSnapshot.queueLength === "number"
+              ? workerSnapshot.queueLength
+              : runtimeHealthLocal.queueLength,
+          queueStartCountdownMs:
+            typeof workerSnapshot.queueStartCountdownMs === "number" ||
+            workerSnapshot.queueStartCountdownMs === null
+              ? workerSnapshot.queueStartCountdownMs
+              : runtimeHealthLocal.queueStartCountdownMs,
+          onchainCreateFailures:
+            Array.isArray(workerSnapshot.onchainCreateFailures)
+              ? workerSnapshot.onchainCreateFailures
+              : runtimeHealthLocal.onchainCreateFailures,
+          slotReports:
+            Array.isArray(workerSnapshot.slotReports)
+              ? workerSnapshot.slotReports
+              : runtimeHealthLocal.slotReports,
+        }
+      : runtimeHealthLocal;
     if (workerRuntimeFreshMs == null) {
       systemWarnings.push("Worker runtime heartbeat unavailable.");
     } else if (workerRuntimeFreshMs > 30_000) {
