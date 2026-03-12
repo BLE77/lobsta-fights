@@ -83,24 +83,134 @@ function isMatchingGuard(strike: string | undefined | null, guard: string | unde
   );
 }
 
-function describeDamage(
-  dmg: number,
+function renderDamageBadge(dmg: number, compact: boolean) {
+  return (
+    <span className={`${compact ? "text-[9px]" : "text-[10px]"} text-red-400 font-bold`}>
+      -{dmg}
+    </span>
+  );
+}
+
+function isCounterOutcome(
+  dmgTaken: number,
+  strikerMove: string,
+  defenderMove: string,
+): boolean {
+  return dmgTaken > 0 && isStrike(strikerMove) && isMatchingGuard(strikerMove, defenderMove);
+}
+
+function isCatchPunish(
+  dmgTaken: number,
   attackerMove: string,
   defenderMove: string,
-): { label: string; className: string } {
-  if (dmg > 0) {
-    if (dmg >= 20) return { label: `-${dmg}`, className: "text-red-400 font-bold" };
-    if (dmg >= 10) return { label: `-${dmg}`, className: "text-orange-400" };
-    return { label: `-${dmg}`, className: "text-yellow-400" };
+): boolean {
+  return dmgTaken > 0 && attackerMove === "CATCH" && defenderMove === "DODGE";
+}
+
+function renderOutcomeSummary(
+  pairing: Pairing,
+  fighterAName: string,
+  fighterBName: string,
+  compact: boolean,
+) {
+  const damageToA = Math.max(0, Number(pairing.damageToA ?? 0));
+  const damageToB = Math.max(0, Number(pairing.damageToB ?? 0));
+  const textSize = compact ? "text-[9px]" : "text-[10px]";
+
+  if (damageToA > 0 && damageToB > 0) {
+    return (
+      <>
+        <span className="text-amber-400 font-semibold">Trade hits.</span>{" "}
+        <span className="text-stone-300">{fighterAName}</span>{" "}
+        {renderDamageBadge(damageToA, compact)}
+        <span className="text-stone-600">, </span>
+        <span className="text-stone-300">{fighterBName}</span>{" "}
+        {renderDamageBadge(damageToB, compact)}
+      </>
+    );
   }
 
-  if ((isStrike(attackerMove) || attackerMove === "SPECIAL") && defenderMove === "DODGE") {
-    return { label: "DODGED", className: "text-green-400 font-semibold" };
+  if (isCounterOutcome(damageToA, pairing.moveA, pairing.moveB)) {
+    return (
+      <>
+        <span className="text-blue-400 font-semibold">{fighterBName} blocks and counters.</span>{" "}
+        <span className="text-stone-300">{fighterAName}</span>{" "}
+        {renderDamageBadge(damageToA, compact)}
+      </>
+    );
   }
-  if (isStrike(attackerMove) && isGuard(defenderMove) && isMatchingGuard(attackerMove, defenderMove)) {
-    return { label: "BLOCKED", className: "text-blue-400 font-semibold" };
+
+  if (isCounterOutcome(damageToB, pairing.moveB, pairing.moveA)) {
+    return (
+      <>
+        <span className="text-blue-400 font-semibold">{fighterAName} blocks and counters.</span>{" "}
+        <span className="text-stone-300">{fighterBName}</span>{" "}
+        {renderDamageBadge(damageToB, compact)}
+      </>
+    );
   }
-  return { label: "NO HIT", className: "text-stone-500" };
+
+  if (isCatchPunish(damageToA, pairing.moveB, pairing.moveA)) {
+    return (
+      <>
+        <span className="text-purple-400 font-semibold">{fighterBName} catches the dodge.</span>{" "}
+        <span className="text-stone-300">{fighterAName}</span>{" "}
+        {renderDamageBadge(damageToA, compact)}
+      </>
+    );
+  }
+
+  if (isCatchPunish(damageToB, pairing.moveA, pairing.moveB)) {
+    return (
+      <>
+        <span className="text-purple-400 font-semibold">{fighterAName} catches the dodge.</span>{" "}
+        <span className="text-stone-300">{fighterBName}</span>{" "}
+        {renderDamageBadge(damageToB, compact)}
+      </>
+    );
+  }
+
+  if (damageToA > 0) {
+    return (
+      <>
+        <span className={`${getMoveColor(pairing.moveB)} font-semibold`}>
+          {fighterBName} lands {getMoveLabel(pairing.moveB)}.
+        </span>{" "}
+        <span className="text-stone-300">{fighterAName}</span>{" "}
+        {renderDamageBadge(damageToA, compact)}
+      </>
+    );
+  }
+
+  if (damageToB > 0) {
+    return (
+      <>
+        <span className={`${getMoveColor(pairing.moveA)} font-semibold`}>
+          {fighterAName} lands {getMoveLabel(pairing.moveA)}.
+        </span>{" "}
+        <span className="text-stone-300">{fighterBName}</span>{" "}
+        {renderDamageBadge(damageToB, compact)}
+      </>
+    );
+  }
+
+  if (pairing.moveA === "DODGE" && pairing.moveB === "DODGE") {
+    return <span className="text-green-400 font-semibold">Both evade. No damage.</span>;
+  }
+
+  if ((isStrike(pairing.moveA) || pairing.moveA === "SPECIAL") && pairing.moveB === "DODGE") {
+    return <span className="text-green-400 font-semibold">{fighterBName} dodges clean. No damage.</span>;
+  }
+
+  if ((isStrike(pairing.moveB) || pairing.moveB === "SPECIAL") && pairing.moveA === "DODGE") {
+    return <span className="text-green-400 font-semibold">{fighterAName} dodges clean. No damage.</span>;
+  }
+
+  if (isGuard(pairing.moveA) && isGuard(pairing.moveB)) {
+    return <span className="text-blue-400 font-semibold">Both defend. No damage.</span>;
+  }
+
+  return <span className={`${textSize} text-stone-500`}>No contact. No damage.</span>;
 }
 
 export default function CombatFeed({
@@ -244,38 +354,27 @@ export default function CombatFeed({
 
           {/* Pairings — centered, each on its own line */}
           {turn.pairings.map((p, i) => {
-            const aTook = describeDamage(p.damageToA, p.moveB, p.moveA);
-            const bTook = describeDamage(p.damageToB, p.moveA, p.moveB);
             const fighterAName = resolveFighterLabel(p.fighterA, p.fighterAName);
             const fighterBName = resolveFighterLabel(p.fighterB, p.fighterBName);
             return (
               <div
                 key={`${turn.turnNumber}-${i}`}
-                className={`font-mono text-center py-0.5 ${compact ? "text-[11px]" : "text-xs"}`}
+                className={`font-mono text-center py-1 ${compact ? "text-[11px]" : "text-xs"}`}
               >
-                {/* Fighter A: name + move + received outcome */}
-                <span className="text-stone-300">{fighterAName}</span>
-                {" "}
-                <span className={`${getMoveColor(p.moveA)} ${compact ? "text-[9px]" : "text-[10px]"}`}>
-                  {getMoveLabel(p.moveA)}
-                </span>
-                {" "}
-                <span className={`${compact ? "text-[9px]" : "text-[10px]"} ${aTook.className}`}>
-                  {aTook.label}
-                </span>
-
-                <span className="text-stone-700 mx-1">|</span>
-
-                {/* Fighter B: received outcome + move + name */}
-                <span className={`${compact ? "text-[9px]" : "text-[10px]"} ${bTook.className}`}>
-                  {bTook.label}
-                </span>
-                {" "}
-                <span className={`${getMoveColor(p.moveB)} ${compact ? "text-[9px]" : "text-[10px]"}`}>
-                  {getMoveLabel(p.moveB)}
-                </span>
-                {" "}
-                <span className="text-stone-300">{fighterBName}</span>
+                <div className={`${compact ? "text-[10px]" : "text-[11px]"} text-stone-300`}>
+                  <span className="text-stone-200">{fighterAName}</span>{" "}
+                  <span className={`${getMoveColor(p.moveA)} ${compact ? "text-[9px]" : "text-[10px]"}`}>
+                    [{getMoveLabel(p.moveA)}]
+                  </span>
+                  <span className="text-stone-700 mx-2">vs</span>
+                  <span className="text-stone-200">{fighterBName}</span>{" "}
+                  <span className={`${getMoveColor(p.moveB)} ${compact ? "text-[9px]" : "text-[10px]"}`}>
+                    [{getMoveLabel(p.moveB)}]
+                  </span>
+                </div>
+                <div className={`${compact ? "text-[9px]" : "text-[10px]"} mt-0.5`}>
+                  {renderOutcomeSummary(p, fighterAName, fighterBName, compact)}
+                </div>
               </div>
             );
           })}
