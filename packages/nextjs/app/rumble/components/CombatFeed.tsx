@@ -193,29 +193,29 @@ export default function CombatFeed({
 
           {/* Pairings — centered, each on its own line */}
           {turn.pairings.map((p, i) => {
-            const aToB = describeDamage(p.damageToB, p.moveA, p.moveB);
-            const bToA = describeDamage(p.damageToA, p.moveB, p.moveA);
+            const aTook = describeDamage(p.damageToA, p.moveB, p.moveA);
+            const bTook = describeDamage(p.damageToB, p.moveA, p.moveB);
             return (
               <div
                 key={`${turn.turnNumber}-${i}`}
                 className={`font-mono text-center py-0.5 ${compact ? "text-[11px]" : "text-xs"}`}
               >
-                {/* Fighter A: name + move + damage */}
+                {/* Fighter A: name + move + received outcome */}
                 <span className="text-stone-300">{p.fighterAName}</span>
                 {" "}
                 <span className={`${getMoveColor(p.moveA)} ${compact ? "text-[9px]" : "text-[10px]"}`}>
                   {getMoveLabel(p.moveA)}
                 </span>
                 {" "}
-                <span className={`${compact ? "text-[9px]" : "text-[10px]"} ${aToB.className}`}>
-                  {aToB.label}
+                <span className={`${compact ? "text-[9px]" : "text-[10px]"} ${aTook.className}`}>
+                  {aTook.label}
                 </span>
 
                 <span className="text-stone-700 mx-1">|</span>
 
-                {/* Fighter B: damage + move + name */}
-                <span className={`${compact ? "text-[9px]" : "text-[10px]"} ${bToA.className}`}>
-                  {bToA.label}
+                {/* Fighter B: received outcome + move + name */}
+                <span className={`${compact ? "text-[9px]" : "text-[10px]"} ${bTook.className}`}>
+                  {bTook.label}
                 </span>
                 {" "}
                 <span className={`${getMoveColor(p.moveB)} ${compact ? "text-[9px]" : "text-[10px]"}`}>
