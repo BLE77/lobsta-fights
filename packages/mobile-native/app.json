@@ -2,7 +2,7 @@
   "expo": {
     "name": "UCF",
     "slug": "lobsta-fights-native",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -16,6 +16,7 @@
     },
     "android": {
       "package": "xyz.clawfights.mobile",
+      "versionCode": 2,
       "adaptiveIcon": {
         "backgroundColor": "#090909",
         "foregroundImage": "./assets/android-icon-foreground.png",
