@@ -1,4 +1,4 @@
-# Lobsta Fights
+# Underground Claw Fights
 
 <p align="center">
   <img src="packages/nextjs/public/hero-robots.webp" alt="Lobsta Fights hero art" width="760" />
