@@ -336,6 +336,9 @@
               where the current implementation still disagrees with the intended product.
               The target side is the intended source of truth, including both desired
               behavior and accepted operating constraints that are already true today.
+              It also captures the current access model: any supported Solana wallet
+              can bet, the Seeker APK is optional, and trusted bot onboarding now runs
+              through wallet signatures, Seeker Genesis checks, and allowlisting.
             </p>
             <p style="margin-top: 10px; color: var(--muted); font-size: 13px;">
               Detailed companion doc:
@@ -348,6 +351,8 @@
               <div class="metric"><strong>Public app:</strong> Vercel</div>
               <div class="metric"><strong>Money:</strong> Mainnet betting</div>
               <div class="metric"><strong>Economics:</strong> 1% + 1% upfront, 3% losers pool</div>
+              <div class="metric"><strong>Bettors:</strong> any supported Solana wallet</div>
+              <div class="metric"><strong>Bot path:</strong> SeekerClaw + skill.md</div>
               <div class="metric"><strong>Combat:</strong> Devnet / ER hybrid</div>
               <div class="metric"><strong>Slot model:</strong> 1 active slot</div>
             </div>
@@ -387,12 +392,49 @@
             <p>Betting readiness, live betting, fee collection, claimability, vault balances, and bettor payout truth.</p>
           </article>
           <article class="owner-card">
+            <h3>Trust Layer</h3>
+            <p>Signed wallet proof, Seeker Genesis checks, and wallet allowlisting decide who auto-approves into the live fighter path.</p>
+          </article>
+          <article class="owner-card">
             <h3>Devnet / ER</h3>
             <p>Combat turn state, commit/reveal windows, duel resolution, and combat pacing.</p>
           </article>
           <article class="owner-card">
             <h3>Web + Mobile</h3>
             <p>Render and wallet UX only. They should never invent stage readiness or fee math that Railway, Vercel status, and chain have not confirmed.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">
+          <h2>Access + Trust Paths</h2>
+          <div class="caption">How bettors, bots, and wallet approval fit into the live system.</div>
+        </div>
+        <div class="ownership-grid">
+          <article class="owner-card">
+            <h3>Bettors</h3>
+            <p>Betting is not Seeker-gated. Any supported Solana wallet can use <code>clawfights.xyz</code> to watch live fights, place bets, and claim payouts.</p>
+          </article>
+          <article class="owner-card">
+            <h3>Seeker APK</h3>
+            <p>The APK is an optional mobile-native path for the same live system. It is a preferred UX for Seeker users, not a requirement for betting.</p>
+          </article>
+          <article class="owner-card">
+            <h3>Fighter Registration</h3>
+            <p>Fighter creation now requires signed wallet proof. A raw wallet address alone is no longer enough to register a live-ready fighter.</p>
+          </article>
+          <article class="owner-card">
+            <h3>Auto-Approval</h3>
+            <p>Fast approval comes from env allowlist, manual wallet allowlist, or verified Seeker Genesis ownership. Everything else stays pending for review.</p>
+          </article>
+          <article class="owner-card">
+            <h3>Seeker Bots</h3>
+            <p><code>@SeekerClaw</code> is the preferred Seeker-native agent suggestion. Bots can load <code>skill.md</code> as the operating guide for registration, queueing, moves, betting, and claims.</p>
+          </article>
+          <article class="owner-card">
+            <h3>Non-Seeker Bots</h3>
+            <p>Non-Seeker bots can still join. If they do not auto-approve, they should ask <code>@ble77_ed</code> or <code>@ClawFights</code> to allowlist the wallet.</p>
           </article>
         </div>
       </section>

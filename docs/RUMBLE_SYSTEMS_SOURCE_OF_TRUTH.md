@@ -22,6 +22,8 @@ Scope:
 - Vercel serves UI and public APIs, but it must not create rumbles or run combat in production.
 - Mainnet is the money side. Real bets, real bettor accounting, and real claimability live there.
 - Settlement economics are `1%` platform + `1%` fighter sponsorship upfront, `98%` to pool, then `3%` of losers' pool extracted once at result finalization.
+- Betting is not Seeker-gated. Any supported Solana wallet can use the website betting flow, and the Seeker APK is an optional native path.
+- Fighter registration is signed-wallet gated. Wallet trust decides whether a fighter auto-approves, stays pending, or requires manual allowlisting.
 - Combat runs on the combat side, using the combat connection. When enabled, that means MagicBlock ER; otherwise it falls back to Solana L1/devnet combat RPC.
 - Supabase is the durable mirror and recovery layer. It is how Vercel sees Railway-owned state and how the worker recovers after churn.
 - Public betting is not truly open until the mainnet rumble account exists, is readable, is in `betting`, and has a real close deadline.
@@ -35,6 +37,7 @@ Scope:
 | Live lifecycle advancement | Railway worker + `RumbleOrchestrator` | Supabase persistence for recovery |
 | Queue membership | Railway memory while worker is healthy | `ucf_rumble_queue` |
 | Active rumble identity | Railway slot state + `ucf_rumbles` | betting-ready marker + status API |
+| Fighter trust / approval | signed wallet proof + `wallet-trust.ts` decision | admin allowlist config + fighter `verified` state |
 | Whether betting can actually accept money | mainnet rumble program | status API projection |
 | Bet transaction validity | mainnet transaction contents | `/api/rumble/bet` verification result |
 | Combat turn state | combat program state | status API + persisted turns/comments |
@@ -48,6 +51,7 @@ Scope:
 | Runtime / stage machine | Owns queue, slot stages, combat, payout, cleanup | `packages/nextjs/lib/queue-manager.ts`, `packages/nextjs/lib/rumble-orchestrator.ts`, `packages/nextjs/rumble-worker.ts` |
 | Queue system | Holds fighters until a rumble locks and starts | `packages/nextjs/lib/queue-manager.ts`, `packages/nextjs/lib/rumble-config.ts`, `packages/nextjs/app/api/rumble/queue/route.ts` |
 | Betting / money side | Creates mainnet rumbles, prepares bet txs, verifies bet txs, tracks claims | `packages/nextjs/app/api/rumble/bet/*`, `packages/nextjs/lib/solana-programs.ts`, `packages/nextjs/lib/tx-verify.ts`, `packages/solana/programs/rumble-engine/src/lib.rs` |
+| Trust / onboarding | Verifies wallet ownership, auto-approves trusted wallets, and gates queue access | `packages/nextjs/lib/wallet-trust.ts`, `packages/nextjs/app/api/fighter/register/route.ts`, `packages/nextjs/app/api/admin/wallet-allowlist/route.ts`, `packages/nextjs/lib/fighter-registration-proof.ts` |
 | Combat / move side | Builds commit/reveal txs, runs turns, resolves eliminations and winner | `packages/nextjs/app/api/rumble/move/*`, `packages/nextjs/lib/rumble-orchestrator.ts`, `packages/nextjs/lib/solana-connection.ts`, `packages/solana/programs/rumble-engine/src/lib.rs` |
 | Payout / claims | Settles winner-takes-all state and lets winners claim | `packages/nextjs/app/api/rumble/claim/*`, `packages/nextjs/lib/rumble-onchain-claims.ts`, `packages/nextjs/lib/rumble-persistence.ts`, `packages/solana/programs/rumble-engine/src/lib.rs` |
 | Client surfaces | Render the live arena and drive wallet interactions | `packages/nextjs/app/rumble/page.tsx`, `packages/nextjs/app/rumble/components/*`, `packages/mobile-native/App.tsx`, `packages/mobile-native/lib/utils.ts` |
@@ -171,6 +175,59 @@ That mismatch is currently a live alignment issue, not just documentation wordin
 - If a betting slot fails before real betting opens, fighters can be recycled into the queue.
 - Queue reconciliation tries to re-add fighters that exist in Supabase but are missing from the in-memory queue.
 
+## 2A. Wallet Trust, Access, And Seeker Integration
+
+### What this system is
+
+This system decides who can register fighters quickly, who needs review, and how Seeker fits without gating ordinary bettors.
+
+### Main files
+
+- `packages/nextjs/lib/wallet-trust.ts`
+- `packages/nextjs/app/api/fighter/register/route.ts`
+- `packages/nextjs/app/api/admin/wallet-allowlist/route.ts`
+- `packages/nextjs/lib/fighter-registration-proof.ts`
+- `packages/nextjs/public/skill.md`
+
+### Canonical truths
+
+- Betting is open to any supported Solana wallet. The website flow is not Seeker-only.
+- The Seeker APK is an optional mobile-native client path for the same live system.
+- Fighter registration requires a real wallet signature challenge. Wallet ownership is now part of the gate, not just wallet string format.
+- Wallets can auto-approve from three trust sources:
+  - env allowlist
+  - manual admin allowlist
+  - verified Seeker Genesis ownership
+- If a wallet does not auto-approve, the fighter stays pending until approved.
+- Queue access for live rumbles now depends on fighter verification, not just successful fighter creation.
+
+### Current user paths
+
+#### Bettors
+
+- Any supported Solana wallet can watch and bet on `clawfights.xyz`.
+- Seeker is a supported wallet path, not a requirement.
+- The Seeker APK is a native UX path for testers/users who prefer mobile-native wallet flow.
+
+#### Bots
+
+- The preferred Seeker-native bot suggestion is `@SeekerClaw`.
+- Bots can load the public `skill.md` file as an operating guide for:
+  - fetching the nonce
+  - signing registration
+  - registering a fighter
+  - queueing into rumbles
+  - optionally handling move webhooks / polling
+  - betting and claiming payouts
+- Non-Seeker bots that do not auto-approve should ask `@ble77_ed` or `@ClawFights` to allowlist the wallet.
+
+### Why this matters
+
+This trust layer is the difference between:
+
+- legitimate bot-first onboarding with fast approved paths, and
+- anonymous spam fighter creation using wallets the caller does not actually control.
+
 ## 3. Betting And Mainnet Money System
 
 ### What this system is
@@ -202,6 +259,7 @@ It is responsible for:
 - The mainnet rumble program is the authority for whether betting is really open.
 - The transaction on chain is the authority for whether a user really placed a bet.
 - Supabase is the mirror that lets the app show odds/history and recover after worker churn.
+- Wallet choice is not part of betting eligibility beyond normal wallet support. Seeker can bet, but Seeker is not required.
 
 ### Step 1: Railway creates the mainnet rumble
 
@@ -594,6 +652,7 @@ It is responsible for:
 - `state === betting` by itself is not enough to show a real open betting window.
 - Web labels unarmed betting as initializing on-chain.
 - Mobile shows `ARMING ON-CHAIN`.
+- Web betting is open to any supported Solana wallet. Seeker-specific labels are contextual wallet UX, not a product gate.
 
 ### Countdown behavior
 
@@ -606,6 +665,14 @@ It is responsible for:
 - Vercel status API reads those persisted clips from Supabase.
 - Web commentary is richer and has more playback logic.
 - Mobile commentary is simpler and mostly follows the featured slot stream.
+
+### Feed behavior
+
+- The public rumble page no longer shows the raw on-chain transaction feed.
+- On-chain feed visibility is now admin-only.
+- Combat rows are moving toward a clearer two-line format:
+  - matchup line: `FIGHTER [MOVE] vs FIGHTER [MOVE]`
+  - outcome line: plain-language resolution with red damage numbers on the fighter who actually lost HP
 
 ### Final-turn hold behavior
 
