@@ -2038,7 +2038,7 @@ export class RumbleOrchestrator {
       return true;
     } catch (err) {
       console.error(
-        `[Orchestrator] Failed to publish betting-ready marker for ${slot.id}; keeping betting closed:`,
+        `[Orchestrator] Failed to publish betting-ready marker for ${slot.id}; live betting stays open but recovery mirror is stale:`,
         err,
       );
       return false;
@@ -3080,9 +3080,9 @@ export class RumbleOrchestrator {
     if (!updated?.bettingDeadline) return;
     const markerPublished = await this.publishBettingReadyMarker(updated, updated.bettingDeadline);
     if (!markerPublished) {
-      updated.bettingDeadline = null;
-      updated.bettingArmedAt = null;
-      return;
+      console.warn(
+        `[Orchestrator] Betting window armed for ${slot.id}, but betting-ready marker persistence failed; continuing with live on-chain deadline`,
+      );
     }
 
     console.log(`[Orchestrator] Betting window armed for ${slot.id}: deadline=${updated.bettingDeadline.toISOString()}`);
@@ -4695,6 +4695,17 @@ export class RumbleOrchestrator {
           invalidateReadCache(`combat:${rumbleIdNum}`);
         }
       } catch (err) {
+        if (this.isMaxTurnsReachedError(err)) {
+          console.error(
+            `[ONCHAIN-ADVANCE] Max combat turns reached for ${slot.id}; forcing local completion fallback from resolved turn ${combat.currentTurn}`,
+          );
+          this.syncLocalFightersFromOnchain(slot, state, combat);
+          state.lastAdvanceSubmittedTurn = undefined;
+          state.lastAdvanceSubmittedAt = undefined;
+          state.allowFinalizeFallback = true;
+          await this.finishCombat(slot, state);
+          return;
+        }
         if (
           !this.hasErrorTokenAny(err, [
             "turn already open",
@@ -5192,6 +5203,15 @@ export class RumbleOrchestrator {
       "account discriminator did not match",
       "declaredprogramidmismatch",
       "declared program id mismatch",
+    ]);
+  }
+
+  private isMaxTurnsReachedError(err: unknown): boolean {
+    return this.hasErrorTokenAny(err, [
+      "maxturnsreached",
+      "error number: 6033",
+      "custom program error: 0x1791",
+      "max combat turns reached",
     ]);
   }
 
@@ -6797,7 +6817,8 @@ export class RumbleOrchestrator {
     if (!slot) return;
 
     const combatState = this.combatStates.get(slotIndex);
-    const strictPayoutState = this.strictOnchainMode
+    const allowFinalizeFallback = combatState?.allowFinalizeFallback === true;
+    const strictPayoutState = this.strictOnchainMode && !allowFinalizeFallback
       ? await this.readOnchainPayoutReadyState(slot.id)
       : null;
 
@@ -7047,7 +7068,7 @@ export class RumbleOrchestrator {
         placements,
         payoutResult,
         slot.fighters,
-        combatState?.allowFinalizeFallback === true,
+        allowFinalizeFallback,
       );
     }
 

@@ -989,16 +989,27 @@ export async function GET(request: Request) {
           return slot;
         }
 
-        // Only ADVANCE state from on-chain data, never regress it.
-        // E.g. if in-memory is "combat" (deadline passed, advanceSlots ran)
-        // but on-chain is still "betting" (startCombat tx hasn't landed),
-        // keep the more-advanced in-memory state to prevent UI from
-        // showing "betting" indefinitely when combat is already running.
-        const STATE_ORDER: Record<string, number> = { idle: 0, betting: 1, combat: 2, payout: 3 };
-        let state: "idle" | "betting" | "combat" | "payout" = slot.state;
-        if (onchain.state === "combat") state = "combat";
-        else if (onchain.state === "payout" || onchain.state === "complete") state = "payout";
-        else if (onchain.state === "betting") state = "betting";
+        // Only advance state from on-chain data, never regress a slot from a
+        // more-advanced local/runtime state back to betting because the chain
+        // view is lagging behind.
+        const STATE_ORDER: Record<"idle" | "betting" | "combat" | "payout", number> = {
+          idle: 0,
+          betting: 1,
+          combat: 2,
+          payout: 3,
+        };
+        const mappedOnchainState: "idle" | "betting" | "combat" | "payout" =
+          onchain.state === "combat"
+            ? "combat"
+            : onchain.state === "payout" || onchain.state === "complete"
+              ? "payout"
+              : onchain.state === "betting"
+                ? "betting"
+                : slot.state;
+        const state =
+          STATE_ORDER[mappedOnchainState] > STATE_ORDER[slot.state]
+            ? mappedOnchainState
+            : slot.state;
 
         let nextTurnAt = slot.nextTurnAt;
         let turnIntervalMs = slot.turnIntervalMs;
@@ -1585,34 +1596,7 @@ export async function GET(request: Request) {
     const stats = await getStatsCached();
     const rumblesSinceLastTrigger = stats?.total_rumbles ?? 0;
 
-    // ---- nextRumbleIn estimate ---------------------------------------------
-    const effectiveQueueLen = queueEntries.length;
-    let nextRumbleIn: string | null = null;
-    const fightersNeeded = MIN_FIGHTERS_TO_START;
-    if (effectiveQueueLen > 0 && effectiveQueueLen < fightersNeeded) {
-      nextRumbleIn = `Need ${fightersNeeded - effectiveQueueLen} more fighters`;
-    } else if (effectiveQueueLen >= fightersNeeded) {
-      const hasIdleSlot = slots.some((s) => s.state === "idle");
-      if (!hasIdleSlot) {
-        nextRumbleIn = "All slots active";
-      } else {
-        const queueLockCountdownMs = qm.getQueueStartCountdownMs();
-        if (effectiveQueueLen >= FIGHTERS_PER_RUMBLE) {
-          nextRumbleIn = "Starting now...";
-        } else if (queueLockCountdownMs !== null && queueLockCountdownMs > 0) {
-          const seconds = Math.max(1, Math.ceil(queueLockCountdownMs / 1000));
-          nextRumbleIn = `Locking in ${seconds}s (${effectiveQueueLen}/${FIGHTERS_PER_RUMBLE})`;
-        } else {
-          nextRumbleIn = `Starting soon... (${effectiveQueueLen}/${FIGHTERS_PER_RUMBLE})`;
-        }
-      }
-    }
-
     // ---- queueLength: in-queue + in-combat fighters for display ------------
-    const activeFighterCount = slots.reduce(
-      (sum, s) => sum + (s.state !== "idle" ? s.fighters.length : 0),
-      0,
-    );
     const workerRuntime = await getAdminConfig("worker_runtime_health");
     const runtimeHealthLocal = orchestrator.getRuntimeHealth();
     const workerRuntimeFreshMs =
@@ -1659,6 +1643,42 @@ export async function GET(request: Request) {
       if (!Number.isInteger(slotIndex)) continue;
       runtimeSlotReportsByIndex.set(slotIndex, report);
     }
+    // ---- nextRumbleIn estimate ---------------------------------------------
+    const effectiveQueueLen = queueEntries.length;
+    let nextRumbleIn: string | null = null;
+    const fightersNeeded = MIN_FIGHTERS_TO_START;
+    if (effectiveQueueLen > 0 && effectiveQueueLen < fightersNeeded) {
+      nextRumbleIn = `Need ${fightersNeeded - effectiveQueueLen} more fighters`;
+    } else if (effectiveQueueLen >= fightersNeeded) {
+      const hasIdleSlot =
+        slots.some((s) => s.state === "idle") ||
+        runtimeSlotReports.some((report) => report?.state === "idle");
+      if (!hasIdleSlot) {
+        nextRumbleIn = "All slots active";
+      } else {
+        const localQueueLockCountdownMs = qm.getQueueStartCountdownMs();
+        const workerQueueLockCountdownMs =
+          typeof runtimeHealth.queueStartCountdownMs === "number"
+            ? runtimeHealth.queueStartCountdownMs
+            : null;
+        const queueLockCountdownMs =
+          workerQueueLockCountdownMs !== null
+            ? workerQueueLockCountdownMs
+            : localQueueLockCountdownMs;
+        if (effectiveQueueLen >= FIGHTERS_PER_RUMBLE) {
+          nextRumbleIn = "Starting now...";
+        } else if (queueLockCountdownMs !== null && queueLockCountdownMs > 0) {
+          const seconds = Math.max(1, Math.ceil(queueLockCountdownMs / 1000));
+          nextRumbleIn = `Locking in ${seconds}s (${effectiveQueueLen}/${FIGHTERS_PER_RUMBLE})`;
+        } else {
+          nextRumbleIn = `Starting soon... (${effectiveQueueLen}/${FIGHTERS_PER_RUMBLE})`;
+        }
+      }
+    }
+    const activeFighterCount = slots.reduce(
+      (sum, s) => sum + (s.state !== "idle" ? s.fighters.length : 0),
+      0,
+    );
     const freshPersistedById = new Map(
       freshPersisted.map(row => [row.id, row] as const),
     );
@@ -1684,14 +1704,37 @@ export async function GET(request: Request) {
 
       const persisted = freshPersistedById.get(reportedRumbleId);
       if (!persisted) {
+        const sameRumble = slot.rumbleId === reportedRumbleId;
+        if (!sameRumble) {
+          return slot;
+        }
         return {
           ...slot,
           rumbleId: reportedRumbleId,
           state: reportedState,
+          fighters: slot.fighters,
+          fighterNames: slot.fighterNames,
+          odds: slot.odds,
+          totalPool: slot.totalPool,
+          bettingDeadline:
+            reportedState === "betting"
+              ? (typeof report.bettingDeadline === "string"
+                  ? report.bettingDeadline
+                  : slot.bettingDeadline)
+              : null,
           currentTurn:
-            typeof report.turnCount === "number" ? Math.max(slot.currentTurn ?? 0, report.turnCount) : slot.currentTurn,
+            typeof report.turnCount === "number"
+              ? Math.max(slot.currentTurn ?? 0, report.turnCount)
+              : slot.currentTurn,
           remainingFighters:
-            typeof report.remainingFighters === "number" ? report.remainingFighters : slot.remainingFighters,
+            typeof report.remainingFighters === "number"
+              ? report.remainingFighters
+              : slot.remainingFighters,
+          turns: slot.turns,
+          nextTurnAt: reportedState === "combat" ? slot.nextTurnAt : null,
+          nextTurnTargetSlot: reportedState === "combat" ? slot.nextTurnTargetSlot : null,
+          turnIntervalMs: reportedState === "combat" ? slot.turnIntervalMs : null,
+          payout: slot.payout,
         };
       }
 
