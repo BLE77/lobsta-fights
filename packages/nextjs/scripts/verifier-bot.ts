@@ -37,12 +37,14 @@ const MOVE_DODGE = 6;
 const MOVE_CATCH = 7;
 const MOVE_SPECIAL = 8;
 
-const STRIKE_DAMAGE_HIGH = 26;
-const STRIKE_DAMAGE_MID = 20;
-const STRIKE_DAMAGE_LOW = 15;
-const CATCH_DAMAGE = 30;
-const COUNTER_DAMAGE = 12;
-const SPECIAL_DAMAGE = 35;
+const STRIKE_DAMAGE_HIGH = 39;
+const STRIKE_DAMAGE_MID = 30;
+const STRIKE_DAMAGE_LOW = 23;
+const CATCH_DAMAGE = 45;
+const COUNTER_DAMAGE = 18;
+const SPECIAL_DAMAGE = 52;
+const FINAL_DUEL_SUDDEN_DEATH_BONUS = 20;
+const FINAL_DUEL_SUDDEN_DEATH_CHIP = 20;
 
 const METER_PER_TURN = 20;
 const SPECIAL_METER_COST = 100;
@@ -329,6 +331,7 @@ function resolveDuel(
   moveB: number,
   meterA: number,
   meterB: number,
+  suddenDeathActive = false,
 ): [number, number, number, number] {
   let damageToA = 0;
   let damageToB = 0;
@@ -371,6 +374,15 @@ function resolveDuel(
       damageToB = COUNTER_DAMAGE;
     } else {
       damageToA = strikeDamage(effectiveB);
+    }
+  }
+
+  if (suddenDeathActive) {
+    if (damageToA > 0) damageToA += FINAL_DUEL_SUDDEN_DEATH_BONUS;
+    if (damageToB > 0) damageToB += FINAL_DUEL_SUDDEN_DEATH_BONUS;
+    if (damageToA === 0 && damageToB === 0) {
+      damageToA = FINAL_DUEL_SUDDEN_DEATH_CHIP;
+      damageToB = FINAL_DUEL_SUDDEN_DEATH_CHIP;
     }
   }
 
@@ -564,7 +576,11 @@ function replayTurn(
 
     // Resolve duel
     const [damageToA, damageToB, meterUsedA, meterUsedB] = resolveDuel(
-      moveA, moveB, meter[idxA], meter[idxB],
+      moveA,
+      moveB,
+      meter[idxA],
+      meter[idxB],
+      aliveIndices.length === 2,
     );
 
     // Apply meter usage

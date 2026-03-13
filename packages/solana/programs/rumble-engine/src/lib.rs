@@ -98,6 +98,10 @@ const COUNTER_DAMAGE: u16 = 18;
 #[cfg(feature = "combat")]
 const SPECIAL_DAMAGE: u16 = 52;
 #[cfg(feature = "combat")]
+const FINAL_DUEL_SUDDEN_DEATH_BONUS: u16 = 20;
+#[cfg(feature = "combat")]
+const FINAL_DUEL_SUDDEN_DEATH_CHIP: u16 = 20;
+#[cfg(feature = "combat")]
 const METER_PER_TURN: u8 = 20;
 #[cfg(feature = "combat")]
 const SPECIAL_METER_COST: u8 = 100;
@@ -393,7 +397,27 @@ fn fallback_move_code(rumble_id: u64, turn: u32, fighter: &Pubkey, meter: u8) ->
 }
 
 #[cfg(feature = "combat")]
-fn resolve_duel(move_a: u8, move_b: u8, meter_a: u8, meter_b: u8) -> (u16, u16, u8, u8) {
+fn apply_final_duel_sudden_death(damage_to_a: &mut u16, damage_to_b: &mut u16) {
+    if *damage_to_a > 0 {
+        *damage_to_a = damage_to_a.saturating_add(FINAL_DUEL_SUDDEN_DEATH_BONUS);
+    }
+    if *damage_to_b > 0 {
+        *damage_to_b = damage_to_b.saturating_add(FINAL_DUEL_SUDDEN_DEATH_BONUS);
+    }
+    if *damage_to_a == 0 && *damage_to_b == 0 {
+        *damage_to_a = FINAL_DUEL_SUDDEN_DEATH_CHIP;
+        *damage_to_b = FINAL_DUEL_SUDDEN_DEATH_CHIP;
+    }
+}
+
+#[cfg(feature = "combat")]
+fn resolve_duel(
+    move_a: u8,
+    move_b: u8,
+    meter_a: u8,
+    meter_b: u8,
+    sudden_death_active: bool,
+) -> (u16, u16, u8, u8) {
     let mut damage_to_a: u16 = 0;
     let mut damage_to_b: u16 = 0;
     let mut meter_used_a: u8 = 0;
@@ -455,6 +479,10 @@ fn resolve_duel(move_a: u8, move_b: u8, meter_a: u8, meter_b: u8) -> (u16, u16, 
         } else {
             damage_to_a = strike_damage(effective_b);
         }
+    }
+
+    if sudden_death_active {
+        apply_final_duel_sudden_death(&mut damage_to_a, &mut damage_to_b);
     }
 
     (damage_to_a, damage_to_b, meter_used_a, meter_used_b)
@@ -1056,6 +1084,7 @@ pub mod rumble_engine {
             .into_iter()
             .map(|(idx, _, _)| idx)
             .collect();
+        let sudden_death_active = alive_indices.len() == 2;
 
         let mut paired_indices: Vec<usize> = Vec::with_capacity(alive_indices.len());
         let mut eliminated_this_turn: Vec<usize> = Vec::new();
@@ -1093,7 +1122,13 @@ pub mod rumble_engine {
             });
 
             let (damage_to_a, damage_to_b, meter_used_a, meter_used_b) =
-                resolve_duel(move_a, move_b, combat.meter[idx_a], combat.meter[idx_b]);
+                resolve_duel(
+                    move_a,
+                    move_b,
+                    combat.meter[idx_a],
+                    combat.meter[idx_b],
+                    sudden_death_active,
+                );
 
             combat.meter[idx_a] = combat.meter[idx_a].saturating_sub(meter_used_a);
             combat.meter[idx_b] = combat.meter[idx_b].saturating_sub(meter_used_b);
@@ -1224,6 +1259,7 @@ pub mod rumble_engine {
         let alive_count = (0..fighter_count)
             .filter(|&i| combat.hp[i] > 0 && combat.elimination_rank[i] == 0)
             .count();
+        let sudden_death_active = alive_count == 2;
         let expected_duels = alive_count / 2;
         let expected_bye = if alive_count % 2 == 1 { 1usize } else { 0usize };
         require!(
@@ -1259,12 +1295,14 @@ pub mod rumble_engine {
             require!(is_valid_move_code(dr.move_b), RumbleError::InvalidState);
 
             // RE-VALIDATE damage by running resolve_duel
-            let (expected_dmg_a, expected_dmg_b, expected_meter_a, expected_meter_b) = resolve_duel(
-                dr.move_a,
-                dr.move_b,
-                combat.meter[idx_a],
-                combat.meter[idx_b],
-            );
+            let (expected_dmg_a, expected_dmg_b, expected_meter_a, expected_meter_b) =
+                resolve_duel(
+                    dr.move_a,
+                    dr.move_b,
+                    combat.meter[idx_a],
+                    combat.meter[idx_b],
+                    sudden_death_active,
+                );
             require!(
                 dr.damage_to_a == expected_dmg_a && dr.damage_to_b == expected_dmg_b,
                 RumbleError::DamageMismatch
@@ -1968,11 +2006,14 @@ pub mod rumble_engine {
     }
 
     /// Close a completed Rumble PDA to reclaim rent. Admin-only.
-    /// Requires Complete state. Closable when:
-    /// - No bets were placed (vault remainder is drained to treasury first), OR
-    /// - No one bet on the winner (vault remainder is drained to treasury first), OR
-    /// - Winners have claimed and only residual vault balance remains
-    /// If winners exist and vault still has claimable SOL, close is blocked.
+    /// Requires Complete state. Closable only when there are no possible winner
+    /// claims left on-chain:
+    /// - No bets were placed, OR
+    /// - No one bet on the winner
+    /// In both cases any remaining vault balance is drained to treasury first.
+    /// Winner rumbles are only closable after claims have fully drained the
+    /// vault to zero, so bettor claims are never invalidated by a rent-floor
+    /// heuristic or premature sweep.
     pub fn close_rumble(ctx: Context<CloseRumble>) -> Result<()> {
         let rumble = &ctx.accounts.rumble;
         require!(
@@ -1982,11 +2023,7 @@ pub mod rumble_engine {
 
         let total_bets: u64 = rumble.betting_pools.iter().sum();
         let vault_balance = ctx.accounts.vault.lamports();
-        let rent = Rent::get()?;
-        let min_balance = rent.minimum_balance(0);
-        let winner_pool = winner_pool_lamports(rumble)?;
-
-        if total_bets == 0 || winner_pool == 0 {
+        if total_bets == 0 {
             transfer_from_vault(
                 ctx.accounts.vault.to_account_info(),
                 ctx.accounts.treasury.to_account_info(),
@@ -1995,12 +2032,20 @@ pub mod rumble_engine {
                 ctx.bumps.vault,
                 vault_balance,
             )?;
-            msg!("Rumble {} closed after draining non-claimable vault funds", rumble.id);
+            msg!("Rumble {} closed after draining no-bet vault funds", rumble.id);
             return Ok(());
         }
 
-        // Winners exist — only close if claimable funds are gone.
-        require!(vault_balance <= min_balance, RumbleError::ClaimWindowActive);
+        let winner_pool = winner_pool_lamports(rumble)?;
+        if winner_pool > 0 {
+            require!(vault_balance == 0, RumbleError::OutstandingWinnerClaims);
+            msg!(
+                "Rumble {} closed after winner claims fully drained the vault",
+                rumble.id
+            );
+            return Ok(());
+        }
+
         transfer_from_vault(
             ctx.accounts.vault.to_account_info(),
             ctx.accounts.treasury.to_account_info(),
@@ -2010,7 +2055,7 @@ pub mod rumble_engine {
             vault_balance,
         )?;
 
-        msg!("Rumble {} closed after draining residual vault balance", rumble.id);
+        msg!("Rumble {} closed after draining no-winner vault funds", rumble.id);
         Ok(())
     }
 
@@ -3112,12 +3157,10 @@ fn extract_result_treasury_cut<'info>(
         return Ok(());
     }
 
-    let rent = Rent::get()?;
-    let min_balance = rent.minimum_balance(0);
-    let available = vault_info
-        .lamports()
-        .checked_sub(min_balance)
-        .ok_or(RumbleError::InsufficientVaultFunds)?;
+    // Result finalization happens before any bettor claims. Treasury extraction
+    // only needs the vault to contain the cut itself; no rent reserve is
+    // required because winner claims can fully drain the vault later.
+    let available = vault_info.lamports();
     require!(available >= treasury_cut, RumbleError::InsufficientVaultFunds);
 
     let rumble_id_bytes = rumble.id.to_le_bytes();
@@ -3526,6 +3569,28 @@ mod tests {
         assert_eq!(losers_pool, 980_000_000);
         assert_eq!(treasury_cut, 29_400_000);
         assert_eq!(distributable, 950_600_000);
+    }
+
+    #[cfg(feature = "combat")]
+    #[test]
+    fn final_duel_sudden_death_forces_damage_even_on_double_dodge() {
+        let (damage_to_a, damage_to_b, meter_used_a, meter_used_b) =
+            resolve_duel(MOVE_DODGE, MOVE_DODGE, 0, 0, true);
+
+        assert_eq!(damage_to_a, FINAL_DUEL_SUDDEN_DEATH_CHIP);
+        assert_eq!(damage_to_b, FINAL_DUEL_SUDDEN_DEATH_CHIP);
+        assert_eq!(meter_used_a, 0);
+        assert_eq!(meter_used_b, 0);
+    }
+
+    #[cfg(feature = "combat")]
+    #[test]
+    fn final_duel_sudden_death_boosts_real_hits() {
+        let (damage_to_a, damage_to_b, _, _) =
+            resolve_duel(MOVE_HIGH_STRIKE, MOVE_MID_STRIKE, 0, 0, true);
+
+        assert_eq!(damage_to_a, STRIKE_DAMAGE_MID + FINAL_DUEL_SUDDEN_DEATH_BONUS);
+        assert_eq!(damage_to_b, STRIKE_DAMAGE_HIGH + FINAL_DUEL_SUDDEN_DEATH_BONUS);
     }
 
     #[cfg(feature = "mainnet")]

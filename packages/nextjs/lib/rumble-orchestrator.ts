@@ -51,6 +51,12 @@ import {
   isValidMove,
   createMoveHash,
 } from "./combat";
+import {
+  applyFinalDuelSuddenDeath,
+  chooseHouseBotFallbackMove,
+  FINAL_DUEL_SUDDEN_DEATH_BONUS,
+  FINAL_DUEL_SUDDEN_DEATH_CHIP,
+} from "./final-duel-strategy";
 import { notifyFighter } from "./webhook";
 import type { MoveType } from "./types";
 
@@ -680,6 +686,8 @@ const D_STRIKE_LOW = 23;
 const D_CATCH = 45;
 const D_COUNTER = 18;
 const D_SPECIAL = 52;
+const D_FINAL_DUEL_SUDDEN_DEATH_BONUS = FINAL_DUEL_SUDDEN_DEATH_BONUS;
+const D_FINAL_DUEL_SUDDEN_DEATH_CHIP = FINAL_DUEL_SUDDEN_DEATH_CHIP;
 const D_METER_PER_TURN = 20;
 const D_SPECIAL_METER_COST = 100;
 
@@ -700,7 +708,7 @@ function strikeDamage(m: number): number {
 }
 
 function resolveDuelDeterministic(
-  moveA: number, moveB: number, meterA: number, meterB: number
+  moveA: number, moveB: number, meterA: number, meterB: number, suddenDeathActive = false,
 ): { damageToA: number; damageToB: number; meterUsedA: number; meterUsedB: number } {
   let damageToA = 0, damageToB = 0;
   let meterUsedA = 0, meterUsedB = 0;
@@ -741,6 +749,12 @@ function resolveDuelDeterministic(
     } else {
       damageToA = strikeDamage(effectiveB);
     }
+  }
+
+  if (suddenDeathActive) {
+    const adjusted = applyFinalDuelSuddenDeath(damageToA, damageToB);
+    damageToA = adjusted.damageToA;
+    damageToB = adjusted.damageToB;
   }
 
   return { damageToA, damageToB, meterUsedA, meterUsedB };
@@ -5606,7 +5620,11 @@ export class RumbleOrchestrator {
       const moveB = movesByIdx.get(idxB) ?? computeFallbackMove(rumbleIdNum, turn, fighters[idxB], combat.meter[idxB]);
 
       const { damageToA, damageToB } = resolveDuelDeterministic(
-        moveA, moveB, combat.meter[idxA], combat.meter[idxB]
+        moveA,
+        moveB,
+        combat.meter[idxA],
+        combat.meter[idxB],
+        aliveIndices.length === 2,
       );
 
       duelResults.push({
@@ -5804,12 +5822,48 @@ export class RumbleOrchestrator {
     });
   }
 
+  private getRecentOpponentMoves(
+    turnHistory: RumbleTurn[],
+    fighterId: string,
+    opponentId: string,
+    limit = 3,
+  ): MoveType[] {
+    const recent: MoveType[] = [];
+    for (let i = turnHistory.length - 1; i >= 0 && recent.length < limit; i--) {
+      const turn = turnHistory[i];
+      const pairing = turn.pairings.find(
+        (row) =>
+          (row.fighterA === fighterId && row.fighterB === opponentId) ||
+          (row.fighterA === opponentId && row.fighterB === fighterId),
+      );
+      if (!pairing) continue;
+      const move =
+        pairing.fighterA === opponentId ? pairing.moveA : pairing.moveB;
+      if (typeof move === "string" && isValidMove(move)) {
+        recent.push(move);
+      }
+    }
+    return recent;
+  }
+
   private fallbackMoveForFighter(
     fighter: RumbleFighter,
+    opponent: RumbleFighter,
     alive: RumbleFighter[],
     turnHistory: RumbleTurn[],
   ): MoveType {
-    return selectMove(fighter, alive.filter((f) => f.id !== fighter.id), turnHistory as any);
+    if (!this.houseBotSet.has(fighter.id)) {
+      return selectMove(fighter, [opponent], turnHistory as any);
+    }
+
+    const recentOpponentMoves = this.getRecentOpponentMoves(turnHistory, fighter.id, opponent.id, 4);
+    return chooseHouseBotFallbackMove({
+      fighter,
+      opponent,
+      aliveCount: alive.length,
+      recentOpponentMoves,
+      random: secureRandom,
+    });
   }
 
   private async requestWebhookWithTimeout(
@@ -5930,7 +5984,7 @@ export class RumbleOrchestrator {
     alive: RumbleFighter[],
     turnNumber: number,
   ): Promise<MoveType> {
-    const fallback = this.fallbackMoveForFighter(fighter, alive, state.turns);
+    const fallback = this.fallbackMoveForFighter(fighter, opponent, alive, state.turns);
     const profile = state.fighterProfiles.get(fighter.id);
     const webhookUrl = profile?.webhookUrl;
     const hasRealWebhook =
@@ -6083,9 +6137,22 @@ export class RumbleOrchestrator {
 
     const turnNumber = state.turns.length + 1;
     const overtimeTurns = Math.max(0, turnNumber - MAX_COMBAT_TURNS);
-    const suddenDeathActive = overtimeTurns > 0;
-    const suddenDeathBonus = suddenDeathActive ? Math.min(20, Math.max(1, Math.floor((overtimeTurns + 1) / 2))) : 0;
-    if (suddenDeathActive && overtimeTurns === 1) {
+    const finalDuelSuddenDeath = alive.length === 2;
+    const overtimeSuddenDeath = overtimeTurns > 0;
+    const suddenDeathActive = finalDuelSuddenDeath || overtimeSuddenDeath;
+    const suddenDeathBonus = finalDuelSuddenDeath
+      ? D_FINAL_DUEL_SUDDEN_DEATH_BONUS
+      : overtimeSuddenDeath
+        ? Math.min(20, Math.max(1, Math.floor((overtimeTurns + 1) / 2)))
+        : 0;
+    const suddenDeathChip = finalDuelSuddenDeath
+      ? D_FINAL_DUEL_SUDDEN_DEATH_CHIP
+      : suddenDeathBonus;
+    if (finalDuelSuddenDeath) {
+      console.log(
+        `[Orchestrator] Slot ${slot.slotIndex} entering final-duel sudden death at turn ${turnNumber}.`,
+      );
+    } else if (overtimeSuddenDeath && overtimeTurns === 1) {
       console.log(
         `[Orchestrator] Slot ${slot.slotIndex} entering sudden death at turn ${turnNumber}; no HP-ranked winner until elimination.`,
       );
@@ -6131,8 +6198,8 @@ export class RumbleOrchestrator {
         if (damageToA > 0) damageToA += suddenDeathBonus;
         if (damageToB > 0) damageToB += suddenDeathBonus;
         if (damageToA === 0 && damageToB === 0) {
-          damageToA = suddenDeathBonus;
-          damageToB = suddenDeathBonus;
+          damageToA = suddenDeathChip;
+          damageToB = suddenDeathChip;
         }
       }
 

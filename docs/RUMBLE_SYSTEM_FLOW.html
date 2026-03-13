@@ -570,6 +570,7 @@
                   <li>Fighters/agents choose moves in a clearly defined commit window.</li>
                   <li>The phase must be visible and predictable.</li>
                   <li>Late or missing agent input should fall back cleanly.</li>
+                  <li>When only 2 fighters remain, the very next duel becomes sudden death.</li>
                 </ul>
               </div>
               <div class="stage-block current">
@@ -578,10 +579,13 @@
                   <li>Commit window is 30 slots.</li>
                   <li>At the current 400ms slot estimate, that is about 12 seconds.</li>
                   <li>Internal agent timeout is 3500ms before fallback logic kicks in.</li>
+                  <li>Final-duel sudden death now forces damage: real hits get +20 and double-whiffs chip both fighters for 20.</li>
+                  <li>House bots now react to recent dodges/strikes and push harder to finish the last duel.</li>
                 </ul>
                 <div class="badge-row">
                   <span class="badge good">timed window exists</span>
                   <span class="badge warn">agent timeout is shorter than turn window</span>
+                  <span class="badge good">final duel converges</span>
                 </div>
               </div>
             </div>

@@ -499,6 +499,9 @@ The route builds an unsigned reveal transaction against the combat connection.
 - reveal window: `30 slots`
 - with the current `400ms` slot estimate, that is about `12s` commit and `12s` reveal
 - max on-chain combat turns: `120`
+- when exactly `2` fighters remain, the next duel enters final-duel sudden death:
+  - any real hit gets `+20` damage
+  - if both sides would deal `0`, both take `20` chip damage instead
 
 ### Orchestrator responsibilities
 
@@ -520,6 +523,10 @@ Current agent-side timing:
 - The next commit does not currently overlap the current reveal in the public lifecycle.
 - Railway resolves the current turn, then the next turn opens.
 - Combat is not the same thing as betting. Even though both use the same broader program family, they live on different runtime paths.
+- House bots now use opponent-aware fallback logic instead of pure random fallback:
+  - they react to recent dodges with `CATCH`
+  - they guard against recent strike patterns
+  - they bias toward guaranteed finishers and specials in the final duel
 
 ## 5. Result Settlement, Payout, And Claims
 
