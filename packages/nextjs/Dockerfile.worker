@@ -5,15 +5,13 @@ RUN groupadd -r worker && useradd -r -g worker -m worker
 WORKDIR /app
 
 # Copy package files
-COPY package.json package-lock.json* ./
+COPY --chown=worker:worker package.json package-lock.json* ./
 
 # Install production dependencies
 RUN npm install --omit=dev --legacy-peer-deps && npm install tsx --legacy-peer-deps
 
 # Copy source files
-COPY . .
-
-RUN chown -R worker:worker /app
+COPY --chown=worker:worker . .
 
 USER worker
 
