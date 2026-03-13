@@ -140,6 +140,7 @@ async function persistWorkerRuntimeHealth(
     queueStartCountdownMs: runtimeHealth.queueStartCountdownMs,
     onchainAdmin: runtimeHealth.onchainAdmin,
     onchainCreateFailures: runtimeHealth.onchainCreateFailures,
+    maxTurnFallbacks: runtimeHealth.maxTurnFallbacks,
     slotReports: runtimeHealth.slotReports,
     slotStatus: status.map((slot) => ({
       slotIndex: slot.slotIndex,

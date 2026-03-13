@@ -1630,6 +1630,10 @@ export async function GET(request: Request) {
             Array.isArray(workerSnapshot.onchainCreateFailures)
               ? workerSnapshot.onchainCreateFailures
               : runtimeHealthLocal.onchainCreateFailures,
+          maxTurnFallbacks:
+            Array.isArray(workerSnapshot.maxTurnFallbacks)
+              ? workerSnapshot.maxTurnFallbacks
+              : runtimeHealthLocal.maxTurnFallbacks,
           slotReports:
             Array.isArray(workerSnapshot.slotReports)
               ? workerSnapshot.slotReports
@@ -1818,6 +1822,27 @@ export async function GET(request: Request) {
         const reason = typeof failure?.reason === "string" ? failure.reason : "unknown create_rumble failure";
         const rumbleId = typeof failure?.rumbleId === "string" ? failure.rumbleId : "unknown";
         systemWarnings.push(`On-chain create failed for ${slotLabel}, ${rumbleId}: ${reason}${attemptsSuffix}`);
+      }
+    }
+    if (Array.isArray(runtimeHealth.maxTurnFallbacks)) {
+      for (const incident of runtimeHealth.maxTurnFallbacks.slice(0, 3)) {
+        const slotLabel =
+          typeof incident?.slotIndex === "number" && Number.isInteger(incident.slotIndex)
+            ? `slot ${incident.slotIndex}`
+            : "unknown slot";
+        const turnLabel =
+          Number.isFinite(Number(incident?.currentTurn))
+            ? `turn ${Number(incident.currentTurn)}`
+            : "unknown turn";
+        const remainingLabel =
+          Number.isFinite(Number(incident?.remainingFighters))
+            ? `${Number(incident.remainingFighters)} fighters remaining`
+            : "remaining fighters unknown";
+        const rumbleId = typeof incident?.rumbleId === "string" ? incident.rumbleId : "unknown";
+        const reason = typeof incident?.reason === "string" ? incident.reason : "max turn fallback";
+        systemWarnings.push(
+          `Max-turn fallback triggered for ${slotLabel}, ${rumbleId} at ${turnLabel} with ${remainingLabel}: ${reason}`,
+        );
       }
     }
 

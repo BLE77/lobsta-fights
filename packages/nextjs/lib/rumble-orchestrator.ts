@@ -57,6 +57,7 @@ import type { MoveType } from "./types";
 import * as persist from "./rumble-persistence";
 import { getRumblePayoutMode } from "./rumble-payout-mode";
 import { parseOnchainRumbleIdNumber } from "./rumble-id";
+import { isMaxTurnsReachedError, shouldForceMaxTurnFallback } from "./max-turn-guard";
 
 import {
   distributeReward as distributeRewardOnChain,
@@ -584,6 +585,16 @@ interface OnchainCreateFailure {
   nextRetryAt: number | null;
 }
 
+interface MaxTurnFallbackIncident {
+  rumbleId: string;
+  slotIndex: number;
+  currentTurn: number;
+  remainingFighters: number;
+  firstSeenAt: number;
+  lastSeenAt: number;
+  reason: string;
+}
+
 interface PendingFinalization {
   rumbleId: string;
   rumbleIdNum: number;
@@ -865,6 +876,7 @@ export class RumbleOrchestrator {
   private onchainRumbleCreateRetryAt: Map<string, number> = new Map();
   private onchainRumbleCreateStartedAt: Map<string, number> = new Map();
   private onchainRumbleCreateLastError: Map<string, OnchainCreateFailure> = new Map();
+  private maxTurnFallbacks: Map<string, MaxTurnFallbackIncident> = new Map();
   private onchainRumbleNumberById: Map<string, number> = new Map();
   private warnedInvalidHouseBotIds: Set<string> = new Set();
   private handledUnderfilledActiveRumbles: Set<string> = new Set();
@@ -1859,6 +1871,7 @@ export class RumbleOrchestrator {
     this.trimMap(this.onchainRumbleCreateRetryAt);
     this.trimMap(this.onchainRumbleCreateStartedAt);
     this.trimMap(this.onchainRumbleCreateLastError);
+    this.trimMap(this.maxTurnFallbacks);
     this.trimSet(this.payoutProcessed);
   }
 
@@ -1887,6 +1900,42 @@ export class RumbleOrchestrator {
 
   private clearOnchainCreateFailure(rumbleId: string): void {
     this.onchainRumbleCreateLastError.delete(rumbleId);
+  }
+
+  private recordMaxTurnFallback(
+    slot: RumbleSlot,
+    combat: RumbleCombatAccountState,
+    reason: string,
+  ): void {
+    const now = Date.now();
+    const existing = this.maxTurnFallbacks.get(slot.id);
+    this.maxTurnFallbacks.set(slot.id, {
+      rumbleId: slot.id,
+      slotIndex: slot.slotIndex,
+      currentTurn: combat.currentTurn,
+      remainingFighters: combat.remainingFighters,
+      firstSeenAt: existing?.firstSeenAt ?? now,
+      lastSeenAt: now,
+      reason,
+    });
+    this.trimTrackingMaps();
+  }
+
+  private async forceFinishCombatAtMaxTurns(
+    slot: RumbleSlot,
+    state: SlotCombatState,
+    combat: RumbleCombatAccountState,
+    reason: string,
+  ): Promise<void> {
+    this.recordMaxTurnFallback(slot, combat, reason);
+    console.error(
+      `[ONCHAIN-ADVANCE] Max combat turns reached for ${slot.id}; forcing local completion fallback from resolved turn ${combat.currentTurn}. reason=${reason}`,
+    );
+    this.syncLocalFightersFromOnchain(slot, state, combat);
+    state.lastAdvanceSubmittedTurn = undefined;
+    state.lastAdvanceSubmittedAt = undefined;
+    state.allowFinalizeFallback = true;
+    await this.finishCombat(slot, state);
   }
 
   private shouldRetryTurnSubmission(
@@ -1934,16 +1983,25 @@ export class RumbleOrchestrator {
       lastResolveSubmittedTurn: number | null;
       lastAdvanceSubmittedTurn: number | null;
     }>;
-    onchainCreateFailures: Array<{
-      rumbleId: string;
-      slotIndex: number | null;
+      onchainCreateFailures: Array<{
+        rumbleId: string;
+        slotIndex: number | null;
       fighterCount: number;
       attempts: number;
       firstSeenAt: string;
       lastSeenAt: string;
-      reason: string;
-      nextRetryAt: string | null;
-    }>;
+        reason: string;
+        nextRetryAt: string | null;
+      }>;
+      maxTurnFallbacks: Array<{
+        rumbleId: string;
+        slotIndex: number;
+        currentTurn: number;
+        remainingFighters: number;
+        firstSeenAt: string;
+        lastSeenAt: string;
+        reason: string;
+      }>;
   } {
     const slots = this.queueManager.getSlots();
     const slotReports = slots.map((slot) => {
@@ -2007,6 +2065,18 @@ export class RumbleOrchestrator {
         reason: entry.reason,
         nextRetryAt: entry.nextRetryAt ? new Date(entry.nextRetryAt).toISOString() : null,
       }));
+    const maxTurnFallbacks = [...this.maxTurnFallbacks.values()]
+      .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
+      .slice(0, 8)
+      .map((entry) => ({
+        rumbleId: entry.rumbleId,
+        slotIndex: entry.slotIndex,
+        currentTurn: entry.currentTurn,
+        remainingFighters: entry.remainingFighters,
+        firstSeenAt: new Date(entry.firstSeenAt).toISOString(),
+        lastSeenAt: new Date(entry.lastSeenAt).toISOString(),
+        reason: entry.reason,
+      }));
 
     return {
       onchainAdmin: { ...this.onchainAdminHealth },
@@ -2014,6 +2084,7 @@ export class RumbleOrchestrator {
       queueStartCountdownMs: this.queueManager.getQueueStartCountdownMs(),
       slotReports,
       onchainCreateFailures,
+      maxTurnFallbacks,
     };
   }
 
@@ -4669,6 +4740,25 @@ export class RumbleOrchestrator {
     }
 
     // More than 1 fighter remains and turn is resolved — advance to next turn.
+    if (
+      shouldForceMaxTurnFallback({
+        currentTurn: combat.currentTurn,
+        maxCombatTurns: MAX_COMBAT_TURNS,
+        remainingFighters: combat.remainingFighters,
+        turnResolved: combat.turnResolved,
+        currentSlot: currentSlotBig,
+        revealCloseSlot: combat.revealCloseSlot,
+      })
+    ) {
+      await this.forceFinishCombatAtMaxTurns(
+        slot,
+        state,
+        combat,
+        "worker guard tripped before advanceTurn submission",
+      );
+      return;
+    }
+
     if (currentSlotBig >= combat.revealCloseSlot) {
       if (
         !this.shouldRetryTurnSubmission(
@@ -4695,15 +4785,13 @@ export class RumbleOrchestrator {
           invalidateReadCache(`combat:${rumbleIdNum}`);
         }
       } catch (err) {
-        if (this.isMaxTurnsReachedError(err)) {
-          console.error(
-            `[ONCHAIN-ADVANCE] Max combat turns reached for ${slot.id}; forcing local completion fallback from resolved turn ${combat.currentTurn}`,
+        if (isMaxTurnsReachedError(err)) {
+          await this.forceFinishCombatAtMaxTurns(
+            slot,
+            state,
+            combat,
+            "on-chain advanceTurn rejected with MaxTurnsReached",
           );
-          this.syncLocalFightersFromOnchain(slot, state, combat);
-          state.lastAdvanceSubmittedTurn = undefined;
-          state.lastAdvanceSubmittedAt = undefined;
-          state.allowFinalizeFallback = true;
-          await this.finishCombat(slot, state);
           return;
         }
         if (
@@ -5203,15 +5291,6 @@ export class RumbleOrchestrator {
       "account discriminator did not match",
       "declaredprogramidmismatch",
       "declared program id mismatch",
-    ]);
-  }
-
-  private isMaxTurnsReachedError(err: unknown): boolean {
-    return this.hasErrorTokenAny(err, [
-      "maxturnsreached",
-      "error number: 6033",
-      "custom program error: 0x1791",
-      "max combat turns reached",
     ]);
   }
 
