@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 
 // ---------------------------------------------------------------------------
@@ -108,6 +109,28 @@ export function getRateLimitKey(request: Request): string {
   const realIp = request.headers.get("x-real-ip");
   if (realIp) return realIp.trim();
   return "unknown";
+}
+
+function hashIdentityPart(...parts: Array<string | null | undefined>): string {
+  const hash = createHash("sha256");
+  for (const part of parts) {
+    hash.update(part?.trim() ?? "");
+    hash.update("|");
+  }
+  return hash.digest("base64url").slice(0, 24);
+}
+
+/**
+ * Build a stable, privacy-preserving request identity for durable abuse checks.
+ * Unlike `getRateLimitKey()`, this intentionally avoids returning raw IP data.
+ */
+export function getRequestIdentityKey(request: Request): string | null {
+  const forwardedFor = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "";
+  const realIp = request.headers.get("x-real-ip")?.trim() ?? "";
+  if (!forwardedFor && !realIp) {
+    return null;
+  }
+  return `network:${hashIdentityPart(forwardedFor, realIp)}`;
 }
 
 /**

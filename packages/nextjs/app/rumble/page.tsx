@@ -186,6 +186,7 @@ const STATUS_POLL_TRANSITION_LEAD_MS = {
 };
 const STATUS_POLL_ERROR_RETRY_MS = 5_000;
 const STATUS_REALTIME_REFRESH_DEBOUNCE_MS = 350;
+const BET_REGISTRATION_RETRY_DELAYS_MS = [2_000, 4_000, 6_000] as const;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -225,6 +226,40 @@ function getWalletConnectionMessage(error: unknown, prefersMobile: boolean): str
 
 function isSlotState(value: unknown): value is SlotData["state"] {
   return value === "idle" || value === "betting" || value === "combat" || value === "payout";
+}
+
+function getSseEventRumbleId(data: any): string | null {
+  if (typeof data?.rumbleId === "string" && data.rumbleId.trim()) {
+    return data.rumbleId.trim();
+  }
+  if (typeof data?.turn?.rumbleId === "string" && data.turn.rumbleId.trim()) {
+    return data.turn.rumbleId.trim();
+  }
+  return null;
+}
+
+function shouldIgnoreSseEventForSlot(slot: SlotData, event: SSEEvent): boolean {
+  const eventRumbleId = getSseEventRumbleId(event.data);
+  if (!eventRumbleId || !slot.rumbleId || slot.rumbleId === eventRumbleId) {
+    return false;
+  }
+  if (event.type === "betting_open") {
+    return !slot.rumbleId.startsWith("slot_");
+  }
+  return true;
+}
+
+function isRetryableBetRegistrationFailure(status: number, data: any): boolean {
+  const errorMessage = String(data?.error ?? data?.detail ?? "");
+  const lower = errorMessage.toLowerCase();
+  return (
+    status === 503 ||
+    data?.retryable === true ||
+    lower.includes("still propagating") ||
+    lower.includes("may not be confirmed yet") ||
+    lower.includes("not confirmed yet") ||
+    lower.includes("not found yet")
+  );
 }
 
 
@@ -558,6 +593,7 @@ export default function RumblePage() {
   const [claimError, setClaimError] = useState<string | null>(null);
   const [showIntroOverlay, setShowIntroOverlay] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const statusRef = useRef<RumbleStatus | null>(null);
   const introVideoRef = useRef<HTMLVideoElement | null>(null);
   // Grace period: after an optimistic bet update, prevent fetchMyBets from overwriting for 10s
   const optimisticBetUntilRef = useRef<number>(0);
@@ -591,6 +627,9 @@ export default function RumblePage() {
     } catch { }
     return new Map();
   });
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
 
   // Track user stake per fighter per slot.
   // Map<slotIndex, Map<fighterId, totalSolStaked>>
@@ -1263,6 +1302,10 @@ export default function RumblePage() {
   const handleSSEEvent = useCallback((rawEvent: SSEEvent) => {
     const eventType = LEGACY_EVENT_MAP[rawEvent.type] ?? rawEvent.type;
     const event: SSEEvent = { ...rawEvent, type: eventType };
+    const currentSlot = statusRef.current?.slots.find((slot) => slot.slotIndex === event.slotIndex);
+    if (currentSlot && shouldIgnoreSseEventForSlot(currentSlot, event)) {
+      return;
+    }
 
     // Sound effects are now driven by the status useEffect (works with both
     // SSE patches and polling). No need for SSE-only sound triggers here.
@@ -1288,6 +1331,10 @@ export default function RumblePage() {
       if (slotIdx === -1) return prev;
 
       const slot = { ...slots[slotIdx] };
+      if (shouldIgnoreSseEventForSlot(slot, event)) {
+        return prev;
+      }
+      const eventRumbleId = getSseEventRumbleId(event.data);
 
       switch (event.type) {
         case "turn":
@@ -1327,7 +1374,7 @@ export default function RumblePage() {
 
         case "betting_open":
           slot.state = "betting";
-          slot.rumbleId = typeof event.data?.rumbleId === "string" ? event.data.rumbleId : slot.rumbleId;
+          slot.rumbleId = eventRumbleId ?? slot.rumbleId;
           slot.bettingDeadline =
             typeof event.data?.deadline === "string" ? event.data.deadline : slot.bettingDeadline;
           slot.turns = [];
@@ -1355,6 +1402,8 @@ export default function RumblePage() {
 
         case "slot_recycled":
           slot.state = "idle";
+          slot.rumbleId = `slot_${slot.slotIndex}`;
+          slot.fighters = [];
           slot.turns = [];
           slot.currentTurn = 0;
           slot.totalPool = 0;
@@ -1805,7 +1854,7 @@ export default function RumblePage() {
         fighter_index: preparedLegs[0]?.fighter_index ?? prepared.fighter_index,
       };
       let registerResponseOk = false;
-      for (let attempt = 0; attempt < 3; attempt++) {
+      for (let attempt = 0; attempt < BET_REGISTRATION_RETRY_DELAYS_MS.length; attempt++) {
         const res = await fetch("/api/rumble/bet", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1818,18 +1867,14 @@ export default function RumblePage() {
         }
 
         const errorMessage = String(data?.error ?? data?.detail ?? "Bet registered on-chain but API failed");
-        const retryable =
-          res.status === 503 ||
-          data?.retryable === true ||
-          errorMessage.toLowerCase().includes("still propagating") ||
-          errorMessage.toLowerCase().includes("may not be confirmed yet");
-        if (!retryable || attempt === 2) {
+        const retryable = isRetryableBetRegistrationFailure(res.status, data);
+        if (!retryable || attempt === BET_REGISTRATION_RETRY_DELAYS_MS.length - 1) {
           fetchStatus();
           setBetError(errorMessage);
           setTimeout(() => setBetError(null), 5000);
           return;
         }
-        await sleep(2_000 * (attempt + 1));
+        await sleep(BET_REGISTRATION_RETRY_DELAYS_MS[attempt] ?? BET_REGISTRATION_RETRY_DELAYS_MS[BET_REGISTRATION_RETRY_DELAYS_MS.length - 1]);
       }
       if (!registerResponseOk) {
         fetchStatus();

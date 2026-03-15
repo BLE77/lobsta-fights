@@ -9,13 +9,15 @@ import { isAuthorizedAdminRequest } from "../../../../lib/request-auth";
 import { requireJsonContentType, sanitizeErrorResponse } from "../../../../lib/api-middleware";
 import { validateWebhookUrl } from "../../../../lib/url-validation";
 import { FIGHTERS_PER_RUMBLE, MIN_FIGHTERS_TO_START } from "../../../../lib/rumble-config";
-import { consumeNonce, decodeBase64, verifyEd25519Bytes } from "../../../../lib/mobile-siws";
+import { consumeNonce, decodeBase64, readNonce, verifyEd25519Bytes } from "../../../../lib/mobile-siws";
+import { getRateLimitKey, getRequestIdentityKey } from "../../../../lib/rate-limit";
 import {
   buildFighterRegistrationMessage,
   FIGHTER_REGISTRATION_STATEMENT,
 } from "../../../../lib/fighter-registration-proof";
 import {
   getWalletTrustDecision,
+  rollbackWalletTrustDecision,
   rememberWalletTrustDecision,
 } from "../../../../lib/wallet-trust";
 
@@ -23,46 +25,134 @@ export const dynamic = "force-dynamic";
 
 const REGISTRATION_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 const MAX_REGISTRATIONS_PER_WINDOW = 3;
-const registrationRateLimit = new Map<string, { count: number; resetAt: number }>();
+const REGISTRATION_QUOTA_KEY_PREFIX = "fighter_registration_quota_v1:";
 
-function getRateLimitKey(request: Request): string {
-  const forwardedFor = request.headers.get("x-forwarded-for");
-  if (forwardedFor) {
-    return forwardedFor.split(",")[0].trim();
-  }
-  const realIp = request.headers.get("x-real-ip");
-  if (realIp) return realIp.trim();
-  return "unknown";
+interface RegistrationQuotaRecord {
+  count: number;
+  resetAt: string;
 }
 
-function consumeRegistrationQuota(request: Request): { allowed: boolean; retryAfterSec: number } {
-  const key = getRateLimitKey(request);
-  const now = Date.now();
+function registrationQuotaAdminKey(key: string): string {
+  return `${REGISTRATION_QUOTA_KEY_PREFIX}${key}`;
+}
 
-  if (registrationRateLimit.size > 10_000) {
-    for (const [entryKey, entry] of registrationRateLimit.entries()) {
-      if (now >= entry.resetAt) registrationRateLimit.delete(entryKey);
+function parseRegistrationQuotaRecord(value: unknown): RegistrationQuotaRecord | null {
+  if (!value || typeof value !== "object") return null;
+  const count = Number((value as any).count);
+  const resetAt = typeof (value as any).resetAt === "string" ? (value as any).resetAt : "";
+  if (!Number.isFinite(count) || count < 0 || !resetAt) return null;
+  return { count, resetAt };
+}
+
+async function consumeRegistrationQuota(key: string): Promise<{ allowed: boolean; retryAfterSec: number }> {
+  const quotaKey = registrationQuotaAdminKey(key);
+  const sb = freshSupabase();
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const now = Date.now();
+    const nowIso = new Date(now).toISOString();
+    const { data, error } = await sb
+      .from("admin_config")
+      .select("value, updated_at")
+      .eq("key", quotaKey)
+      .maybeSingle();
+    if (error && error.code !== "PGRST116") {
+      throw error;
+    }
+
+    const existing = parseRegistrationQuotaRecord(data?.value ?? null);
+    const resetAtMs = existing ? Date.parse(existing.resetAt) : Number.NaN;
+    if (!existing || !Number.isFinite(resetAtMs) || resetAtMs <= now) {
+      const nextRecord: RegistrationQuotaRecord = {
+        count: 1,
+        resetAt: new Date(now + REGISTRATION_RATE_LIMIT_WINDOW_MS).toISOString(),
+      };
+      if (data) {
+        const previousUpdatedAt =
+          typeof (data as any)?.updated_at === "string" ? (data as any).updated_at : null;
+        let resetQuery = sb
+          .from("admin_config")
+          .update({
+            value: nextRecord,
+            updated_at: nowIso,
+          })
+          .eq("key", quotaKey);
+        if (previousUpdatedAt) {
+          resetQuery = resetQuery.eq("updated_at", previousUpdatedAt);
+        }
+        const { data: resetRows, error: resetError } = await resetQuery.select("key").limit(1);
+        if (resetError) throw resetError;
+        if (Array.isArray(resetRows) && resetRows.length > 0) {
+          return { allowed: true, retryAfterSec: 0 };
+        }
+      } else {
+        const { error: insertError } = await sb.from("admin_config").insert({
+          key: quotaKey,
+          value: nextRecord,
+          updated_at: nowIso,
+        });
+        if (!insertError) {
+          return { allowed: true, retryAfterSec: 0 };
+        }
+        if (insertError.code !== "23505") {
+          throw insertError;
+        }
+      }
+      continue;
+    }
+
+    if (existing.count >= MAX_REGISTRATIONS_PER_WINDOW) {
+      return {
+        allowed: false,
+        retryAfterSec: Math.max(1, Math.ceil((resetAtMs - now) / 1000)),
+      };
+    }
+
+    const previousUpdatedAt =
+      typeof (data as any)?.updated_at === "string" ? (data as any).updated_at : null;
+    let updateQuery = sb
+      .from("admin_config")
+      .update({
+        value: {
+          count: existing.count + 1,
+          resetAt: existing.resetAt,
+        },
+        updated_at: nowIso,
+      })
+      .eq("key", quotaKey);
+    if (previousUpdatedAt) {
+      updateQuery = updateQuery.eq("updated_at", previousUpdatedAt);
+    }
+    const { data: updatedRows, error: updateError } = await updateQuery
+      .select("key")
+      .limit(1);
+    if (updateError) throw updateError;
+    if (Array.isArray(updatedRows) && updatedRows.length > 0) {
+      return { allowed: true, retryAfterSec: 0 };
     }
   }
 
-  const existing = registrationRateLimit.get(key);
-  if (!existing || now >= existing.resetAt) {
-    registrationRateLimit.set(key, {
-      count: 1,
-      resetAt: now + REGISTRATION_RATE_LIMIT_WINDOW_MS,
-    });
-    return { allowed: true, retryAfterSec: 0 };
-  }
+  throw new Error(`Failed to update registration quota for ${key}`);
+}
 
-  if (existing.count >= MAX_REGISTRATIONS_PER_WINDOW) {
-    return {
-      allowed: false,
-      retryAfterSec: Math.max(1, Math.ceil((existing.resetAt - now) / 1000)),
-    };
-  }
+async function consumeRegistrationQuotaForRequest(
+  request: Request,
+  walletAddress: string | null,
+): Promise<{ allowed: boolean; retryAfterSec: number }> {
+  const keys = new Set<string>();
+  const networkKey = getRequestIdentityKey(request);
+  if (networkKey) keys.add(networkKey);
+  if (walletAddress) keys.add(`wallet:${walletAddress}`);
+  if (keys.size === 0) keys.add("unknown");
 
-  existing.count += 1;
-  registrationRateLimit.set(key, existing);
+  let maxRetryAfterSec = 0;
+  for (const key of keys) {
+    const result = await consumeRegistrationQuota(key);
+    if (!result.allowed) {
+      maxRetryAfterSec = Math.max(maxRetryAfterSec, result.retryAfterSec);
+      return { allowed: false, retryAfterSec: maxRetryAfterSec };
+    }
+  }
   return { allowed: true, retryAfterSec: 0 };
 }
 
@@ -99,7 +189,16 @@ function validateRegistrationProof(
   walletAddress: string,
   payload: any,
   result: any,
-): string | null {
+): Promise<string | null> {
+  return validateRegistrationProofInternal(request, walletAddress, payload, result);
+}
+
+async function validateRegistrationProofInternal(
+  request: Request,
+  walletAddress: string,
+  payload: any,
+  result: any,
+): Promise<string | null> {
   if (!payload || !result) {
     return "Missing wallet signature proof. Connect your Solana wallet and sign the registration challenge.";
   }
@@ -109,8 +208,12 @@ function validateRegistrationProof(
   if (!nonce || !issuedAt) {
     return "Registration proof is missing nonce or issuedAt.";
   }
-  if (!consumeNonce(nonce)) {
+  const nonceRecord = await readNonce(nonce);
+  if (!nonceRecord) {
     return "Registration proof nonce is invalid or expired. Request a new signature challenge.";
+  }
+  if (nonceRecord.issuedAt !== issuedAt) {
+    return "Registration proof issuedAt does not match the active nonce challenge.";
   }
 
   const { host, origin } = getRequestOriginParts(request);
@@ -118,7 +221,7 @@ function validateRegistrationProof(
     domain: host,
     walletAddress,
     nonce,
-    issuedAt,
+    issuedAt: nonceRecord.issuedAt,
     uri: origin,
   });
 
@@ -146,6 +249,10 @@ function validateRegistrationProof(
     });
     if (!signatureOk) {
       return "Invalid wallet signature.";
+    }
+    const consumed = await consumeNonce(nonce);
+    if (!consumed) {
+      return "Registration proof nonce was already used or expired. Request a new signature challenge.";
     }
   } catch (error) {
     console.error("[fighter/register] wallet proof validation error:", error);
@@ -426,17 +533,6 @@ export async function POST(request: Request) {
     const contentTypeError = requireJsonContentType(request);
     if (contentTypeError) return contentTypeError;
 
-    const quota = consumeRegistrationQuota(request);
-    if (!quota.allowed) {
-      return NextResponse.json(
-        {
-          error: "Registration rate limit exceeded",
-          retry_after_seconds: quota.retryAfterSec,
-        },
-        { status: 429, headers: { "Retry-After": String(quota.retryAfterSec) } },
-      );
-    }
-
     const body: RobotCharacter = await request.json();
     const isAdminRegistration = isAuthorizedAdminRequest(request.headers);
     const {
@@ -489,7 +585,7 @@ export async function POST(request: Request) {
     }
 
     if (!isAdminRegistration && normalizedWalletAddress) {
-      const proofError = validateRegistrationProof(
+      const proofError = await validateRegistrationProof(
         request,
         normalizedWalletAddress,
         registrationPayload,
@@ -506,12 +602,36 @@ export async function POST(request: Request) {
         );
       }
 
+      const quota = await consumeRegistrationQuotaForRequest(request, normalizedWalletAddress);
+      if (!quota.allowed) {
+        return NextResponse.json(
+          {
+            error: "Registration rate limit exceeded",
+            retry_after_seconds: quota.retryAfterSec,
+          },
+          { status: 429, headers: { "Retry-After": String(quota.retryAfterSec) } },
+        );
+      }
+
       trustDecision = await getWalletTrustDecision(normalizedWalletAddress);
+    } else {
+      const quota = await consumeRegistrationQuotaForRequest(request, normalizedWalletAddress);
+      if (!quota.allowed) {
+        return NextResponse.json(
+          {
+            error: "Registration rate limit exceeded",
+            retry_after_seconds: quota.retryAfterSec,
+          },
+          { status: 429, headers: { "Retry-After": String(quota.retryAfterSec) } },
+        );
+      }
     }
 
     const effectiveWalletAddress = normalizedWalletAddress
       || `bot-${name?.toLowerCase().replace(/[^a-z0-9]/g, "-")}-${Date.now()}`;
     const effectiveWebhookUrl = webhookUrl || "https://polling-mode.local";
+    const registrantIdentity = getRequestIdentityKey(request);
+    const legacyRegistrantIp = getRateLimitKey(request);
 
     // Validate fighter name format
     if (name) {
@@ -576,18 +696,21 @@ export async function POST(request: Request) {
       );
     }
 
-    // Sybil protection: limit total fighters per IP
-    const registrantIp = getRateLimitKey(request);
-    if (registrantIp !== "unknown") {
+    // Sybil protection: limit total fighters per network fingerprint
+    if (registrantIdentity) {
+      const identityCandidates = [registrantIdentity];
+      if (legacyRegistrantIp && legacyRegistrantIp !== "unknown" && legacyRegistrantIp !== registrantIdentity) {
+        identityCandidates.push(legacyRegistrantIp);
+      }
       const { count: ipFighterCount, error: countErr } = await supabase
         .from("ucf_fighters")
         .select("id", { count: "exact", head: true })
-        .eq("registered_from_ip", registrantIp);
+        .in("registered_from_ip", identityCandidates);
 
       if (!countErr && ipFighterCount !== null && ipFighterCount >= 5) {
         return NextResponse.json(
           {
-            error: "Too many fighters registered from your network. Maximum 5 fighters per IP.",
+            error: "Too many fighters registered from this network identity. Maximum 5 fighters per network.",
             instructions: GAME_INSTRUCTIONS,
           },
           { status: 429 },
@@ -762,7 +885,7 @@ export async function POST(request: Request) {
 
     // Create new fighter with 1000 starting points
     const { plaintext: plaintextApiKey, hash: apiKeyHash } = generateApiKey();
-    const autoApproved = Boolean(trustDecision.approved);
+    const preInsertAutoApproved = Boolean(trustDecision.approved && trustDecision.source !== "seeker_genesis");
     const { data, error } = await supabase
       .from("ucf_fighters")
       .insert({
@@ -774,9 +897,9 @@ export async function POST(request: Request) {
         image_url: imageUrl,
         robot_metadata: robotMetadata,
         points: 1000,
-        verified: autoApproved,
+        verified: preInsertAutoApproved,
         moltbook_agent_id: moltbookAgentId,
-        registered_from_ip: registrantIp !== "unknown" ? registrantIp : null,
+        registered_from_ip: registrantIdentity,
         api_key_hash: apiKeyHash,
       })
       .select()
@@ -798,29 +921,60 @@ export async function POST(request: Request) {
       });
     }
 
-    if (autoApproved && normalizedWalletAddress) {
-      await rememberWalletTrustDecision({
+    let finalTrustDecision = trustDecision;
+    if (trustDecision.approved && normalizedWalletAddress) {
+      finalTrustDecision = await rememberWalletTrustDecision({
         walletAddress: normalizedWalletAddress,
         decision: trustDecision,
         fighterId: data.id,
       }).catch((trustError) => {
         console.error("[fighter/register] failed to persist wallet trust:", trustError);
+        return {
+          approved: false,
+          source: null,
+          reason: "Failed to finalize wallet trust approval",
+          label: null,
+          sgtAssetId: trustDecision.sgtAssetId,
+        };
       });
+      if (finalTrustDecision.approved && !preInsertAutoApproved) {
+        const { error: approveError } = await freshSupabase()
+          .from("ucf_fighters")
+          .update({ verified: true })
+          .eq("id", data.id);
+        if (approveError) {
+          console.error("[fighter/register] failed to mark fighter verified after trust approval:", approveError);
+          await rollbackWalletTrustDecision({
+            walletAddress: normalizedWalletAddress,
+            decision: finalTrustDecision,
+            fighterId: data.id,
+          });
+          finalTrustDecision = {
+            approved: false,
+            source: null,
+            reason: "Failed to persist fighter verification state",
+            label: null,
+            sgtAssetId: trustDecision.sgtAssetId,
+            reservationToken: null,
+          };
+        }
+      }
     }
+    const autoApproved = Boolean(preInsertAutoApproved || finalTrustDecision.approved);
 
     return NextResponse.json({
       success: true,
       fighter_id: data.id,
       api_key: plaintextApiKey,
       message: autoApproved
-        ? `🤖 Robot fighter registered and auto-approved via ${trustDecision.label ?? trustDecision.source}! Save your API key and queue up.`
+        ? `🤖 Robot fighter registered and auto-approved via ${finalTrustDecision.label ?? finalTrustDecision.source}! Save your API key and queue up.`
         : "🤖 Robot fighter registered! Save your API key. Fighter approval is required before it can queue for live rumbles. Non-Seeker wallets should ask @ble77_ed or @ClawFights for approval if still pending.",
       points: data.points,
       robot: robotMetadata,
       image_generating: !imageUrl && !!process.env.REPLICATE_API_TOKEN,
       approval_required: !autoApproved,
       auto_approved: autoApproved,
-      approval_source: autoApproved ? trustDecision.source : null,
+      approval_source: autoApproved ? finalTrustDecision.source : null,
       instructions: GAME_INSTRUCTIONS,
     });
   } catch (error: any) {

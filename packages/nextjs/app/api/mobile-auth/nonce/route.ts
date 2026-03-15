@@ -9,5 +9,5 @@ export async function GET(request: Request) {
   const rl = checkRateLimit("PUBLIC_READ", rlKey);
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
 
-  return NextResponse.json(issueNonce());
+  return NextResponse.json(await issueNonce());
 }

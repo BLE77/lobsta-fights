@@ -4,6 +4,7 @@ import {
   decodeBase64,
   MobileSiwsPayload,
   MobileSiwsResult,
+  readNonce,
   toBase58Address,
   verifyEd25519Bytes,
 } from "~~/lib/mobile-siws";
@@ -44,8 +45,12 @@ export async function POST(request: NextRequest) {
   if (!signInPayload.nonce || typeof signInPayload.nonce !== "string") {
     return NextResponse.json({ error: "Missing sign-in nonce" }, { status: 400 });
   }
-  if (!consumeNonce(signInPayload.nonce)) {
+  const nonceRecord = await readNonce(signInPayload.nonce);
+  if (!nonceRecord) {
     return NextResponse.json({ error: "Invalid or expired nonce" }, { status: 401 });
+  }
+  if (signInPayload.issuedAt && signInPayload.issuedAt !== nonceRecord.issuedAt) {
+    return NextResponse.json({ error: "Sign-in nonce issuedAt mismatch" }, { status: 401 });
   }
 
   try {
@@ -77,11 +82,16 @@ export async function POST(request: NextRequest) {
     if (!includesIfPresent(messageText, signInPayload.statement)) {
       return NextResponse.json({ error: "Signed message missing statement" }, { status: 401 });
     }
+    const consumed = await consumeNonce(signInPayload.nonce);
+    if (!consumed) {
+      return NextResponse.json({ error: "Nonce already used or expired" }, { status: 401 });
+    }
 
     return NextResponse.json({
       ok: true,
       walletAddress: verifiedWallet,
       domain: signInPayload.domain ?? null,
+      issuedAt: nonceRecord.issuedAt,
     });
   } catch (error) {
     console.error("[Mobile Auth Verify] SIWS error:", error);

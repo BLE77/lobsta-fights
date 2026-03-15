@@ -260,6 +260,12 @@ export async function POST(request: Request) {
       lamports: number;
     }> = [];
     for (const [fighterId, solAmount] of aggregated.entries()) {
+      if (solAmount > MAX_BET_SOL) {
+        return NextResponse.json(
+          { error: `Maximum bet is ${MAX_BET_SOL} SOL per fighter` },
+          { status: 400 },
+        );
+      }
       if (!slotFighters.includes(fighterId)) {
         return NextResponse.json({ error: `Fighter ${fighterId} is not in this Rumble.` }, { status: 400 });
       }

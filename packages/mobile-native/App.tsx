@@ -134,6 +134,25 @@ type UiToast = {
   tone: UiToastTone;
 };
 
+const BET_REGISTRATION_RETRY_DELAYS_MS = [2_000, 4_000, 6_000] as const;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableBetRegistrationFailure(status: number, body: any): boolean {
+  const errorMessage = String(body?.error ?? body?.detail ?? "");
+  const lower = errorMessage.toLowerCase();
+  return (
+    status === 503 ||
+    body?.retryable === true ||
+    lower.includes("still propagating") ||
+    lower.includes("may not be confirmed yet") ||
+    lower.includes("not confirmed yet") ||
+    lower.includes("not found yet")
+  );
+}
+
 
 
 
@@ -1853,7 +1872,7 @@ function RumbleNativeScreen() {
           ? prepared.bets
           : bets.map(bet => ({ fighter_id: bet.fighterId, sol_amount: bet.amount }));
 
-      const registerRes = await postJsonWithFallback("/api/rumble/bet", {
+      const registerBody = {
         slot_index: slotIndex,
         fighter_id: preparedLegs[0]?.fighter_id,
         sol_amount: preparedLegs[0]?.sol_amount,
@@ -1864,11 +1883,24 @@ function RumbleNativeScreen() {
         rumble_id: prepared.rumble_id,
         rumble_id_num: prepared.rumble_id_num,
         fighter_index: preparedLegs[0]?.fighter_index,
-      });
+      };
 
-      const registerBody = await registerRes.json().catch(() => ({}));
-      if (!registerRes.ok) {
-        throw new Error(String((registerBody as any)?.error ?? "Bet registered on-chain but API write failed."));
+      let registerSucceeded = false;
+      for (let attempt = 0; attempt < BET_REGISTRATION_RETRY_DELAYS_MS.length; attempt += 1) {
+        const registerRes = await postJsonWithFallback("/api/rumble/bet", registerBody);
+        const registerPayload = await registerRes.json().catch(() => ({}));
+        if (registerRes.ok) {
+          registerSucceeded = true;
+          break;
+        }
+        if (!isRetryableBetRegistrationFailure(registerRes.status, registerPayload) || attempt === BET_REGISTRATION_RETRY_DELAYS_MS.length - 1) {
+          throw new Error(String((registerPayload as any)?.error ?? "Bet registered on-chain but API write failed."));
+        }
+        await sleep(BET_REGISTRATION_RETRY_DELAYS_MS[attempt]);
+      }
+
+      if (!registerSucceeded) {
+        throw new Error("Bet transaction submitted, but registration did not finish yet. Check your wallet activity and retry.");
       }
 
       setLastBetSig(txSig);

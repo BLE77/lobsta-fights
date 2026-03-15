@@ -278,6 +278,11 @@ interface MinimalRumbleState {
 const TREASURY_CUT_BPS = 300n;
 const BPS_DENOMINATOR = 10_000n;
 
+function getActiveExposureLamports(bettor: BettorAccountDecoded): bigint {
+  const summedDeployments = bettor.fighterDeploymentsLamports.reduce((sum, value) => sum + value, 0n);
+  return summedDeployments > 0n ? summedDeployments : bettor.solDeployedLamports;
+}
+
 async function filterBettorRowsBySessionFloor(
   bettorRowsRaw: BettorAccountDecoded[],
   minTimestampMs: number | null,
@@ -556,10 +561,12 @@ export async function discoverOnchainWalletPayoutSnapshot(
   try {
     const { data: activeRows } = await freshSupabase()
       .from("ucf_rumbles")
-      .select("id")
+      .select("id, rumble_number")
       .in("status", ["betting", "combat"]);
     for (const row of activeRows ?? []) {
-      const parsed = parseOnchainRumbleIdNumber(String((row as any).id ?? ""));
+      const parsed = parseOnchainRumbleIdNumber(
+        (row as any).rumble_number ?? (row as any).id ?? null,
+      );
       if (parsed !== null) {
         activeDbRumbleIds.add(parsed);
       }
@@ -574,14 +581,20 @@ export async function discoverOnchainWalletPayoutSnapshot(
 
   for (const bettor of bettorRows) {
     totalClaimedLamports += bettor.totalClaimedLamports;
+    const activeExposureLamports = getActiveExposureLamports(bettor);
 
     const rumbleState = rumbleStateById.get(bettor.rumbleIdNum);
-    if (!rumbleState) continue;
+    if (!rumbleState) {
+      if (activeDbRumbleIds.has(bettor.rumbleIdNum)) {
+        pendingNotReadyLamports += activeExposureLamports;
+      }
+      continue;
+    }
 
     const payoutReady = rumbleState.state === "payout" || rumbleState.state === "complete";
     if (!payoutReady) {
-      if (activeDbRumbleIds.has(bettor.rumbleIdNum)) {
-        pendingNotReadyLamports += bettor.solDeployedLamports;
+      if (rumbleState.state === "betting" || rumbleState.state === "combat" || activeDbRumbleIds.has(bettor.rumbleIdNum)) {
+        pendingNotReadyLamports += activeExposureLamports;
       }
       continue;
     }
@@ -638,7 +651,7 @@ export async function discoverOnchainWalletPayoutSnapshot(
 
   claimableRumbles.sort((a, b) => b.inferredClaimableSol - a.inferredClaimableSol);
   const boundedClaimable = claimableRumbles.slice(0, Math.max(1, Math.min(limit, 250)));
-  const totalClaimableSol = boundedClaimable.reduce((sum, row) => {
+  const totalClaimableSol = claimableRumbles.reduce((sum, row) => {
     return sum + (row.onchainClaimableSol > 0 ? row.onchainClaimableSol : row.inferredClaimableSol);
   }, 0);
 
