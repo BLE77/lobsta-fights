@@ -120,6 +120,7 @@ import { Keypair, PublicKey, Transaction, Connection } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import {
   getCachedCombatSlot,
+  getCachedBettingSlot,
   getConnection,
   getErConnection,
   getBettingConnection,
@@ -3127,7 +3128,7 @@ export class RumbleOrchestrator {
         );
         return;
       }
-      const clusterSlot = await getBettingConnection().getSlot("processed").catch(() => null);
+      const clusterSlot = await getCachedBettingSlot("processed").catch(() => null);
       if (typeof clusterSlot !== "number" || !Number.isFinite(clusterSlot)) {
         console.warn(
           `[Orchestrator] armBettingWindowIfReady: could not read mainnet cluster slot for ${slot.id}; keeping betting closed`,

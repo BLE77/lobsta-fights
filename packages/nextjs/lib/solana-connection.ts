@@ -144,7 +144,7 @@ export function getBettingReadRpcEndpoints(): string[] {
 let _connection: Connection | null = null;
 const _slotCache = new Map<string, { slot: number; at: number }>();
 const DEFAULT_SLOT_CACHE_TTL_MS = (() => {
-  const raw = Number(process.env.RUMBLE_RPC_SLOT_CACHE_MS ?? "1500");
+  const raw = Number(process.env.RUMBLE_RPC_SLOT_CACHE_MS ?? "5000"); // 5s — turns are 30s apart
   if (!Number.isFinite(raw)) return 1_500;
   return Math.min(10_000, Math.max(250, Math.floor(raw)));
 })();
