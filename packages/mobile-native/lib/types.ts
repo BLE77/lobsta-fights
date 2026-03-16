@@ -141,7 +141,43 @@ export type TxEntry = {
   err: boolean;
 };
 
-export type TabKey = "arena" | "chat" | "queue";
+export type TabKey = "arena" | "chat" | "queue" | "setup";
+
+export type FighterSetupStatus = {
+  fighter: {
+    id?: string;
+    name?: string;
+    verified?: boolean;
+    createdAt?: string | null;
+    created_at?: string | null;
+  } | null;
+  trust?: {
+    approved?: boolean;
+    source?: string | null;
+    label?: string | null;
+    reason?: string | null;
+    sgtAssetId?: string | null;
+  } | null;
+  delegate?: {
+    configured?: boolean;
+    authorized?: boolean;
+    revoked?: boolean;
+    expectedAuthority?: string | null;
+    onchainAuthority?: string | null;
+    matchesExpectedAuthority?: boolean;
+    nextAction?: "authorize_delegate" | "rebind_delegate" | "ready_for_seekerclaw";
+    message?: string;
+  } | null;
+  can_register?: boolean;
+  can_queue?: boolean;
+  can_auto_verify_existing_fighter?: boolean;
+  canRegister?: boolean;
+  canQueue?: boolean;
+  canAutoVerifyExistingFighter?: boolean;
+  next_action?: string | null;
+  nextAction?: string | null;
+  message?: string | null;
+};
 
 export type MyBetsResponse = {
   slots?: Array<{

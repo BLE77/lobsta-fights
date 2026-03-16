@@ -124,6 +124,31 @@ export const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     minWidth: 0,
+    gap: 6,
+  },
+  headerSetupBadge: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  headerSetupBadgeReady: {
+    borderColor: "#166534",
+    backgroundColor: "rgba(22, 163, 74, 0.18)",
+  },
+  headerSetupBadgeWarn: {
+    borderColor: "#a16207",
+    backgroundColor: "rgba(217, 119, 6, 0.16)",
+  },
+  headerSetupBadgePending: {
+    borderColor: "#44403c",
+    backgroundColor: "rgba(41, 37, 36, 0.8)",
+  },
+  headerSetupBadgeText: {
+    color: "#e7e5e4",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.6,
   },
   headerGearSlot: {
     width: 34,
@@ -1131,6 +1156,68 @@ export const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 6,
   },
+  setupCard: {
+    marginTop: 10,
+    gap: 8,
+  },
+  setupModeRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  setupModeBtn: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: "#44403c",
+    borderRadius: 8,
+    backgroundColor: "#111111",
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    alignItems: "center",
+  },
+  setupModeBtnActive: {
+    borderColor: "#d97706",
+    backgroundColor: "rgba(217, 119, 6, 0.18)",
+  },
+  setupModeBtnText: {
+    color: "#a8a29e",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.5,
+  },
+  setupModeBtnTextActive: {
+    color: "#fbbf24",
+  },
+  setupInput: {
+    borderWidth: 1,
+    borderColor: "#44403c",
+    borderRadius: 8,
+    backgroundColor: "#101010",
+    color: "#f5f5f4",
+    fontSize: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+  },
+  setupTextarea: {
+    minHeight: 108,
+    textAlignVertical: "top",
+  },
+  setupTextareaSmall: {
+    minHeight: 72,
+    textAlignVertical: "top",
+  },
+  setupSecretLabel: {
+    color: "#78716c",
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
+  },
+  setupSecretValue: {
+    color: "#f5f5f4",
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: "700",
+  },
   rewardCard: {
     flex: 1,
     borderWidth: 1,
@@ -1177,12 +1264,11 @@ export const styles = StyleSheet.create({
     fontWeight: "900",
   },
   ichorBottleImage: {
-    width: "100%",
-    height: 110,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#3f3f46",
-    resizeMode: "cover",
+    width: 96,
+    height: 144,
+    alignSelf: "center",
+    marginTop: 6,
+    marginBottom: 4,
   },
   ichorUnit: {
     color: "#a16207",

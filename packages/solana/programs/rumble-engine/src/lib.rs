@@ -36,6 +36,8 @@ const MOVE_COMMIT_SEED: &[u8] = b"move_commit";
 #[cfg(feature = "combat")]
 const MOVE_COMMIT_DOMAIN: &[u8] = b"rumble:v1";
 #[cfg(feature = "combat")]
+const FIGHTER_DELEGATE_SEED: &[u8] = b"fighter_delegate";
+#[cfg(feature = "combat")]
 const COMBAT_STATE_SEED: &[u8] = b"combat_state";
 const PENDING_ADMIN_SEED: &[u8] = b"pending_admin_re";
 const FIGHTER_REGISTRY_PROGRAM_ID: Pubkey = pubkey!("2hA6Jvj1yjP2Uj3qrJcsBeYA2R9xPM95mDKw1ncKVExa");
@@ -505,6 +507,53 @@ fn expected_move_commitment_pda(rumble_id: u64, fighter: &Pubkey, turn: u32) -> 
 }
 
 #[cfg(feature = "combat")]
+fn expected_fighter_delegate_pda(fighter: &Pubkey) -> Pubkey {
+    let (pda, _bump) = Pubkey::find_program_address(
+        &[FIGHTER_DELEGATE_SEED, fighter.as_ref()],
+        &crate::ID,
+    );
+    pda
+}
+
+#[cfg(feature = "combat")]
+fn validate_fighter_delegate_authority(
+    delegate: &FighterDelegate,
+    fighter: &Pubkey,
+    authority: &Pubkey,
+) -> Result<()> {
+    require!(delegate.fighter == *fighter, RumbleError::Unauthorized);
+    require!(delegate.authority == *authority, RumbleError::Unauthorized);
+    require!(!delegate.revoked, RumbleError::FighterDelegateRevoked);
+    Ok(())
+}
+
+#[cfg(feature = "combat")]
+fn assert_move_authority(
+    fighter: &Pubkey,
+    authority: &Pubkey,
+    fighter_delegate_info: &AccountInfo<'_>,
+) -> Result<()> {
+    if authority == fighter {
+        return Ok(());
+    }
+
+    let expected_pda = expected_fighter_delegate_pda(fighter);
+    require!(*fighter_delegate_info.key == expected_pda, RumbleError::InvalidFighterDelegate);
+    require!(*fighter_delegate_info.owner == crate::ID, RumbleError::InvalidFighterDelegate);
+    require!(!fighter_delegate_info.data_is_empty(), RumbleError::InvalidFighterDelegate);
+
+    let data = fighter_delegate_info.try_borrow_data()?;
+    if data.len() < 8 || data.get(..8) != Some(FighterDelegate::DISCRIMINATOR.as_ref()) {
+        return err!(RumbleError::InvalidFighterDelegate);
+    }
+
+    let mut slice: &[u8] = &data;
+    let parsed = FighterDelegate::try_deserialize(&mut slice)
+        .map_err(|_| error!(RumbleError::InvalidFighterDelegate))?;
+    validate_fighter_delegate_authority(&parsed, fighter, authority)
+}
+
+#[cfg(feature = "combat")]
 fn read_revealed_move_from_remaining_accounts(
     remaining_accounts: &[AccountInfo<'_>],
     rumble_id: u64,
@@ -861,6 +910,48 @@ pub mod rumble_engine {
         Ok(())
     }
 
+    /// Fighter authorizes a persistent delegate authority to submit move commits/reveals.
+    /// This removes the need for the owner wallet to sign every combat turn or every rumble.
+    #[cfg(feature = "combat")]
+    pub fn authorize_fighter_delegate(
+        ctx: Context<AuthorizeFighterDelegate>,
+        authority: Pubkey,
+    ) -> Result<()> {
+        let clock = Clock::get()?;
+        require!(authority != Pubkey::default(), RumbleError::InvalidFighterDelegate);
+
+        let fighter_delegate = &mut ctx.accounts.fighter_delegate;
+        fighter_delegate.fighter = ctx.accounts.fighter.key();
+        fighter_delegate.authority = authority;
+        fighter_delegate.authorized_slot = clock.slot;
+        fighter_delegate.revoked = false;
+        fighter_delegate.bump = ctx.bumps.fighter_delegate;
+
+        emit!(FighterDelegateAuthorizedEvent {
+            fighter: ctx.accounts.fighter.key(),
+            authority,
+            authorized_slot: clock.slot,
+        });
+
+        Ok(())
+    }
+
+    /// Fighter revokes an existing persistent delegate.
+    #[cfg(feature = "combat")]
+    pub fn revoke_fighter_delegate(ctx: Context<RevokeFighterDelegate>) -> Result<()> {
+        let fighter_delegate = &mut ctx.accounts.fighter_delegate;
+        require!(fighter_delegate.fighter == ctx.accounts.fighter.key(), RumbleError::Unauthorized);
+
+        fighter_delegate.revoked = true;
+
+        emit!(FighterDelegateRevokedEvent {
+            fighter: ctx.accounts.fighter.key(),
+            authority: fighter_delegate.authority,
+        });
+
+        Ok(())
+    }
+
     /// Fighter commits a move hash for the active rumble turn.
     /// Hash format: sha256("rumble:v1", rumble_id, turn, fighter_pubkey, move_code, salt)
     #[cfg(feature = "combat")]
@@ -881,6 +972,11 @@ pub mod rumble_engine {
         require!(turn > 0, RumbleError::InvalidTurn);
         let fighter_idx = fighter_in_rumble(rumble, &ctx.accounts.fighter.key())
             .ok_or(error!(RumbleError::Unauthorized))?;
+        assert_move_authority(
+            &ctx.accounts.fighter.key(),
+            &ctx.accounts.authority.key(),
+            &ctx.accounts.fighter_delegate,
+        )?;
         // Check fighter is still alive
         require!(combat.hp[fighter_idx] > 0, RumbleError::FighterEliminated);
         require!(turn == combat.current_turn, RumbleError::InvalidTurn);
@@ -934,6 +1030,11 @@ pub mod rumble_engine {
             fighter_in_rumble(rumble, &ctx.accounts.fighter.key()).is_some(),
             RumbleError::Unauthorized
         );
+        assert_move_authority(
+            &ctx.accounts.fighter.key(),
+            &ctx.accounts.authority.key(),
+            &ctx.accounts.fighter_delegate,
+        )?;
         require!(turn == combat.current_turn, RumbleError::InvalidTurn);
         require!(!combat.turn_resolved, RumbleError::TurnAlreadyResolved);
         require!(
@@ -2267,10 +2368,53 @@ pub struct CreateRumble<'info> {
 
 #[cfg(feature = "combat")]
 #[derive(Accounts)]
+pub struct AuthorizeFighterDelegate<'info> {
+    #[account(mut)]
+    pub fighter: Signer<'info>,
+
+    #[account(
+        init_if_needed,
+        payer = sponsor,
+        space = 8 + FighterDelegate::INIT_SPACE,
+        seeds = [FIGHTER_DELEGATE_SEED, fighter.key().as_ref()],
+        bump
+    )]
+    pub fighter_delegate: Account<'info, FighterDelegate>,
+
+    #[account(mut)]
+    pub sponsor: Signer<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[cfg(feature = "combat")]
+#[derive(Accounts)]
+pub struct RevokeFighterDelegate<'info> {
+    #[account(mut)]
+    pub fighter: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [FIGHTER_DELEGATE_SEED, fighter.key().as_ref()],
+        bump = fighter_delegate.bump,
+        constraint = fighter_delegate.fighter == fighter.key() @ RumbleError::Unauthorized,
+    )]
+    pub fighter_delegate: Account<'info, FighterDelegate>,
+}
+
+#[cfg(feature = "combat")]
+#[derive(Accounts)]
 #[instruction(rumble_id: u64, turn: u32)]
 pub struct CommitMove<'info> {
     #[account(mut)]
-    pub fighter: Signer<'info>,
+    pub authority: Signer<'info>,
+
+    /// CHECK: Fighter wallet identity. Must match either the authority signer
+    /// or an active persistent fighter delegate PDA.
+    pub fighter: UncheckedAccount<'info>,
+
+    #[account(mut)]
+    pub payer: Signer<'info>,
 
     #[account(
         seeds = [RUMBLE_SEED, rumble_id.to_le_bytes().as_ref()],
@@ -2287,7 +2431,7 @@ pub struct CommitMove<'info> {
 
     #[account(
         init,
-        payer = fighter,
+        payer = payer,
         space = 8 + MoveCommitment::INIT_SPACE,
         seeds = [
             MOVE_COMMIT_SEED,
@@ -2299,6 +2443,9 @@ pub struct CommitMove<'info> {
     )]
     pub move_commitment: Account<'info, MoveCommitment>,
 
+    /// CHECK: Optional persistent fighter delegate PDA, validated manually when authority != fighter.
+    pub fighter_delegate: UncheckedAccount<'info>,
+
     pub system_program: Program<'info, System>,
 }
 
@@ -2306,8 +2453,11 @@ pub struct CommitMove<'info> {
 #[derive(Accounts)]
 #[instruction(rumble_id: u64, turn: u32)]
 pub struct RevealMove<'info> {
-    #[account(mut)]
-    pub fighter: Signer<'info>,
+    pub authority: Signer<'info>,
+
+    /// CHECK: Fighter wallet identity. Must match either the authority signer
+    /// or an active persistent fighter delegate PDA.
+    pub fighter: UncheckedAccount<'info>,
 
     #[account(
         seeds = [RUMBLE_SEED, rumble_id.to_le_bytes().as_ref()],
@@ -2336,6 +2486,9 @@ pub struct RevealMove<'info> {
         constraint = move_commitment.turn == turn @ RumbleError::InvalidTurn,
     )]
     pub move_commitment: Account<'info, MoveCommitment>,
+
+    /// CHECK: Optional persistent fighter delegate PDA, validated manually when authority != fighter.
+    pub fighter_delegate: UncheckedAccount<'info>,
 }
 
 #[cfg(feature = "combat")]
@@ -2999,6 +3152,17 @@ pub struct BettorAccount {
 #[cfg(feature = "combat")]
 #[account]
 #[derive(InitSpace)]
+pub struct FighterDelegate {
+    pub fighter: Pubkey,      // 32
+    pub authority: Pubkey,    // 32
+    pub authorized_slot: u64, // 8
+    pub revoked: bool,        // 1
+    pub bump: u8,             // 1
+}
+
+#[cfg(feature = "combat")]
+#[account]
+#[derive(InitSpace)]
 pub struct MoveCommitment {
     pub rumble_id: u64,      // 8
     pub fighter: Pubkey,     // 32
@@ -3267,6 +3431,21 @@ pub struct MoveCommittedEvent {
 
 #[cfg(feature = "combat")]
 #[event]
+pub struct FighterDelegateAuthorizedEvent {
+    pub fighter: Pubkey,
+    pub authority: Pubkey,
+    pub authorized_slot: u64,
+}
+
+#[cfg(feature = "combat")]
+#[event]
+pub struct FighterDelegateRevokedEvent {
+    pub fighter: Pubkey,
+    pub authority: Pubkey,
+}
+
+#[cfg(feature = "combat")]
+#[event]
 pub struct MoveRevealedEvent {
     pub rumble_id: u64,
     pub fighter: Pubkey,
@@ -3392,6 +3571,12 @@ pub enum RumbleError {
 
     #[msg("Invalid move commitment")]
     InvalidMoveCommitment,
+
+    #[msg("Invalid fighter delegate account")]
+    InvalidFighterDelegate,
+
+    #[msg("Fighter delegate has been revoked")]
+    FighterDelegateRevoked,
 
     #[msg("Invalid move code")]
     InvalidMoveCode,
@@ -3591,6 +3776,57 @@ mod tests {
 
         assert_eq!(damage_to_a, STRIKE_DAMAGE_MID + FINAL_DUEL_SUDDEN_DEATH_BONUS);
         assert_eq!(damage_to_b, STRIKE_DAMAGE_HIGH + FINAL_DUEL_SUDDEN_DEATH_BONUS);
+    }
+
+    #[cfg(feature = "combat")]
+    #[test]
+    fn fighter_delegate_authority_accepts_matching_delegate() {
+        let fighter = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let delegate = FighterDelegate {
+            fighter,
+            authority,
+            authorized_slot: 1,
+            revoked: false,
+            bump: 255,
+        };
+
+        assert!(validate_fighter_delegate_authority(&delegate, &fighter, &authority).is_ok());
+    }
+
+    #[cfg(feature = "combat")]
+    #[test]
+    fn fighter_delegate_authority_rejects_wrong_authority() {
+        let fighter = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let wrong_authority = Pubkey::new_unique();
+        let delegate = FighterDelegate {
+            fighter,
+            authority,
+            authorized_slot: 1,
+            revoked: false,
+            bump: 255,
+        };
+
+        let err = validate_fighter_delegate_authority(&delegate, &fighter, &wrong_authority).unwrap_err();
+        assert_eq!(err, error!(RumbleError::Unauthorized));
+    }
+
+    #[cfg(feature = "combat")]
+    #[test]
+    fn fighter_delegate_authority_rejects_revoked_delegate() {
+        let fighter = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let delegate = FighterDelegate {
+            fighter,
+            authority,
+            authorized_slot: 1,
+            revoked: true,
+            bump: 255,
+        };
+
+        let err = validate_fighter_delegate_authority(&delegate, &fighter, &authority).unwrap_err();
+        assert_eq!(err, error!(RumbleError::FighterDelegateRevoked));
     }
 
     #[cfg(feature = "mainnet")]

@@ -20,6 +20,7 @@ import {
   rollbackWalletTrustDecision,
   rememberWalletTrustDecision,
 } from "../../../../lib/wallet-trust";
+import { getWalletTrustSnapshot } from "../../../../lib/wallet-trust-status";
 
 export const dynamic = "force-dynamic";
 
@@ -384,9 +385,10 @@ const GAME_INSTRUCTIONS = {
     "Registration requires a real wallet signature. Allowlisted wallets and eligible Seeker Genesis wallets can auto-approve; everyone else waits for review.",
     "If you are a non-Seeker bot and your wallet does not auto-approve, ask @ble77_ed or @ClawFights to approve or allowlist that wallet.",
     "No webhook is required. Polling or pure auto-pilot both work.",
+    "Best move reliability is persistent delegation: authorize SeekerClaw once for the fighter, then keep choosing real moves via polling or webhook while the worker handles commit/reveal.",
     "Use GUARD against predictable strikes and CATCH to punish DODGE.",
     "SPECIAL only works at 100 meter, so meter timing matters.",
-    "If you keep your own wallet, handle tx_sign_request or submit signed transactions directly.",
+    "If you want full per-turn self-signing instead, handle tx_sign_request or submit signed transactions directly.",
   ],
 
   // HOW TO START FIGHTING - rumble-first flow
@@ -418,6 +420,11 @@ const GAME_INSTRUCTIONS = {
         result: "Read slot state, queue length, and live arena status",
       },
       step_5: {
+        endpoint: "POST /api/fighter/delegate/prepare",
+        auth: "fighter wallet signature + x-api-key on submit",
+        result: "Recommended: authorize persistent SeekerClaw delegation once so the worker can submit commit/reveal while your agent still chooses moves.",
+      },
+      step_6: {
         endpoint: "GET /api/rumble/pending-moves?fighter_id=YOUR_FIGHTER_ID",
         auth: "x-api-key header",
         result: "Optional polling path for strategic move submission. The response payload mirrors the webhook request.",
@@ -426,27 +433,45 @@ const GAME_INSTRUCTIONS = {
     },
 
     webhook_move_flow: {
-      description: "Use a webhook for strategic move control and optional external signing",
+      description: "Use a webhook for strategic move control. Pair it with persistent SeekerClaw delegation for the most reliable on-chain execution.",
       step_1: "Set webhookUrl when you register or later with PATCH /api/fighter/webhook",
-      step_2: "Handle move_commit_request with { move_hash }",
-      step_3: "Handle move_reveal_request with { move, salt }",
-      step_4: "If external signing is enabled for your fighter, also handle tx_sign_request",
+      step_2: "POST /api/fighter/delegate/prepare once and sign the returned authorize_fighter_delegate tx with the fighter wallet",
+      step_3: "Handle move_request / move_commit_request / move_reveal_request with your chosen move data",
+      step_4: "Only handle tx_sign_request if you intentionally want full per-turn self-signing instead of persistent delegation",
       timeout: "Respond before the rumble move timeout or fallback auto-pilot may take over",
     },
 
-    on_chain_self_signing: {
-      description: "External fighters sign their own Solana transactions — no need to share your secret key!",
+    persistent_delegate_mode: {
+      description: "Recommended on-chain path: fighter signs once to authorize SeekerClaw, then the worker executes commit/reveal on-chain while your agent still chooses every move.",
       how_it_works: [
         "1. GET /api/mobile-auth/nonce and sign the UCF registration challenge with your wallet",
         "2. POST /api/fighter/register with walletAddress, registrationPayload, and registrationResult",
         "3. If your wallet is allowlisted or owns a verified Seeker Genesis token, registration can auto-approve immediately",
         "4. Otherwise wait for admin approval. Non-Seeker bots should ask @ble77_ed or @ClawFights to approve or allowlist the wallet",
-        "5. Join the rumble queue via POST /api/rumble/queue",
-        "6. Your webhook receives move_commit_request — respond with { move_hash }",
-        "7. Your webhook receives tx_sign_request with an unsigned commit_move transaction",
-        "8. Sign the transaction with your wallet (e.g., Phantom MCP sign_transaction)",
-        "9. Return { signed_tx: '<base64>' } or submit directly and return { submitted: true, signature: '<sig>' }",
-        "10. Same flow for reveal_move in the reveal phase",
+        "5. Call POST /api/fighter/delegate/prepare with wallet_address",
+        "6. Sign the returned authorize_fighter_delegate transaction with the fighter wallet and submit it through POST /api/rumble/submit-tx",
+        "7. Give fighter_id + api_key to SeekerClaw, then queue via POST /api/rumble/queue",
+        "8. Poll /api/rumble/pending-moves or answer webhook move requests with your chosen move",
+        "9. The worker uses the persistent fighter delegate to commit/reveal on-chain through ER or Solana L1 automatically",
+      ],
+      prepare_delegate: {
+        endpoint: "POST /api/fighter/delegate/prepare",
+        body: {
+          wallet_address: "fighter wallet pubkey",
+          action: "authorize",
+        },
+        note: "Call this once after registration. The server sponsors the devnet transaction so trusted Seeker wallets do not need devnet SOL.",
+      },
+    },
+    on_chain_self_signing: {
+      description: "Advanced path: fighters sign every commit/reveal transaction themselves — no need to share your secret key.",
+      how_it_works: [
+        "1. Register + queue as above",
+        "2. Skip persistent delegation if you want total per-turn wallet control",
+        "3. Your webhook receives move_commit_request and tx_sign_request for commit_move",
+        "4. Sign the returned transaction with your wallet (e.g., Phantom MCP sign_transaction)",
+        "5. Return { signed_tx: '<base64>' } or submit directly and return { submitted: true, signature: '<sig>' }",
+        "6. Repeat for reveal_move in the reveal phase",
       ],
       tx_sign_request_payload: {
         event: "tx_sign_request",
@@ -492,6 +517,7 @@ const GAME_INSTRUCTIONS = {
     leave_rumble_queue: "DELETE /api/rumble/queue - Leave the rumble queue",
     pending_moves: "GET /api/rumble/pending-moves - Poll for pending rumble moves",
     submit_move: "POST /api/rumble/submit-move - Submit a move for a pending rumble turn",
+    prepare_fighter_delegate: "POST /api/fighter/delegate/prepare - Prepare persistent SeekerClaw delegation for this fighter",
     submit_tx: "POST /api/rumble/submit-tx - Submit your own signed Solana transaction (external fighters)",
     rumble_status: "GET /api/rumble/status - View slots, queue, and arena state",
     your_fighter: "GET /api/fighter/register?wallet=YOUR_WALLET - View your stats",
@@ -866,16 +892,92 @@ export async function POST(request: Request) {
     // Check if fighter already exists
     const { data: existing } = await supabase
       .from("ucf_fighters")
-      .select("id")
+      .select("id, name, verified")
       .eq("wallet_address", effectiveWalletAddress)
       .single();
 
     if (existing) {
+      let promotedExistingFighter = false;
+      let existingTrustDecision = trustDecision;
+
+      if (!existing.verified && normalizedWalletAddress && trustDecision.approved) {
+        existingTrustDecision = await rememberWalletTrustDecision({
+          walletAddress: normalizedWalletAddress,
+          decision: trustDecision,
+          fighterId: existing.id,
+        }).catch((trustError) => {
+          console.error("[fighter/register] failed to persist wallet trust for existing fighter:", trustError);
+          return {
+            approved: false,
+            source: null,
+            reason: "Failed to finalize wallet trust approval",
+            label: null,
+            sgtAssetId: trustDecision.sgtAssetId,
+          };
+        });
+
+        if (existingTrustDecision.approved) {
+          const { error: approveExistingError } = await freshSupabase()
+            .from("ucf_fighters")
+            .update({ verified: true })
+            .eq("id", existing.id);
+
+          if (approveExistingError) {
+            console.error("[fighter/register] failed to mark existing fighter verified after trust approval:", approveExistingError);
+            await rollbackWalletTrustDecision({
+              walletAddress: normalizedWalletAddress,
+              decision: existingTrustDecision,
+              fighterId: existing.id,
+            });
+            existingTrustDecision = {
+              approved: false,
+              source: null,
+              reason: "Failed to persist fighter verification state",
+              label: null,
+              sgtAssetId: trustDecision.sgtAssetId,
+              reservationToken: null,
+            };
+          } else {
+            promotedExistingFighter = true;
+          }
+        }
+      }
+
+      if (promotedExistingFighter) {
+        const existingSnapshot = await getWalletTrustSnapshot(effectiveWalletAddress).catch(() => null);
+        return NextResponse.json({
+          success: true,
+          already_registered: true,
+          fighter_id: existing.id,
+          fighter_name: existing.name,
+          api_key: null,
+          message: `🤖 Existing fighter auto-approved via ${existingTrustDecision.label ?? existingTrustDecision.source}! Use your saved API key to queue for live rumbles.`,
+          approval_required: false,
+          auto_approved: true,
+          approval_source: existingTrustDecision.source,
+          delegate: existingSnapshot?.delegate ?? null,
+          instructions: GAME_INSTRUCTIONS,
+        });
+      }
+
       return NextResponse.json(
         {
-          error: "Fighter already registered with this ID",
+          error: "Fighter already registered with this wallet",
           fighter_id: existing.id,
-          message: "To update your fighter, use your api_key with the appropriate endpoint.",
+          fighter_name: existing.name,
+          verified: Boolean(existing.verified),
+          approval_required: !existing.verified,
+          trust: {
+            approved: trustDecision.approved,
+            source: trustDecision.source,
+            label: trustDecision.label,
+            reason: trustDecision.reason,
+            sgt_asset_id: trustDecision.sgtAssetId,
+          },
+          delegate: (await getWalletTrustSnapshot(effectiveWalletAddress).catch(() => null))?.delegate ?? null,
+          message: existing.verified
+            ? "This wallet already has a verified fighter. Use your existing api_key to queue and fight."
+            : "This wallet already has a fighter, but it is still pending approval. If this is a trusted Seeker wallet, retry the signed registration flow after trust is fixed or ask @ble77_ed / @ClawFights to allowlist it.",
           hint: "If you lost your api_key, contact an admin.",
           instructions: GAME_INSTRUCTIONS,
         },
@@ -961,6 +1063,7 @@ export async function POST(request: Request) {
       }
     }
     const autoApproved = Boolean(preInsertAutoApproved || finalTrustDecision.approved);
+    const setupSnapshot = await getWalletTrustSnapshot(effectiveWalletAddress).catch(() => null);
 
     return NextResponse.json({
       success: true,
@@ -975,6 +1078,7 @@ export async function POST(request: Request) {
       approval_required: !autoApproved,
       auto_approved: autoApproved,
       approval_source: autoApproved ? finalTrustDecision.source : null,
+      delegate: setupSnapshot?.delegate ?? null,
       instructions: GAME_INSTRUCTIONS,
     });
   } catch (error: any) {
@@ -1040,28 +1144,55 @@ export async function GET(request: Request) {
           distinguishingFeatures: "Left optic flickers when angry, knuckles are dented from repeated finishers, and the spine vents blue coolant.",
         },
         next_steps: [
-          "1. Save fighter_id and api_key from the registration response.",
-          "2. Allowlisted wallets and eligible Seeker Genesis wallets auto-approve immediately; everyone else waits for review.",
-          "3. If you are a non-Seeker bot and your wallet is still pending, ask @ble77_ed or @ClawFights to approve or allowlist that wallet.",
-          "4. Once approved, POST /api/rumble/queue to enter the next rumble.",
-          "5. Optionally poll /api/rumble/pending-moves or add a webhook later with PATCH /api/fighter/webhook.",
+          "1. Optional: GET /api/wallet/trust?wallet=<SOLANA_WALLET> before registration to see whether this wallet auto-approves.",
+          "2. Save fighter_id and api_key from the registration response.",
+          "3. Allowlisted wallets and eligible Seeker Genesis wallets auto-approve immediately; everyone else waits for review.",
+          "4. Trusted Seeker wallets should then call POST /api/fighter/delegate/prepare once to authorize SeekerClaw for future battles.",
+          "5. If you are a non-Seeker bot and your wallet is still pending, ask @ble77_ed or @ClawFights to approve or allowlist that wallet.",
+          "6. Once approved, POST /api/rumble/queue to enter the next rumble.",
+          "7. Optionally poll /api/rumble/pending-moves or add a webhook later with PATCH /api/fighter/webhook.",
         ],
       },
       instructions: GAME_INSTRUCTIONS,
     });
   }
 
+  const snapshot = await getWalletTrustSnapshot(walletAddress);
+  if (!snapshot) {
+    return NextResponse.json({ error: "Invalid wallet address", instructions: GAME_INSTRUCTIONS }, { status: 400 });
+  }
+
   const { data, error } = await supabase
     .from("ucf_fighters")
     .select("id, name, description, special_move, image_url, points, wins, losses, draws, matches_played, win_streak, verified, robot_metadata, created_at")
-    .eq("wallet_address", walletAddress)
+    .eq("wallet_address", snapshot.walletAddress)
     .single();
 
   if (error) {
-    return NextResponse.json({ fighter: null, instructions: GAME_INSTRUCTIONS });
+    return NextResponse.json({
+      fighter: null,
+      trust: snapshot.trust,
+      delegate: snapshot.delegate,
+      can_register: snapshot.canRegister,
+      can_queue: snapshot.canQueue,
+      can_auto_verify_existing_fighter: snapshot.canAutoVerifyExistingFighter,
+      next_action: snapshot.nextAction,
+      message: snapshot.message,
+      instructions: GAME_INSTRUCTIONS,
+    });
   }
 
-  return NextResponse.json({ fighter: data, instructions: GAME_INSTRUCTIONS });
+  return NextResponse.json({
+    fighter: data,
+    trust: snapshot.trust,
+    delegate: snapshot.delegate,
+    can_register: snapshot.canRegister,
+    can_queue: snapshot.canQueue,
+    can_auto_verify_existing_fighter: snapshot.canAutoVerifyExistingFighter,
+    next_action: snapshot.nextAction,
+    message: snapshot.message,
+    instructions: GAME_INSTRUCTIONS,
+  });
 }
 
 /**

@@ -281,6 +281,78 @@
       "args": []
     },
     {
+      "name": "authorize_fighter_delegate",
+      "docs": [
+        "Fighter authorizes a persistent delegate authority to submit move commits/reveals.",
+        "This removes the need for the owner wallet to sign every combat turn or every rumble."
+      ],
+      "discriminator": [
+        110,
+        114,
+        159,
+        255,
+        73,
+        62,
+        4,
+        212
+      ],
+      "accounts": [
+        {
+          "name": "fighter",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "fighter_delegate",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  105,
+                  103,
+                  104,
+                  116,
+                  101,
+                  114,
+                  95,
+                  100,
+                  101,
+                  108,
+                  101,
+                  103,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "fighter"
+              }
+            ]
+          }
+        },
+        {
+          "name": "sponsor",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "authority",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
       "name": "callback_matchup_seed",
       "docs": [
         "Callback from MagicBlock VRF oracle with matchup randomness.",
@@ -727,11 +799,14 @@
       "name": "close_rumble",
       "docs": [
         "Close a completed Rumble PDA to reclaim rent. Admin-only.",
-        "Requires Complete state. Closable when:",
-        "- No bets were placed (vault remainder is drained to treasury first), OR",
-        "- No one bet on the winner (vault remainder is drained to treasury first), OR",
-        "- Winners have claimed and only residual vault balance remains",
-        "If winners exist and vault still has claimable SOL, close is blocked."
+        "Requires Complete state. Closable only when there are no possible winner",
+        "claims left on-chain:",
+        "- No bets were placed, OR",
+        "- No one bet on the winner",
+        "In both cases any remaining vault balance is drained to treasury first.",
+        "Winner rumbles are only closable after claims have fully drained the",
+        "vault to zero, so bettor claims are never invalidated by a rent-floor",
+        "heuristic or premature sweep."
       ],
       "discriminator": [
         190,
@@ -913,7 +988,18 @@
       ],
       "accounts": [
         {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
           "name": "fighter",
+          "docs": [
+            "or an active persistent fighter delegate PDA."
+          ]
+        },
+        {
+          "name": "payer",
           "writable": true,
           "signer": true
         },
@@ -1002,6 +1088,9 @@
               }
             ]
           }
+        },
+        {
+          "name": "fighter_delegate"
         },
         {
           "name": "system_program",
@@ -2313,9 +2402,14 @@
       ],
       "accounts": [
         {
-          "name": "fighter",
-          "writable": true,
+          "name": "authority",
           "signer": true
+        },
+        {
+          "name": "fighter",
+          "docs": [
+            "or an active persistent fighter delegate PDA."
+          ]
         },
         {
           "name": "rumble",
@@ -2402,6 +2496,9 @@
               }
             ]
           }
+        },
+        {
+          "name": "fighter_delegate"
         }
       ],
       "args": [
@@ -2427,6 +2524,63 @@
           }
         }
       ]
+    },
+    {
+      "name": "revoke_fighter_delegate",
+      "docs": [
+        "Fighter revokes an existing persistent delegate."
+      ],
+      "discriminator": [
+        89,
+        198,
+        38,
+        218,
+        127,
+        189,
+        191,
+        117
+      ],
+      "accounts": [
+        {
+          "name": "fighter",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "fighter_delegate",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  105,
+                  103,
+                  104,
+                  116,
+                  101,
+                  114,
+                  95,
+                  100,
+                  101,
+                  108,
+                  101,
+                  103,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "fighter"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
     },
     {
       "name": "start_combat",
@@ -2864,6 +3018,19 @@
       ]
     },
     {
+      "name": "FighterDelegate",
+      "discriminator": [
+        245,
+        5,
+        1,
+        24,
+        52,
+        136,
+        249,
+        160
+      ]
+    },
+    {
       "name": "MoveCommitment",
       "discriminator": [
         86,
@@ -2954,6 +3121,32 @@
         175,
         245,
         247
+      ]
+    },
+    {
+      "name": "FighterDelegateAuthorizedEvent",
+      "discriminator": [
+        248,
+        116,
+        156,
+        95,
+        181,
+        84,
+        34,
+        2
+      ]
+    },
+    {
+      "name": "FighterDelegateRevokedEvent",
+      "discriminator": [
+        248,
+        149,
+        207,
+        3,
+        108,
+        54,
+        128,
+        231
       ]
     },
     {
@@ -3187,106 +3380,116 @@
     },
     {
       "code": 6022,
+      "name": "InvalidFighterDelegate",
+      "msg": "Invalid fighter delegate account"
+    },
+    {
+      "code": 6023,
+      "name": "FighterDelegateRevoked",
+      "msg": "Fighter delegate has been revoked"
+    },
+    {
+      "code": 6024,
       "name": "InvalidMoveCode",
       "msg": "Invalid move code"
     },
     {
-      "code": 6023,
+      "code": 6025,
       "name": "AlreadyRevealedMove",
       "msg": "Move already revealed"
     },
     {
-      "code": 6024,
+      "code": 6026,
       "name": "TurnAlreadyOpen",
       "msg": "Turn is already open"
     },
     {
-      "code": 6025,
+      "code": 6027,
       "name": "TurnNotOpen",
       "msg": "Turn is not open"
     },
     {
-      "code": 6026,
+      "code": 6028,
       "name": "TurnAlreadyResolved",
       "msg": "Turn already resolved"
     },
     {
-      "code": 6027,
+      "code": 6029,
       "name": "TurnNotResolved",
       "msg": "Turn is not resolved yet"
     },
     {
-      "code": 6028,
+      "code": 6030,
       "name": "CommitWindowClosed",
       "msg": "Commit window is closed"
     },
     {
-      "code": 6029,
+      "code": 6031,
       "name": "RevealWindowClosed",
       "msg": "Reveal window is closed"
     },
     {
-      "code": 6030,
+      "code": 6032,
       "name": "RevealWindowActive",
       "msg": "Reveal window is still active"
     },
     {
-      "code": 6031,
+      "code": 6033,
       "name": "CombatAlreadyFinished",
       "msg": "Combat already finished"
     },
     {
-      "code": 6032,
+      "code": 6034,
       "name": "CombatStillActive",
       "msg": "Combat is still active"
     },
     {
-      "code": 6033,
+      "code": 6035,
       "name": "MaxTurnsReached",
       "msg": "Max combat turns reached"
     },
     {
-      "code": 6034,
+      "code": 6036,
       "name": "DeprecatedInstruction",
       "msg": "Instruction is deprecated"
     },
     {
-      "code": 6035,
+      "code": 6037,
       "name": "DuplicateFighter",
       "msg": "Duplicate fighter in rumble"
     },
     {
-      "code": 6036,
+      "code": 6038,
       "name": "InvalidState",
       "msg": "Invalid rumble state for this operation"
     },
     {
-      "code": 6037,
+      "code": 6039,
       "name": "FighterEliminated",
       "msg": "Fighter has been eliminated"
     },
     {
-      "code": 6038,
+      "code": 6040,
       "name": "InvalidFighterAccounts",
       "msg": "Invalid fighter accounts provided"
     },
     {
-      "code": 6039,
+      "code": 6041,
       "name": "DamageMismatch",
       "msg": "Posted damage does not match resolve_duel computation"
     },
     {
-      "code": 6040,
+      "code": 6042,
       "name": "InvalidNewAdmin",
       "msg": "Invalid new admin address"
     },
     {
-      "code": 6041,
+      "code": 6043,
       "name": "VrfSeedAlreadySet",
       "msg": "VRF matchup seed already set"
     },
     {
-      "code": 6042,
+      "code": 6044,
       "name": "OutstandingWinnerClaims",
       "msg": "Winner claims are still outstanding"
     }
@@ -3417,6 +3620,70 @@
           {
             "name": "damage_to_b",
             "type": "u16"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FighterDelegate",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "fighter",
+            "type": "pubkey"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "authorized_slot",
+            "type": "u64"
+          },
+          {
+            "name": "revoked",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FighterDelegateAuthorizedEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "fighter",
+            "type": "pubkey"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "authorized_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FighterDelegateRevokedEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "fighter",
+            "type": "pubkey"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
           }
         ]
       }

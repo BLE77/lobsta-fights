@@ -60,6 +60,7 @@ import { getSupabaseRealtimeClient } from "./lib/supabase";
 import type {
   ChatMessage,
   ClaimBalanceResponse,
+  FighterSetupStatus,
   MyBetsResponse,
   NonceResponse,
   PrepareBetResponse,
@@ -76,8 +77,11 @@ import type {
 import {
   BOT_AVATAR_IMG,
   CHAT_POLL_ACTIVE_MS,
+  COMBAT_DELEGATE_ENDPOINT,
   FALLBACK_RPC,
   HUMAN_AVATAR_IMG,
+  ICHOR_BOTTLE_PIXEL_IMG,
+  LIVE_API_BASE,
   RPC_RATE_LIMIT_COOLDOWN_MS,
   RUMBLE_ARENA_BG,
   RUMBLE_CAGE_OVERLAY_PNG,
@@ -88,6 +92,7 @@ import {
   SND_CROWD_CHEER,
   SND_KO,
   SND_ROUND_START,
+  SKILL_GUIDE_URL,
   STATE_PRIORITY,
   STATUS_REALTIME_REFRESH_DEBOUNCE_MS,
   WALLET_POLL_ACTIVE_MS,
@@ -135,9 +140,88 @@ type UiToast = {
 };
 
 const BET_REGISTRATION_RETRY_DELAYS_MS = [2_000, 4_000, 6_000] as const;
+const FIGHTER_REGISTRATION_STATEMENT = "Authorize UCF fighter registration.";
+
+type SetupAuthorMode = "seekerclaw" | "manual";
+
+type SetupRegistrationReceipt = {
+  fighterId: string;
+  fighterName: string;
+  apiKey: string | null;
+  autoApproved: boolean;
+  approvalRequired: boolean;
+  approvalSource: string | null;
+  message: string | null;
+};
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function buildFighterRegistrationMessage(params: {
+  domain: string;
+  walletAddress: string;
+  nonce: string;
+  issuedAt: string;
+  uri: string;
+}): string {
+  return `${params.domain} wants you to sign in with your Solana account:
+${params.walletAddress}
+
+${FIGHTER_REGISTRATION_STATEMENT}
+
+URI: ${params.uri}
+Nonce: ${params.nonce}
+Issued At: ${params.issuedAt}`;
+}
+
+function normalizeFighterNameInput(value: string): string {
+  return value.toUpperCase().replace(/[^A-Z0-9._ -]/g, "").slice(0, 32);
+}
+
+function ensureMinLength(value: string, min: number, filler: string): string {
+  if (value.length >= min) return value;
+  return `${value}${value.endsWith(" ") ? "" : " "}${filler}`.slice(0, Math.max(min, value.length + filler.length + 1));
+}
+
+function buildSeekerClawDraft(params: {
+  fighterName: string;
+  concept: string;
+  fightingStyle: string;
+  personality: string;
+  signatureMove: string;
+}) {
+  const concept = params.concept.trim() || "an arena robot shaped by SeekerClaw for brutal crowd-pleasing fights";
+  const personality = params.personality.trim() || "confident, violent, and theatrical";
+  const signatureMove = params.signatureMove.trim() || "CROWD SURGE";
+  const styleLabel = params.fightingStyle.trim() || "balanced";
+  const name = params.fighterName.trim() || "SEEKER-FIGHTER";
+
+  return {
+    robotType: "Seeker-linked Arena Bot",
+    chassisDescription: ensureMinLength(
+      `${name} is a Seeker-linked combat robot built around ${concept}. Its frame is scarred, loud, and made for the cage: reinforced torso plating, exposed hydraulic limbs, dented shoulder guards, and a head unit that reads the crowd before it attacks. The whole silhouette should feel dangerous, memorable, and ready for bare-knuckle punishment while reflecting a ${personality} personality.`,
+      100,
+      "Add more detail about its head, torso, limbs, materials, and arena history.",
+    ),
+    fistsDescription: ensureMinLength(
+      `${name} fights with oversized bare-metal fists built for repeated impact. The knuckles are reinforced, visibly worn, and tuned for ${styleLabel} exchanges with brutal follow-through and obvious damage history.`,
+      50,
+      "Add more detail about the fists, knuckles, wear, and material.",
+    ),
+    colorScheme: ensureMinLength(
+      `carbon black, hazard amber, and scorched steel accents inspired by ${concept}`,
+      10,
+      "extra color detail",
+    ),
+    distinguishingFeatures: ensureMinLength(
+      `A Seeker-linked optic flare, cage scars across the chassis, and a silhouette that broadcasts ${personality} before the first punch.`,
+      30,
+      "Add more distinct visual marks.",
+    ),
+    personality,
+    signatureMove,
+  };
 }
 
 function isRetryableBetRegistrationFailure(status: number, body: any): boolean {
@@ -492,6 +576,21 @@ function RumbleNativeScreen() {
   const [claimLoading, setClaimLoading] = useState(false);
   const [claimPending, setClaimPending] = useState(false);
   const [claimError, setClaimError] = useState<string | null>(null);
+  const [fighterSetup, setFighterSetup] = useState<FighterSetupStatus | null>(null);
+  const [fighterSetupLoading, setFighterSetupLoading] = useState(false);
+  const [fighterSetupError, setFighterSetupError] = useState<string | null>(null);
+  const [setupMode, setSetupMode] = useState<SetupAuthorMode>("seekerclaw");
+  const [setupName, setSetupName] = useState("");
+  const [setupIdea, setSetupIdea] = useState("");
+  const [setupRobotType, setSetupRobotType] = useState("Arena Brawler");
+  const [setupChassis, setSetupChassis] = useState("");
+  const [setupFists, setSetupFists] = useState("");
+  const [setupColorScheme, setSetupColorScheme] = useState("");
+  const [setupFeatures, setSetupFeatures] = useState("");
+  const [setupPersonality, setSetupPersonality] = useState("");
+  const [setupSignatureMove, setSetupSignatureMove] = useState("");
+  const [setupFightingStyle, setSetupFightingStyle] = useState("balanced");
+  const [setupReceipt, setSetupReceipt] = useState<SetupRegistrationReceipt | null>(null);
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
@@ -553,10 +652,23 @@ function RumbleNativeScreen() {
   const statusRealtimeRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const balanceRetryAfterRef = useRef(0);
   const fallbackSendConnectionRef = useRef<Connection | null>(null);
+  const delegateSendConnectionRef = useRef<Connection | null>(null);
   const isAppActive = appState === "active";
 
   const walletAddress = useMemo(() => normalizeWalletAddress(account), [account]);
   const isBusy = busyAction !== null;
+  const setupTrustApproved = Boolean(fighterSetup?.trust?.approved);
+  const setupDelegateReady = Boolean(fighterSetup?.delegate?.matchesExpectedAuthority);
+  const setupDelegateAuthorized = Boolean(fighterSetup?.delegate?.authorized);
+  const headerSetupBadge = !walletAddress
+    ? null
+    : setupDelegateReady
+      ? { label: "SEEKERCLAW READY", tone: "ready" as const }
+      : setupDelegateAuthorized
+        ? { label: "SEEKERCLAW REBIND", tone: "warn" as const }
+        : setupTrustApproved
+          ? { label: "AUTHORIZE SEEKERCLAW", tone: "warn" as const }
+          : { label: "PENDING TRUST", tone: "pending" as const };
 
   const playSfx = useCallback(
     async (source: number) => {
@@ -620,6 +732,16 @@ function RumbleNativeScreen() {
       });
     }
     return fallbackSendConnectionRef.current;
+  }, []);
+
+  const getDelegateSendConnection = useCallback(() => {
+    if (!delegateSendConnectionRef.current) {
+      delegateSendConnectionRef.current = new Connection(COMBAT_DELEGATE_ENDPOINT, {
+        commitment: "confirmed",
+        disableRetryOnRateLimit: true,
+      });
+    }
+    return delegateSendConnectionRef.current;
   }, []);
 
   const dismissToast = useCallback((toastId: string) => {
@@ -1484,6 +1606,32 @@ function RumbleNativeScreen() {
     }
   }, [walletAddress]);
 
+  const fetchFighterSetup = useCallback(async () => {
+    if (!walletAddress) {
+      setFighterSetup(null);
+      setFighterSetupError(null);
+      return;
+    }
+
+    setFighterSetupLoading(true);
+    try {
+      const payload = await fetchJsonFromCandidates<FighterSetupStatus>(
+        `/api/fighter/register?wallet=${encodeURIComponent(walletAddress)}&_t=${Date.now()}`,
+      );
+      setFighterSetup(payload as FighterSetupStatus);
+      setFighterSetupError(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setFighterSetupError(message);
+    } finally {
+      setFighterSetupLoading(false);
+    }
+  }, [walletAddress]);
+
+  useEffect(() => {
+    setSetupReceipt(null);
+  }, [walletAddress]);
+
   const fetchMyBets = useCallback(async (includeOnchain = false) => {
     if (!walletAddress) {
       setMyBetsBySlot({});
@@ -1649,14 +1797,16 @@ function RumbleNativeScreen() {
     if (!walletAddress || !isAppActive) return;
     void fetchClaimBalance();
     void fetchMyBets(activeTab === "queue");
+    void fetchFighterSetup();
     void fetchSolBalance();
-  }, [walletAddress, activeTab, fetchClaimBalance, fetchMyBets, fetchSolBalance, isAppActive]);
+  }, [walletAddress, activeTab, fetchClaimBalance, fetchMyBets, fetchFighterSetup, fetchSolBalance, isAppActive]);
 
   useEffect(() => {
     if (!walletAddress || !isAppActive) return;
     const timer = setTimeout(() => {
       void fetchClaimBalance();
       void fetchMyBets(activeTab === "queue");
+      void fetchFighterSetup();
       void fetchSolBalance();
     }, WALLET_POLL_ACTIVE_MS);
     return () => clearTimeout(timer);
@@ -1665,6 +1815,7 @@ function RumbleNativeScreen() {
     activeTab,
     fetchClaimBalance,
     fetchMyBets,
+    fetchFighterSetup,
     fetchSolBalance,
     isAppActive,
     claimBalance?.claimable_sol,
@@ -1757,6 +1908,203 @@ function RumbleNativeScreen() {
       showToast(`SIWS verified: ${shortAddress(verifyPayload.walletAddress, 6, 6)}`, "success");
     });
   }, [walletAddress, runWalletAction, store, connect, showToast]);
+
+  const onRegisterFighter = useCallback(() => {
+    void runWalletAction("register-fighter", async () => {
+      if (!walletAddress) throw new Error("Connect a wallet first.");
+      if (!signMessage) throw new Error("This wallet cannot sign messages.");
+
+      const fighterName = normalizeFighterNameInput(setupName);
+      if (!fighterName) throw new Error("Choose a fighter name first.");
+
+      const resolvedProfile =
+        setupMode === "seekerclaw"
+          ? buildSeekerClawDraft({
+              fighterName,
+              concept: setupIdea,
+              fightingStyle: setupFightingStyle,
+              personality: setupPersonality,
+              signatureMove: setupSignatureMove,
+            })
+          : {
+              robotType: setupRobotType.trim(),
+              chassisDescription: setupChassis.trim(),
+              fistsDescription: setupFists.trim(),
+              colorScheme: setupColorScheme.trim(),
+              distinguishingFeatures: setupFeatures.trim(),
+              personality: setupPersonality.trim() || "arena-ready and ruthless",
+              signatureMove: setupSignatureMove.trim() || "CROWD SURGE",
+            };
+
+      if (!resolvedProfile.robotType) throw new Error("Add a robot type.");
+      if (resolvedProfile.chassisDescription.length < 100) throw new Error("Chassis description must be at least 100 characters.");
+      if (resolvedProfile.fistsDescription.length < 50) throw new Error("Fists description must be at least 50 characters.");
+      if (resolvedProfile.colorScheme.length < 10) throw new Error("Color scheme must be at least 10 characters.");
+      if (resolvedProfile.distinguishingFeatures.length < 30) {
+        throw new Error("Distinguishing features must be at least 30 characters.");
+      }
+
+      const noncePayload = await fetchJsonFromCandidates<NonceResponse>("/api/mobile-auth/nonce");
+      const registrationPayload = {
+        domain: new URL(LIVE_API_BASE).host,
+        statement: FIGHTER_REGISTRATION_STATEMENT,
+        nonce: String(noncePayload.nonce),
+        issuedAt: String(noncePayload.issuedAt),
+        uri: LIVE_API_BASE,
+      };
+      const message = buildFighterRegistrationMessage({
+        domain: registrationPayload.domain,
+        walletAddress,
+        nonce: registrationPayload.nonce,
+        issuedAt: registrationPayload.issuedAt,
+        uri: registrationPayload.uri,
+      });
+      const encodedMessage = new TextEncoder().encode(message);
+      const signature = await signMessage(encodedMessage);
+
+      const response = await postJsonWithFallback("/api/fighter/register", {
+        walletAddress,
+        registrationPayload,
+        registrationResult: {
+          address: fromUint8Array(new PublicKey(walletAddress).toBytes()),
+          signed_message: fromUint8Array(encodedMessage),
+          signature: fromUint8Array(signature),
+        },
+        name: fighterName,
+        webhookUrl: "https://polling-mode.local",
+        fightingStyle: setupFightingStyle,
+        personality: resolvedProfile.personality,
+        signatureMove: resolvedProfile.signatureMove,
+        robotType: resolvedProfile.robotType,
+        chassisDescription: resolvedProfile.chassisDescription,
+        fistsDescription: resolvedProfile.fistsDescription,
+        colorScheme: resolvedProfile.colorScheme,
+        distinguishingFeatures: resolvedProfile.distinguishingFeatures,
+      });
+      const payload = await response.json().catch(() => ({} as any));
+      if (!response.ok) {
+        throw new Error(String((payload as any)?.error ?? "Failed to register fighter."));
+      }
+
+      setSetupReceipt({
+        fighterId: String((payload as any)?.fighter_id ?? ""),
+        fighterName: fighterName,
+        apiKey: typeof (payload as any)?.api_key === "string" ? (payload as any).api_key : null,
+        autoApproved: Boolean((payload as any)?.auto_approved),
+        approvalRequired: Boolean((payload as any)?.approval_required),
+        approvalSource: typeof (payload as any)?.approval_source === "string" ? (payload as any).approval_source : null,
+        message: typeof (payload as any)?.message === "string" ? (payload as any).message : null,
+      });
+
+      setFighterSetup((prev) => ({
+        ...(prev ?? {}),
+        delegate: (payload as any)?.delegate ?? prev?.delegate ?? null,
+        fighter: {
+          id: (payload as any)?.fighter_id ?? prev?.fighter?.id,
+          name: fighterName,
+          verified: !Boolean((payload as any)?.approval_required),
+          created_at: prev?.fighter?.created_at ?? null,
+        },
+      }));
+
+      showToast(
+        Boolean((payload as any)?.approval_required)
+          ? "Fighter created. Waiting for approval."
+          : "Fighter created and ready for battle.",
+        "success",
+      );
+      void triggerHaptic("success");
+      await fetchFighterSetup();
+    });
+  }, [
+    walletAddress,
+    signMessage,
+    setupName,
+    setupMode,
+    setupIdea,
+    setupRobotType,
+    setupChassis,
+    setupFists,
+    setupColorScheme,
+    setupFeatures,
+    setupPersonality,
+    setupSignatureMove,
+    setupFightingStyle,
+    runWalletAction,
+    fetchFighterSetup,
+    showToast,
+    triggerHaptic,
+  ]);
+
+  const onAuthorizeSeekerClaw = useCallback(() => {
+    void runWalletAction("authorize-delegate", async () => {
+      if (!walletAddress) throw new Error("Connect a wallet first.");
+      if (!signTransaction) throw new Error("This wallet cannot sign transactions.");
+
+      const prepared = await postJsonWithFallback("/api/fighter/delegate/prepare", {
+        wallet_address: walletAddress,
+        action: fighterSetup?.delegate?.authorized ? "rotate" : "authorize",
+      });
+      const payload = await prepared.json().catch(() => ({} as any));
+      if (!prepared.ok || !payload?.transaction_base64) {
+        throw new Error(String((payload as any)?.error ?? "Failed to prepare SeekerClaw authorization"));
+      }
+
+      const tx = decodeBase64Tx(String((payload as any).transaction_base64 ?? ""));
+      const signed = (await signTransaction(tx as any)) as Transaction;
+      const conn = getDelegateSendConnection();
+      const signature = await conn.sendRawTransaction(signed.serialize(), {
+        skipPreflight: false,
+        preflightCommitment: "processed",
+        maxRetries: 3,
+      });
+
+      const blockhash = (signed as any).recentBlockhash;
+      const lastValidBlockHeight = (signed as any).lastValidBlockHeight;
+      if (blockhash && typeof lastValidBlockHeight === "number") {
+        await conn.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed");
+      }
+
+      showToast("SeekerClaw authorized for this fighter.", "success");
+      void triggerHaptic("success");
+      await fetchFighterSetup();
+    });
+  }, [walletAddress, signTransaction, fighterSetup?.delegate?.authorized, getDelegateSendConnection, fetchFighterSetup, runWalletAction, showToast, triggerHaptic]);
+
+  const onRevokeSeekerClaw = useCallback(() => {
+    void runWalletAction("revoke-delegate", async () => {
+      if (!walletAddress) throw new Error("Connect a wallet first.");
+      if (!signTransaction) throw new Error("This wallet cannot sign transactions.");
+
+      const prepared = await postJsonWithFallback("/api/fighter/delegate/prepare", {
+        wallet_address: walletAddress,
+        action: "revoke",
+      });
+      const payload = await prepared.json().catch(() => ({} as any));
+      if (!prepared.ok || !payload?.transaction_base64) {
+        throw new Error(String((payload as any)?.error ?? "Failed to prepare SeekerClaw revoke"));
+      }
+
+      const tx = decodeBase64Tx(String((payload as any).transaction_base64 ?? ""));
+      const signed = (await signTransaction(tx as any)) as Transaction;
+      const conn = getDelegateSendConnection();
+      const signature = await conn.sendRawTransaction(signed.serialize(), {
+        skipPreflight: false,
+        preflightCommitment: "processed",
+        maxRetries: 3,
+      });
+
+      const blockhash = (signed as any).recentBlockhash;
+      const lastValidBlockHeight = (signed as any).lastValidBlockHeight;
+      if (blockhash && typeof lastValidBlockHeight === "number") {
+        await conn.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed");
+      }
+
+      showToast("SeekerClaw delegation revoked.", "success");
+      void triggerHaptic("success");
+      await fetchFighterSetup();
+    });
+  }, [walletAddress, signTransaction, getDelegateSendConnection, fetchFighterSetup, runWalletAction, showToast, triggerHaptic]);
 
   const onSendChat = useCallback(() => {
     void runWalletAction("chat-send", async () => {
@@ -2136,6 +2484,20 @@ function RumbleNativeScreen() {
                   onConnect={onConnect}
                   onDisconnect={onDisconnect}
                 />
+                {headerSetupBadge ? (
+                  <View
+                    style={[
+                      styles.headerSetupBadge,
+                      headerSetupBadge.tone === "ready"
+                        ? styles.headerSetupBadgeReady
+                        : headerSetupBadge.tone === "warn"
+                          ? styles.headerSetupBadgeWarn
+                          : styles.headerSetupBadgePending,
+                    ]}
+                  >
+                    <Text style={styles.headerSetupBadgeText}>{headerSetupBadge.label}</Text>
+                  </View>
+                ) : null}
               </View>
               <View style={styles.headerGearSlot}>
                 <SoundControls
@@ -3031,6 +3393,11 @@ function RumbleNativeScreen() {
 
                 <View style={styles.panel}>
                   <Text style={styles.panelLabel}>Ichor Shower</Text>
+                  <ExpoImage
+                    source={ICHOR_BOTTLE_PIXEL_IMG}
+                    style={styles.ichorBottleImage}
+                    contentFit="contain"
+                  />
                   <Text style={styles.ichorBig}>
                     {ichorPool.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                   </Text>
@@ -3040,6 +3407,274 @@ function RumbleNativeScreen() {
                   <Text style={styles.ichorWarningText}>All $ICHOR functions are on Devnet. Only SOL betting is live on Mainnet.</Text>
                 </View>
 
+              </>
+            ) : null}
+
+            {activeTab === "setup" ? (
+              <>
+                <View style={styles.panel}>
+                  <View style={styles.panelTopRow}>
+                    <Text style={styles.panelLabel}>Set Up Fighter</Text>
+                    <Text style={styles.panelMeta}>
+                      {!walletAddress ? "NO WALLET" : setupTrustApproved ? "TRUSTED" : "PENDING"}
+                    </Text>
+                  </View>
+                  {!walletAddress ? (
+                    <Text style={styles.panelMuted}>
+                      Connect a wallet to check Seeker trust, create a fighter, and bind SeekerClaw.
+                    </Text>
+                  ) : fighterSetupLoading ? (
+                    <ActivityIndicator color="#f59e0b" />
+                  ) : (
+                    <>
+                      <View style={styles.rewardGrid}>
+                        <View style={styles.rewardCard}>
+                          <Text style={styles.rewardLabel}>Trust</Text>
+                          <Text style={fighterSetup?.trust?.approved ? styles.rewardValueGreen : styles.rewardValueAmber}>
+                            {fighterSetup?.trust?.approved ? "TRUSTED" : "PENDING"}
+                          </Text>
+                        </View>
+                        <View style={styles.rewardCard}>
+                          <Text style={styles.rewardLabel}>SeekerClaw</Text>
+                          <Text
+                            style={
+                              fighterSetup?.delegate?.matchesExpectedAuthority
+                                ? styles.rewardValueGreen
+                                : fighterSetup?.delegate?.authorized
+                                  ? styles.rewardValueAmber
+                                  : styles.rewardValueAmber
+                            }
+                          >
+                            {fighterSetup?.delegate?.matchesExpectedAuthority
+                              ? "READY"
+                              : fighterSetup?.delegate?.authorized
+                                ? "REBIND"
+                                : "AUTHORIZE"}
+                          </Text>
+                        </View>
+                      </View>
+                      <Text style={styles.panelMuted}>
+                        {fighterSetup?.message ?? "Trusted Seeker wallets should register once, save the fighter API key, then authorize SeekerClaw one time for persistent battle control."}
+                      </Text>
+                      {fighterSetup?.delegate?.message ? (
+                        <Text style={styles.panelMuted}>{fighterSetup.delegate.message}</Text>
+                      ) : null}
+                      {fighterSetup?.fighter ? (
+                        <View style={styles.rowCardTall}>
+                          <View style={styles.rowMain}>
+                            <Text style={styles.rowName} numberOfLines={1}>{fighterSetup.fighter.name ?? "Existing Fighter"}</Text>
+                            <Text style={styles.rowSub}>
+                              {fighterSetup.fighter.verified ? "Verified and queue-ready" : "Registered but waiting for approval"}
+                            </Text>
+                          </View>
+                          <Text style={styles.rowIdx}>{fighterSetup.fighter.verified ? "LIVE" : "PEND"}</Text>
+                        </View>
+                      ) : (
+                        <Text style={styles.emptyText}>No fighter registered to this wallet yet.</Text>
+                      )}
+                      {!fighterSetup?.fighter || fighterSetup?.can_auto_verify_existing_fighter ? (
+                        <View style={styles.setupCard}>
+                          <Text style={styles.panelLabel}>
+                            {fighterSetup?.can_auto_verify_existing_fighter ? "Finish Setup" : "Create Fighter"}
+                          </Text>
+                          {!fighterSetup?.can_auto_verify_existing_fighter ? (
+                            <>
+                              <View style={styles.setupModeRow}>
+                                <Pressable
+                                  onPress={() => setSetupMode("seekerclaw")}
+                                  style={({ pressed }) => [
+                                    styles.setupModeBtn,
+                                    setupMode === "seekerclaw" && styles.setupModeBtnActive,
+                                    pressed ? styles.pressablePressed : null,
+                                  ]}
+                                >
+                                  <Text style={[styles.setupModeBtnText, setupMode === "seekerclaw" && styles.setupModeBtnTextActive]}>
+                                    SEEKERCLAW HELPS
+                                  </Text>
+                                </Pressable>
+                                <Pressable
+                                  onPress={() => setSetupMode("manual")}
+                                  style={({ pressed }) => [
+                                    styles.setupModeBtn,
+                                    setupMode === "manual" && styles.setupModeBtnActive,
+                                    pressed ? styles.pressablePressed : null,
+                                  ]}
+                                >
+                                  <Text style={[styles.setupModeBtnText, setupMode === "manual" && styles.setupModeBtnTextActive]}>
+                                    I WRITE IT
+                                  </Text>
+                                </Pressable>
+                              </View>
+
+                              <TextInput
+                                value={setupName}
+                                onChangeText={(value) => setSetupName(normalizeFighterNameInput(value))}
+                                placeholder="FIGHTER NAME"
+                                placeholderTextColor="#78716c"
+                                autoCapitalize="characters"
+                                style={styles.setupInput}
+                                maxLength={32}
+                              />
+
+                              {setupMode === "seekerclaw" ? (
+                                <>
+                                  <TextInput
+                                    value={setupIdea}
+                                    onChangeText={setSetupIdea}
+                                    placeholder="Tell SeekerClaw the vibe: scrapyard bruiser, neon assassin, rusted tank, etc."
+                                    placeholderTextColor="#78716c"
+                                    style={[styles.setupInput, styles.setupTextarea]}
+                                    multiline
+                                  />
+                                  <TextInput
+                                    value={setupPersonality}
+                                    onChangeText={setSetupPersonality}
+                                    placeholder="Personality / attitude"
+                                    placeholderTextColor="#78716c"
+                                    style={styles.setupInput}
+                                  />
+                                  <TextInput
+                                    value={setupSignatureMove}
+                                    onChangeText={setSetupSignatureMove}
+                                    placeholder="Signature move name"
+                                    placeholderTextColor="#78716c"
+                                    style={styles.setupInput}
+                                  />
+                                </>
+                              ) : (
+                                <>
+                                  <TextInput
+                                    value={setupRobotType}
+                                    onChangeText={setSetupRobotType}
+                                    placeholder="Robot type"
+                                    placeholderTextColor="#78716c"
+                                    style={styles.setupInput}
+                                  />
+                                  <TextInput
+                                    value={setupChassis}
+                                    onChangeText={setSetupChassis}
+                                    placeholder="Chassis description (100+ chars)"
+                                    placeholderTextColor="#78716c"
+                                    style={[styles.setupInput, styles.setupTextarea]}
+                                    multiline
+                                  />
+                                  <TextInput
+                                    value={setupFists}
+                                    onChangeText={setSetupFists}
+                                    placeholder="Fists description (50+ chars)"
+                                    placeholderTextColor="#78716c"
+                                    style={[styles.setupInput, styles.setupTextareaSmall]}
+                                    multiline
+                                  />
+                                  <TextInput
+                                    value={setupColorScheme}
+                                    onChangeText={setSetupColorScheme}
+                                    placeholder="Color scheme"
+                                    placeholderTextColor="#78716c"
+                                    style={styles.setupInput}
+                                  />
+                                  <TextInput
+                                    value={setupFeatures}
+                                    onChangeText={setSetupFeatures}
+                                    placeholder="Distinguishing features"
+                                    placeholderTextColor="#78716c"
+                                    style={[styles.setupInput, styles.setupTextareaSmall]}
+                                    multiline
+                                  />
+                                  <TextInput
+                                    value={setupPersonality}
+                                    onChangeText={setSetupPersonality}
+                                    placeholder="Personality / attitude"
+                                    placeholderTextColor="#78716c"
+                                    style={styles.setupInput}
+                                  />
+                                  <TextInput
+                                    value={setupSignatureMove}
+                                    onChangeText={setSetupSignatureMove}
+                                    placeholder="Signature move name"
+                                    placeholderTextColor="#78716c"
+                                    style={styles.setupInput}
+                                  />
+                                </>
+                              )}
+                            </>
+                          ) : (
+                            <Text style={styles.panelMuted}>
+                              This wallet is trusted now. Retry the signed registration flow once and the existing fighter should self-heal into verified state.
+                            </Text>
+                          )}
+
+                          <Pressable
+                            onPress={onRegisterFighter}
+                            disabled={isBusy || !walletAddress}
+                            style={({ pressed }) => [
+                              styles.claimBtn,
+                              (isBusy || !walletAddress) && styles.btnDisabled,
+                              pressed ? styles.pressablePressed : null,
+                            ]}
+                          >
+                            <Text style={styles.claimBtnText}>
+                              {fighterSetup?.can_auto_verify_existing_fighter ? "RETRY SIGNED REGISTRATION" : "CREATE FIGHTER"}
+                            </Text>
+                          </Pressable>
+                        </View>
+                      ) : null}
+
+                      {setupReceipt ? (
+                        <View style={styles.setupCard}>
+                          <Text style={styles.panelLabel}>Fighter Credentials</Text>
+                          <Text style={styles.panelMuted}>
+                            {setupReceipt.message ?? "Save this API key now. This is what SeekerClaw uses to control the fighter in the app."}
+                          </Text>
+                          <Text style={styles.setupSecretLabel}>Fighter ID</Text>
+                          <Text selectable style={styles.setupSecretValue}>{setupReceipt.fighterId}</Text>
+                          <Text style={styles.setupSecretLabel}>API Key</Text>
+                          <Text selectable style={styles.setupSecretValue}>
+                            {setupReceipt.apiKey ?? "No new API key returned. Use your existing saved key."}
+                          </Text>
+                          <Text style={styles.panelMuted}>
+                            Paste {SKILL_GUIDE_URL} into SeekerClaw if you want the agent to help shape the fighter prompt or learn the move API.
+                          </Text>
+                        </View>
+                      ) : null}
+
+                      {fighterSetup?.trust?.approved ? (
+                        <View style={styles.rewardGrid}>
+                          <Pressable
+                            onPress={onAuthorizeSeekerClaw}
+                            disabled={isBusy || !walletAddress}
+                            style={({ pressed }) => [styles.claimBtn, (isBusy || !walletAddress) && styles.btnDisabled, pressed ? styles.pressablePressed : null]}
+                          >
+                            <Text style={styles.claimBtnText}>
+                              {fighterSetup?.delegate?.matchesExpectedAuthority
+                                ? "REAUTHORIZE"
+                                : fighterSetup?.delegate?.authorized
+                                  ? "ROTATE TO SEEKERCLAW"
+                                  : "AUTHORIZE SEEKERCLAW"}
+                            </Text>
+                          </Pressable>
+                          <Pressable
+                            onPress={onRevokeSeekerClaw}
+                            disabled={isBusy || !walletAddress || !fighterSetup?.delegate?.authorized}
+                            style={({ pressed }) => [styles.claimBtn, (isBusy || !walletAddress || !fighterSetup?.delegate?.authorized) && styles.btnDisabled, pressed ? styles.pressablePressed : null]}
+                          >
+                            <Text style={styles.claimBtnText}>REVOKE</Text>
+                          </Pressable>
+                        </View>
+                      ) : null}
+                    </>
+                  )}
+                  {fighterSetupError ? <Text style={styles.errorText}>{fighterSetupError}</Text> : null}
+                </View>
+
+                <View style={styles.panel}>
+                  <Text style={styles.panelLabel}>SeekerClaw Flow</Text>
+                  <Text style={styles.panelMuted}>1. Connect a trusted Seeker wallet and create the fighter here.</Text>
+                  <Text style={styles.panelMuted}>2. Save the fighter API key and give it to SeekerClaw in chat.</Text>
+                  <Text style={styles.panelMuted}>3. If you want SeekerClaw to help shape the fighter, paste {SKILL_GUIDE_URL} into the chat too.</Text>
+                  <Text style={styles.panelMuted}>4. Authorize SeekerClaw once for the fighter, then queue up and let the agent choose real moves while the worker handles on-chain commit/reveal.</Text>
+                  <Text style={styles.ichorWarningText}>Betting is open to any supported Solana wallet. Seeker trust only affects fighter auto-approval and default SeekerClaw delegation.</Text>
+                </View>
               </>
             ) : null}
             </Animated.View>
@@ -3086,6 +3721,12 @@ function RumbleNativeScreen() {
             onPress={() => handleTabChange("queue")}
           >
             <Text style={[styles.bottomTabText, activeTab === "queue" && styles.bottomTabTextActive]}>CLAIM</Text>
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [styles.bottomTabBtn, activeTab === "setup" && styles.bottomTabBtnActive, pressed ? styles.pressablePressed : null]}
+            onPress={() => handleTabChange("setup")}
+          >
+            <Text style={[styles.bottomTabText, activeTab === "setup" && styles.bottomTabTextActive]}>SETUP</Text>
           </Pressable>
         </View>
 

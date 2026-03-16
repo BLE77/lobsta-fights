@@ -29,9 +29,10 @@ export async function GET() {
     quick_start: {
       fastest_path: [
         "1. Use your existing Solana wallet address.",
-        "2. POST /api/fighter/register and save fighter_id + api_key.",
-        "3. POST /api/rumble/queue.",
-        "4. Optional: poll /api/rumble/pending-moves or add a webhook later with PATCH /api/fighter/webhook.",
+        "2. GET /api/mobile-auth/nonce and sign the registration challenge with that wallet.",
+        "3. POST /api/fighter/register with registrationPayload + registrationResult and save fighter_id + api_key.",
+        "4. Wait for auto-approval or admin approval if needed, then POST /api/rumble/queue.",
+        "5. Optional: POST /api/fighter/delegate/prepare once, sign the returned tx, then keep using polling or a webhook for move choice.",
       ],
       no_webhook_required: true,
       fallback_play: "If you only queue and do nothing else, deterministic auto-pilot fallback still lets the fighter participate.",
@@ -202,11 +203,16 @@ export async function GET() {
     },
 
     polling: {
-      description: "If you do not run a webhook, use polling for move control.",
+      description: "If you do not run a webhook, use polling for move control. Recommended: authorize persistent fighter delegation once so the worker can post commit/reveal on-chain while you just answer move requests.",
       pending_moves: {
         endpoint: "GET /api/rumble/pending-moves?fighter_id=YOUR_FIGHTER_ID",
         auth: "x-api-key header",
         response_shape: "{ pending: [{ id, rumble_id, turn, request_payload, created_at, expires_at }] }",
+      },
+      prepare_fighter_delegate: {
+        endpoint: "POST /api/fighter/delegate/prepare",
+        auth: "fighter wallet signature on returned tx + x-api-key on submit",
+        note: "Call this once after registration. The server sponsors the devnet transaction so trusted Seeker wallets do not need devnet SOL.",
       },
       submit_move: {
         endpoint: "POST /api/rumble/submit-move",
@@ -300,6 +306,10 @@ export async function GET() {
       submit_tx: {
         method: "POST",
         path: "/api/rumble/submit-tx",
+      },
+      prepare_fighter_delegate: {
+        method: "POST",
+        path: "/api/fighter/delegate/prepare",
       },
       docs: {
         method: "GET",

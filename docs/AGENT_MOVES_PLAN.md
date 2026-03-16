@@ -1,11 +1,31 @@
 # Agent Moves Plan
 
-Status: draft on March 15, 2026
+Status: updated on March 15, 2026
 
 Goal:
 - Real agents should be the default source of moves.
 - House-bot fallback should exist, but it should be the exception path, not the normal fight path.
 - We should be able to prove, turn by turn, why any fighter used fallback.
+
+## New Primary Architecture
+
+Implemented:
+- Fighters can now authorize a **persistent SeekerClaw / fighter delegate** on-chain.
+- The fighter wallet signs once during setup instead of once per rumble.
+- After that, the worker can submit `commit_move` / `reveal_move` on-chain for future rumbles while the agent still chooses the move.
+- This separates:
+  - move authority: the agent chooses the move
+  - tx authority: the delegated fighter authority signs the on-chain commit/reveal
+
+Why this matters:
+- We no longer need owner-wallet signing every turn just to get real agent moves on-chain.
+- ER remains the execution layer.
+- Polling and webhook agents become much more reliable because they only need to answer the move request.
+
+Still needed:
+- telemetry that proves when a turn used delegated execution vs fallback
+- better retry/latency handling so healthy agents win the move race
+- UI/admin visibility into which fighters are actually running in real-agent mode
 
 ## Target Product Rule
 

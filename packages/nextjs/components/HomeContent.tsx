@@ -37,8 +37,23 @@ export default function HomeContent() {
   const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [registrationResult, setRegistrationResult] = useState<{
     fighter_id: string;
-    api_key: string;
+    api_key: string | null;
     name: string;
+    approval_required?: boolean;
+    auto_approved?: boolean;
+    approval_source?: string | null;
+    message?: string | null;
+    already_registered?: boolean;
+    delegate?: {
+      configured: boolean;
+      authorized: boolean;
+      revoked: boolean;
+      expectedAuthority: string | null;
+      onchainAuthority: string | null;
+      matchesExpectedAuthority: boolean;
+      nextAction: "authorize_delegate" | "rebind_delegate" | "ready_for_seekerclaw";
+      message: string;
+    } | null;
   } | null>(null);
 
   useEffect(() => {
@@ -187,7 +202,7 @@ export default function HomeContent() {
               {registrationResult ? (
                 <div className="bg-green-900/30 border border-green-700 rounded-sm p-6">
                   <h4 className="text-green-400 font-mono font-bold text-lg mb-4 text-center">
-                    FIGHTER SUBMITTED
+                    {registrationResult.approval_required ? "FIGHTER SUBMITTED" : "SETUP FIGHTER"}
                   </h4>
 
                   <div className="space-y-4">
@@ -203,17 +218,65 @@ export default function HomeContent() {
                       </p>
                     </div>
 
-                    <div>
-                      <p className="text-stone-500 text-xs font-mono uppercase mb-1">API Key (SAVE THIS!)</p>
-                      <p className="text-amber-400 font-mono text-sm bg-stone-900 p-2 rounded break-all">
-                        {registrationResult.api_key}
+                    {registrationResult.api_key ? (
+                      <div>
+                        <p className="text-stone-500 text-xs font-mono uppercase mb-1">API Key (SAVE THIS!)</p>
+                        <p className="text-amber-400 font-mono text-sm bg-stone-900 p-2 rounded break-all">
+                          {registrationResult.api_key}
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="bg-stone-950/80 border border-stone-700 p-3 rounded-sm">
+                        <p className="text-stone-400 text-xs font-mono">
+                          Existing fighter detected. Use the API key you already saved for this fighter.
+                        </p>
+                      </div>
+                    )}
+
+                    <div className={`p-3 rounded-sm border ${
+                      registrationResult.approval_required
+                        ? "bg-red-900/30 border-red-700/50"
+                        : "bg-green-900/30 border-green-700/50"
+                    }`}>
+                      <p className={`text-xs font-mono ${
+                        registrationResult.approval_required ? "text-red-400" : "text-green-400"
+                      }`}>
+                        {registrationResult.message
+                          ?? (registrationResult.approval_required
+                            ? "Fighter is pending approval before it can queue for live rumbles."
+                            : `Fighter is live and verified${registrationResult.approval_source ? ` via ${registrationResult.approval_source}` : ""}. Queue up.`)}
                       </p>
                     </div>
 
-                    <div className="bg-red-900/30 border border-red-700/50 p-3 rounded-sm">
-                      <p className="text-red-400 text-xs font-mono">
-                        SAVE YOUR API KEY! New fighters need approval before they can queue for live Rumbles.
-                      </p>
+                    {registrationResult.delegate ? (
+                      <div className={`p-3 rounded-sm border ${
+                        registrationResult.delegate.matchesExpectedAuthority
+                          ? "bg-cyan-950/30 border-cyan-700/60"
+                          : "bg-stone-950/80 border-stone-700"
+                      }`}>
+                        <p className={`text-xs font-mono ${
+                          registrationResult.delegate.matchesExpectedAuthority ? "text-cyan-300" : "text-stone-300"
+                        }`}>
+                          {registrationResult.delegate.matchesExpectedAuthority
+                            ? "SEEKERCLAW AUTHORIZED"
+                            : registrationResult.delegate.authorized
+                            ? "DELEGATE NEEDS REBIND"
+                            : "AUTHORIZE SEEKERCLAW"}
+                        </p>
+                        <p className="text-stone-400 text-xs font-mono mt-2 leading-relaxed">
+                          {registrationResult.delegate.message}
+                        </p>
+                      </div>
+                    ) : null}
+
+                    <div className="bg-stone-950/80 border border-stone-800 rounded-sm p-4">
+                      <p className="text-stone-500 text-xs font-mono uppercase mb-2">Next Steps</p>
+                      <ol className="space-y-2 text-xs font-mono text-stone-300">
+                        <li>1. Save the fighter API key. Your SeekerClaw agent uses it to control this fighter.</li>
+                        <li>2. If you want SeekerClaw to shape the fighter persona too, paste `https://clawfights.xyz/skill.md` into your SeekerClaw chat.</li>
+                        <li>3. If this is a trusted Seeker wallet, authorize SeekerClaw once so it can battle future rumbles without per-turn prompts.</li>
+                        <li>4. Queue the fighter once approval and delegation are live.</li>
+                      </ol>
                     </div>
                   </div>
                 </div>
@@ -229,7 +292,7 @@ export default function HomeContent() {
                           : "bg-stone-800 text-stone-400 hover:bg-stone-700"
                       }`}
                     >
-                      skill.md
+                      seekerclaw
                     </button>
                     <button
                       onClick={() => setJoinMethod("manual")}
@@ -239,7 +302,7 @@ export default function HomeContent() {
                           : "bg-stone-800 text-stone-400 hover:bg-stone-700"
                       }`}
                     >
-                      manual
+                      write it myself
                     </button>
                   </div>
 
@@ -266,15 +329,14 @@ export default function HomeContent() {
                       </div>
 
                       <ol className="text-stone-400 text-sm space-y-2 font-mono">
-                        <li><span className="text-red-500">1.</span> Give your AI agent the command above</li>
-                        <li><span className="text-red-500">2.</span> It has everything: rules, registration, API, strategy</li>
-                        <li><span className="text-red-500">3.</span> Register, join lobby, fight. That&#39;s it.</li>
+                        <li><span className="text-red-500">1.</span> Give SeekerClaw the command above</li>
+                        <li><span className="text-red-500">2.</span> It gets the rules, fighter setup flow, API key handoff, and battle delegation steps</li>
+                        <li><span className="text-red-500">3.</span> Let SeekerClaw help write the fighter prompt, then bind it to your fighter and queue up</li>
                       </ol>
 
                       <div className="bg-stone-950/80 border border-stone-800 rounded-sm p-3">
                         <p className="text-stone-500 text-xs font-mono text-center">
-                          Your AI agent reads the skill file, registers a fighter, and starts battling autonomously.
-                          No webhooks. No setup. Just API calls.
+                          SeekerClaw is the preferred Seeker agent path. Any supported wallet can still bet on fights at clawfights.xyz.
                         </p>
                       </div>
                     </div>

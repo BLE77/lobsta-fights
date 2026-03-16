@@ -143,6 +143,7 @@ const VAULT_SEED = Buffer.from("vault");
 const BETTOR_SEED = Buffer.from("bettor");
 const SPONSORSHIP_SEED = Buffer.from("sponsorship");
 const MOVE_COMMIT_SEED = Buffer.from("move_commit");
+const FIGHTER_DELEGATE_SEED = Buffer.from("fighter_delegate");
 const COMBAT_STATE_SEED = Buffer.from("combat_state");
 const DELEGATION_BUFFER_SEED = Buffer.from("buffer");
 const DELEGATION_RECORD_SEED = Buffer.from("delegation");
@@ -600,6 +601,16 @@ export function deriveMoveCommitmentPda(
   );
 }
 
+export function deriveFighterDelegatePda(
+  fighter: PublicKey,
+  programId: PublicKey = RUMBLE_ENGINE_ID,
+): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [FIGHTER_DELEGATE_SEED, fighter.toBuffer()],
+    programId,
+  );
+}
+
 export function deriveCombatStatePda(
   rumbleId: bigint | number,
   programId: PublicKey = RUMBLE_ENGINE_ID,
@@ -754,6 +765,15 @@ export interface RumbleCombatAccountState {
   totalDamageDealt: bigint[];
   totalDamageTaken: bigint[];
   vrfSeed: Uint8Array;
+  bump: number;
+}
+
+export interface FighterDelegateAccountState {
+  address: PublicKey;
+  fighter: PublicKey;
+  authority: PublicKey;
+  authorizedSlot: bigint;
+  revoked: boolean;
   bump: number;
 }
 
@@ -1014,6 +1034,37 @@ export async function readRumbleCombatState(
   });
 }
 
+export async function readFighterDelegateState(
+  fighter: PublicKey,
+  connection?: Connection,
+  programId: PublicKey = RUMBLE_ENGINE_ID,
+) : Promise<FighterDelegateAccountState | null> {
+  const conn = connection ?? getConnection();
+  const [fighterDelegatePda] = deriveFighterDelegatePda(fighter, programId);
+  const MIN_FIGHTER_DELEGATE_ACCOUNT_LEN = 82;
+  const info = await conn.getAccountInfo(fighterDelegatePda, "processed");
+  if (!info || info.data.length < MIN_FIGHTER_DELEGATE_ACCOUNT_LEN || !info.owner.equals(programId)) {
+    return null;
+  }
+
+  const data = info.data;
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const fighterOffset = 8;
+  const authorityOffset = fighterOffset + 32;
+  const authorizedSlotOffset = authorityOffset + 32;
+  const revokedOffset = authorizedSlotOffset + 8;
+  const bumpOffset = revokedOffset + 1;
+
+  return {
+    address: fighterDelegatePda,
+    fighter: new PublicKey(data.subarray(fighterOffset, fighterOffset + 32)),
+    authority: new PublicKey(data.subarray(authorityOffset, authorityOffset + 32)),
+    authorizedSlot: view.getBigUint64(authorizedSlotOffset, true),
+    revoked: data[revokedOffset] === 1,
+    bump: data[bumpOffset] ?? 0,
+  };
+}
+
 /**
  * Read a bettor account directly from chain.
  * Works with both old and new layouts; missing new fields default to zero.
@@ -1244,6 +1295,39 @@ function getAdminKeypair(): Keypair | null {
 export function getAdminSignerPublicKey(): string | null {
   const kp = getAdminKeypair();
   return kp ? kp.publicKey.toBase58() : null;
+}
+
+export function getServerAdminKeypair(): Keypair | null {
+  return getAdminKeypair();
+}
+
+function getFighterDelegateMasterSeed(adminKeypair: Keypair | null): Buffer | null {
+  const configured = readFirstEnv([
+    "RUMBLE_FIGHTER_DELEGATE_MASTER_SEED",
+    "NEXT_PRIVATE_RUMBLE_FIGHTER_DELEGATE_MASTER_SEED",
+    "RUMBLE_BATTLE_SESSION_MASTER_SEED",
+    "NEXT_PRIVATE_RUMBLE_BATTLE_SESSION_MASTER_SEED",
+  ]);
+  if (configured) {
+    return createHash("sha256").update(configured).digest().subarray(0, 32);
+  }
+  if (!adminKeypair) return null;
+  return Buffer.from(adminKeypair.secretKey.subarray(0, 32));
+}
+
+export function deriveFighterDelegateSigner(
+  fighter: PublicKey,
+  adminKeypair: Keypair | null = getAdminKeypair(),
+): Keypair | null {
+  const masterSeed = getFighterDelegateMasterSeed(adminKeypair);
+  if (!masterSeed) return null;
+  const seed = createHash("sha256")
+    .update(Buffer.from("fighter-delegate:v1"))
+    .update(masterSeed)
+    .update(fighter.toBuffer())
+    .digest()
+    .subarray(0, 32);
+  return Keypair.fromSeed(seed);
 }
 
 function getAdminProvider(connection?: Connection): anchor.AnchorProvider | null {
@@ -2229,7 +2313,82 @@ export function computeMoveCommitmentHash(
 }
 
 /**
- * Build a commit_move transaction for fighter signer flow.
+ * Build a fighter-signed authorize_fighter_delegate transaction.
+ * The fighter signs once to bind a persistent delegate authority that can
+ * submit commit/reveal turns across future rumbles.
+ */
+export async function buildAuthorizeFighterDelegateTx(
+  fighter: PublicKey,
+  authority: PublicKey,
+  connection?: Connection,
+): Promise<Transaction> {
+  const provider = getProvider(connection);
+  const program = getRumbleEngineProgram(provider);
+  const [fighterDelegatePda] = deriveFighterDelegatePda(fighter);
+  const conn = connection ?? getConnection();
+  const sponsor = getServerAdminKeypair();
+  if (!sponsor) {
+    throw new Error("No sponsor keypair is configured for fighter delegation");
+  }
+
+  const tx = await (program.methods as any)
+    .authorizeFighterDelegate(authority)
+    .accounts({
+      fighter,
+      fighterDelegate: fighterDelegatePda,
+      sponsor: sponsor.publicKey,
+      systemProgram: SystemProgram.programId,
+    })
+    .transaction();
+
+  tx.feePayer = sponsor.publicKey;
+  const { blockhash, lastValidBlockHeight } = await getLatestBlockhashCached(conn, "confirmed");
+  tx.recentBlockhash = blockhash;
+  tx.lastValidBlockHeight = lastValidBlockHeight;
+  tx.partialSign(sponsor);
+  return tx;
+}
+
+/**
+ * Build a fighter-signed revoke_fighter_delegate transaction.
+ * The fighter revokes SeekerClaw/server move authority until they rebind it.
+ */
+export async function buildRevokeFighterDelegateTx(
+  fighter: PublicKey,
+  connection?: Connection,
+): Promise<Transaction> {
+  const provider = getProvider(connection);
+  const program = getRumbleEngineProgram(provider);
+  const [fighterDelegatePda] = deriveFighterDelegatePda(fighter);
+  const conn = connection ?? getConnection();
+  const sponsor = getServerAdminKeypair();
+  if (!sponsor) {
+    throw new Error("No sponsor keypair is configured for fighter delegation");
+  }
+
+  const tx = await (program.methods as any)
+    .revokeFighterDelegate()
+    .accounts({
+      fighter,
+      fighterDelegate: fighterDelegatePda,
+    })
+    .transaction();
+
+  tx.feePayer = sponsor.publicKey;
+  const { blockhash, lastValidBlockHeight } = await getLatestBlockhashCached(conn, "confirmed");
+  tx.recentBlockhash = blockhash;
+  tx.lastValidBlockHeight = lastValidBlockHeight;
+  tx.partialSign(sponsor);
+  return tx;
+}
+
+export interface MoveTxBuildOptions {
+  authority?: PublicKey;
+  payer?: PublicKey;
+}
+
+/**
+ * Build a commit_move transaction for fighter signer flow or delegated session flow.
  */
 export async function buildCommitMoveTx(
   fighter: PublicKey,
@@ -2237,6 +2396,7 @@ export async function buildCommitMoveTx(
   turn: number,
   moveHash: Uint8Array | string,
   connection?: Connection,
+  options?: MoveTxBuildOptions,
 ): Promise<Transaction> {
   if (!Number.isInteger(turn) || turn <= 0) {
     throw new Error("turn must be a positive integer");
@@ -2254,7 +2414,10 @@ export async function buildCommitMoveTx(
   const [rumblePda] = deriveRumblePda(rumbleId);
   const [combatStatePda] = deriveCombatStatePda(rumbleId);
   const [moveCommitmentPda] = deriveMoveCommitmentPda(rumbleId, fighter, turn);
+  const [fighterDelegatePda] = deriveFighterDelegatePda(fighter);
   const conn = connection ?? getConnection();
+  const authority = options?.authority ?? fighter;
+  const payer = options?.payer ?? authority;
 
   const tx = await (program.methods as any)
     .commitMove(
@@ -2263,15 +2426,18 @@ export async function buildCommitMoveTx(
       Array.from(hashBytes),
     )
     .accounts({
+      authority,
       fighter,
+      payer,
       rumble: rumblePda,
       combatState: combatStatePda,
       moveCommitment: moveCommitmentPda,
+      fighterDelegate: fighterDelegatePda,
       systemProgram: SystemProgram.programId,
     })
     .transaction();
 
-  tx.feePayer = fighter;
+  tx.feePayer = payer;
   const { blockhash, lastValidBlockHeight } = await getLatestBlockhashCached(conn, "confirmed");
   tx.recentBlockhash = blockhash;
   tx.lastValidBlockHeight = lastValidBlockHeight;
@@ -2279,7 +2445,7 @@ export async function buildCommitMoveTx(
 }
 
 /**
- * Build a reveal_move transaction for fighter signer flow.
+ * Build a reveal_move transaction for fighter signer flow or delegated session flow.
  */
 export async function buildRevealMoveTx(
   fighter: PublicKey,
@@ -2288,6 +2454,7 @@ export async function buildRevealMoveTx(
   moveCode: number,
   salt32: Uint8Array | string,
   connection?: Connection,
+  options?: MoveTxBuildOptions,
 ): Promise<Transaction> {
   if (!Number.isInteger(turn) || turn <= 0) {
     throw new Error("turn must be a positive integer");
@@ -2308,7 +2475,9 @@ export async function buildRevealMoveTx(
   const [rumblePda] = deriveRumblePda(rumbleId);
   const [combatStatePda] = deriveCombatStatePda(rumbleId);
   const [moveCommitmentPda] = deriveMoveCommitmentPda(rumbleId, fighter, turn);
+  const [fighterDelegatePda] = deriveFighterDelegatePda(fighter);
   const conn = connection ?? getConnection();
+  const authority = options?.authority ?? fighter;
 
   const tx = await (program.methods as any)
     .revealMove(
@@ -2318,14 +2487,16 @@ export async function buildRevealMoveTx(
       Array.from(saltBytes),
     )
     .accounts({
+      authority,
       fighter,
       rumble: rumblePda,
       combatState: combatStatePda,
       moveCommitment: moveCommitmentPda,
+      fighterDelegate: fighterDelegatePda,
     })
     .transaction();
 
-  tx.feePayer = fighter;
+  tx.feePayer = options?.payer ?? authority;
   const { blockhash, lastValidBlockHeight } = await getLatestBlockhashCached(conn, "confirmed");
   tx.recentBlockhash = blockhash;
   tx.lastValidBlockHeight = lastValidBlockHeight;

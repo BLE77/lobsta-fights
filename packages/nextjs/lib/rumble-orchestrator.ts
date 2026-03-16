@@ -73,10 +73,12 @@ import {
   checkIchorShower as checkIchorShowerOnChain,
   computeMoveCommitmentHash,
   createRumble as createRumbleOnChain,
+  deriveFighterDelegateSigner,
   deriveMoveCommitmentPda,
   finalizeRumbleOnChain as finalizeRumbleOnChainTx,
   openTurn as openTurnOnChain,
   readRumbleCombatState,
+  readFighterDelegateState,
   startCombat as startCombatOnChain,
   resolveTurnOnChain,
   advanceTurnOnChain,
@@ -90,6 +92,7 @@ import {
   readRumbleAccountState,
   readMainnetRumbleAccountStateResilient,
   getAdminSignerPublicKey,
+  getServerAdminKeypair,
   type RumbleCombatAccountState,
   readShowerRequest,
   RUMBLE_ENGINE_ID,
@@ -308,6 +311,17 @@ interface OnchainTurnDecision {
   nextRevealRetryAtSlot?: bigint;
   commitErrorCount?: number;
   revealErrorCount?: number;
+}
+
+interface LocalMoveAuthority {
+  authority: PublicKey;
+  signer: Keypair;
+  payerSigner: Keypair | null;
+  kind: "fighter" | "delegate";
+}
+
+interface CachedFighterDelegateSigner {
+  signer: Keypair;
 }
 
 interface CombatWakeSubscription {
@@ -841,6 +855,7 @@ export class RumbleOrchestrator {
   private readonly houseBotSet = new Set(HOUSE_BOT_IDS);
   private readonly fighterSignerById = new Map<string, Keypair>();
   private readonly fighterSignerByWallet = new Map<string, Keypair>();
+  private readonly fighterDelegateSignerByWallet = new Map<string, CachedFighterDelegateSigner>();
   // Safe default: do not allow house bots to run until persisted control
   // state has been loaded from Supabase.
   private houseBotsPaused = true;
@@ -4954,7 +4969,76 @@ export class RumbleOrchestrator {
     return this.fighterSignerByWallet.get(wallet.toBase58()) ?? null;
   }
 
-  private async sendFighterSignedTx(tx: Transaction, signer: Keypair, connection?: Connection): Promise<string> {
+  private fighterDelegateCacheKey(fighterWallet: PublicKey): string {
+    return fighterWallet.toBase58();
+  }
+
+  private async getAuthorizedFighterDelegateSigner(
+    fighterWallet: PublicKey,
+  ): Promise<Keypair | null> {
+    const cacheKey = this.fighterDelegateCacheKey(fighterWallet);
+    const cached = this.fighterDelegateSignerByWallet.get(cacheKey);
+    if (cached) {
+      return cached.signer;
+    }
+
+    const signer = deriveFighterDelegateSigner(fighterWallet);
+    if (!signer) return null;
+
+    const delegate = await readFighterDelegateState(fighterWallet).catch(() => null);
+    if (!delegate || delegate.revoked || !delegate.authority.equals(signer.publicKey)) {
+      return null;
+    }
+
+    this.fighterDelegateSignerByWallet.set(cacheKey, {
+      signer,
+    });
+    return signer;
+  }
+
+  private async getLocalMoveAuthority(
+    fighterId: string,
+    fighterWallet: PublicKey | null,
+  ): Promise<LocalMoveAuthority | null> {
+    const directSigner = this.getSignerForFighter(fighterId, fighterWallet);
+    if (directSigner) {
+      return {
+        authority: fighterWallet ?? directSigner.publicKey,
+        signer: directSigner,
+        payerSigner: null,
+        kind: "fighter",
+      };
+    }
+    if (!fighterWallet) return null;
+
+    const delegateSigner = await this.getAuthorizedFighterDelegateSigner(fighterWallet);
+    if (!delegateSigner) return null;
+
+    const adminPayer = getServerAdminKeypair();
+    if (!adminPayer) {
+      console.warn(
+        `[OnChain] Fighter delegate signer available for ${fighterId}, but no admin payer is configured`,
+      );
+      return null;
+    }
+
+    return {
+      authority: delegateSigner.publicKey,
+      signer: delegateSigner,
+      payerSigner: adminPayer,
+      kind: "delegate",
+    };
+  }
+
+  private async sendFighterSignedTx(
+    tx: Transaction,
+    signer: Keypair,
+    connection?: Connection,
+    payerSigner?: Keypair | null,
+  ): Promise<string> {
+    if (payerSigner && !payerSigner.publicKey.equals(signer.publicKey)) {
+      tx.partialSign(payerSigner);
+    }
     tx.partialSign(signer);
     const conn = connection ?? this.getCombatConnection();
     const isEr = conn.rpcEndpoint?.includes("magicblock");
@@ -5211,8 +5295,8 @@ export class RumbleOrchestrator {
 
     const fighterWallet = state.fighterWallets.get(fighterId) ?? null;
     if (!fighterWallet) return null;
-    const signer = this.getSignerForFighter(fighterId, fighterWallet);
-    const hasSigner = !!signer;
+      const localAuthority = await this.getLocalMoveAuthority(fighterId, fighterWallet);
+    const hasSigner = !!localAuthority;
 
     // If no local signer, check if the fighter has a webhook for external signing
     if (!hasSigner) {
@@ -5344,9 +5428,10 @@ export class RumbleOrchestrator {
       const fighterWallet = state.fighterWallets.get(fighterId) ?? null;
       if (!fighterWallet) continue;
 
-      const signer = decision.hasSigner
-        ? this.getSignerForFighter(fighterId, fighterWallet)
+      const localAuthority = decision.hasSigner
+        ? await this.getLocalMoveAuthority(fighterId, fighterWallet)
         : null;
+      const signer = localAuthority?.signer ?? null;
 
       // Resolve webhook URL for external fighters (no local signer)
       let webhookUrl: string | null = null;
@@ -5371,12 +5456,23 @@ export class RumbleOrchestrator {
             turn,
             Uint8Array.from(Buffer.from(decision.commitmentHex, "hex")),
             combatConn,
+            localAuthority
+              ? {
+                  authority: localAuthority.authority,
+                  payer: (localAuthority.payerSigner ?? localAuthority.signer).publicKey,
+                }
+              : undefined,
           );
 
           let sig: string | null = null;
           if (signer) {
             // Case A: Local signer — sign and submit directly
-            sig = await this.sendFighterSignedTx(tx, signer, combatConn);
+            sig = await this.sendFighterSignedTx(
+              tx,
+              signer,
+              combatConn,
+              localAuthority?.payerSigner ?? null,
+            );
           } else {
             // Case B: External signer — request signing via webhook
             sig = await this.requestExternalSign(
@@ -5460,12 +5556,23 @@ export class RumbleOrchestrator {
             decision.moveCode,
             Uint8Array.from(Buffer.from(decision.salt32Hex, "hex")),
             combatConn,
+            localAuthority
+              ? {
+                  authority: localAuthority.authority,
+                  payer: (localAuthority.payerSigner ?? localAuthority.signer).publicKey,
+                }
+              : undefined,
           );
 
           let sig: string | null = null;
           if (signer) {
             // Case A: Local signer — sign and submit directly
-            sig = await this.sendFighterSignedTx(tx, signer, combatConn);
+            sig = await this.sendFighterSignedTx(
+              tx,
+              signer,
+              combatConn,
+              localAuthority?.payerSigner ?? null,
+            );
           } else {
             // Case B: External signer — request signing via webhook
             sig = await this.requestExternalSign(

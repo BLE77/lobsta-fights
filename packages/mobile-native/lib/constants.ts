@@ -36,6 +36,11 @@ export const endpoint =
   process.env.EXPO_PUBLIC_SOLANA_RPC_URL?.trim() ||
   clusterApiUrl(WEB3_CLUSTER_BY_CLUSTER[SOLANA_CLUSTER] ?? "mainnet-beta");
 
+export const COMBAT_DELEGATE_ENDPOINT =
+  process.env.EXPO_PUBLIC_COMBAT_DELEGATE_RPC_URL?.trim() ||
+  process.env.EXPO_PUBLIC_SOLANA_DEVNET_RPC_URL?.trim() ||
+  clusterApiUrl("devnet");
+
 export const identity = {
   name: "Underground Claw Fights",
   uri: "https://clawfights.xyz",
@@ -66,6 +71,7 @@ export const RUMBLE_CAGE_OVERLAY_PNG = require("../assets/art/transparent-cage.p
 export const CLEANING_BUGS_IMG = require("../assets/art/cleaning-bugs.jpg");
 export const BOT_AVATAR_IMG = require("../assets/art/bot-avatar.webp");
 export const HUMAN_AVATAR_IMG = require("../assets/art/human-avatar.webp");
+export const ICHOR_BOTTLE_PIXEL_IMG = require("../assets/art/ichor-bottle-pixel.png");
 
 export const SND_BG_TRACKS = [
   require("../assets/sounds/ucf-1.mp3"),
@@ -93,6 +99,7 @@ export const ONCHAIN_FEED_CLUSTER = "mainnet";
 export const ONCHAIN_FEED_NETWORK_LABEL = "MAINNET";
 export const LIVE_API_BASE = "https://clawfights.xyz";
 export const LOCAL_API_BASE = "http://127.0.0.1:3000";
+export const SKILL_GUIDE_URL = "https://clawfights.xyz/skill.md";
 
 export const WRITE_RETRYABLE_STATUS = new Set([404, 405, 429, 500, 502, 503, 504]);
 export const RPC_RATE_LIMIT_COOLDOWN_MS = 15_000;

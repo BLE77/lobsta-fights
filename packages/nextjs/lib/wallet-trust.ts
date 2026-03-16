@@ -679,7 +679,10 @@ async function findSeekerGenesisAsset(walletAddress: string): Promise<{ assetId:
   return null;
 }
 
-export async function getWalletTrustDecision(walletAddressRaw: string): Promise<WalletTrustDecision> {
+export async function getWalletTrustDecision(
+  walletAddressRaw: string,
+  options?: { reserveSeekerAsset?: boolean },
+): Promise<WalletTrustDecision> {
   const walletAddress = normalizeTrustedWalletAddress(walletAddressRaw);
   if (!walletAddress) {
     return {
@@ -740,10 +743,15 @@ export async function getWalletTrustDecision(walletAddressRaw: string): Promise<
     };
   }
 
-  const reservation = await reserveSeekerAssetUsage({
-    assetId: seekerAsset.assetId,
-    walletAddress,
-  });
+  const shouldReserve = options?.reserveSeekerAsset !== false;
+  const reservation = shouldReserve
+    ? await reserveSeekerAssetUsage({
+        assetId: seekerAsset.assetId,
+        walletAddress,
+      })
+    : {
+        reservationToken: null,
+      };
   if (!reservation) {
     return {
       approved: false,

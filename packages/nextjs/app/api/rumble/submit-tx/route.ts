@@ -6,12 +6,17 @@ import { getApiKeyFromHeaders } from "~~/lib/request-auth";
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 import { requireJsonContentType, sanitizeErrorResponse } from "~~/lib/api-middleware";
 import { hashApiKey } from "~~/lib/api-key";
-import { getCombatConnectionAuto, isErEnabled, getErStatusInfo } from "~~/lib/solana-connection";
+import { getCombatConnectionAuto, getConnection, isErEnabled, getErStatusInfo } from "~~/lib/solana-connection";
 import { RUMBLE_ENGINE_ID } from "~~/lib/solana-programs";
 
 export const dynamic = "force-dynamic";
 
-const ALLOWED_TX_TYPES = ["commit_move", "reveal_move"] as const;
+const ALLOWED_TX_TYPES = [
+  "authorize_fighter_delegate",
+  "revoke_fighter_delegate",
+  "commit_move",
+  "reveal_move",
+] as const;
 type TxType = (typeof ALLOWED_TX_TYPES)[number];
 
 const ALLOWED_PROGRAM_IDS = new Set([
@@ -74,18 +79,19 @@ export async function GET(request: Request) {
   return NextResponse.json({
     endpoint: "POST /api/rumble/submit-tx",
     description:
-      "Submit a signed Solana transaction for on-chain combat (commit_move or reveal_move). Use this instead of giving your secret key to the orchestrator.",
+      "Submit a signed Solana transaction for persistent fighter delegation or on-chain move execution. Use this instead of giving your secret key to the orchestrator.",
     auth: "x-api-key header",
     body: {
       fighter_id: "Your fighter ID",
       signed_tx: "Base64-encoded signed Solana transaction",
-      tx_type: "commit_move | reveal_move",
+      tx_type: "authorize_fighter_delegate | revoke_fighter_delegate | commit_move | reveal_move",
     },
     notes: [
       "Build the transaction using the UCF Anchor program IDL",
       "Sign with your fighter's wallet keypair",
       "The orchestrator will detect the on-chain state change automatically",
-      "Use the tx_sign_request webhook event to receive pre-built unsigned transactions",
+      "Use /api/fighter/delegate/prepare once to let SeekerClaw / the worker submit commit/reveal after your fighter authorizes persistent delegation.",
+      "Use the tx_sign_request webhook event only if you want to keep full per-turn self-signing.",
       erInfo.er_enabled
         ? `Ephemeral Rollups are ON — transactions are routed to ${erInfo.er_rpc_url}. Use the prepare endpoints to get a correctly-addressed tx.`
         : "Ephemeral Rollups are OFF — transactions are sent to Solana L1.",
@@ -215,8 +221,14 @@ export async function POST(request: Request) {
     // --- Submit to combat RPC (ER when enabled, L1 otherwise) ---
 
     const rawTx = transaction.serialize();
-    const erEnabled = isErEnabled();
-    const connection = getCombatConnectionAuto();
+    const erEnabled =
+      txType !== "authorize_fighter_delegate" &&
+      txType !== "revoke_fighter_delegate" &&
+      isErEnabled();
+    const connection =
+      txType === "authorize_fighter_delegate" || txType === "revoke_fighter_delegate"
+        ? getConnection()
+        : getCombatConnectionAuto();
 
     let signature: string;
     try {

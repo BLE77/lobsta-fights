@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import { buildFighterRegistrationMessage, FIGHTER_REGISTRATION_STATEMENT } from "~~/lib/fighter-registration-proof";
@@ -10,8 +10,55 @@ type Archetype = "heavy_brawler" | "speed_demon" | "tank" | "berserker" | "tacti
 
 interface RegistrationResult {
   fighter_id: string;
-  api_key: string;
+  api_key: string | null;
   name: string;
+  approval_required?: boolean;
+  auto_approved?: boolean;
+  approval_source?: string | null;
+  message?: string | null;
+  already_registered?: boolean;
+  delegate?: {
+    configured: boolean;
+    authorized: boolean;
+    revoked: boolean;
+    expectedAuthority: string | null;
+    onchainAuthority: string | null;
+    matchesExpectedAuthority: boolean;
+    nextAction: "authorize_delegate" | "rebind_delegate" | "ready_for_seekerclaw";
+    message: string;
+  } | null;
+}
+
+interface WalletTrustStatus {
+  walletAddress: string;
+  trust: {
+    approved: boolean;
+    source: string | null;
+    label: string | null;
+    reason: string | null;
+    sgtAssetId: string | null;
+  };
+  delegate: {
+    configured: boolean;
+    authorized: boolean;
+    revoked: boolean;
+    expectedAuthority: string | null;
+    onchainAuthority: string | null;
+    matchesExpectedAuthority: boolean;
+    nextAction: "authorize_delegate" | "rebind_delegate" | "ready_for_seekerclaw";
+    message: string;
+  };
+  fighter: {
+    id: string;
+    name: string;
+    verified: boolean;
+    createdAt: string | null;
+  } | null;
+  canRegister: boolean;
+  canQueue: boolean;
+  canAutoVerifyExistingFighter: boolean;
+  nextAction: string;
+  message: string;
 }
 
 const ARCHETYPES: { id: Archetype; name: string; icon: string; style: string; desc: string }[] = [
@@ -82,6 +129,9 @@ export default function FighterWizard({ onRegistered }: Props) {
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [registering, setRegistering] = useState(false);
   const [registrationError, setRegistrationError] = useState("");
+  const [trustStatus, setTrustStatus] = useState<WalletTrustStatus | null>(null);
+  const [trustStatusState, setTrustStatusState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [trustStatusError, setTrustStatusError] = useState("");
 
   const selectArchetype = (a: Archetype) => {
     setArchetype(a);
@@ -91,6 +141,43 @@ export default function FighterWizard({ onRegistered }: Props) {
 
   const canProceedStep1 = robotName.trim().length >= 2 && archetype;
   const canProceedStep2 = chassis.length >= 100 && fists.length >= 50 && colorScheme.length >= 10 && features.length >= 30;
+
+  useEffect(() => {
+    const walletAddress = publicKey?.toBase58?.();
+    if (!connected || !walletAddress) {
+      setTrustStatus(null);
+      setTrustStatusState("idle");
+      setTrustStatusError("");
+      return;
+    }
+
+    let cancelled = false;
+    setTrustStatusState("loading");
+    setTrustStatusError("");
+
+    fetch(`/api/wallet/trust?wallet=${encodeURIComponent(walletAddress)}`)
+      .then(async res => {
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data?.error || "Failed to check wallet trust");
+        }
+        if (!cancelled) {
+          setTrustStatus(data as WalletTrustStatus);
+          setTrustStatusState("ready");
+        }
+      })
+      .catch((error: any) => {
+        if (!cancelled) {
+          setTrustStatus(null);
+          setTrustStatusState("error");
+          setTrustStatusError(error?.message || "Failed to check wallet trust");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [connected, publicKey]);
 
   const verifyEndpoint = async () => {
     if (!apiEndpoint) return;
@@ -211,7 +298,17 @@ export default function FighterWizard({ onRegistered }: Props) {
       });
       const data = await res.json();
       if (res.ok) {
-        onRegistered({ fighter_id: data.fighter_id, api_key: data.api_key, name: robotName });
+        onRegistered({
+          fighter_id: data.fighter_id,
+          api_key: data.api_key ?? null,
+          name: String(data.fighter_name ?? robotName),
+          approval_required: Boolean(data.approval_required),
+          auto_approved: Boolean(data.auto_approved),
+          approval_source: data.approval_source ?? null,
+          message: data.message ?? null,
+          already_registered: Boolean(data.already_registered),
+          delegate: data.delegate ?? null,
+        });
       } else {
         setRegistrationError(data.error || "Registration failed");
       }
@@ -568,11 +665,75 @@ export default function FighterWizard({ onRegistered }: Props) {
                 </>
               )}
             </div>
+            {connected && publicKey ? (
+              <div className={`mt-3 rounded-sm border p-3 ${
+                trustStatusState === "loading"
+                  ? "border-yellow-700 bg-yellow-950/20"
+                  : trustStatusState === "error"
+                  ? "border-red-700 bg-red-950/30"
+                  : trustStatus?.trust.approved
+                  ? "border-green-700 bg-green-950/20"
+                  : "border-amber-700 bg-amber-950/20"
+              }`}>
+                {trustStatusState === "loading" ? (
+                  <p className="text-yellow-400 text-xs font-mono">[ CHECKING TRUST STATUS... ]</p>
+                ) : trustStatusState === "error" ? (
+                  <p className="text-red-400 text-xs font-mono">[ TRUST CHECK FAILED ] {trustStatusError}</p>
+                ) : trustStatus ? (
+                  <div className="space-y-2">
+                    <p className={`text-xs font-mono ${
+                      trustStatus.trust.approved ? "text-green-400" : "text-amber-300"
+                    }`}>
+                      {trustStatus.trust.approved
+                        ? `[ TRUSTED ] ${trustStatus.trust.label ?? trustStatus.trust.source ?? "wallet trust"}`
+                        : "[ PENDING TRUST ] Wallet is not auto-approved yet"}
+                    </p>
+                    <p className="text-stone-400 text-[11px] font-mono leading-relaxed">
+                      {trustStatus.message}
+                    </p>
+                    <div className={`rounded-sm border p-2 ${
+                      trustStatus.delegate.matchesExpectedAuthority
+                        ? "border-cyan-700 bg-cyan-950/20"
+                        : trustStatus.delegate.authorized
+                        ? "border-amber-700 bg-amber-950/20"
+                        : "border-stone-700 bg-stone-950/40"
+                    }`}>
+                      <p className={`text-[11px] font-mono ${
+                        trustStatus.delegate.matchesExpectedAuthority
+                          ? "text-cyan-300"
+                          : trustStatus.delegate.authorized
+                          ? "text-amber-300"
+                          : "text-stone-400"
+                      }`}>
+                        {trustStatus.delegate.matchesExpectedAuthority
+                          ? "[ SEEKERCLAW AUTHORIZED ] Persistent delegate is live for this fighter wallet."
+                          : trustStatus.delegate.authorized
+                          ? "[ DELEGATE MISMATCH ] A different delegate is on-chain. Rebind to SeekerClaw in setup."
+                          : "[ AUTHORIZE SEEKERCLAW ] After fighter setup, sign one delegate tx so SeekerClaw can battle without per-turn prompts."}
+                      </p>
+                      <p className="text-stone-500 text-[11px] font-mono mt-1">
+                        {trustStatus.delegate.message}
+                      </p>
+                    </div>
+                    {trustStatus.fighter ? (
+                      <p className="text-stone-500 text-[11px] font-mono">
+                        Existing fighter: {trustStatus.fighter.name} ({trustStatus.fighter.verified ? "verified" : "pending"}) {trustStatus.canAutoVerifyExistingFighter ? "— signed registration retry can auto-verify it." : ""}
+                      </p>
+                    ) : null}
+                    {!trustStatus.trust.approved ? (
+                      <p className="text-stone-500 text-[11px] font-mono">
+                        Betting is open to any supported Solana wallet. Fighter auto-approval only happens for allowlisted wallets or wallets that hold a valid Seeker Genesis token.
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
 
-          {/* API Endpoint */}
+          {/* Agent API Endpoint */}
           <div className="border-t border-stone-800 pt-4">
-            <label className="block text-stone-500 text-xs font-mono uppercase mb-2">Agent API Endpoint *</label>
+            <label className="block text-stone-500 text-xs font-mono uppercase mb-2">Agent API Endpoint <span className="text-stone-700">(optional)</span></label>
             <input
               type="url"
               className="w-full bg-stone-900 border border-stone-700 p-3 text-stone-300 font-mono focus:border-amber-600 focus:outline-none text-sm"
@@ -580,7 +741,7 @@ export default function FighterWizard({ onRegistered }: Props) {
               value={apiEndpoint}
               onChange={(e) => { setApiEndpoint(e.target.value); setVerificationStatus("idle"); }}
             />
-            <p className="text-stone-600 text-[10px] mt-1 font-mono">Must respond to challenges within 5 seconds</p>
+            <p className="text-stone-600 text-[10px] mt-1 font-mono">Optional. Leave blank if SeekerClaw or polling will control moves. Verify it only if you plan to use webhook callbacks.</p>
           </div>
 
           {/* Verification */}
@@ -640,9 +801,9 @@ export default function FighterWizard({ onRegistered }: Props) {
             </button>
             <button
               onClick={register}
-              disabled={registering || verificationStatus !== "verified" || !connected || !publicKey || !signMessage}
+              disabled={registering || !connected || !publicKey || !signMessage}
               className={`flex-1 py-3 font-bold font-mono uppercase tracking-wider transition-all ${
-                registering || verificationStatus !== "verified" || !connected || !publicKey || !signMessage
+                registering || !connected || !publicKey || !signMessage
                   ? "bg-stone-800 text-stone-600 cursor-not-allowed"
                   : "bg-red-600 hover:bg-red-500 text-white"
               }`}
@@ -654,9 +815,9 @@ export default function FighterWizard({ onRegistered }: Props) {
           <p className="text-stone-600 text-xs font-mono text-center">
             {!connected || !publicKey
               ? "Connect a wallet to sign the registration challenge"
-              : verificationStatus !== "verified"
-              ? "Verify your endpoint first"
-              : "Registration submits your fighter for approval before live queue access."}
+              : apiEndpoint && verificationStatus !== "verified"
+              ? "Endpoint verification is optional, but recommended if you plan to use webhook callbacks."
+              : "Registration signs the wallet challenge first, then the fighter can auto-approve if the wallet is trusted."}
           </p>
         </div>
       )}
