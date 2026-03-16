@@ -1377,12 +1377,6 @@ function RumbleNativeScreen() {
     };
   }, [stopCommentaryPlayback]);
 
-  // 1-second tick for live countdowns
-  useEffect(() => {
-    const interval = setInterval(() => setClockTick(t => t + 1), 1000);
-    return () => clearInterval(interval);
-  }, []);
-
   useEffect(() => {
     contentRevealAnim.setValue(0);
     Animated.timing(contentRevealAnim, {
@@ -1392,6 +1386,11 @@ function RumbleNativeScreen() {
       useNativeDriver: true,
     }).start();
   }, [activeTab, contentRevealAnim]);
+
+  useEffect(() => {
+    const interval = setInterval(() => setClockTick(t => t + 1), 1000);
+    return () => clearInterval(interval);
+  }, []);
 
   const payoutPlacements = useMemo(() => {
     if (!featuredSlot || !Array.isArray(featuredSlot.fighters)) {
@@ -2422,10 +2421,6 @@ function RumbleNativeScreen() {
 
   const featuredState = String(featuredSlot?.state ?? "idle");
   const stateColor = getStateColor(featuredSlot?.state);
-  const signalLive =
-    lastStatusAt !== null &&
-    Date.now() - lastStatusAt <
-      Math.max(8_000, getSuggestedStatusPollDelayMs(rumbleStatus, statusError) + 4_000);
 
   const queueLength = safeNumber(rumbleStatus?.queueLength, queuePreview.length);
   const ichorPool = safeNumber(rumbleStatus?.ichorShower?.currentPool, 0);
@@ -2438,6 +2433,65 @@ function RumbleNativeScreen() {
     featuredSlot?.remainingFighters,
     featuredFighters.filter(fighter => safeNumber(fighter.hp, 0) > 0).length,
   );
+  const arenaStatusSummary = useMemo(() => {
+    if (featuredState === "betting") {
+      return featuredSlot?.bettingDeadline
+        ? `BETTING OPEN // ${Math.max(0, featuredOdds.length)} FIGHTERS`
+        : "ARMING MAINNET BETTING";
+    }
+    if (featuredState === "combat") {
+      if (activeTurn === 0 || featuredSlot?.turnPhase === "starting") {
+        return `COMBAT STARTING // ${combatAliveCount} ALIVE`;
+      }
+      return `TURN ${safeNumber(activeTurnData?.turnNumber, activeTurn)} // ${combatAliveCount} ALIVE`;
+    }
+    if (featuredState === "payout") {
+      return "PAYOUT LIVE";
+    }
+    if (featuredState === "queue") {
+      return `QUEUE ${queueLength} / 12`;
+    }
+    return queueLength > 0 ? `QUEUE ${queueLength} / 12` : "WAITING FOR FIGHTERS";
+  }, [
+    activeTurn,
+    activeTurnData?.turnNumber,
+    combatAliveCount,
+    featuredOdds.length,
+    featuredSlot?.bettingDeadline,
+    featuredSlot?.turnPhase,
+    featuredState,
+    queueLength,
+  ]);
+  const arenaTimerInfo = useMemo(() => {
+    void clockTick;
+    if (featuredState === "betting") {
+      return {
+        label: featuredSlot?.bettingDeadline ? "BETTING CLOSES" : "ARMING MAINNET",
+        value: featuredSlot?.bettingDeadline ? formatCountdown(featuredSlot?.bettingDeadline) : "WAITING",
+      };
+    }
+    if (featuredState === "combat") {
+      if (activeTurn === 0 || featuredSlot?.turnPhase === "starting") {
+        return {
+          label: "COMBAT START",
+          value: "PREPARING",
+        };
+      }
+      return {
+        label: `NEXT MOVE // TURN ${safeNumber(activeTurnData?.turnNumber, activeTurn)}`,
+        value: formatCountdown(featuredSlot?.nextTurnAt),
+      };
+    }
+    return null;
+  }, [
+    activeTurn,
+    activeTurnData?.turnNumber,
+    clockTick,
+    featuredSlot?.bettingDeadline,
+    featuredSlot?.nextTurnAt,
+    featuredSlot?.turnPhase,
+    featuredState,
+  ]);
 
   const payoutMode = claimBalance?.payout_mode ?? "accrue_claim";
   const canClaim =
@@ -2466,15 +2520,11 @@ function RumbleNativeScreen() {
               minimumFontScale={0.72}
               allowFontScaling={false}
             >
-              RUMBLE
+              RUMBLE BUDDY
             </Text>
             <Text style={styles.subTitle}>BATTLE ROYALE // 12-16 FIGHTERS // LAST BOT STANDING</Text>
           </View>
           <View style={styles.headerRight}>
-            <View style={styles.liveRow}>
-              <View style={[styles.liveDot, signalLive ? styles.liveDotOn : styles.liveDotOff]} />
-              <Text style={styles.liveText}>{signalLive ? "LIVE" : "POLLING"}</Text>
-            </View>
             <View style={styles.headerUtilityGroup}>
               <View style={styles.headerWalletSlot}>
                 <WalletHeader
@@ -2600,16 +2650,18 @@ function RumbleNativeScreen() {
                         [{featuredState.toUpperCase()}]
                       </Text>
                     </View>
-                    <Text style={styles.panelMuted}>{rumbleStatus?.nextRumbleIn ?? "Need fighters in queue"}</Text>
+                    <View style={styles.arenaStatusStrip}>
+                      <Text style={styles.arenaStatusText}>{arenaStatusSummary}</Text>
+                    </View>
+                    {arenaTimerInfo ? (
+                      <View style={styles.arenaTimerStrip}>
+                        <Text style={styles.arenaTimerLabel}>{arenaTimerInfo.label}</Text>
+                        <Text style={styles.arenaTimerValue}>{arenaTimerInfo.value}</Text>
+                      </View>
+                    ) : null}
 
                     {featuredState === "betting" ? (
                       <>
-                        <View style={styles.timerCard}>
-                          <Text style={styles.timerLabel}>
-                            {featuredSlot?.bettingDeadline ? "BETTING OPEN" : "ARMING ON-CHAIN"}
-                          </Text>
-                          <Text style={styles.timerValue}>{formatCountdown(featuredSlot?.bettingDeadline)}</Text>
-                        </View>
                         {featuredOdds.length === 0 ? (
                           <Text style={styles.emptyText}>Odds data not available yet.</Text>
                         ) : (
@@ -2748,23 +2800,6 @@ function RumbleNativeScreen() {
 
                     {featuredState === "combat" ? (
                       <>
-                        {activeTurn === 0 || featuredSlot?.turnPhase === "starting" ? (
-                          <View style={styles.timerCard}>
-                            <Text style={styles.timerLabel}>COMBAT START</Text>
-                            <Text style={styles.timerValue}>PREPARING</Text>
-                          </View>
-                        ) : (
-                          <View style={styles.timerCard}>
-                            <Text style={styles.timerLabel}>TURN {activeTurn}</Text>
-                            <Text style={styles.timerValue}>
-                              {(() => {
-                                void clockTick;
-                                return formatCountdown(featuredSlot?.nextTurnAt);
-                              })()}
-                            </Text>
-                            <Text style={styles.timerSub}>NEXT TURN</Text>
-                          </View>
-                        )}
                         <View style={styles.combatHeaderRow}>
                           {activeTurn === 0 || featuredSlot?.turnPhase === "starting" ? (
                             <Text style={styles.sectionLabel}>STARTING ON-CHAIN COMBAT</Text>
