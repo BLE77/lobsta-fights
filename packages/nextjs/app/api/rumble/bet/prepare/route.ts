@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { NextResponse } from "next/server";
 import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import { getOrchestrator } from "~~/lib/rumble-orchestrator";
@@ -163,6 +164,7 @@ export async function POST(request: Request) {
           error: requestedRumbleId
             ? "The requested rumble is no longer the active bettable rumble. Refresh and place the bet again."
             : "Betting is not open for this slot right now.",
+          error_code: "BETTING_CLOSED",
         },
         { status: 409 },
       );
@@ -267,7 +269,7 @@ export async function POST(request: Request) {
         );
       }
       if (!slotFighters.includes(fighterId)) {
-        return NextResponse.json({ error: `Fighter ${fighterId} is not in this Rumble.` }, { status: 400 });
+        return NextResponse.json({ error: `Fighter ${fighterId} is not in this Rumble.`, error_code: "FIGHTER_NOT_FOUND" }, { status: 400 });
       }
       const fighterIndex = slotFighters.findIndex((f) => f === fighterId);
       if (fighterIndex < 0) {
@@ -334,6 +336,7 @@ export async function POST(request: Request) {
         return NextResponse.json(
           {
             error: "Betting is closing right now. Wait for the next rumble to avoid a failed transaction.",
+            error_code: "BETTING_CLOSED",
             onchain_state: onchainRumble.state,
             onchain_betting_close_slot: looksLikeUnixDeadline ? null : onchainCloseRaw.toString(),
             onchain_betting_deadline_unix: looksLikeUnixDeadline ? onchainCloseRaw.toString() : null,
@@ -389,8 +392,17 @@ export async function POST(request: Request) {
 
       const primary = preparedBets[0];
       const txKind = preparedBets.length > 1 ? "rumble_place_bet_batch" : "rumble_place_bet";
+      const idempotencyKey = randomUUID();
+
+      const oddsVersion = orchestrator.getOddsVersion(parsedSlotIndex);
+      // recommended_sign_by_ms: deadline minus 20s, accounts for network + wallet signing time
+      const recommendedSignByMs =
+        Number.isFinite(onchainDeadlineMsEstimate) && onchainDeadlineMsEstimate > 0
+          ? onchainDeadlineMsEstimate - 20_000
+          : null;
 
       return NextResponse.json({
+        idempotency_key: idempotencyKey,
         slot_index: parsedSlotIndex,
         rumble_id: slotRumbleId,
         rumble_id_num: rumbleIdNum,
@@ -402,6 +414,8 @@ export async function POST(request: Request) {
         total_sol_amount: preparedBets.reduce((sum, b) => sum + b.sol_amount, 0),
         total_lamports: preparedBets.reduce((sum, b) => sum + b.lamports, 0),
         wallet: wallet.toBase58(),
+        odds_version: oddsVersion,
+        recommended_sign_by_ms: recommendedSignByMs,
         onchain_state: onchainRumble.state,
         onchain_betting_close_slot:
           onchainCloseRaw > 0n && !looksLikeUnixDeadline ? onchainCloseRaw.toString() : null,

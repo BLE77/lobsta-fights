@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { NextResponse } from "next/server";
 import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import { getQueueManager } from "~~/lib/queue-manager";
@@ -19,6 +20,17 @@ const QUEUE_BALANCE_CACHE_TTL_MS = Math.max(
 const ACTIVE_RUMBLE_STATUSES = ["betting", "combat", "payout"] as const;
 
 export const dynamic = "force-dynamic";
+
+// In-memory idempotency cache for queue joins (TTL-based cleanup)
+const QUEUE_IDEMPOTENCY_TTL_MS = 60_000; // 1 minute
+const queueIdempotencyCache = new Map<string, { response: Record<string, any>; expiresAt: number }>();
+
+function cleanQueueIdempotencyCache(): void {
+  const now = Date.now();
+  for (const [key, entry] of queueIdempotencyCache) {
+    if (now >= entry.expiresAt) queueIdempotencyCache.delete(key);
+  }
+}
 
 async function isAuthorizedFighter(fighterId: string, apiKey: string): Promise<boolean> {
   const hashedKey = hashApiKey(apiKey);
@@ -147,6 +159,20 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json();
+    const idempotencyKey: string =
+      (typeof (body.idempotency_key ?? body.idempotencyKey) === "string" &&
+        (body.idempotency_key ?? body.idempotencyKey).trim().length > 0)
+        ? (body.idempotency_key ?? body.idempotencyKey).trim()
+        : randomUUID();
+
+    // Idempotency check: return cached response if this key was already processed
+    cleanQueueIdempotencyCache();
+    const cached = queueIdempotencyCache.get(idempotencyKey);
+    if (cached) {
+      console.log("[rumble/queue] Idempotency hit — returning cached response for key:", idempotencyKey);
+      return NextResponse.json(cached.response);
+    }
+
     const fighterId = body.fighter_id || body.fighterId;
     const autoRequeue = body.auto_requeue ?? body.autoRequeue ?? false;
     const requestedPriority = body.priority ?? body.queuePriority;
@@ -281,15 +307,24 @@ export async function POST(request: Request) {
     const position = qm.getQueuePosition(fighterId);
     const estimatedWait = qm.getEstimatedWait(fighterId);
 
-    return NextResponse.json({
+    const responsePayload = {
         status: "queued",
+        idempotency_key: idempotencyKey,
         fighter_id: fighterId,
         position,
         auto_requeue: entry.autoRequeue,
         priority: entry.priority,
         estimated_wait_ms: estimatedWait,
         joined_at: entry.joinedAt.toISOString(),
+    };
+
+    // Cache for idempotency replay
+    queueIdempotencyCache.set(idempotencyKey, {
+      response: responsePayload,
+      expiresAt: Date.now() + QUEUE_IDEMPOTENCY_TTL_MS,
     });
+
+    return NextResponse.json(responsePayload);
   } catch (error: any) {
     return NextResponse.json(sanitizeErrorResponse(error, "Failed to join queue"), { status: 500 });
   }

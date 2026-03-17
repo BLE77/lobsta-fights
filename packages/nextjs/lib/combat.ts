@@ -87,6 +87,38 @@ export function isValidMove(move: string): move is MoveType {
 }
 
 /**
+ * Return which moves are legal given the current meter, and why
+ * unavailable ones are blocked.
+ *
+ * SPECIAL requires meter >= 100 at decision time. The +20 meter grant
+ * happens AFTER resolveCombat(), so the bot must have 100 already.
+ */
+export function getAvailableMoves(meter: number): {
+  legal: string[];
+  unavailable: Record<string, string>;
+} {
+  const legal: string[] = [];
+  const unavailable: Record<string, string> = {};
+
+  for (const move of VALID_MOVES) {
+    if (move === "SPECIAL") {
+      if (meter >= SPECIAL_METER_COST) {
+        legal.push(move);
+      } else {
+        const turnsNeeded = Math.ceil((SPECIAL_METER_COST - meter) / METER_PER_TURN);
+        unavailable[move] =
+          `Requires meter >= ${SPECIAL_METER_COST} (current: ${meter}). ` +
+          `Available in ~${turnsNeeded} turn${turnsNeeded > 1 ? 's' : ''}.`;
+      }
+    } else {
+      legal.push(move);
+    }
+  }
+
+  return { legal, unavailable };
+}
+
+/**
  * Cryptographically-secure random integer in [min, max].
  * Uses crypto.getRandomValues for fairness in game-critical paths.
  */

@@ -843,6 +843,10 @@ export async function markLosingBets(
  * Winners are marked:
  * - pending in accrue_claim mode (user must claim)
  * - paid in instant mode
+ *
+ * IDEMPOTENT: On first call the payout amounts are calculated and stored as a
+ * `bet_settlement_record` JSONB column on `ucf_rumbles`. Subsequent calls
+ * re-use the stored record so payout amounts never drift across retries.
  */
 export async function settleWinnerTakeAllBets(
   rumbleId: string,
@@ -851,55 +855,88 @@ export async function settleWinnerTakeAllBets(
 ): Promise<void> {
   try {
     const sb = freshServiceClient();
-    const { data, error } = await sb
-      .from("ucf_bets")
-      .select("id, fighter_id, net_amount")
-      .eq("rumble_id", rumbleId);
-    if (error) throw error;
 
-    const bets = (data ?? []).map((row: any) => ({
-      id: String(row.id),
-      fighterId: String(row.fighter_id),
-      netAmount: toNumber(row.net_amount),
-    }));
-    if (bets.length === 0) return;
+    // ---- 1. Check for an existing settlement record (idempotency) ----------
+    const { data: rumbleRow, error: rumbleErr } = await sb
+      .from("ucf_rumbles")
+      .select("bet_settlement_record")
+      .eq("id", rumbleId)
+      .maybeSingle();
+    if (rumbleErr) throw rumbleErr;
 
-    const totalByFighter = new Map<string, number>();
-    for (const bet of bets) {
-      totalByFighter.set(
-        bet.fighterId,
-        (totalByFighter.get(bet.fighterId) ?? 0) + bet.netAmount,
-      );
-    }
+    type SettlementEntry = { betId: string; payoutAmount: number; payoutStatus: "pending" | "paid" | "lost" };
 
-    const winnerPool = totalByFighter.get(winnerFighterId) ?? 0;
-    let losersPool = 0;
-    for (const [fighterId, total] of totalByFighter) {
-      if (fighterId !== winnerFighterId) losersPool += total;
-    }
+    let updates: SettlementEntry[];
+    const existingRecord = (rumbleRow as any)?.bet_settlement_record as SettlementEntry[] | null | undefined;
 
-    const treasuryCut = losersPool * 0.03;
-    const distributable = Math.max(0, losersPool - treasuryCut);
-    const winnerStatus = payoutMode === "accrue_claim" ? "pending" : "paid";
+    if (existingRecord && Array.isArray(existingRecord) && existingRecord.length > 0) {
+      // Re-use the previously computed & stored settlement — no recalculation.
+      log(`Using stored bet_settlement_record for rumble ${rumbleId} (${existingRecord.length} entries)`);
+      updates = existingRecord;
+    } else {
+      // ---- 2. First-time calculation ---------------------------------------
+      const { data, error } = await sb
+        .from("ucf_bets")
+        .select("id, fighter_id, net_amount")
+        .eq("rumble_id", rumbleId);
+      if (error) throw error;
 
-    const updates = bets.map((bet) => {
-      if (bet.fighterId !== winnerFighterId) {
+      const bets = (data ?? []).map((row: any) => ({
+        id: String(row.id),
+        fighterId: String(row.fighter_id),
+        netAmount: toNumber(row.net_amount),
+      }));
+      if (bets.length === 0) return;
+
+      const totalByFighter = new Map<string, number>();
+      for (const bet of bets) {
+        totalByFighter.set(
+          bet.fighterId,
+          (totalByFighter.get(bet.fighterId) ?? 0) + bet.netAmount,
+        );
+      }
+
+      const winnerPool = totalByFighter.get(winnerFighterId) ?? 0;
+      let losersPool = 0;
+      for (const [fighterId, total] of totalByFighter) {
+        if (fighterId !== winnerFighterId) losersPool += total;
+      }
+
+      const treasuryCut = losersPool * 0.03;
+      const distributable = Math.max(0, losersPool - treasuryCut);
+      const winnerStatus = payoutMode === "accrue_claim" ? "pending" : "paid";
+
+      updates = bets.map((bet) => {
+        if (bet.fighterId !== winnerFighterId) {
+          return {
+            betId: bet.id,
+            payoutAmount: 0,
+            payoutStatus: "lost" as const,
+          };
+        }
+        const winningsShare =
+          winnerPool > 0 ? (distributable * bet.netAmount) / winnerPool : 0;
+        const payoutAmount = bet.netAmount + winningsShare;
         return {
           betId: bet.id,
-          payoutAmount: 0,
-          payoutStatus: "lost" as const,
+          payoutAmount,
+          payoutStatus: winnerStatus as "pending" | "paid",
         };
-      }
-      const winningsShare =
-        winnerPool > 0 ? (distributable * bet.netAmount) / winnerPool : 0;
-      const payoutAmount = bet.netAmount + winningsShare;
-      return {
-        betId: bet.id,
-        payoutAmount,
-        payoutStatus: winnerStatus as "pending" | "paid",
-      };
-    });
+      });
 
+      // ---- 3. Persist the settlement record before applying ----------------
+      const { error: storeErr } = await sb
+        .from("ucf_rumbles")
+        .update({ bet_settlement_record: updates })
+        .eq("id", rumbleId);
+      if (storeErr) {
+        logError("Failed to store bet_settlement_record — proceeding with apply", storeErr);
+        // Non-fatal: we still apply the payouts; next call will recalculate
+        // identically from the same DB bets, so this is safe.
+      }
+    }
+
+    // ---- 4. Apply the (stored or freshly computed) payouts to bet rows -----
     await updateBetPayouts(rumbleId, updates);
     log(
       `Settled ${updates.length} bets for rumble ${rumbleId} (${payoutMode}, winner=${winnerFighterId})`,

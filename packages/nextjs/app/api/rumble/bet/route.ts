@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { NextResponse } from "next/server";
 import { getOrchestrator } from "~~/lib/rumble-orchestrator";
 import { freshSupabase } from "~~/lib/supabase";
@@ -166,7 +167,13 @@ export async function GET(request: Request) {
     }
 
     const odds = orchestrator.getOdds(slotIndex);
+    const oddsVersion = orchestrator.getOddsVersion(slotIndex);
     const totalPool = odds.reduce((sum, o) => sum + o.solDeployed, 0);
+    const bettingDeadlineMs = slot.bettingDeadline ? slot.bettingDeadline.getTime() : null;
+    // odds_valid_until_ms: deadline minus 15s buffer, or 30s from now if no deadline
+    const oddsValidUntilMs = bettingDeadlineMs
+      ? bettingDeadlineMs - 15_000
+      : Date.now() + 30_000;
 
     return NextResponse.json({
       slot_index: slotIndex,
@@ -174,6 +181,8 @@ export async function GET(request: Request) {
       state: slot.state,
       fighters: slot.fighters,
       odds,
+      odds_version: oddsVersion,
+      odds_valid_until_ms: oddsValidUntilMs,
       total_pool_sol: totalPool,
       betting_open: slot.state === "betting" && !!slot.bettingDeadline,
       betting_initializing: slot.state === "betting" && !slot.bettingDeadline,
@@ -214,7 +223,34 @@ export async function POST(request: Request) {
     const bettorId = body.bettor_id || body.bettorId;
     const txSignature = body.tx_signature || body.txSignature;
     const txKind = body.tx_kind || body.txKind;
+    const expectedOddsVersionRaw = body.expected_odds_version ?? body.expectedOddsVersion;
+    const expectedOddsVersion =
+      typeof expectedOddsVersionRaw === "number" && Number.isInteger(expectedOddsVersionRaw)
+        ? expectedOddsVersionRaw
+        : null;
     const rawBatch = Array.isArray(body.bets) ? body.bets : null;
+    const idempotencyKey: string =
+      (typeof (body.idempotency_key ?? body.idempotencyKey) === "string" &&
+        (body.idempotency_key ?? body.idempotencyKey).trim().length > 0)
+        ? (body.idempotency_key ?? body.idempotencyKey).trim()
+        : randomUUID();
+
+    // --- Idempotency check: if this key was already processed, return the stored response ---
+    {
+      const { data: existingRow, error: idemError } = await freshSupabase()
+        .from("ucf_used_tx_signatures")
+        .select("response_payload")
+        .eq("idempotency_key", idempotencyKey)
+        .maybeSingle();
+      if (!idemError && existingRow?.response_payload) {
+        console.log("[rumble/bet] Idempotency hit — returning stored response for key:", idempotencyKey);
+        return NextResponse.json(existingRow.response_payload);
+      }
+      // If the query fails (e.g. column doesn't exist yet), just proceed normally
+      if (idemError && !isMissingTxSignatureTableError(idemError)) {
+        console.warn("[rumble/bet] Idempotency lookup failed, proceeding without:", idemError);
+      }
+    }
 
     if (rawBatch && rawBatch.length > 16) {
       return NextResponse.json({ error: "Maximum 16 bets per batch" }, { status: 400 });
@@ -330,10 +366,15 @@ export async function POST(request: Request) {
       if (existingSignatureError) {
         if (isMissingTxSignatureTableError(existingSignatureError)) {
           // Migration not applied yet; fall back to process-memory replay guard.
+          console.warn(
+            "[rumble/bet] WARNING: ucf_used_tx_signatures table query failed — falling back to in-memory replay guard. " +
+            "Apply the migration to enable persistent cross-instance protection. Error:",
+            existingSignatureError,
+          );
           useMemoryReplayGuard = true;
           if (isSignatureUsed(txSignature)) {
             return NextResponse.json(
-              { error: "This transaction signature has already been used for a bet." },
+              { error: "This transaction signature has already been used for a bet.", error_code: "REPLAY_DETECTED" },
               { status: 400 },
             );
           }
@@ -343,7 +384,7 @@ export async function POST(request: Request) {
       }
       if (existingSignature) {
         return NextResponse.json(
-          { error: "This transaction signature has already been used for a bet." },
+          { error: "This transaction signature has already been used for a bet.", error_code: "REPLAY_DETECTED" },
           { status: 400 },
         );
       }
@@ -473,7 +514,7 @@ export async function POST(request: Request) {
       if (useMemoryReplayGuard) {
         if (markSignatureUsed(txSignature)) {
           return NextResponse.json(
-            { error: "This transaction signature has already been used for a bet." },
+            { error: "This transaction signature has already been used for a bet.", error_code: "REPLAY_DETECTED" },
             { status: 400 },
           );
         }
@@ -487,6 +528,7 @@ export async function POST(request: Request) {
             wallet_address: bettorWallet,
             rumble_id: verifiedRumbleId,
             slot_index: parsedSlotIndex,
+            idempotency_key: idempotencyKey,
             payload: {
               tx_kind: txKind ?? null,
               legs: parsedBets.map((bet) => ({
@@ -498,16 +540,21 @@ export async function POST(request: Request) {
           });
         if (signatureInsertError) {
           if (isMissingTxSignatureTableError(signatureInsertError)) {
+            console.warn(
+              "[rumble/bet] WARNING: ucf_used_tx_signatures insert failed (table missing?) — falling back to in-memory guard. " +
+              "Apply the migration to enable persistent protection. Error:",
+              signatureInsertError,
+            );
             if (markSignatureUsed(txSignature)) {
               return NextResponse.json(
-                { error: "This transaction signature has already been used for a bet." },
+                { error: "This transaction signature has already been used for a bet.", error_code: "REPLAY_DETECTED" },
                 { status: 400 },
               );
             }
             signatureLock = { mode: "memory", txSignature };
           } else if ((signatureInsertError as any).code === "23505") {
             return NextResponse.json(
-              { error: "This transaction signature has already been used for a bet." },
+              { error: "This transaction signature has already been used for a bet.", error_code: "REPLAY_DETECTED" },
               { status: 400 },
             );
           } else {
@@ -590,7 +637,7 @@ export async function POST(request: Request) {
     if (!authoritativeRumbleId) {
       await releaseBetSignatureLock(signatureLock);
       signatureLock = null;
-      return NextResponse.json({ error: "Betting is not open for this slot right now." }, { status: 409 });
+      return NextResponse.json({ error: "Betting is not open for this slot right now.", error_code: "BETTING_CLOSED" }, { status: 409 });
     }
 
     if (
@@ -600,7 +647,7 @@ export async function POST(request: Request) {
       await releaseBetSignatureLock(signatureLock);
       signatureLock = null;
       return NextResponse.json(
-        { error: "Slot rumble changed while processing this bet. Rebuild and re-sign a fresh bet transaction." },
+        { error: "Slot rumble changed while processing this bet. Rebuild and re-sign a fresh bet transaction.", error_code: "BETTING_CLOSED" },
         { status: 409 },
       );
     }
@@ -611,8 +658,27 @@ export async function POST(request: Request) {
         await releaseBetSignatureLock(signatureLock);
         signatureLock = null;
         return NextResponse.json(
-          { error: `Fighter ${bet.fighterId} is not in the current rumble.` },
+          { error: `Fighter ${bet.fighterId} is not in the current rumble.`, error_code: "FIGHTER_NOT_FOUND" },
           { status: 400 },
+        );
+      }
+    }
+
+    // Optimistic concurrency: reject if caller's odds snapshot is stale
+    if (expectedOddsVersion !== null) {
+      const currentOddsVersion = orchestrator.getOddsVersion(parsedSlotIndex);
+      if (expectedOddsVersion !== currentOddsVersion) {
+        const currentOdds = orchestrator.getOdds(parsedSlotIndex);
+        await releaseBetSignatureLock(signatureLock);
+        signatureLock = null;
+        return NextResponse.json(
+          {
+            error: "Odds have changed since your last fetch. Refresh odds and retry.",
+            error_code: "STALE_ODDS",
+            current_odds_version: currentOddsVersion,
+            odds: currentOdds,
+          },
+          { status: 409 },
         );
       }
     }
@@ -684,9 +750,11 @@ export async function POST(request: Request) {
     betRegistered = true;
 
     const updatedOdds = orchestrator.getOdds(parsedSlotIndex);
+    const updatedOddsVersion = orchestrator.getOddsVersion(parsedSlotIndex);
 
-    return NextResponse.json({
+    const responsePayload = {
       status: "accepted",
+      idempotency_key: idempotencyKey,
       slot_index: parsedSlotIndex,
       fighter_id: parsedBets[0].fighterId,
       sol_amount: parsedBets[0].solAmount,
@@ -695,7 +763,19 @@ export async function POST(request: Request) {
       bettor_wallet: resolvedWallet,
       tx_signature: txSignature ?? null,
       updated_odds: updatedOdds,
-    });
+      odds_version: updatedOddsVersion,
+    };
+
+    // Store the response payload for idempotency replay (awaited to prevent race on retry)
+    if (txSignature) {
+      const { error: storeErr } = await freshSupabase()
+        .from("ucf_used_tx_signatures")
+        .update({ response_payload: responsePayload })
+        .eq("tx_signature", txSignature);
+      if (storeErr) console.warn("[rumble/bet] Failed to store idempotency response_payload:", storeErr);
+    }
+
+    return NextResponse.json(responsePayload);
   } catch (error: any) {
     if (!betRegistered) {
       await releaseBetSignatureLock(signatureLock);

@@ -6,14 +6,21 @@ import {
   isValidUUID,
 } from "~~/lib/request-auth";
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
+import { getAvailableMoves } from "~~/lib/combat";
 
 export const dynamic = "force-dynamic";
 
 /**
- * GET /api/rumble/pending-moves?fighter_id=<uuid>
+ * GET /api/rumble/pending-moves?fighter_id=<uuid>&enriched=true
  * Poll for pending move requests. External bots call this instead of
  * running a webhook server. Returns the oldest pending request for the
  * fighter, or an empty array if none.
+ *
+ * When `enriched=true`, each pending item is flattened: the nested
+ * request_payload fields are spread to the top level, and `legal_moves` /
+ * `unavailable_moves` are (re)computed from the fighter's current meter so
+ * bots always get an accurate picture even if the stored payload predates
+ * this feature.
  *
  * Auth: x-api-key header.
  */
@@ -32,6 +39,7 @@ export async function GET(request: Request) {
 
   const { searchParams } = new URL(request.url);
   const fighterId = searchParams.get("fighter_id");
+  const enriched = searchParams.get("enriched") === "true";
 
   if (!fighterId || !isValidUUID(fighterId)) {
     return NextResponse.json(
@@ -76,5 +84,28 @@ export async function GET(request: Request) {
     );
   }
 
-  return NextResponse.json({ pending: data ?? [] });
+  if (!enriched) {
+    return NextResponse.json({ pending: data ?? [] });
+  }
+
+  // Enriched mode: flatten request_payload and add/override legal_moves
+  const enrichedPending = (data ?? []).map((row: any) => {
+    const payload = row.request_payload ?? {};
+    const meter =
+      payload.your_state?.meter ??
+      payload.match_state?.your_meter ??
+      0;
+    const { legal, unavailable } = getAvailableMoves(meter);
+
+    // Spread DB columns first, then payload fields, then overrides
+    const { request_payload: _rp, ...dbFields } = row;
+    return {
+      ...dbFields,
+      ...payload,
+      legal_moves: legal,
+      unavailable_moves: unavailable,
+    };
+  });
+
+  return NextResponse.json({ pending: enrichedPending });
 }

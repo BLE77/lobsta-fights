@@ -50,6 +50,7 @@ import {
   resolveCombat,
   isValidMove,
   createMoveHash,
+  getAvailableMoves,
 } from "./combat";
 import {
   applyFinalDuelSuddenDeath,
@@ -867,6 +868,9 @@ export class RumbleOrchestrator {
 
   // Betting pools indexed by slot
   private bettingPools: Map<number, BettingPool> = new Map();
+
+  // Odds version counter per slot — incremented each time a bet changes odds
+  private oddsVersions: Map<number, number> = new Map();
 
   // Incremental combat state indexed by slot
   private combatStates: Map<number, SlotCombatState> = new Map();
@@ -2986,6 +2990,8 @@ export class RumbleOrchestrator {
 
       const pool = createBettingPool(slot.id);
       this.bettingPools.set(idx, pool);
+      // Reset odds version — seed with timestamp to avoid collisions after restart
+      this.oddsVersions.set(idx, Date.now() % 1_000_000);
 
       // Persist: create rumble record BEFORE betting window opens (FK constraint)
       // Must be awaited so the ucf_rumbles row exists before any bet can reference it.
@@ -3835,6 +3841,9 @@ export class RumbleOrchestrator {
       this.queueManager.placeBet(slotIndex, bettorId, bet.solAmount);
     }
 
+    // Increment odds version so clients can detect stale odds
+    this.oddsVersions.set(slotIndex, (this.oddsVersions.get(slotIndex) ?? 0) + 1);
+
     return { accepted: true };
   }
 
@@ -3845,6 +3854,14 @@ export class RumbleOrchestrator {
     const pool = this.bettingPools.get(slotIndex);
     if (!pool) return [];
     return calculateOdds(pool);
+  }
+
+  /**
+   * External API: get current odds version counter for a slot.
+   * Increments each time a bet is placed that changes odds.
+   */
+  getOddsVersion(slotIndex: number): number {
+    return this.oddsVersions.get(slotIndex) ?? 0;
   }
 
   // ---- Combat phase --------------------------------------------------------
@@ -6012,6 +6029,8 @@ export class RumbleOrchestrator {
       your_damage_taken: t.fighter_a_id === fighter.id ? t.damage_to_a : t.damage_to_b,
     }));
 
+    const { legal: crLegalMoves, unavailable: crUnavailableMoves } = getAvailableMoves(fighter.meter);
+
     const sharedState = {
       mode: "rumble",
       rumble_id: slot.id,
@@ -6052,6 +6071,8 @@ export class RumbleOrchestrator {
         "CATCH",
         "SPECIAL",
       ],
+      legal_moves: crLegalMoves,
+      unavailable_moves: crUnavailableMoves,
       timeout_ms: AGENT_MOVE_TIMEOUT_MS,
     };
 
@@ -6109,6 +6130,8 @@ export class RumbleOrchestrator {
     const opponentMeterTier =
       opponent.meter >= 100 ? "full" : opponent.meter >= 60 ? "high" : opponent.meter >= 30 ? "mid" : "low";
 
+    const { legal: legalMoves, unavailable: unavailableMoves } = getAvailableMoves(fighter.meter);
+
     const moveRequestPayload: Record<string, unknown> = {
       mode: "rumble",
       rumble_id: slot.id,
@@ -6133,6 +6156,8 @@ export class RumbleOrchestrator {
         "GUARD_HIGH", "GUARD_MID", "GUARD_LOW",
         "DODGE", "CATCH", "SPECIAL",
       ],
+      legal_moves: legalMoves,
+      unavailable_moves: unavailableMoves,
       timeout_ms: AGENT_MOVE_TIMEOUT_MS,
     };
 
@@ -7328,7 +7353,10 @@ export class RumbleOrchestrator {
 
     // Always settle persisted bet rows if we have a winner id, even when the
     // in-memory betting pool is empty after a server restart.
-    if (winnerFighterId) {
+    // settleWinnerTakeAllBets is itself idempotent (stores/reuses a
+    // bet_settlement_record), but we skip the call entirely when the
+    // on-chain settlement guard already marked this rumble as done.
+    if (winnerFighterId && !this.settledRumbleIds.has(slot.id)) {
       await persist.settleWinnerTakeAllBets(
         slot.id,
         winnerFighterId,
@@ -7528,6 +7556,8 @@ export class RumbleOrchestrator {
     }
 
     this.bettingPools.set(slotIndex, pool);
+    // Seed odds version from timestamp on restore to avoid post-restart collisions
+    this.oddsVersions.set(slotIndex, Date.now() % 1_000_000);
     console.log(
       `[Orchestrator] Restored betting pool for slot ${slotIndex}: ${bets.length} bets, ${pool.totalDeployed} SOL`
     );
