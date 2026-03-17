@@ -63,10 +63,27 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Invalid wallet address" }, { status: 400 });
     }
 
-    const claimables = await discoverOnchainClaimableRumbles(wallet, 120).catch(() => []);
+    let claimables;
+    try {
+      claimables = await discoverOnchainClaimableRumbles(wallet, 120);
+    } catch (error) {
+      console.error("[RumbleClaimPrepareAPI] claim discovery failed", error);
+      const reason = isRateLimitedRpcError(error) ? "rpc_rate_limited" : "rpc_unavailable";
+      return NextResponse.json(
+        {
+          error: "Live claim discovery is temporarily unavailable. Retry shortly.",
+          reason,
+          legacy_claims_supported: false,
+        },
+        { status: 503 },
+      );
+    }
     if (claimables.length === 0) {
       return NextResponse.json(
-        { error: "No on-chain claimable rumble payouts found for this wallet." },
+        {
+          error: "No on-chain claimable rumble payouts found for this wallet on the current betting program.",
+          legacy_claims_supported: false,
+        },
         { status: 404 },
       );
     }
@@ -102,6 +119,7 @@ export async function POST(request: Request) {
     const fundedTargets: typeof selectedTargets = [];
     const skippedCount = { underfunded: 0 };
     const vaultBalances = new Map<number, number>();
+    let vaultBalanceLookupReason: "rpc_rate_limited" | "rpc_unavailable" | null = null;
 
     try {
       const vaultPdas = selectedTargets.map((target) => deriveVaultPdaMainnet(target.rumbleIdNum)[0]);
@@ -111,12 +129,16 @@ export async function POST(request: Request) {
       }
     } catch (err) {
       if (isRateLimitedRpcError(err)) {
-        // Avoid per-vault fallback fan-out during provider throttling.
-        for (const target of selectedTargets) {
-          vaultBalances.set(target.rumbleIdNum, 0);
-        }
+        return NextResponse.json(
+          {
+            error: "Claim funding checks are temporarily rate-limited. Retry shortly.",
+            reason: "rpc_rate_limited",
+            legacy_claims_supported: false,
+          },
+          { status: 503 },
+        );
       } else {
-      // Fallback for providers that intermittently fail multi-account reads.
+        // Fallback for providers that intermittently fail multi-account reads.
         for (const target of selectedTargets) {
           try {
             const [vaultPda] = deriveVaultPdaMainnet(target.rumbleIdNum);
@@ -125,11 +147,25 @@ export async function POST(request: Request) {
               ttlMs: 30_000,
             });
             vaultBalances.set(target.rumbleIdNum, vaultBalance);
-          } catch {
-            vaultBalances.set(target.rumbleIdNum, 0);
+          } catch (balanceError) {
+            vaultBalanceLookupReason = isRateLimitedRpcError(balanceError)
+              ? "rpc_rate_limited"
+              : "rpc_unavailable";
+            break;
           }
         }
       }
+    }
+
+    if (vaultBalanceLookupReason) {
+      return NextResponse.json(
+        {
+          error: "Claim funding checks are temporarily unavailable. Retry shortly.",
+          reason: vaultBalanceLookupReason,
+          legacy_claims_supported: false,
+        },
+        { status: 503 },
+      );
     }
 
     for (const target of selectedTargets) {

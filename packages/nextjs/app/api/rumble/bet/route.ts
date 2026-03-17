@@ -206,7 +206,7 @@ export async function GET(request: Request) {
  */
 export async function POST(request: Request) {
   const rlKey = getRateLimitKey(request);
-  const rl = checkRateLimit("PUBLIC_WRITE", rlKey);
+  const rl = checkRateLimit("PUBLIC_WRITE", rlKey, "/api/rumble/bet");
   if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
   const contentTypeError = requireJsonContentType(request);
   if (contentTypeError) return contentTypeError;

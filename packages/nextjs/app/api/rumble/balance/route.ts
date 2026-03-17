@@ -22,6 +22,11 @@ const snapshotCache = new Map<
   { snapshot: OnchainWalletPayoutSnapshot; fetchedAt: number }
 >();
 
+function isRateLimitedRpcError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /429|too many requests|rate limit|rate-limited/i.test(msg);
+}
+
 // Evict stale entries periodically (avoid unbounded growth)
 function evictStale() {
   const now = Date.now();
@@ -48,6 +53,9 @@ async function getCachedSnapshot(
 export async function GET(request: Request) {
   return runWithRpcMetrics("GET /api/rumble/balance", async () => {
     try {
+      const rlKey = getRateLimitKey(request);
+      const rl = checkRateLimit("PUBLIC_READ", rlKey, "/api/rumble/balance");
+      if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
       const { searchParams } = new URL(request.url);
       const wallet = searchParams.get("wallet") ?? searchParams.get("wallet_address");
 
@@ -67,7 +75,10 @@ export async function GET(request: Request) {
 
       const debug = searchParams.get("debug") === "1";
       const payoutMode = getRumblePayoutMode();
-      const snapshot = await getCachedSnapshot(walletPk, 80);
+      const cacheKey = walletPk.toBase58();
+      const cached = snapshotCache.get(cacheKey);
+      const cacheHit = !!cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS;
+      const snapshot = cacheHit ? cached.snapshot : await getCachedSnapshot(walletPk, 120);
 
       // The snapshot already validates on-chain state: payout ready, not claimed,
       // winner deployment > 0. No simulation needed — claim tx is built at claim time.
@@ -95,6 +106,9 @@ export async function GET(request: Request) {
         payout_mode: payoutMode,
         claimable_sol: onchainClaimableSolTotal,
         legacy_claimable_sol: 0,
+        legacy_claims_supported: false,
+        legacy_claims_excluded: true,
+        legacy_claims_note: "Legacy betting-program claims are intentionally excluded from this API.",
         total_pending_claimable_sol: onchainClaimableSolTotal,
         claimed_sol: snapshot.totalClaimedSol,
         unsettled_sol: 0,
@@ -109,12 +123,18 @@ export async function GET(request: Request) {
           _debug: {
             rpc_endpoint: getBettingRpcEndpoint().replace(/api[_-]key=[^&]+/, "api-key=REDACTED"),
             snapshot_claimable_count: snapshot.claimableRumbles.length,
-            cached: !!snapshotCache.get(walletPk.toBase58()),
+            cached: cacheHit,
           },
         } : {}),
       });
     } catch (error) {
       console.error("[RumbleBalanceAPI]", error);
+      if (isRateLimitedRpcError(error)) {
+        return NextResponse.json(
+          { error: "Payout balance lookup is temporarily rate-limited. Retry shortly." },
+          { status: 503 },
+        );
+      }
       return NextResponse.json({ error: "Failed to fetch payout balance" }, { status: 500 });
     } finally {
       flushRpcMetrics();

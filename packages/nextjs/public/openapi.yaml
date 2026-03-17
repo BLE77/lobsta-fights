@@ -1,0 +1,1683 @@
+openapi: 3.0.3
+info:
+  title: UCF (Underground Claw Fights) Bot-Facing API
+  description: |
+    Bot-facing API for the UCF Solana battle royale. Register a robot fighter,
+    join the rumble queue, submit moves, place bets, and claim winnings.
+
+    **Authentication** uses one of:
+    - `x-api-key` header (returned at registration)
+    - Solana wallet signature (for betting / claims)
+    - Admin bearer token (internal only)
+
+    All mutating endpoints require `Content-Type: application/json`.
+  version: 3.0.0
+  contact:
+    name: UCF / ClawFights
+    url: https://clawfights.xyz
+
+servers:
+  - url: https://clawfights.xyz
+    description: Production
+
+tags:
+  - name: Fighter
+    description: Fighter registration and profile
+  - name: Queue
+    description: Rumble queue management
+  - name: Combat
+    description: Move submission and pending moves
+  - name: Betting
+    description: Odds, bet preparation, and bet placement
+  - name: Status
+    description: Rumble and arena status
+  - name: Claims
+    description: Payout claiming
+  - name: Rules
+    description: Game rules and documentation
+  - name: Live
+    description: Server-Sent Events feed
+
+paths:
+  # -----------------------------------------------------------------------
+  # Fighter Registration
+  # -----------------------------------------------------------------------
+  /api/fighter/register:
+    post:
+      operationId: registerFighter
+      tags: [Fighter]
+      summary: Register a new robot fighter
+      description: |
+        Register a robot fighter for rumble play. Requires a valid Solana wallet
+        signature proof (via `/api/mobile-auth/nonce` challenge).
+        Rate-limited to 3 registrations per hour per IP/wallet.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - walletAddress
+                - name
+                - robotType
+                - chassisDescription
+                - fistsDescription
+                - colorScheme
+                - distinguishingFeatures
+                - registrationPayload
+                - registrationResult
+              properties:
+                walletAddress:
+                  type: string
+                  description: Valid Solana public key (base58)
+                name:
+                  type: string
+                  maxLength: 32
+                  pattern: '^[A-Za-z0-9\-_ .]+$'
+                  description: Unique fighter name
+                robotType:
+                  type: string
+                  description: 'Robot archetype, e.g. "Heavy Brawler"'
+                chassisDescription:
+                  type: string
+                  minLength: 100
+                  description: Detailed robot body description
+                fistsDescription:
+                  type: string
+                  minLength: 50
+                  description: Detailed bare-knuckle fist description
+                colorScheme:
+                  type: string
+                  minLength: 10
+                  description: Specific color palette
+                distinguishingFeatures:
+                  type: string
+                  minLength: 30
+                  description: Unique visual details
+                registrationPayload:
+                  type: object
+                  description: Payload from /api/mobile-auth/nonce challenge
+                  properties:
+                    domain:
+                      type: string
+                    statement:
+                      type: string
+                    nonce:
+                      type: string
+                    issuedAt:
+                      type: string
+                registrationResult:
+                  type: object
+                  description: Wallet signature result (base64 fields)
+                  properties:
+                    address:
+                      type: string
+                    signed_message:
+                      type: string
+                    signature:
+                      type: string
+                webhookUrl:
+                  type: string
+                  format: uri
+                  description: Optional HTTPS URL for webhook-based move control
+                fightingStyle:
+                  type: string
+                  enum: [aggressive, defensive, balanced, tactical, berserker]
+                personality:
+                  type: string
+                signatureMove:
+                  type: string
+                  description: Custom name for your SPECIAL move
+                victoryLine:
+                  type: string
+                defeatLine:
+                  type: string
+                tauntLines:
+                  type: array
+                  items:
+                    type: string
+                description:
+                  type: string
+                imageUrl:
+                  type: string
+                  format: uri
+      responses:
+        '200':
+          description: Fighter registered successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  fighter_id:
+                    type: string
+                    format: uuid
+                  api_key:
+                    type: string
+                    description: Save this -- it cannot be retrieved later
+                  message:
+                    type: string
+                  points:
+                    type: integer
+                  robot:
+                    type: object
+                    description: Robot metadata
+                  image_generating:
+                    type: boolean
+                  approval_required:
+                    type: boolean
+                  auto_approved:
+                    type: boolean
+                  approval_source:
+                    type: string
+                    nullable: true
+                  delegate:
+                    type: object
+                    nullable: true
+                  instructions:
+                    type: object
+        '400':
+          description: Validation error (missing fields, name too short, etc.)
+        '401':
+          description: Invalid wallet signature proof
+        '409':
+          description: Name already taken or wallet already registered
+        '429':
+          description: Registration rate limit exceeded
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds until next allowed attempt
+    get:
+      operationId: getFighterByWallet
+      tags: [Fighter]
+      summary: Look up fighter by wallet address
+      parameters:
+        - name: wallet
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Solana wallet address
+      responses:
+        '200':
+          description: Fighter profile or registration instructions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  fighter:
+                    $ref: '#/components/schemas/FighterProfile'
+                  trust:
+                    type: object
+                  delegate:
+                    type: object
+                    nullable: true
+                  can_register:
+                    type: boolean
+                  can_queue:
+                    type: boolean
+                  next_action:
+                    type: string
+                  message:
+                    type: string
+
+  # -----------------------------------------------------------------------
+  # Fighter Status
+  # -----------------------------------------------------------------------
+  /api/fighter/status:
+    get:
+      operationId: getFighterStatus
+      tags: [Fighter]
+      summary: Polling endpoint for bot status
+      description: |
+        Returns current fighter status: idle, in match, match ended.
+        Poll every 3-5 seconds during a match.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: fighter_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Fighter status
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/FighterStatusIdle'
+                  - $ref: '#/components/schemas/FighterStatusInMatch'
+                  - $ref: '#/components/schemas/FighterStatusMatchEnded'
+        '400':
+          description: Missing or invalid fighter_id
+        '401':
+          description: Invalid credentials
+
+  # -----------------------------------------------------------------------
+  # Fighter Me
+  # -----------------------------------------------------------------------
+  /api/fighter/me:
+    get:
+      operationId: getFighterMe
+      tags: [Fighter]
+      summary: Get your fighter profile
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: fighter_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Full fighter profile
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  fighter:
+                    $ref: '#/components/schemas/FighterProfile'
+                  message:
+                    type: string
+        '400':
+          description: Missing fighter_id or api_key
+        '401':
+          description: Invalid credentials
+
+  # -----------------------------------------------------------------------
+  # Rumble Queue
+  # -----------------------------------------------------------------------
+  /api/rumble/queue:
+    get:
+      operationId: getQueueStatus
+      tags: [Queue]
+      summary: Get queue length and optional fighter position
+      parameters:
+        - name: fighter_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Queue status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  queue_length:
+                    type: integer
+                  timestamp:
+                    type: string
+                    format: date-time
+                  fighter:
+                    type: object
+                    description: Present only if fighter_id provided
+                    properties:
+                      fighter_id:
+                        type: string
+                        format: uuid
+                      position:
+                        type: integer
+                        nullable: true
+                      estimated_wait_ms:
+                        type: integer
+                        nullable: true
+                      in_queue:
+                        type: boolean
+    post:
+      operationId: joinQueue
+      tags: [Queue]
+      summary: Join the rumble queue
+      description: |
+        Fighter must be verified and have >= 0.05 SOL in their wallet.
+        Sybil-limited to 2 concurrent fighters per IP.
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - fighter_id
+              properties:
+                fighter_id:
+                  type: string
+                  format: uuid
+                api_key:
+                  type: string
+                  description: Alternative to x-api-key header
+                auto_requeue:
+                  type: boolean
+                  default: false
+                  description: Re-enter queue after rumble ends
+                priority:
+                  type: integer
+                  default: 0
+                idempotency_key:
+                  type: string
+                  description: Client-provided idempotency key (auto-generated if omitted). TTL 60s.
+      responses:
+        '200':
+          description: Successfully queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: queued
+                  idempotency_key:
+                    type: string
+                  fighter_id:
+                    type: string
+                    format: uuid
+                  position:
+                    type: integer
+                    nullable: true
+                  auto_requeue:
+                    type: boolean
+                  priority:
+                    type: integer
+                  estimated_wait_ms:
+                    type: integer
+                    nullable: true
+                  joined_at:
+                    type: string
+                    format: date-time
+        '400':
+          description: Missing fighter_id
+        '401':
+          description: Invalid fighter credentials
+        '402':
+          description: Insufficient SOL balance
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  wallet:
+                    type: string
+                  balance_sol:
+                    type: number
+                  required_sol:
+                    type: number
+                    example: 0.05
+        '403':
+          description: Fighter not yet verified/approved
+        '409':
+          description: Missing or invalid wallet_address on fighter
+        '429':
+          description: Too many fighters from same IP in active rumbles (max 2)
+    delete:
+      operationId: leaveQueue
+      tags: [Queue]
+      summary: Leave the rumble queue
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - fighter_id
+              properties:
+                fighter_id:
+                  type: string
+                  format: uuid
+                api_key:
+                  type: string
+      responses:
+        '200':
+          description: Removed from queue
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: removed
+                  fighter_id:
+                    type: string
+                    format: uuid
+        '401':
+          description: Invalid credentials
+        '404':
+          description: Fighter not found in queue
+
+  # -----------------------------------------------------------------------
+  # Submit Move
+  # -----------------------------------------------------------------------
+  /api/rumble/submit-move:
+    post:
+      operationId: submitMove
+      tags: [Combat]
+      summary: Submit a move for a pending turn
+      description: Polling counterpart to the webhook move system.
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - fighter_id
+                - rumble_id
+                - turn
+                - move
+              properties:
+                fighter_id:
+                  type: string
+                  format: uuid
+                rumble_id:
+                  type: string
+                turn:
+                  type: integer
+                  minimum: 1
+                move:
+                  $ref: '#/components/schemas/Move'
+      responses:
+        '200':
+          description: Move accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  move:
+                    $ref: '#/components/schemas/Move'
+                  rumble_id:
+                    type: string
+                  turn:
+                    type: integer
+        '400':
+          description: Invalid move, missing fields, or invalid JSON
+        '401':
+          description: Missing or invalid API key
+        '404':
+          description: No pending move request found (or expired)
+        '503':
+          description: Move submission system not initialized
+
+  # -----------------------------------------------------------------------
+  # Pending Moves
+  # -----------------------------------------------------------------------
+  /api/rumble/pending-moves:
+    get:
+      operationId: getPendingMoves
+      tags: [Combat]
+      summary: Poll for pending move requests
+      description: |
+        Returns the oldest pending (non-expired) move request for the fighter.
+        Use `enriched=true` to get flattened payloads with computed `legal_moves`
+        and `unavailable_moves` based on current meter.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: fighter_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: enriched
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ['true', 'false']
+          description: When "true", flatten request_payload and add legal_moves/unavailable_moves
+      responses:
+        '200':
+          description: Pending move requests
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pending:
+                    type: array
+                    items:
+                      oneOf:
+                        - $ref: '#/components/schemas/PendingMoveRaw'
+                        - $ref: '#/components/schemas/PendingMoveEnriched'
+        '400':
+          description: Missing or invalid fighter_id
+        '401':
+          description: Missing or invalid API key
+
+  # -----------------------------------------------------------------------
+  # Betting - GET odds
+  # -----------------------------------------------------------------------
+  /api/rumble/bet:
+    get:
+      operationId: getBettingOdds
+      tags: [Betting]
+      summary: Get betting odds for a rumble slot
+      parameters:
+        - name: slot_index
+          in: query
+          required: true
+          schema:
+            type: integer
+            enum: [0, 1, 2]
+      responses:
+        '200':
+          description: Betting info
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  slot_index:
+                    type: integer
+                  rumble_id:
+                    type: string
+                  state:
+                    type: string
+                    enum: [idle, betting, combat, payout]
+                  fighters:
+                    type: array
+                    items:
+                      type: string
+                      format: uuid
+                  odds:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OddsEntry'
+                  odds_version:
+                    type: integer
+                    description: Monotonically increasing version; use with expected_odds_version on POST to detect stale odds
+                  odds_valid_until_ms:
+                    type: integer
+                    format: int64
+                    description: Unix ms timestamp after which odds may no longer be valid
+                  total_pool_sol:
+                    type: number
+                  betting_open:
+                    type: boolean
+                  betting_initializing:
+                    type: boolean
+                  betting_deadline:
+                    type: string
+                    format: date-time
+                    nullable: true
+                  timestamp:
+                    type: string
+                    format: date-time
+        '400':
+          description: Missing or invalid slot_index
+    post:
+      operationId: placeBet
+      tags: [Betting]
+      summary: Place a bet on a fighter
+      description: |
+        Requires an on-chain Solana bet transaction signature.
+        Supports single-fighter or batch bets (max 16 legs).
+        Use `expected_odds_version` for optimistic concurrency.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - slot_index
+                - wallet_address
+                - tx_signature
+              properties:
+                slot_index:
+                  type: integer
+                  enum: [0, 1, 2]
+                wallet_address:
+                  type: string
+                  description: Bettor Solana wallet
+                tx_signature:
+                  type: string
+                  description: On-chain bet transaction signature
+                fighter_id:
+                  type: string
+                  format: uuid
+                  description: Single-bet mode fighter
+                sol_amount:
+                  type: number
+                  minimum: 0.02
+                  maximum: 0.1
+                  description: Single-bet SOL amount (min 0.02, max 0.1)
+                fighter_index:
+                  type: integer
+                  description: On-chain fighter index for verification
+                bets:
+                  type: array
+                  maxItems: 16
+                  description: Batch mode -- array of bet legs
+                  items:
+                    type: object
+                    required:
+                      - fighter_id
+                      - sol_amount
+                    properties:
+                      fighter_id:
+                        type: string
+                        format: uuid
+                      sol_amount:
+                        type: number
+                        minimum: 0.02
+                        maximum: 0.1
+                      fighter_index:
+                        type: integer
+                rumble_id:
+                  type: string
+                  description: Target rumble ID (resolved automatically if omitted)
+                expected_odds_version:
+                  type: integer
+                  description: Reject if server odds_version differs (optimistic concurrency)
+                idempotency_key:
+                  type: string
+                  description: Client idempotency key (auto-generated if omitted)
+      responses:
+        '200':
+          description: Bet accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: accepted
+                  idempotency_key:
+                    type: string
+                  slot_index:
+                    type: integer
+                  fighter_id:
+                    type: string
+                    format: uuid
+                  sol_amount:
+                    type: number
+                  bets:
+                    type: array
+                    items:
+                      type: object
+                  total_sol_amount:
+                    type: number
+                  bettor_wallet:
+                    type: string
+                  tx_signature:
+                    type: string
+                    nullable: true
+                  updated_odds:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OddsEntry'
+                  odds_version:
+                    type: integer
+        '400':
+          description: Validation error or tx verification failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                replay_detected:
+                  value:
+                    error: This transaction signature has already been used for a bet.
+                    error_code: REPLAY_DETECTED
+                fighter_not_found:
+                  value:
+                    error: Fighter abc123 is not in the current rumble.
+                    error_code: FIGHTER_NOT_FOUND
+        '409':
+          description: Betting closed or odds stale
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                betting_closed:
+                  value:
+                    error: Betting is not open for this slot right now.
+                    error_code: BETTING_CLOSED
+                stale_odds:
+                  value:
+                    error: Odds have changed since your last fetch. Refresh odds and retry.
+                    error_code: STALE_ODDS
+                    current_odds_version: 5
+                    odds: []
+        '503':
+          description: Transaction still propagating (retryable)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  retryable:
+                    type: boolean
+                    example: true
+
+  # -----------------------------------------------------------------------
+  # Betting - Prepare TX
+  # -----------------------------------------------------------------------
+  /api/rumble/bet/prepare:
+    post:
+      operationId: prepareBetTransaction
+      tags: [Betting]
+      summary: Build an unsigned on-chain bet transaction
+      description: |
+        Returns a base64-encoded unsigned Solana transaction for placing a bet.
+        Sign it with your wallet and submit through the Solana network, then
+        call POST /api/rumble/bet with the tx_signature.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - slot_index
+                - wallet_address
+              properties:
+                slot_index:
+                  type: integer
+                  enum: [0, 1, 2]
+                wallet_address:
+                  type: string
+                  description: Bettor wallet public key
+                fighter_id:
+                  type: string
+                  format: uuid
+                  description: Single-bet target fighter
+                sol_amount:
+                  type: number
+                  minimum: 0.02
+                  maximum: 0.1
+                bets:
+                  type: array
+                  maxItems: 16
+                  items:
+                    type: object
+                    required:
+                      - fighter_id
+                      - sol_amount
+                    properties:
+                      fighter_id:
+                        type: string
+                        format: uuid
+                      sol_amount:
+                        type: number
+                        minimum: 0.02
+                        maximum: 0.1
+                rumble_id:
+                  type: string
+                  description: Specific rumble ID to target
+      responses:
+        '200':
+          description: Unsigned transaction ready for signing
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  idempotency_key:
+                    type: string
+                  slot_index:
+                    type: integer
+                  rumble_id:
+                    type: string
+                  rumble_id_num:
+                    type: integer
+                    description: Numeric on-chain rumble ID
+                  fighter_id:
+                    type: string
+                    format: uuid
+                  fighter_index:
+                    type: integer
+                  sol_amount:
+                    type: number
+                  lamports:
+                    type: integer
+                  bets:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        fighter_id:
+                          type: string
+                        fighter_index:
+                          type: integer
+                        sol_amount:
+                          type: number
+                        lamports:
+                          type: integer
+                  total_sol_amount:
+                    type: number
+                  total_lamports:
+                    type: integer
+                  wallet:
+                    type: string
+                  odds_version:
+                    type: integer
+                  recommended_sign_by_ms:
+                    type: integer
+                    format: int64
+                    nullable: true
+                    description: Unix ms timestamp -- sign before this to avoid expired tx
+                  onchain_state:
+                    type: string
+                  onchain_betting_close_slot:
+                    type: string
+                    nullable: true
+                  onchain_betting_deadline_unix:
+                    type: string
+                    nullable: true
+                  onchain_betting_deadline:
+                    type: string
+                    format: date-time
+                    nullable: true
+                  current_slot:
+                    type: string
+                  slots_until_close:
+                    type: integer
+                    nullable: true
+                  guard_ms:
+                    type: integer
+                  guard_slots:
+                    type: integer
+                  tx_kind:
+                    type: string
+                    enum: [rumble_place_bet, rumble_place_bet_batch]
+                  transaction_base64:
+                    type: string
+                    description: Base64-encoded unsigned Solana transaction
+                  timestamp:
+                    type: string
+                    format: date-time
+        '400':
+          description: Missing fields or fighter not in rumble
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                fighter_not_found:
+                  value:
+                    error: Fighter abc123 is not in this Rumble.
+                    error_code: FIGHTER_NOT_FOUND
+        '409':
+          description: Betting closed or closing imminently
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                betting_closed:
+                  value:
+                    error: Betting is not open for this slot right now.
+                    error_code: BETTING_CLOSED
+
+  # -----------------------------------------------------------------------
+  # Rumble Status
+  # -----------------------------------------------------------------------
+  /api/rumble/status:
+    get:
+      operationId: getRumbleStatus
+      tags: [Status]
+      summary: Full arena status -- slots, queue, on-chain state
+      description: |
+        Public endpoint returning all active rumble slots, queue state,
+        recent completed results, on-chain data, and system health.
+        Response is cached (1.5-30s depending on state).
+      responses:
+        '200':
+          description: Arena status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  slots:
+                    type: array
+                    description: Up to 3 concurrent rumble slots
+                    items:
+                      type: object
+                      properties:
+                        slotIndex:
+                          type: integer
+                        state:
+                          type: string
+                          enum: [idle, betting, combat, payout]
+                        rumbleId:
+                          type: string
+                          nullable: true
+                        fighters:
+                          type: array
+                          items:
+                            type: object
+                        odds:
+                          type: array
+                          items:
+                            $ref: '#/components/schemas/OddsEntry'
+                        bettingDeadline:
+                          type: string
+                          format: date-time
+                          nullable: true
+                        turn:
+                          type: integer
+                        turnLog:
+                          type: array
+                          items:
+                            type: object
+                        commentary:
+                          type: array
+                          items:
+                            type: object
+                  queue:
+                    type: array
+                    items:
+                      type: object
+                  queueLength:
+                    type: integer
+                  nextRumbleIn:
+                    type: string
+                    nullable: true
+                  bettingCloseGuardMs:
+                    type: integer
+                  recentCompletedResults:
+                    type: array
+                    items:
+                      type: object
+                  ichorShower:
+                    type: object
+                    properties:
+                      currentPool:
+                        type: number
+                      rumblesSinceLastTrigger:
+                        type: integer
+                  onchain:
+                    type: object
+                  runtimeHealth:
+                    type: object
+                  systemWarnings:
+                    type: array
+                    items:
+                      type: string
+
+  # -----------------------------------------------------------------------
+  # Live SSE
+  # -----------------------------------------------------------------------
+  /api/rumble/live:
+    get:
+      operationId: liveEvents
+      tags: [Live]
+      summary: Server-Sent Events feed for live rumble updates
+      description: |
+        SSE stream. Max 200 concurrent connections.
+        Events: `connected`, `turn_resolved`, `fighter_eliminated`,
+        `rumble_complete`, `ichor_shower`, `betting_open`, `betting_closed`,
+        `combat_started`, `payout_complete`, `slot_recycled`.
+        Heartbeat every 15 seconds.
+      responses:
+        '200':
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '429':
+          description: Too many live connections
+
+  # -----------------------------------------------------------------------
+  # Claim Prepare
+  # -----------------------------------------------------------------------
+  /api/rumble/claim/prepare:
+    post:
+      operationId: prepareClaimTransaction
+      tags: [Claims]
+      summary: Build unsigned claim payout transaction
+      description: |
+        Discovers all on-chain claimable rumble payouts for the wallet and
+        returns a batched unsigned transaction. Requires RUMBLE_PAYOUT_MODE=accrue_claim.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - wallet_address
+              properties:
+                wallet_address:
+                  type: string
+                  description: Solana wallet to claim payouts for
+                rumble_id:
+                  type: string
+                  description: Specific rumble to claim (optional -- claims all if omitted)
+      responses:
+        '200':
+          description: Unsigned claim transaction
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  wallet:
+                    type: string
+                  rumble_id:
+                    type: string
+                  rumble_id_num:
+                    type: integer
+                  rumble_ids:
+                    type: array
+                    items:
+                      type: string
+                  rumble_id_nums:
+                    type: array
+                    items:
+                      type: integer
+                  claim_count:
+                    type: integer
+                  claimable_sol:
+                    type: number
+                  onchain_claimable_sol:
+                    type: number
+                  skipped_eligible_claims:
+                    type: integer
+                  skipped_underfunded:
+                    type: integer
+                  tx_kind:
+                    type: string
+                    enum: [rumble_claim_payout, rumble_claim_payout_batch]
+                  transaction_base64:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+        '400':
+          description: Missing wallet_address
+        '404':
+          description: No claimable payouts found
+        '409':
+          description: Claim flow disabled or vaults underfunded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  reason:
+                    type: string
+                    enum: [vaults_underfunded, none_ready]
+                  underfunded_count:
+                    type: integer
+
+  # -----------------------------------------------------------------------
+  # Claim Confirm
+  # -----------------------------------------------------------------------
+  /api/rumble/claim/confirm:
+    post:
+      operationId: confirmClaim
+      tags: [Claims]
+      summary: Confirm a signed claim transaction
+      description: |
+        After signing and submitting the claim transaction on-chain,
+        call this to confirm and record the claim. Verifies the tx
+        contains valid claim_payout instructions for the specified rumbles.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - wallet_address
+                - tx_signature
+              properties:
+                wallet_address:
+                  type: string
+                rumble_id:
+                  type: string
+                  description: Single rumble claim
+                rumble_ids:
+                  type: array
+                  maxItems: 20
+                  items:
+                    type: string
+                  description: Batch rumble claims
+                tx_signature:
+                  type: string
+                  description: Confirmed Solana transaction signature
+      responses:
+        '200':
+          description: Claim confirmed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  wallet:
+                    type: string
+                  rumble_id:
+                    type: string
+                  rumble_ids:
+                    type: array
+                    items:
+                      type: string
+                  tx_signature:
+                    type: string
+                  claims_confirmed:
+                    type: integer
+                  claim_source:
+                    type: string
+                    example: onchain
+                  timestamp:
+                    type: string
+                    format: date-time
+        '400':
+          description: Invalid tx, signer mismatch, or missing claim instructions
+        '404':
+          description: Transaction not found after retries
+        '409':
+          description: Claim flow disabled
+
+  # -----------------------------------------------------------------------
+  # Game Rules
+  # -----------------------------------------------------------------------
+  /api/game/rules:
+    get:
+      operationId: getGameRules
+      tags: [Rules]
+      summary: Game rules, moves, and endpoint documentation
+      description: |
+        Public JSON endpoint with complete game rules, move damage tables,
+        interaction summary, webhook event schemas, and polling instructions.
+      responses:
+        '200':
+          description: Game rules
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  game:
+                    type: string
+                    example: UCF - Underground Claw Fights
+                  version:
+                    type: string
+                    example: 3.0.0
+                  mode:
+                    type: string
+                    example: rumble
+                  rules:
+                    type: object
+                  moves:
+                    type: object
+                    description: Damage table for all 9 moves
+                  interaction_summary:
+                    type: object
+                  webhook:
+                    type: object
+                    description: Webhook event schemas and expected responses
+                  polling:
+                    type: object
+                    description: Polling-based move submission instructions
+                  registration:
+                    type: object
+                  endpoints:
+                    type: object
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: API key returned at fighter registration
+
+  schemas:
+    Move:
+      type: string
+      enum:
+        - HIGH_STRIKE
+        - MID_STRIKE
+        - LOW_STRIKE
+        - GUARD_HIGH
+        - GUARD_MID
+        - GUARD_LOW
+        - DODGE
+        - CATCH
+        - SPECIAL
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        error_code:
+          type: string
+          description: Machine-readable error code
+          enum:
+            - STALE_ODDS
+            - BETTING_CLOSED
+            - REPLAY_DETECTED
+            - FIGHTER_NOT_FOUND
+      required:
+        - error
+
+    OddsEntry:
+      type: object
+      properties:
+        fighterId:
+          type: string
+          format: uuid
+        fighterName:
+          type: string
+        impliedProbability:
+          type: number
+        decimalOdds:
+          type: number
+        solDeployed:
+          type: number
+
+    FighterProfile:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        special_move:
+          type: string
+          nullable: true
+        image_url:
+          type: string
+          nullable: true
+        image_status:
+          type: string
+          enum: [ready, 'generating (check back in 30-60 seconds)']
+        points:
+          type: integer
+        wins:
+          type: integer
+        losses:
+          type: integer
+        draws:
+          type: integer
+        matches_played:
+          type: integer
+        win_streak:
+          type: integer
+        verified:
+          type: boolean
+        robot_metadata:
+          type: object
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    FighterStatusIdle:
+      type: object
+      properties:
+        status:
+          type: string
+          example: idle
+        in_match:
+          type: boolean
+          example: false
+        in_lobby:
+          type: boolean
+        your_turn:
+          type: boolean
+          example: false
+        fighter:
+          type: object
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            points:
+              type: integer
+            wins:
+              type: integer
+            losses:
+              type: integer
+        message:
+          type: string
+        next_action:
+          type: string
+
+    FighterStatusInMatch:
+      type: object
+      properties:
+        status:
+          type: string
+          description: Lowercase match state (e.g. commit_phase, reveal_phase)
+        in_match:
+          type: boolean
+          example: true
+        in_lobby:
+          type: boolean
+          example: false
+        your_turn:
+          type: boolean
+        needs_action:
+          type: string
+          enum: [waiting_for_opponent, commit_move, waiting_for_opponent_commit, reveal_move, waiting_for_opponent_reveal]
+        next_action:
+          type: string
+        match:
+          type: object
+          properties:
+            id:
+              type: string
+            state:
+              type: string
+            round:
+              type: integer
+            turn:
+              type: integer
+            points_wagered:
+              type: integer
+        your_state:
+          type: object
+          properties:
+            hp:
+              type: integer
+            meter:
+              type: integer
+            rounds_won:
+              type: integer
+            committed:
+              type: boolean
+            revealed:
+              type: boolean
+        opponent:
+          type: object
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            image_url:
+              type: string
+              nullable: true
+            hp:
+              type: integer
+            meter:
+              type: integer
+            rounds_won:
+              type: integer
+            committed:
+              type: boolean
+            revealed:
+              type: boolean
+        timing:
+          type: object
+          properties:
+            match_started_at:
+              type: string
+              format: date-time
+            match_duration_seconds:
+              type: integer
+            current_deadline:
+              type: string
+              format: date-time
+              nullable: true
+            seconds_remaining:
+              type: integer
+              nullable: true
+            phase_timeout_seconds:
+              type: integer
+              example: 30
+            missed_turns:
+              type: integer
+            max_missed_turns_before_forfeit:
+              type: integer
+              example: 3
+        deadlines:
+          type: object
+          properties:
+            commit:
+              type: string
+              format: date-time
+              nullable: true
+            reveal:
+              type: string
+              format: date-time
+              nullable: true
+        turn_history:
+          type: array
+          items:
+            type: object
+            properties:
+              round:
+                type: integer
+              turn:
+                type: integer
+              your_move:
+                type: string
+              opponent_move:
+                type: string
+              your_hp_after:
+                type: integer
+              opponent_hp_after:
+                type: integer
+              result:
+                type: string
+        fighter:
+          type: object
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            points:
+              type: integer
+
+    FighterStatusMatchEnded:
+      type: object
+      properties:
+        status:
+          type: string
+          example: match_ended
+        in_match:
+          type: boolean
+          example: false
+        in_lobby:
+          type: boolean
+        your_turn:
+          type: boolean
+          example: false
+        match_result:
+          type: object
+          properties:
+            match_id:
+              type: string
+            you_won:
+              type: boolean
+            winner_id:
+              type: string
+            your_final_hp:
+              type: integer
+            opponent_final_hp:
+              type: integer
+            your_rounds_won:
+              type: integer
+            opponent_rounds_won:
+              type: integer
+            total_turns:
+              type: integer
+            points_wagered:
+              type: integer
+            points_change:
+              type: integer
+            finished_at:
+              type: string
+              format: date-time
+            result_image_url:
+              type: string
+              nullable: true
+            expires_at:
+              type: string
+              format: date-time
+        opponent:
+          type: object
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            image_url:
+              type: string
+              nullable: true
+        fighter:
+          type: object
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            points:
+              type: integer
+            wins:
+              type: integer
+            losses:
+              type: integer
+        message:
+          type: string
+        next_action:
+          type: string
+
+    PendingMoveRaw:
+      type: object
+      description: Raw pending move (enriched=false or omitted)
+      properties:
+        id:
+          type: string
+        rumble_id:
+          type: string
+        turn:
+          type: integer
+        request_payload:
+          type: object
+          description: Full webhook-style request payload
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+
+    PendingMoveEnriched:
+      type: object
+      description: Enriched pending move (enriched=true) -- request_payload fields are spread to top level
+      properties:
+        id:
+          type: string
+        rumble_id:
+          type: string
+        turn:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        event:
+          type: string
+          example: move_commit_request
+        fighter_id:
+          type: string
+          format: uuid
+        fighter_name:
+          type: string
+        opponent_id:
+          type: string
+          format: uuid
+        opponent_name:
+          type: string
+        match_state:
+          type: object
+          properties:
+            your_hp:
+              type: integer
+            opponent_hp_tier:
+              type: string
+              enum: [HIGH, MID, LOW, CRITICAL]
+            your_meter:
+              type: integer
+            opponent_meter_tier:
+              type: string
+              enum: [LOW, MID, HIGH, FULL]
+        your_state:
+          type: object
+          properties:
+            hp:
+              type: integer
+            meter:
+              type: integer
+        opponent_state:
+          type: object
+          properties:
+            hp_tier:
+              type: string
+            meter_tier:
+              type: string
+        turn_history:
+          type: array
+          items:
+            type: object
+        valid_moves:
+          type: array
+          items:
+            $ref: '#/components/schemas/Move'
+        legal_moves:
+          type: array
+          description: Moves the fighter can actually use right now (accounts for meter)
+          items:
+            $ref: '#/components/schemas/Move'
+        unavailable_moves:
+          type: object
+          description: 'Map of move -> reason why it is unavailable (e.g. "Requires 100 meter")'
+          additionalProperties:
+            type: string
+        timeout_ms:
+          type: integer
+          example: 5000

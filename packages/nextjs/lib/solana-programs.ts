@@ -90,9 +90,8 @@ export const RUMBLE_ENGINE_ID = new PublicKey(
 );
 
 /**
- * Mainnet program ID for betting operations.
- * Same program deployed to mainnet-beta — only betting instructions are called there.
- * Never falls back to the devnet program ID.
+ * Dedicated mainnet betting/claim program ID.
+ * This is distinct from the devnet/combat deployment exposed via RUMBLE_ENGINE_ID.
  */
 export const RUMBLE_ENGINE_ID_MAINNET = new PublicKey(
   resolveMainnetRumbleEngineId(

@@ -1,4 +1,9 @@
-import { getOrchestrator, type OrchestratorEvent } from "~~/lib/rumble-orchestrator";
+import {
+  getOrchestrator,
+  getEventsSince,
+  getLatestSeq,
+  type OrchestratorEvent,
+} from "~~/lib/rumble-orchestrator";
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
@@ -6,13 +11,11 @@ const MAX_SSE_CONNECTIONS = 200;
 let activeSseConnections = 0;
 
 /**
- * GET /api/rumble/live
+ * GET /api/rumble/live?since_seq=N
  *
  * Server-Sent Events (SSE) endpoint for live Rumble updates.
- * Hooks directly into orchestrator events:
- *   turn_resolved, fighter_eliminated, rumble_complete,
- *   ichor_shower, betting_open, betting_closed, combat_started,
- *   payout_complete, slot_recycled
+ * If `since_seq` is provided, replays all buffered events with seq > N
+ * before switching to the live stream.
  */
 export async function GET(request: Request) {
   const rlKey = getRateLimitKey(request);
@@ -31,6 +34,11 @@ export async function GET(request: Request) {
       },
     );
   }
+
+  // Parse optional since_seq for catch-up replay
+  const url = new URL(request.url);
+  const sinceSeqParam = url.searchParams.get("since_seq");
+  const sinceSeq = sinceSeqParam ? parseInt(sinceSeqParam, 10) : null;
 
   const encoder = new TextEncoder();
   let cleanup: (() => void) | null = null;
@@ -69,7 +77,16 @@ export async function GET(request: Request) {
       send("connected", {
         message: "Connected to Rumble live feed",
         timestamp: new Date().toISOString(),
+        latest_seq: getLatestSeq(),
       });
+
+      // Replay missed events if client provided since_seq
+      if (sinceSeq !== null && !isNaN(sinceSeq)) {
+        const missed = getEventsSince(sinceSeq);
+        for (const ev of missed) {
+          send(ev.event, { ...ev.data, seq: ev.seq });
+        }
+      }
 
       // Register listeners for all orchestrator events
       const events: OrchestratorEvent[] = [
@@ -85,7 +102,10 @@ export async function GET(request: Request) {
       ];
 
       for (const eventName of events) {
-        const cb = (data: any) => send(eventName, data);
+        const cb = (data: any) => {
+          // Attach the current seq from the buffer (latest event just pushed)
+          send(eventName, { ...data, seq: getLatestSeq() });
+        };
         callbacks.set(eventName, cb);
         orchestrator.on(eventName, cb);
       }

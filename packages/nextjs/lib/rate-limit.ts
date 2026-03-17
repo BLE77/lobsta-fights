@@ -30,7 +30,7 @@ import { NextResponse } from "next/server";
 //   SSE          — /rumble/live
 //
 // Intentionally removed from high-frequency read endpoints:
-//   /rumble/status, /rumble/my-bets, /rumble/balance, /rumble/sol-balance
+//   /rumble/status, /rumble/my-bets, /rumble/sol-balance
 //   (these are polled rapidly by the UI and rate limiting caused false 429s)
 // ---------------------------------------------------------------------------
 

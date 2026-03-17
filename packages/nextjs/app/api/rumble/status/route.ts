@@ -24,6 +24,7 @@ import {
   readMainnetRumbleAccountStateResilient,
   readRumbleCombatState,
   RUMBLE_ENGINE_ID,
+  RUMBLE_ENGINE_ID_MAINNET,
 } from "~~/lib/solana-programs";
 import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 import {
@@ -1851,6 +1852,7 @@ export async function GET(request: Request) {
         (process.env.RUMBLE_ONCHAIN_TURN_AUTHORITY ?? "false") === "true";
       const allowLegacyFallback =
         (process.env.RUMBLE_ALLOW_LEGACY_FALLBACK ?? "false") === "true";
+      const combatNetwork = process.env.NEXT_PUBLIC_SOLANA_NETWORK ?? "devnet";
       const responseBody: StatusResponseBody = {
         slots,
         queue,
@@ -1867,9 +1869,16 @@ export async function GET(request: Request) {
         },
         onchain: {
           ...erInfo,
+          combat_program_id: RUMBLE_ENGINE_ID.toBase58(),
+          betting_program_id_mainnet: RUMBLE_ENGINE_ID_MAINNET.toBase58(),
+          combat_network: combatNetwork,
+          betting_network_mainnet: "mainnet-beta",
+          // Legacy aliases remain tied to the combat/status program so older
+          // clients do not misread the live arena state as a betting-program
+          // payload. Betting clients should use the explicit mainnet fields.
           program_id: RUMBLE_ENGINE_ID.toBase58(),
           vrf_program_id: "Vrf1RNUjXmQGjmQrQLvJHs9SNkvDJEsRVFPkfSQUwGz",
-          network: process.env.NEXT_PUBLIC_SOLANA_NETWORK ?? "devnet",
+          network: combatNetwork,
           onchain_turn_authority: onchainTurnAuthority,
           resolution_mode: process.env.RUMBLE_RESOLUTION_MODE ?? "onchain",
           allow_legacy_fallback: allowLegacyFallback,

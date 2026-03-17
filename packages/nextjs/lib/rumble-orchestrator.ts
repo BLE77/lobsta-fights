@@ -232,6 +232,35 @@ type EventData = {
 type EventCallback<E extends OrchestratorEvent> = (data: EventData[E]) => void;
 
 // ---------------------------------------------------------------------------
+// Sequence-based event catch-up (allows reconnecting clients to replay missed events)
+// ---------------------------------------------------------------------------
+
+export interface SequencedEvent {
+  seq: number;
+  event: OrchestratorEvent;
+  data: any;
+  ts: number; // Date.now() at emit time
+}
+
+const EVENT_BUFFER_MAX = 200;
+let eventSeq = Date.now() % 1_000_000; // avoid restart collisions
+const eventBuffer: SequencedEvent[] = [];
+
+/** Returns events with seq > sinceSeq. Optionally filter by slotIndex. */
+export function getEventsSince(sinceSeq: number, slotIndex?: number): SequencedEvent[] {
+  let results = eventBuffer.filter(e => e.seq > sinceSeq);
+  if (slotIndex !== undefined) {
+    results = results.filter(e => e.data?.slotIndex === slotIndex);
+  }
+  return results;
+}
+
+/** Returns the latest sequence number. */
+export function getLatestSeq(): number {
+  return eventSeq;
+}
+
+// ---------------------------------------------------------------------------
 // Per-slot combat state (tracks incremental turn-by-turn execution)
 // ---------------------------------------------------------------------------
 
@@ -1458,6 +1487,15 @@ export class RumbleOrchestrator {
   }
 
   emit<E extends OrchestratorEvent>(event: E, data: EventData[E]): void {
+    // Assign monotonic sequence number and buffer for catch-up
+    eventSeq += 1;
+    const seq = eventSeq;
+    const seqEvent: SequencedEvent = { seq, event, data: data as any, ts: Date.now() };
+    if (eventBuffer.length >= EVENT_BUFFER_MAX) {
+      eventBuffer.shift();
+    }
+    eventBuffer.push(seqEvent);
+
     const cbs = this.listeners.get(event);
     if (!cbs) return;
     for (const cb of cbs) {

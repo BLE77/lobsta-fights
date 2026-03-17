@@ -21,15 +21,21 @@ export function resolveMainnetRumbleEngineId(
   for (const candidate of candidates) {
     const normalized = String(candidate ?? "").trim();
     if (!normalized) continue;
-    if (isLegacyMainnetRumbleEngineId(normalized)) {
+    if (
+      normalized === CANONICAL_MAINNET_RUMBLE_ENGINE_ID ||
+      isLegacyMainnetRumbleEngineId(normalized)
+    ) {
       return CANONICAL_MAINNET_RUMBLE_ENGINE_ID;
     }
-    return normalized;
-  }
-
-  if (isLegacyMainnetRumbleEngineId(fallback)) {
     return CANONICAL_MAINNET_RUMBLE_ENGINE_ID;
   }
 
-  return String(fallback).trim() || CANONICAL_MAINNET_RUMBLE_ENGINE_ID;
+  if (
+    String(fallback).trim() === CANONICAL_MAINNET_RUMBLE_ENGINE_ID ||
+    isLegacyMainnetRumbleEngineId(fallback)
+  ) {
+    return CANONICAL_MAINNET_RUMBLE_ENGINE_ID;
+  }
+
+  return CANONICAL_MAINNET_RUMBLE_ENGINE_ID;
 }
