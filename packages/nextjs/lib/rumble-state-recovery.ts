@@ -52,6 +52,23 @@ const MAX_COMBAT_STUCK_AGE_MS = (() => {
 })();
 const MIN_RECOVERABLE_ACTIVE_FIGHTERS = 2;
 
+function rowHasCombatEvidence(rumble: {
+  started_at?: string | null;
+  total_turns?: number | null;
+  turn_log?: unknown;
+}): boolean {
+  const startedAtMs =
+    typeof rumble.started_at === "string" && rumble.started_at.length > 0
+      ? new Date(rumble.started_at).getTime()
+      : Number.NaN;
+  if (Number.isFinite(startedAtMs) && startedAtMs > 0) return true;
+
+  const totalTurns = Number(rumble.total_turns ?? 0);
+  if (Number.isFinite(totalTurns) && totalTurns > 0) return true;
+
+  return Array.isArray(rumble.turn_log) && rumble.turn_log.length > 0;
+}
+
 // ---------------------------------------------------------------------------
 // Main recovery function
 // ---------------------------------------------------------------------------
@@ -256,6 +273,32 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
           continue;
 
         } else if (rumble.status === "betting") {
+          if (rowHasCombatEvidence(rumble)) {
+            console.warn(
+              `[StateRecovery] Rumble ${rumble.id} is marked betting but has combat evidence; restoring as combat`,
+            );
+
+            const slotIndex = rumble.slot_index;
+            const restored = qm.restoreSlot(
+              slotIndex,
+              rumble.id,
+              fighters.map((f) => f.id),
+              "combat",
+              null,
+            );
+            if (!restored) {
+              const msg =
+                `[StateRecovery] Failed to restore combat-evidence rumble ${rumble.id}; leaving row untouched.`;
+              console.warn(msg);
+              result.errors.push(msg);
+              continue;
+            }
+
+            await clearRecoveredQueueEntries(fighters.map((f) => f.id));
+            result.restoredCombat++;
+            continue;
+          }
+
           // ---- RESTORE betting rumble in-memory instead of nuking it ----
           const createdAt = new Date(rumble.created_at).getTime();
           const age = Date.now() - createdAt;

@@ -1600,6 +1600,11 @@ export async function GET(request: Request) {
     // ---- queueLength: in-queue + in-combat fighters for display ------------
     const workerRuntime = await getAdminConfig("worker_runtime_health");
     const runtimeHealthLocal = orchestrator.getRuntimeHealth();
+    const activePersistedRumbleIds = new Set(
+      persistedActive
+        .filter((row) => hasMinimumRumbleFighters(row.fighters))
+        .map((row) => row.id),
+    );
     const workerRuntimeFreshMs =
       typeof workerRuntime === "object" && workerRuntime && typeof (workerRuntime as any).updatedAt === "string"
         ? Date.now() - new Date((workerRuntime as any).updatedAt).getTime()
@@ -1611,6 +1616,29 @@ export async function GET(request: Request) {
       typeof workerRuntime === "object" &&
       workerRuntime !== null;
     const workerSnapshot = workerRuntimeHealthy ? (workerRuntime as any) : null;
+    const isGhostWorkerSlotReport = (report: any) => {
+      const reportedState =
+        report?.state === "betting" || report?.state === "combat" || report?.state === "payout"
+          ? report.state
+          : null;
+      if (!reportedState) return false;
+      const reportedRumbleId =
+        typeof report?.rumbleId === "string" && report.rumbleId.trim().length > 0
+          ? report.rumbleId.trim()
+          : null;
+      if (!reportedRumbleId) return false;
+      return !activePersistedRumbleIds.has(reportedRumbleId);
+    };
+    const workerSnapshotSlotReports =
+      workerSnapshot && Array.isArray(workerSnapshot.slotReports)
+        ? workerSnapshot.slotReports
+        : null;
+    const filteredWorkerSlotReports = workerSnapshotSlotReports
+      ? workerSnapshotSlotReports.filter((report: any) => !isGhostWorkerSlotReport(report))
+      : null;
+    const ignoredGhostWorkerSlotReports = workerSnapshotSlotReports
+      ? workerSnapshotSlotReports.filter((report: any) => isGhostWorkerSlotReport(report))
+      : [];
     const runtimeHealth = workerSnapshot
       ? {
           ...runtimeHealthLocal,
@@ -1635,10 +1663,7 @@ export async function GET(request: Request) {
             Array.isArray(workerSnapshot.maxTurnFallbacks)
               ? workerSnapshot.maxTurnFallbacks
               : runtimeHealthLocal.maxTurnFallbacks,
-          slotReports:
-            Array.isArray(workerSnapshot.slotReports)
-              ? workerSnapshot.slotReports
-              : runtimeHealthLocal.slotReports,
+          slotReports: filteredWorkerSlotReports ?? runtimeHealthLocal.slotReports,
         }
       : runtimeHealthLocal;
     const runtimeSlotReports = Array.isArray(runtimeHealth.slotReports) ? runtimeHealth.slotReports : [];
@@ -1655,10 +1680,20 @@ export async function GET(request: Request) {
     if (effectiveQueueLen > 0 && effectiveQueueLen < fightersNeeded) {
       nextRumbleIn = `Need ${fightersNeeded - effectiveQueueLen} more fighters`;
     } else if (effectiveQueueLen >= fightersNeeded) {
+      // Check if any slot is stuck in betting-init (no deadline armed yet).
+      // This means on-chain creation is still in progress — show that instead
+      // of the misleading "Locking in" countdown.
+      const hasUnarmedBettingSlot = slots.some(
+        (s) => s.state === "betting" && !s.bettingDeadline,
+      ) || runtimeSlotReports.some(
+        (report) => report?.state === "betting" && !report?.bettingDeadline,
+      );
       const hasIdleSlot =
         slots.some((s) => s.state === "idle") ||
         runtimeSlotReports.some((report) => report?.state === "idle");
-      if (!hasIdleSlot) {
+      if (hasUnarmedBettingSlot) {
+        nextRumbleIn = "Initializing on-chain...";
+      } else if (!hasIdleSlot) {
         nextRumbleIn = "All slots active";
       } else {
         const localQueueLockCountdownMs = qm.getQueueStartCountdownMs();
@@ -1800,6 +1835,17 @@ export async function GET(request: Request) {
       systemWarnings.push("Worker runtime heartbeat unavailable.");
     } else if (workerRuntimeFreshMs > 30_000) {
       systemWarnings.push(`Worker heartbeat stale (${Math.round(workerRuntimeFreshMs / 1000)}s old).`);
+    }
+    if (ignoredGhostWorkerSlotReports.length > 0) {
+      const sampleGhostIds = ignoredGhostWorkerSlotReports
+        .map((report: any) => (typeof report?.rumbleId === "string" ? report.rumbleId.trim() : ""))
+        .filter((value: string) => value.length > 0)
+        .slice(0, 3);
+      const sampleSuffix =
+        sampleGhostIds.length > 0 ? `: ${sampleGhostIds.join(", ")}` : "";
+      systemWarnings.push(
+        `Ignored ${ignoredGhostWorkerSlotReports.length} stale worker slot report(s) that do not match active persisted rumbles${sampleSuffix}.`,
+      );
     }
     if (!runtimeHealth.onchainAdmin.ready && runtimeHealth.onchainAdmin.reason) {
       systemWarnings.push(`On-chain admin unavailable: ${runtimeHealth.onchainAdmin.reason}`);

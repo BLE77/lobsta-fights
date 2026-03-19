@@ -288,9 +288,16 @@ export async function updateRumbleTurnLog(
 ): Promise<void> {
   try {
     const sb = freshServiceClient();
+    const updates: Record<string, unknown> = { turn_log: turnLog, total_turns: totalTurns };
+    if (totalTurns > 0) {
+      // If turns are being persisted, the rumble is already live combat even
+      // if an earlier status update was missed during a worker restart.
+      updates.status = "combat";
+      updates.started_at = new Date().toISOString();
+    }
     const { error } = await sb
       .from("ucf_rumbles")
-      .update({ turn_log: turnLog, total_turns: totalTurns })
+      .update(updates)
       .eq("id", rumbleId)
       .select();
     if (error) throw error;
