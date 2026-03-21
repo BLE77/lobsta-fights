@@ -69,6 +69,12 @@ function rowHasCombatEvidence(rumble: {
   return Array.isArray(rumble.turn_log) && rumble.turn_log.length > 0;
 }
 
+function parseIsoDate(value: string | null | undefined): Date | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) ? parsed : null;
+}
+
 // ---------------------------------------------------------------------------
 // Main recovery function
 // ---------------------------------------------------------------------------
@@ -324,15 +330,30 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
 
           // Restore this betting rumble into the correct slot
           const slotIndex = rumble.slot_index;
+          const marker = await persist.getBettingReadyMarker(slotIndex).catch(() => null);
+          const markerMatchesRumble = marker?.rumbleId === rumble.id;
+          const markerDeadline = markerMatchesRumble
+            ? parseIsoDate(marker?.bettingDeadlineIso)
+            : null;
+          const markerArmedAt = markerMatchesRumble
+            ? parseIsoDate(marker?.armedAtIso)
+            : null;
 
           // If bets already exist, the betting window was previously armed and
-          // likely expired. Set deadline to "now" so advanceSlots() can
-          // immediately transition to combat on the first tick instead of
-          // waiting for armBettingWindowIfReady() (which requires on-chain RPC
-          // and costs an extra tick cycle — fatal on serverless cold starts).
-          const recoveryDeadline = existingBets.length > 0 ? new Date() : null;
+          // likely expired. Force a catch-up close without fabricating a fresh
+          // visible betting window; if a persisted marker exists, restore the
+          // original armed/deadline timestamps instead.
+          const recoveryDeadline = markerDeadline ?? (existingBets.length > 0 ? new Date() : null);
+          const recoveryArmedAt = markerArmedAt ?? (existingBets.length > 0 ? new Date(0) : null);
 
-          const restored = qm.restoreSlot(slotIndex, rumble.id, fighterIds, "betting", recoveryDeadline);
+          const restored = qm.restoreSlot(
+            slotIndex,
+            rumble.id,
+            fighterIds,
+            "betting",
+            recoveryDeadline,
+            { bettingArmedAt: recoveryArmedAt },
+          );
           if (!restored) {
             const msg = `[StateRecovery] Failed to restore betting rumble ${rumble.id}; recycling instead.`;
             console.warn(msg);
@@ -347,7 +368,8 @@ export async function recoverOrchestratorState(): Promise<RecoveryResult> {
           console.log(
             `[StateRecovery] RESTORED betting rumble ${rumble.id} in slot ${slotIndex} ` +
               `with ${fighterIds.length} fighters, ${existingBets.length} bets, ` +
-              `deadline=${recoveryDeadline ? recoveryDeadline.toISOString() : "unarmed (waiting on on-chain close slot)"}`
+              `deadline=${recoveryDeadline ? recoveryDeadline.toISOString() : "unarmed (waiting on on-chain close slot)"}, ` +
+              `armedAt=${recoveryArmedAt ? recoveryArmedAt.toISOString() : "none"}`
           );
           result.restoredBetting++;
 

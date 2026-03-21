@@ -191,7 +191,9 @@ export async function reconcileStalePendingPayouts(options?: {
     }
 
     try {
-      await persist.settleWinnerTakeAllBets(row.id, winnerId, payoutMode);
+      await persist.settleWinnerTakeAllBets(row.id, winnerId, payoutMode, {
+        throwOnError: true,
+      });
       result.settled += 1;
     } catch {
       result.unresolved.push({

@@ -601,6 +601,10 @@ export class RumbleQueueManager implements QueueManager {
     fighters: string[],
     state: SlotState,
     bettingDeadline: Date | null,
+    options?: {
+      bettingArmedAt?: Date | null;
+      combatStartedAt?: Date | null;
+    },
   ): boolean {
     const slot = this.slots[slotIndex];
     if (!slot) return false;
@@ -616,8 +620,12 @@ export class RumbleQueueManager implements QueueManager {
     slot.fighters = fighters;
     slot.bettingPool = new Map();
     slot.bettingDeadline = bettingDeadline;
-    slot.bettingArmedAt = bettingDeadline ? new Date() : null;
-    slot.combatStartedAt = state === "combat" ? new Date() : null;
+    slot.bettingArmedAt = state === "betting"
+      ? options?.bettingArmedAt ?? (bettingDeadline ? new Date() : null)
+      : null;
+    slot.combatStartedAt = state === "combat"
+      ? options?.combatStartedAt ?? new Date()
+      : null;
     slot.rumbleResult = null;
 
     // Remove restored fighters from the queue if they're in it

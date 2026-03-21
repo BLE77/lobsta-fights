@@ -4,10 +4,12 @@ import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-
 import { getRumblePayoutMode } from "~~/lib/rumble-payout-mode";
 import {
   discoverOnchainWalletPayoutSnapshot,
+  OnchainClaimDiscoveryError,
   type OnchainWalletPayoutSnapshot,
 } from "~~/lib/rumble-onchain-claims";
 import { getBettingRpcEndpoint } from "~~/lib/solana-connection";
 import { flushRpcMetrics, runWithRpcMetrics } from "~~/lib/solana-rpc-metrics";
+import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 
 export const dynamic = "force-dynamic";
 
@@ -38,13 +40,19 @@ function evictStale() {
 async function getCachedSnapshot(
   walletPk: PublicKey,
   limit: number,
+  requestedRumbleId: string | null,
 ): Promise<OnchainWalletPayoutSnapshot> {
-  const key = walletPk.toBase58();
+  const key = requestedRumbleId
+    ? `${walletPk.toBase58()}:${requestedRumbleId}`
+    : walletPk.toBase58();
   const cached = snapshotCache.get(key);
   if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
     return cached.snapshot;
   }
-  const snapshot = await discoverOnchainWalletPayoutSnapshot(walletPk, limit);
+  const snapshot = await discoverOnchainWalletPayoutSnapshot(walletPk, {
+    limit,
+    specificRumbleId: requestedRumbleId,
+  });
   snapshotCache.set(key, { snapshot, fetchedAt: Date.now() });
   if (snapshotCache.size > 200) evictStale();
   return snapshot;
@@ -58,6 +66,11 @@ export async function GET(request: Request) {
       if (!rl.allowed) return rateLimitResponse(rl.retryAfterMs);
       const { searchParams } = new URL(request.url);
       const wallet = searchParams.get("wallet") ?? searchParams.get("wallet_address");
+      const requestedRumbleIdRaw = searchParams.get("rumble_id") ?? searchParams.get("rumbleId");
+      const requestedRumbleId =
+        typeof requestedRumbleIdRaw === "string" && requestedRumbleIdRaw.trim().length > 0
+          ? requestedRumbleIdRaw.trim()
+          : null;
 
       if (!wallet) {
         return NextResponse.json(
@@ -73,12 +86,16 @@ export async function GET(request: Request) {
         return NextResponse.json({ error: "Invalid wallet address" }, { status: 400 });
       }
 
+      if (requestedRumbleId && parseOnchainRumbleIdNumber(requestedRumbleId) === null) {
+        return NextResponse.json({ error: "Invalid rumble_id" }, { status: 400 });
+      }
+
       const debug = searchParams.get("debug") === "1";
       const payoutMode = getRumblePayoutMode();
-      const cacheKey = walletPk.toBase58();
+      const cacheKey = requestedRumbleId ? `${walletPk.toBase58()}:${requestedRumbleId}` : walletPk.toBase58();
       const cached = snapshotCache.get(cacheKey);
       const cacheHit = !!cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS;
-      const snapshot = cacheHit ? cached.snapshot : await getCachedSnapshot(walletPk, 120);
+      const snapshot = cacheHit ? cached.snapshot : await getCachedSnapshot(walletPk, 250, requestedRumbleId);
 
       // The snapshot already validates on-chain state: payout ready, not claimed,
       // winner deployment > 0. No simulation needed — claim tx is built at claim time.
@@ -105,10 +122,13 @@ export async function GET(request: Request) {
         wallet: walletPk.toBase58(),
         payout_mode: payoutMode,
         claimable_sol: onchainClaimableSolTotal,
-        legacy_claimable_sol: 0,
+        claimable_scope: "mainnet_onchain_current_program_only",
+        legacy_claimable_sol: null,
         legacy_claims_supported: false,
         legacy_claims_excluded: true,
-        legacy_claims_note: "Legacy betting-program claims are intentionally excluded from this API.",
+        legacy_claims_status: "excluded_unknown",
+        legacy_claims_note:
+          "Legacy betting-program claims are excluded from this API. A zero balance here only covers the current on-chain betting program.",
         total_pending_claimable_sol: onchainClaimableSolTotal,
         claimed_sol: snapshot.totalClaimedSol,
         unsettled_sol: 0,
@@ -118,20 +138,47 @@ export async function GET(request: Request) {
         onchain_active_exposure_sol: onchainPendingNotReadySol,
         onchain_claim_ready: onchainClaimReady,
         pending_rumbles: pendingRumbles,
+        requested_rumble_id: requestedRumbleId,
         timestamp: new Date().toISOString(),
         ...(debug ? {
           _debug: {
             rpc_endpoint: getBettingRpcEndpoint().replace(/api[_-]key=[^&]+/, "api-key=REDACTED"),
             snapshot_claimable_count: snapshot.claimableRumbles.length,
+            scanned_rumble_count: snapshot.scannedRumbleCount,
             cached: cacheHit,
           },
         } : {}),
       });
     } catch (error) {
       console.error("[RumbleBalanceAPI]", error);
+      if (error instanceof OnchainClaimDiscoveryError) {
+        return NextResponse.json(
+          {
+            error:
+              error.reason === "rpc_rate_limited"
+                ? "Payout balance lookup is temporarily rate-limited. Retry shortly."
+                : "Payout balance lookup is temporarily unavailable. Retry shortly.",
+            reason: error.reason,
+            claimable_scope: "mainnet_onchain_current_program_only",
+            legacy_claimable_sol: null,
+            legacy_claims_supported: false,
+            legacy_claims_excluded: true,
+            legacy_claims_status: "excluded_unknown",
+          },
+          { status: 503 },
+        );
+      }
       if (isRateLimitedRpcError(error)) {
         return NextResponse.json(
-          { error: "Payout balance lookup is temporarily rate-limited. Retry shortly." },
+          {
+            error: "Payout balance lookup is temporarily rate-limited. Retry shortly.",
+            reason: "rpc_rate_limited",
+            claimable_scope: "mainnet_onchain_current_program_only",
+            legacy_claimable_sol: null,
+            legacy_claims_supported: false,
+            legacy_claims_excluded: true,
+            legacy_claims_status: "excluded_unknown",
+          },
           { status: 503 },
         );
       }

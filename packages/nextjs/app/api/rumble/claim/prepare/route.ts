@@ -8,9 +8,13 @@ import {
   deriveVaultPdaMainnet,
   RUMBLE_ENGINE_ID_MAINNET,
 } from "~~/lib/solana-programs";
-import { discoverOnchainClaimableRumbles } from "~~/lib/rumble-onchain-claims";
+import {
+  discoverOnchainClaimableRumbles,
+  OnchainClaimDiscoveryError,
+} from "~~/lib/rumble-onchain-claims";
 import { getBettingConnection, getCachedBalance } from "~~/lib/solana-connection";
 import { requireJsonContentType, sanitizeErrorResponse } from "~~/lib/api-middleware";
+import { parseOnchainRumbleIdNumber } from "~~/lib/rumble-id";
 
 export const dynamic = "force-dynamic";
 const SOLANA_LEGACY_TX_MAX_BYTES = 1232;
@@ -33,6 +37,16 @@ function summarizeBuildError(err: unknown): string {
   }
 }
 
+const LEGACY_CLAIMS_RESPONSE_META = {
+  claim_scope: "mainnet_onchain_current_program_only",
+  legacy_claimable_sol: null,
+  legacy_claims_supported: false,
+  legacy_claims_excluded: true,
+  legacy_claims_status: "excluded_unknown",
+  legacy_claims_note:
+    "Legacy betting-program claims are excluded from this endpoint. A missing current-program claim here does not rule out older claims.",
+} as const;
+
 export async function POST(request: Request) {
   const rlKey = getRateLimitKey(request);
   const rl = checkRateLimit("PUBLIC_WRITE", rlKey, "/api/rumble/claim/prepare");
@@ -43,7 +57,7 @@ export async function POST(request: Request) {
   try {
     if (!isAccrueClaimMode()) {
       return NextResponse.json(
-        { error: "Claim flow is disabled (RUMBLE_PAYOUT_MODE is not accrue_claim)." },
+        { error: "Claim flow is disabled (RUMBLE_PAYOUT_MODE is not accrue_claim).", ...LEGACY_CLAIMS_RESPONSE_META },
         { status: 409 },
       );
     }
@@ -51,6 +65,10 @@ export async function POST(request: Request) {
     const body = await request.json().catch(() => ({}));
     const walletAddress = body.wallet_address ?? body.walletAddress;
     const requestedRumbleId = body.rumble_id ?? body.rumbleId;
+    const requestedRumbleIdNormalized =
+      typeof requestedRumbleId === "string" && requestedRumbleId.trim().length > 0
+        ? requestedRumbleId.trim()
+        : null;
 
     if (!walletAddress || typeof walletAddress !== "string") {
       return NextResponse.json({ error: "Missing wallet_address" }, { status: 400 });
@@ -63,17 +81,32 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Invalid wallet address" }, { status: 400 });
     }
 
+    if (requestedRumbleIdNormalized && parseOnchainRumbleIdNumber(requestedRumbleIdNormalized) === null) {
+      return NextResponse.json(
+        { error: "Invalid rumble_id", ...LEGACY_CLAIMS_RESPONSE_META },
+        { status: 400 },
+      );
+    }
+
     let claimables;
     try {
-      claimables = await discoverOnchainClaimableRumbles(wallet, 120);
+      claimables = await discoverOnchainClaimableRumbles(wallet, {
+        limit: requestedRumbleIdNormalized ? 1 : 250,
+        specificRumbleId: requestedRumbleIdNormalized,
+      });
     } catch (error) {
       console.error("[RumbleClaimPrepareAPI] claim discovery failed", error);
-      const reason = isRateLimitedRpcError(error) ? "rpc_rate_limited" : "rpc_unavailable";
+      const reason =
+        error instanceof OnchainClaimDiscoveryError
+          ? error.reason
+          : isRateLimitedRpcError(error)
+            ? "rpc_rate_limited"
+            : "rpc_unavailable";
       return NextResponse.json(
         {
           error: "Live claim discovery is temporarily unavailable. Retry shortly.",
           reason,
-          legacy_claims_supported: false,
+          ...LEGACY_CLAIMS_RESPONSE_META,
         },
         { status: 503 },
       );
@@ -81,19 +114,26 @@ export async function POST(request: Request) {
     if (claimables.length === 0) {
       return NextResponse.json(
         {
-          error: "No on-chain claimable rumble payouts found for this wallet on the current betting program.",
-          legacy_claims_supported: false,
+          error: requestedRumbleIdNormalized
+            ? "The requested rumble has no claimable payout for this wallet on the current betting program."
+            : "No on-chain claimable rumble payouts found for this wallet on the current betting program.",
+          requested_rumble_id: requestedRumbleIdNormalized,
+          ...LEGACY_CLAIMS_RESPONSE_META,
         },
         { status: 404 },
       );
     }
 
-    const requestedTarget = typeof requestedRumbleId === "string"
-      ? claimables.find((row) => row.rumbleId === requestedRumbleId.trim())
+    const requestedTarget = requestedRumbleIdNormalized
+      ? claimables.find((row) => row.rumbleId === requestedRumbleIdNormalized)
       : null;
-    if (typeof requestedRumbleId === "string" && !requestedTarget) {
+    if (requestedRumbleIdNormalized && !requestedTarget) {
       return NextResponse.json(
-        { error: "Requested rumble has no on-chain claimable payout for this wallet." },
+        {
+          error: "Requested rumble has no on-chain claimable payout for this wallet.",
+          requested_rumble_id: requestedRumbleIdNormalized,
+          ...LEGACY_CLAIMS_RESPONSE_META,
+        },
         { status: 404 },
       );
     }
@@ -108,7 +148,12 @@ export async function POST(request: Request) {
       : sortedClaimables;
     if (selectedTargets.length === 0) {
       return NextResponse.json(
-        { error: "No on-chain claimable payout found for this wallet.", reason: "none_ready" },
+        {
+          error: "No on-chain claimable payout found for this wallet.",
+          reason: "none_ready",
+          requested_rumble_id: requestedRumbleIdNormalized,
+          ...LEGACY_CLAIMS_RESPONSE_META,
+        },
         { status: 409 },
       );
     }
@@ -133,7 +178,7 @@ export async function POST(request: Request) {
           {
             error: "Claim funding checks are temporarily rate-limited. Retry shortly.",
             reason: "rpc_rate_limited",
-            legacy_claims_supported: false,
+            ...LEGACY_CLAIMS_RESPONSE_META,
           },
           { status: 503 },
         );
@@ -162,7 +207,7 @@ export async function POST(request: Request) {
         {
           error: "Claim funding checks are temporarily unavailable. Retry shortly.",
           reason: vaultBalanceLookupReason,
-          legacy_claims_supported: false,
+          ...LEGACY_CLAIMS_RESPONSE_META,
         },
         { status: 503 },
       );
@@ -192,6 +237,7 @@ export async function POST(request: Request) {
           error: "All claimable rumble vaults are currently underfunded.",
           reason: "vaults_underfunded",
           underfunded_count: skippedCount.underfunded,
+          ...LEGACY_CLAIMS_RESPONSE_META,
         },
         { status: 409 },
       );
@@ -259,6 +305,7 @@ export async function POST(request: Request) {
       rumble_id_num: primary.rumbleIdNum,
       rumble_ids: selectedTargets.map((target) => target.rumbleId),
       rumble_id_nums: selectedTargets.map((target) => target.rumbleIdNum),
+      requested_rumble_id: requestedRumbleIdNormalized,
       claim_count: selectedTargets.length,
       claimable_sol: Number(totalClaimableSol.toFixed(9)),
       onchain_claimable_sol: Number(totalClaimableSol.toFixed(9)),
@@ -266,6 +313,7 @@ export async function POST(request: Request) {
       skipped_underfunded: skippedCount.underfunded,
       tx_kind: selectedTargets.length > 1 ? "rumble_claim_payout_batch" : "rumble_claim_payout",
       transaction_base64: txBase64,
+      ...LEGACY_CLAIMS_RESPONSE_META,
       timestamp: new Date().toISOString(),
     });
   } catch (error) {

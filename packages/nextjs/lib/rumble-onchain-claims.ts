@@ -4,12 +4,12 @@ import { utils as anchorUtils } from "@coral-xyz/anchor";
 import { getBettingConnection, getBettingRpcEndpoint, getCachedBalance } from "./solana-connection";
 import {
   RUMBLE_ENGINE_ID_MAINNET,
+  deriveBettorPdaMainnet,
   readRumbleAccountState,
   deriveRumblePdaMainnet,
   deriveVaultPdaMainnet,
 } from "./solana-programs";
 import { freshSupabase } from "./supabase";
-import { getRumbleSessionMinTimestampMs } from "./rumble-session";
 import { parseOnchainRumbleIdNumber } from "./rumble-id";
 
 export interface OnchainClaimableRumble {
@@ -35,6 +35,28 @@ export interface OnchainWalletPayoutSnapshot {
   totalClaimableSol: number;
   totalClaimedSol: number;
   pendingNotReadySol: number;
+  scannedRumbleCount: number;
+  specificRumbleRequested: string | null;
+}
+
+export type OnchainClaimDiscoveryFailureReason = "rpc_rate_limited" | "rpc_unavailable";
+
+export class OnchainClaimDiscoveryError extends Error {
+  readonly reason: OnchainClaimDiscoveryFailureReason;
+
+  constructor(reason: OnchainClaimDiscoveryFailureReason, message: string, options?: { cause?: unknown }) {
+    super(message);
+    this.name = "OnchainClaimDiscoveryError";
+    this.reason = reason;
+    if (options?.cause !== undefined) {
+      (this as Error & { cause?: unknown }).cause = options.cause;
+    }
+  }
+}
+
+export interface OnchainClaimDiscoveryOptions {
+  limit?: number;
+  specificRumbleId?: number | string | null;
 }
 
 const BETTOR_DISCRIMINATOR = createHash("sha256")
@@ -46,6 +68,34 @@ const BETTOR_MIN_DATA_LEN = 59;
 function isRateLimitedRpcError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   return /429|too many requests|rate limit|rate-limited/i.test(msg);
+}
+
+function toClaimDiscoveryError(err: unknown, fallbackMessage: string): OnchainClaimDiscoveryError {
+  return new OnchainClaimDiscoveryError(
+    isRateLimitedRpcError(err) ? "rpc_rate_limited" : "rpc_unavailable",
+    fallbackMessage,
+    { cause: err },
+  );
+}
+
+function normalizeClaimDiscoveryOptions(
+  limitOrOptions: number | OnchainClaimDiscoveryOptions | undefined,
+): Required<Pick<OnchainClaimDiscoveryOptions, "limit">> & { specificRumbleId: string | null } {
+  if (typeof limitOrOptions === "number" || limitOrOptions === undefined) {
+    return {
+      limit: typeof limitOrOptions === "number" ? limitOrOptions : 40,
+      specificRumbleId: null,
+    };
+  }
+
+  const rawSpecific = limitOrOptions.specificRumbleId;
+  return {
+    limit: limitOrOptions.limit ?? 40,
+    specificRumbleId:
+      rawSpecific === null || rawSpecific === undefined
+        ? null
+        : String(rawSpecific).trim() || null,
+  };
 }
 
 function readU64LE(data: Uint8Array, offset: number): bigint {
@@ -255,6 +305,22 @@ async function listBettorAccountsForWallet(
   return listBettorAccountsLegacy(wallet, connection);
 }
 
+async function loadSpecificBettorAccount(
+  wallet: PublicKey,
+  rumbleIdNum: number,
+  connection: Connection,
+): Promise<BettorAccountDecoded | null> {
+  const [bettorPda] = deriveBettorPdaMainnet(rumbleIdNum, wallet);
+  let info;
+  try {
+    info = await connection.getAccountInfo(bettorPda, "confirmed");
+  } catch (err) {
+    throw toClaimDiscoveryError(err, "Failed to load the bettor account for the requested rumble.");
+  }
+  if (!info) return null;
+  return decodeBettorAccountData(info.data as Buffer);
+}
+
 // ---------------------------------------------------------------------------
 // Batch rumble state reads via getMultipleAccountsInfo (1 credit for all)
 // ---------------------------------------------------------------------------
@@ -281,60 +347,6 @@ const BPS_DENOMINATOR = 10_000n;
 function getActiveExposureLamports(bettor: BettorAccountDecoded): bigint {
   const summedDeployments = bettor.fighterDeploymentsLamports.reduce((sum, value) => sum + value, 0n);
   return summedDeployments > 0n ? summedDeployments : bettor.solDeployedLamports;
-}
-
-async function filterBettorRowsBySessionFloor(
-  bettorRowsRaw: BettorAccountDecoded[],
-  minTimestampMs: number | null,
-): Promise<BettorAccountDecoded[]> {
-  if (minTimestampMs === null || bettorRowsRaw.length === 0) return bettorRowsRaw;
-
-  const directTimestamps = new Map<number, number | null>();
-  const unresolvedRumbleIds = new Set<number>();
-
-  for (const row of bettorRowsRaw) {
-    const ts = deriveRumbleTimestampMs(row.rumbleIdNum);
-    directTimestamps.set(row.rumbleIdNum, ts);
-    if (ts === null) {
-      unresolvedRumbleIds.add(row.rumbleIdNum);
-    }
-  }
-
-  const dbTimestamps = new Map<number, number | null>();
-  if (unresolvedRumbleIds.size > 0) {
-    try {
-      const sb = freshSupabase();
-      const unresolved = [...unresolvedRumbleIds];
-      const CHUNK = 200;
-      for (let i = 0; i < unresolved.length; i += CHUNK) {
-        const chunk = unresolved.slice(i, i + CHUNK);
-        const { data, error } = await sb
-          .from("ucf_rumbles")
-          .select("id, rumble_number")
-          .in("rumble_number", chunk);
-        if (error) throw error;
-        for (const row of data ?? []) {
-          const rumbleIdNum = Number((row as any).rumble_number ?? -1);
-          if (!Number.isSafeInteger(rumbleIdNum) || rumbleIdNum < 0) continue;
-          dbTimestamps.set(rumbleIdNum, deriveRumbleTimestampMs(String((row as any).id ?? "")));
-        }
-      }
-    } catch (err) {
-      console.warn("[claims] session floor DB lookup failed; keeping unresolved rumble IDs:", err);
-    }
-  }
-
-  return bettorRowsRaw.filter((row) => {
-    const directTs = directTimestamps.get(row.rumbleIdNum) ?? null;
-    if (directTs !== null) return directTs >= minTimestampMs;
-
-    const dbTs = dbTimestamps.get(row.rumbleIdNum);
-    if (typeof dbTs === "number") return dbTs >= minTimestampMs;
-
-    // Fail open for unresolved numeric on-chain IDs so valid claimable/claimed
-    // rumbles are not hidden just because their ID is not timestamp-encoded.
-    return true;
-  });
 }
 
 export function inferWinnerTakeAllClaimableLamports(
@@ -445,10 +457,7 @@ async function batchReadRumbleStates(
         err?.message,
       );
       if (rateLimited) {
-        for (const id of chunkIds) {
-          result.set(id, null);
-        }
-        continue;
+        throw toClaimDiscoveryError(err, "Rumble state lookups were rate-limited.");
       }
       // Fall back to individual reads for this chunk
       for (const id of chunkIds) {
@@ -466,8 +475,11 @@ async function batchReadRumbleStates(
           } else {
             result.set(id, null);
           }
-        } catch {
-          result.set(id, null);
+        } catch (fallbackErr) {
+          throw toClaimDiscoveryError(
+            fallbackErr,
+            `Failed to load on-chain state for rumble ${id}.`,
+          );
         }
       }
     }
@@ -500,15 +512,9 @@ async function batchReadVaultBalances(
         result.set(chunkIds[j], infos[j]?.lamports ?? 0);
       }
     } catch (err) {
-      // If provider rate-limited, avoid fan-out fallback storm.
-      // Returning 0 balance defers claims gracefully until next poll.
-      // Individual getBalance fallback can multiply RPC pressure by 100x.
       const rateLimited = isRateLimitedRpcError(err);
       if (rateLimited) {
-        for (const id of chunkIds) {
-          result.set(id, 0);
-        }
-        continue;
+        throw toClaimDiscoveryError(err, "Vault balance lookups were rate-limited.");
       }
       // Fallback to individual getBalance
       for (const id of chunkIds) {
@@ -519,8 +525,11 @@ async function batchReadVaultBalances(
             ttlMs: 30_000,
           });
           result.set(id, bal);
-        } catch {
-          result.set(id, 0);
+        } catch (fallbackErr) {
+          throw toClaimDiscoveryError(
+            fallbackErr,
+            `Failed to load the vault balance for rumble ${id}.`,
+          );
         }
       }
     }
@@ -543,12 +552,28 @@ async function batchReadVaultBalances(
  */
 export async function discoverOnchainWalletPayoutSnapshot(
   wallet: PublicKey,
-  limit: number = 40,
+  limitOrOptions: number | OnchainClaimDiscoveryOptions = 40,
 ): Promise<OnchainWalletPayoutSnapshot> {
+  const { limit, specificRumbleId } = normalizeClaimDiscoveryOptions(limitOrOptions);
   const connection = getBettingConnection();
-  const minTimestampMs = getRumbleSessionMinTimestampMs();
-  const bettorRowsRaw = await listBettorAccountsForWallet(wallet, connection);
-  const bettorRows = await filterBettorRowsBySessionFloor(bettorRowsRaw, minTimestampMs);
+  let bettorRows: BettorAccountDecoded[];
+  if (specificRumbleId) {
+    const rumbleIdNum = parseOnchainRumbleIdNumber(specificRumbleId);
+    if (rumbleIdNum === null) {
+      return {
+        claimableRumbles: [],
+        totalClaimableSol: 0,
+        totalClaimedSol: 0,
+        pendingNotReadySol: 0,
+        scannedRumbleCount: 0,
+        specificRumbleRequested: specificRumbleId,
+      };
+    }
+    const specificBettor = await loadSpecificBettorAccount(wallet, rumbleIdNum, connection);
+    bettorRows = specificBettor ? [specificBettor] : [];
+  } else {
+    bettorRows = await listBettorAccountsForWallet(wallet, connection);
+  }
 
   // Batch-read all rumble states in 1 RPC call
   const rumbleIds = [...new Set(bettorRows.map((row) => row.rumbleIdNum))];
@@ -660,14 +685,16 @@ export async function discoverOnchainWalletPayoutSnapshot(
     totalClaimableSol: Number(totalClaimableSol.toFixed(9)),
     totalClaimedSol: Number((Number(totalClaimedLamports) / LAMPORTS_PER_SOL).toFixed(9)),
     pendingNotReadySol: Number((Number(pendingNotReadyLamports) / LAMPORTS_PER_SOL).toFixed(9)),
+    scannedRumbleCount: rumbleIds.length,
+    specificRumbleRequested: specificRumbleId,
   };
 }
 
 export async function discoverOnchainClaimableRumbles(
   wallet: PublicKey,
-  limit: number = 40,
+  limitOrOptions: number | OnchainClaimDiscoveryOptions = 40,
 ): Promise<OnchainClaimableRumble[]> {
-  const snapshot = await discoverOnchainWalletPayoutSnapshot(wallet, limit);
+  const snapshot = await discoverOnchainWalletPayoutSnapshot(wallet, limitOrOptions);
   return snapshot.claimableRumbles;
 }
 export function deriveRumbleTimestampMs(rumbleIdNum: number | string): number | null {

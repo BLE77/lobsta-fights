@@ -60,7 +60,12 @@ export const STATE_PRIORITY: Record<string, number> = {
 // ---------------------------------------------------------------------------
 // Program / RPC
 // ---------------------------------------------------------------------------
-export const PROGRAM_ID = "638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU";
+// Dedicated mainnet betting/claim deployment.
+export const MAINNET_BETTING_PROGRAM_ID = "2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC";
+// Non-mainnet combat/devnet deployment.
+export const COMBAT_PROGRAM_ID = "638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU";
+// Backward-compatible alias for any remaining claim/betting references.
+export const PROGRAM_ID = MAINNET_BETTING_PROGRAM_ID;
 export const FALLBACK_RPC = endpoint;
 
 // ---------------------------------------------------------------------------

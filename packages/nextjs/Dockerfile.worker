@@ -4,16 +4,18 @@ RUN groupadd -r worker && useradd -r -g worker -m worker
 
 WORKDIR /app
 
-# Copy package files
-COPY --chown=worker:worker package.json package-lock.json* ./
+# Copy the worker package manifest
+COPY --chown=worker:worker package.json ./
 
 # Install production dependencies
-RUN npm install --omit=dev --legacy-peer-deps && npm install tsx --legacy-peer-deps
+RUN npm install --omit=dev --legacy-peer-deps
 
 # Copy source files
 COPY --chown=worker:worker . .
 
+ENV RUMBLE_WORKER_MODE=true
+
 USER worker
 
-# Run the worker
-CMD ["npx", "tsx", "rumble-worker.ts"]
+# Run the worker through the repo script so the package manifest stays canonical.
+CMD ["npm", "run", "worker"]

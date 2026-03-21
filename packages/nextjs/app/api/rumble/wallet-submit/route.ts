@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { ComputeBudgetProgram, SystemProgram, Transaction } from "@solana/web3.js";
 import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
@@ -18,6 +19,13 @@ function isWalletSubmitNetwork(value: unknown): value is WalletSubmitNetwork {
   return value === "betting" || value === "combat";
 }
 
+function anchorInstructionDiscriminator(name: string): string {
+  return createHash("sha256")
+    .update(`global:${name}`)
+    .digest("hex")
+    .slice(0, 16);
+}
+
 const COMMON_ALLOWED_PROGRAMS = new Set([
   ComputeBudgetProgram.programId.toBase58(),
   SystemProgram.programId.toBase58(),
@@ -27,7 +35,7 @@ const COMMON_ALLOWED_PROGRAMS = new Set([
 
 const ALLOWED_PROGRAMS_BY_NETWORK: Record<WalletSubmitNetwork, Set<string>> = {
   betting: new Set([
-    ...COMMON_ALLOWED_PROGRAMS,
+    ComputeBudgetProgram.programId.toBase58(),
     RUMBLE_ENGINE_ID_MAINNET.toBase58(),
   ]),
   combat: new Set([
@@ -35,6 +43,11 @@ const ALLOWED_PROGRAMS_BY_NETWORK: Record<WalletSubmitNetwork, Set<string>> = {
     RUMBLE_ENGINE_ID.toBase58(),
   ]),
 };
+
+const ALLOWED_BETTING_DISCRIMINATORS = new Set([
+  anchorInstructionDiscriminator("place_bet"),
+  anchorInstructionDiscriminator("claim_payout"),
+]);
 
 function getInstructionProgramIds(transaction: Transaction): string[] {
   return transaction.instructions.map((instruction) => instruction.programId.toBase58());
@@ -48,10 +61,20 @@ function findUnexpectedProgramId(
   transaction: Transaction,
   network: WalletSubmitNetwork,
 ): string | null {
-  if (network === "betting") return null;
   const allowedPrograms = ALLOWED_PROGRAMS_BY_NETWORK[network];
   for (const programId of getInstructionProgramIds(transaction)) {
     if (!allowedPrograms.has(programId)) return programId;
+  }
+  return null;
+}
+
+function findUnexpectedBettingInstruction(transaction: Transaction): string | null {
+  for (const instruction of transaction.instructions) {
+    if (!instruction.programId.equals(RUMBLE_ENGINE_ID_MAINNET)) continue;
+    const discriminator = instruction.data.subarray(0, 8).toString("hex");
+    if (!ALLOWED_BETTING_DISCRIMINATORS.has(discriminator)) {
+      return discriminator;
+    }
   }
   return null;
 }
@@ -126,6 +149,19 @@ export async function POST(request: Request) {
         },
         { status: 400 },
       );
+    }
+
+    if (network === "betting") {
+      const unexpectedDiscriminator = findUnexpectedBettingInstruction(transaction);
+      if (unexpectedDiscriminator) {
+        return NextResponse.json(
+          {
+            error: "Betting relay only accepts wallet-signed bet and claim instructions.",
+            discriminator: unexpectedDiscriminator,
+          },
+          { status: 400 },
+        );
+      }
     }
 
     const connection = network === "combat" ? getCombatConnectionAuto() : getBettingConnection();

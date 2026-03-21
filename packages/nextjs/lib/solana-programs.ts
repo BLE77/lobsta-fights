@@ -3326,13 +3326,36 @@ export async function createRumbleMainnet(
 
   const conn = getBettingConnection();
   const nowUnix = Math.floor(Date.now() / 1000);
-  const bettingCloseUnix = BigInt(Math.max(bettingDeadlineUnix, nowUnix + 30));
+  const currentSlot = await conn.getSlot("processed");
+  const slotMsEstimateRaw = Number(process.env.RUMBLE_SLOT_MS_ESTIMATE ?? "400");
+  const slotMsEstimate = Number.isFinite(slotMsEstimateRaw)
+    ? Math.min(1_000, Math.max(250, Math.floor(slotMsEstimateRaw)))
+    : 400;
+  const minCloseSlotsRaw = Number(process.env.RUMBLE_BETTING_MIN_CLOSE_SLOTS ?? "180");
+  const minCloseSlots = Number.isFinite(minCloseSlotsRaw)
+    ? Math.min(2_000, Math.max(10, Math.floor(minCloseSlotsRaw)))
+    : 180;
+  const closeSafetySlotsRaw = Number(process.env.RUMBLE_BETTING_CLOSE_SAFETY_SLOTS ?? "45");
+  const closeSafetySlots = Number.isFinite(closeSafetySlotsRaw)
+    ? Math.min(1_000, Math.max(0, Math.floor(closeSafetySlotsRaw)))
+    : 45;
+
+  let bettingCloseSlot = BigInt(Math.floor(bettingDeadlineUnix));
+  if (bettingDeadlineUnix >= nowUnix - 60) {
+    const remainingMs = Math.max(1_000, (bettingDeadlineUnix - nowUnix) * 1_000);
+    const slotsRemainingBase = Math.ceil(remainingMs / slotMsEstimate);
+    const slotsRemaining = Math.max(minCloseSlots, slotsRemainingBase + closeSafetySlots);
+    bettingCloseSlot = BigInt(currentSlot) + BigInt(slotsRemaining);
+  }
+  if (bettingCloseSlot <= BigInt(currentSlot)) {
+    bettingCloseSlot = BigInt(currentSlot + minCloseSlots);
+  }
 
   const method = (program.methods as any)
     .createRumble(
       new anchor.BN(rumbleId),
       fighters,
-      new anchor.BN(bettingCloseUnix.toString()),
+      new anchor.BN(bettingCloseSlot.toString()),
     )
     .accounts({
       admin: admin.publicKey,
@@ -3545,6 +3568,12 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
   const now = Math.floor(Date.now() / 1000);
   const BETTING_STALE_SECONDS = 3600; // 1 hour
   const RENT_EXEMPT_MIN = 890_880; // ~0.00089 SOL for 0-byte account
+  const slotMsEstimateRaw = Number(process.env.RUMBLE_SLOT_MS_ESTIMATE ?? "400");
+  const slotMsEstimate = Number.isFinite(slotMsEstimateRaw)
+    ? Math.min(1_000, Math.max(250, Math.floor(slotMsEstimateRaw)))
+    : 400;
+  const staleBettingSlots = Math.max(1, Math.ceil((BETTING_STALE_SECONDS * 1_000) / slotMsEstimate));
+  const currentSlot = await conn.getSlot("confirmed");
 
   // Byte offsets for Rumble account fields (Anchor discriminator = 8 bytes)
   // id(u64) state(u8) fighters([Pubkey;16]) fighter_count(u8) betting_pools([u64;16])
@@ -3597,8 +3626,11 @@ export async function reclaimMainnetRumbleRent(): Promise<{ completed: number; c
     // Only auto-close if no bets were placed (vault empty).
     // If people bet but fight never started, skip — needs admin review.
     if (state === 0) {
-      const bettingDeadline = Number(data.readBigInt64LE(BETTING_DEADLINE_OFFSET));
-      const staleBetting = bettingDeadline > 0 && (now - bettingDeadline) > BETTING_STALE_SECONDS;
+      const bettingCloseSlot = Number(data.readBigInt64LE(BETTING_DEADLINE_OFFSET));
+      const staleBetting =
+        Number.isSafeInteger(bettingCloseSlot) &&
+        bettingCloseSlot > 0 &&
+        currentSlot - bettingCloseSlot > staleBettingSlots;
       if (!staleBetting) { skipped++; continue; }
 
       // Check vault — if anyone bet, don't auto-close

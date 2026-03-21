@@ -109,6 +109,10 @@ async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+interface PersistWriteOptions {
+  throwOnError?: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Queue
 // ---------------------------------------------------------------------------
@@ -117,6 +121,7 @@ export async function saveQueueFighter(
   fighterId: string,
   status: "waiting" | "matched" | "in_combat",
   autoRequeue: boolean = false,
+  options?: PersistWriteOptions,
 ): Promise<void> {
   try {
     const sb = freshServiceClient();
@@ -130,10 +135,14 @@ export async function saveQueueFighter(
     if (error) throw error;
   } catch (err) {
     logError("saveQueueFighter failed", err);
+    if (options?.throwOnError) throw err;
   }
 }
 
-export async function removeQueueFighter(fighterId: string): Promise<void> {
+export async function removeQueueFighter(
+  fighterId: string,
+  options?: PersistWriteOptions,
+): Promise<void> {
   try {
     const sb = freshServiceClient();
     const { error } = await sb
@@ -143,6 +152,7 @@ export async function removeQueueFighter(fighterId: string): Promise<void> {
     if (error) throw error;
   } catch (err) {
     logError("removeQueueFighter failed", err);
+    if (options?.throwOnError) throw err;
   }
 }
 
@@ -263,6 +273,7 @@ export async function updateRumbleStatus(
   rumbleId: string,
   status: "betting" | "combat" | "payout" | "complete",
   extra: Record<string, unknown> = {},
+  options?: PersistWriteOptions,
 ): Promise<void> {
   try {
     const sb = freshServiceClient();
@@ -278,6 +289,7 @@ export async function updateRumbleStatus(
     if (error) throw error;
   } catch (err) {
     logError("updateRumbleStatus failed", err);
+    if (options?.throwOnError) throw err;
   }
 }
 
@@ -724,6 +736,7 @@ export interface BetPayoutUpdate {
 export async function updateBetPayouts(
   rumbleId: string,
   payouts: BetPayoutUpdate[],
+  options?: PersistWriteOptions,
 ): Promise<void> {
   if (payouts.length === 0) return;
 
@@ -820,6 +833,7 @@ export async function updateBetPayouts(
     }
   } catch (err) {
     logError("updateBetPayouts failed", err);
+    if (options?.throwOnError) throw err;
   }
 }
 
@@ -859,6 +873,7 @@ export async function settleWinnerTakeAllBets(
   rumbleId: string,
   winnerFighterId: string,
   payoutMode: RumblePayoutMode,
+  options?: PersistWriteOptions,
 ): Promise<void> {
   try {
     const sb = freshServiceClient();
@@ -944,12 +959,13 @@ export async function settleWinnerTakeAllBets(
     }
 
     // ---- 4. Apply the (stored or freshly computed) payouts to bet rows -----
-    await updateBetPayouts(rumbleId, updates);
+    await updateBetPayouts(rumbleId, updates, { throwOnError: options?.throwOnError });
     log(
       `Settled ${updates.length} bets for rumble ${rumbleId} (${payoutMode}, winner=${winnerFighterId})`,
     );
   } catch (err) {
     logError("settleWinnerTakeAllBets failed", err);
+    if (options?.throwOnError) throw err;
   }
 }
 
@@ -1336,6 +1352,7 @@ export async function updateRumbleTxSignature(
   rumbleId: string,
   step: TxStep,
   sig: string | null,
+  options?: PersistWriteOptions,
 ): Promise<void> {
   try {
     const sb = freshServiceClient();
@@ -1394,6 +1411,7 @@ export async function updateRumbleTxSignature(
     }
   } catch (err) {
     logError(`updateRumbleTxSignature(${rumbleId}, ${step}) failed`, err);
+    if (options?.throwOnError) throw err;
   }
 }
 
@@ -1605,18 +1623,21 @@ export async function expirePendingMoveRequest(
   rumbleId: string,
   turn: number,
   fighterId: string,
+  options?: PersistWriteOptions,
 ): Promise<void> {
   try {
     const sb = freshServiceClient();
-    await sb
+    const { error } = await sb
       .from("pending_moves")
       .update({ status: "expired" })
       .eq("fighter_id", fighterId)
       .eq("rumble_id", rumbleId)
       .eq("turn", turn)
       .in("status", ["pending", "responded"]);
+    if (error) throw error;
   } catch (err) {
     logError("expirePendingMoveRequest failed", err);
+    if (options?.throwOnError) throw err;
   }
 }
 
@@ -1644,60 +1665,88 @@ export async function acquireWorkerLease(
 
   try {
     const now = Date.now();
+    const nowIso = new Date(now).toISOString();
     const expiresAtMs = now + Math.max(1_000, ttlMs);
     const expiresAtIso = new Date(expiresAtMs).toISOString();
     const sb = freshServiceClient();
 
-    const { data: existing, error: existingErr } = await sb
+    const leaseRow = {
+      id: WORKER_LEASE_ROW_ID,
+      worker_id: normalizedWorkerId,
+      expires_at: expiresAtIso,
+    };
+
+    const { data: inserted, error: insertErr } = await sb
+      .from("worker_lease")
+      .insert(leaseRow)
+      .select("worker_id,expires_at")
+      .maybeSingle();
+
+    if (!insertErr) {
+      return (
+        inserted?.worker_id === normalizedWorkerId &&
+        parseLeaseExpiry(inserted.expires_at) === expiresAtMs
+      );
+    }
+
+    if (insertErr.code === "42P01" || insertErr.code === "PGRST205") {
+      return false;
+    }
+    if (insertErr.code !== "23505") {
+      throw insertErr;
+    }
+
+    const { data: renewed, error: renewErr } = await sb
+      .from("worker_lease")
+      .update({ worker_id: normalizedWorkerId, expires_at: expiresAtIso })
+      .eq("id", WORKER_LEASE_ROW_ID)
+      .eq("worker_id", normalizedWorkerId)
+      .select("worker_id,expires_at")
+      .maybeSingle();
+    if (renewErr) {
+      if (renewErr.code === "42P01" || renewErr.code === "PGRST205") return false;
+      throw renewErr;
+    }
+    if (
+      renewed?.worker_id === normalizedWorkerId &&
+      parseLeaseExpiry(renewed.expires_at) === expiresAtMs
+    ) {
+      return true;
+    }
+
+    const { data: claimedExpired, error: claimErr } = await sb
+      .from("worker_lease")
+      .update({ worker_id: normalizedWorkerId, expires_at: expiresAtIso })
+      .eq("id", WORKER_LEASE_ROW_ID)
+      .lte("expires_at", nowIso)
+      .select("worker_id,expires_at")
+      .maybeSingle();
+    if (claimErr) {
+      if (claimErr.code === "42P01" || claimErr.code === "PGRST205") return false;
+      throw claimErr;
+    }
+    if (
+      claimedExpired?.worker_id === normalizedWorkerId &&
+      parseLeaseExpiry(claimedExpired.expires_at) === expiresAtMs
+    ) {
+      return true;
+    }
+
+    const { data: current, error: currentErr } = await sb
       .from("worker_lease")
       .select("worker_id,expires_at")
       .eq("id", WORKER_LEASE_ROW_ID)
       .maybeSingle();
-
-    if (existingErr) {
-      if (existingErr.code === "42P01" || existingErr.code === "PGRST205") {
-        return false;
-      }
-      throw existingErr;
+    if (currentErr) {
+      if (currentErr.code === "42P01" || currentErr.code === "PGRST205") return false;
+      throw currentErr;
     }
 
-    if (existing) {
-      const currentOwner = existing.worker_id;
-      const leaseExpiresAt = parseLeaseExpiry(existing.expires_at);
-      const isExpired = leaseExpiresAt === null || leaseExpiresAt <= now;
-      if (currentOwner && currentOwner !== normalizedWorkerId && !isExpired) {
-        return false;
-      }
+    if (current?.worker_id === normalizedWorkerId) {
+      const currentExpiry = parseLeaseExpiry(current.expires_at);
+      return currentExpiry !== null && currentExpiry >= now;
     }
-
-    const { error: upsertErr } = await sb
-      .from("worker_lease")
-      .upsert(
-        {
-          id: WORKER_LEASE_ROW_ID,
-          worker_id: normalizedWorkerId,
-          expires_at: expiresAtIso,
-        },
-        { onConflict: "id" },
-      );
-
-    if (upsertErr) {
-      if (upsertErr.code === "42P01" || upsertErr.code === "PGRST205") return false;
-      throw upsertErr;
-    }
-
-    const { data: current, error: verifyErr } = await sb
-      .from("worker_lease")
-      .select("worker_id")
-      .eq("id", WORKER_LEASE_ROW_ID)
-      .maybeSingle();
-
-    if (verifyErr) {
-      if (verifyErr.code === "42P01" || verifyErr.code === "PGRST205") return false;
-      throw verifyErr;
-    }
-
-    return current?.worker_id === normalizedWorkerId;
+    return false;
   } catch (err) {
     logError("acquireWorkerLease failed", err);
     return false;

@@ -35,9 +35,9 @@ const DEPLOYER_KEYPAIR_PATH = path.join(
   ".config/solana/mainnet-admin.json"
 );
 
-// Mainnet program ID (same as devnet since same keypair was used)
+// Dedicated betting-only mainnet deployment.
 const RUMBLE_ENGINE_ID = new PublicKey(
-  "638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU"
+  "2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC"
 );
 
 // PDA seed (must match Rust constant)

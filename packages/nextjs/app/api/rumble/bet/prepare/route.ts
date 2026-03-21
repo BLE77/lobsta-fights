@@ -30,7 +30,6 @@ export const dynamic = "force-dynamic";
 const BETTING_CLOSE_GUARD_MS = Math.max(1000, Number(process.env.RUMBLE_BETTING_CLOSE_GUARD_MS ?? "12000"));
 const SLOT_MS_ESTIMATE = Math.max(250, Number(process.env.RUMBLE_SLOT_MS_ESTIMATE ?? "400"));
 const BETTING_CLOSE_GUARD_SLOTS = Math.max(1, Math.ceil(BETTING_CLOSE_GUARD_MS / SLOT_MS_ESTIMATE));
-const ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD = 5_000_000n;
 
 async function ensureRecovered(): Promise<void> {
   if (hasRecovered()) return;
@@ -302,46 +301,29 @@ export async function POST(request: Request) {
     const bettingConn = getBettingConnection();
 
     const currentSlot = await bettingConn.getSlot("processed");
-    const onchainCloseRaw = (() => {
-      const compat = onchainRumble as unknown as {
-        bettingCloseSlot?: bigint;
-        bettingDeadlineTs?: bigint;
-      };
-      const slotValue = compat.bettingCloseSlot ?? compat.bettingDeadlineTs ?? 0n;
-      return slotValue > 0n ? slotValue : 0n;
-    })();
+    const onchainCloseRaw = onchainRumble.bettingCloseSlot > 0n ? onchainRumble.bettingCloseSlot : 0n;
     const currentSlotBig = BigInt(currentSlot);
-    const looksLikeUnixDeadline = onchainCloseRaw > currentSlotBig + ONCHAIN_DEADLINE_UNIX_SLOT_GAP_THRESHOLD;
     const guardSlotThreshold = currentSlotBig + BigInt(BETTING_CLOSE_GUARD_SLOTS);
-    const slotsUntilCloseBig = !looksLikeUnixDeadline && onchainCloseRaw > currentSlotBig
+    const slotsUntilCloseBig = onchainCloseRaw > currentSlotBig
       ? onchainCloseRaw - currentSlotBig
       : 0n;
-    const slotsUntilClose = !looksLikeUnixDeadline ? Number(slotsUntilCloseBig) : Number.NaN;
+    const slotsUntilClose = Number(slotsUntilCloseBig);
     const onchainDeadlineMsEstimate =
-      looksLikeUnixDeadline
-        ? Number(onchainCloseRaw) * 1_000
-        : Number.isFinite(slotsUntilClose) && slotsUntilClose > 0
-          ? Date.now() + slotsUntilClose * SLOT_MS_ESTIMATE
-          : Number.NaN;
+      Number.isFinite(slotsUntilClose) && slotsUntilClose > 0
+        ? Date.now() + slotsUntilClose * SLOT_MS_ESTIMATE
+        : Number.NaN;
     if (onchainCloseRaw > 0n) {
-      const bettingClosingNow = (() => {
-        if (looksLikeUnixDeadline) {
-          const guardSec = Math.max(1, Math.ceil(BETTING_CLOSE_GUARD_MS / 1_000));
-          const nowUnix = Math.floor(Date.now() / 1_000);
-          return BigInt(nowUnix + guardSec) >= onchainCloseRaw;
-        }
-        return guardSlotThreshold >= onchainCloseRaw;
-      })();
+      const bettingClosingNow = guardSlotThreshold >= onchainCloseRaw;
       if (bettingClosingNow) {
         return NextResponse.json(
           {
             error: "Betting is closing right now. Wait for the next rumble to avoid a failed transaction.",
             error_code: "BETTING_CLOSED",
             onchain_state: onchainRumble.state,
-            onchain_betting_close_slot: looksLikeUnixDeadline ? null : onchainCloseRaw.toString(),
-            onchain_betting_deadline_unix: looksLikeUnixDeadline ? onchainCloseRaw.toString() : null,
+            onchain_betting_close_slot: onchainCloseRaw.toString(),
+            onchain_betting_deadline_unix: null,
             current_slot: String(currentSlot),
-            slots_until_close: Number.isFinite(slotsUntilClose) ? slotsUntilClose : null,
+            slots_until_close: slotsUntilClose,
             guard_ms: BETTING_CLOSE_GUARD_MS,
             guard_slots: BETTING_CLOSE_GUARD_SLOTS,
           },
@@ -417,12 +399,10 @@ export async function POST(request: Request) {
         odds_version: oddsVersion,
         recommended_sign_by_ms: recommendedSignByMs,
         onchain_state: onchainRumble.state,
-        onchain_betting_close_slot:
-          onchainCloseRaw > 0n && !looksLikeUnixDeadline ? onchainCloseRaw.toString() : null,
-        onchain_betting_deadline_unix:
-          onchainCloseRaw > 0n && looksLikeUnixDeadline ? onchainCloseRaw.toString() : null,
+        onchain_betting_close_slot: onchainCloseRaw > 0n ? onchainCloseRaw.toString() : null,
+        onchain_betting_deadline_unix: null,
         current_slot: String(currentSlot),
-        slots_until_close: Number.isFinite(slotsUntilClose) ? slotsUntilClose : null,
+        slots_until_close: slotsUntilClose,
         onchain_betting_deadline:
           Number.isFinite(onchainDeadlineMsEstimate) && onchainDeadlineMsEstimate > 0
             ? new Date(onchainDeadlineMsEstimate).toISOString()

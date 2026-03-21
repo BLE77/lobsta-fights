@@ -2,7 +2,7 @@
  * Batch close stale mainnet rumble PDAs to reclaim rent.
  *
  * Flow per rumble:
- *   Betting (state=0) + empty vault → adminSetResult → completeRumble → closeRumble
+ *   Betting (state=0) + empty vault → adminSetResult
  *   Payout  (state=2) + past claim  → completeRumble → closeRumble
  *   Complete(state=3) + empty vault → closeRumble
  *
@@ -20,6 +20,7 @@ import {
 import * as anchor from "@coral-xyz/anchor";
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 
 // ── Config ──────────────────────────────────────────────────────────────
 const PROGRAM_ID = new PublicKey("2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC");
@@ -33,6 +34,11 @@ const TX_DELAY_MS = 400; // delay between txs to avoid rate limits
 const CONFIG_SEED = Buffer.from("rumble_config");
 const RUMBLE_SEED = Buffer.from("rumble");
 const VAULT_SEED = Buffer.from("vault");
+const RUMBLE_DISCRIMINATOR = crypto
+  .createHash("sha256")
+  .update("account:Rumble")
+  .digest()
+  .subarray(0, 8);
 
 // Field offsets (after 8-byte Anchor discriminator)
 const BETTING_POOLS_OFFSET = 8 + 8 + 1 + 512 + 1; // 530
@@ -67,13 +73,25 @@ async function sendTx(
 ): Promise<string | null> {
   try {
     const tx = await method.transaction();
+    const latest = await conn.getLatestBlockhash("confirmed");
     tx.feePayer = admin.publicKey;
-    tx.recentBlockhash = (await conn.getLatestBlockhash()).blockhash;
+    tx.recentBlockhash = latest.blockhash;
     tx.sign(admin);
     const sig = await conn.sendRawTransaction(tx.serialize(), {
       skipPreflight: true,
-      maxRetries: 2,
+      maxRetries: 5,
     });
+    const confirmation = await conn.confirmTransaction(
+      {
+        signature: sig,
+        blockhash: latest.blockhash,
+        lastValidBlockHeight: latest.lastValidBlockHeight,
+      },
+      "confirmed",
+    );
+    if (confirmation.value.err) {
+      throw new Error(`confirmation failed: ${JSON.stringify(confirmation.value.err)}`);
+    }
     return sig;
   } catch (err: any) {
     const msg = err?.message?.slice(0, 120) ?? String(err);
@@ -143,12 +161,13 @@ async function main() {
   };
 
   // Parse and classify
-  type Candidate = {
+type Candidate = {
     rumbleId: number;
     state: number;
     stateName: string;
     pda: PublicKey;
     lamports: number;
+    fighterCount: number;
     bettingDeadline: number;
     completedAt: number;
     winnerIndex: number;
@@ -160,6 +179,7 @@ async function main() {
   for (const acct of accounts) {
     const data = acct.account.data;
     if (data.length < 700 || data.length > 730) continue;
+    if (!data.subarray(0, 8).equals(RUMBLE_DISCRIMINATOR)) continue;
 
     let rumbleId: number;
     try {
@@ -171,6 +191,7 @@ async function main() {
 
     const state = data[16];
     const stateName = stateNames[state] ?? `unknown(${state})`;
+    const fighterCount = data[8 + 8 + 1 + 512];
     const bettingDeadline = state === 0 ? Number(data.readBigInt64LE(BETTING_DEADLINE_OFFSET)) : 0;
     const completedAt = Number(data.readBigInt64LE(COMPLETED_AT_OFFSET));
     const winnerIndex = data[WINNER_INDEX_OFFSET];
@@ -185,6 +206,7 @@ async function main() {
       stateName,
       pda: acct.pubkey,
       lamports: acct.account.lamports,
+      fighterCount,
       bettingDeadline,
       completedAt,
       winnerIndex,
@@ -236,7 +258,7 @@ async function main() {
 
       actions.push({
         candidate: c,
-        steps: ["adminSetResult", "completeRumble", "closeRumble"],
+        steps: ["adminSetResult"],
         vaultBalance,
       });
     }
@@ -272,10 +294,20 @@ async function main() {
     }
   }
 
-  console.log(`\nCloseable rumbles: ${actions.length}`);
+  actions.sort((a, b) => {
+    const priority = (state: number) => {
+      if (state === 3) return 0;
+      if (state === 2) return 1;
+      if (state === 0) return 2;
+      return 3;
+    };
+    return priority(a.candidate.state) - priority(b.candidate.state) || a.candidate.rumbleId - b.candidate.rumbleId;
+  });
+
+  console.log(`\nActionable rumbles: ${actions.length}`);
   const totalRentRecoverable = actions.reduce((s, a) => s + a.candidate.lamports, 0);
   console.log(
-    `Total rent recoverable: ${(totalRentRecoverable / LAMPORTS_PER_SOL).toFixed(4)} SOL\n`,
+    `Total rent tied to actionable rumbles: ${(totalRentRecoverable / LAMPORTS_PER_SOL).toFixed(4)} SOL\n`,
   );
 
   // State breakdown
@@ -302,6 +334,7 @@ async function main() {
   const batch = actions.slice(0, batchSize);
   let closed = 0;
   let swept = 0;
+  let advanced = 0;
   let failed = 0;
   let reclaimedLamports = 0;
 
@@ -322,7 +355,9 @@ async function main() {
       let method: any;
 
       if (step === "adminSetResult") {
-        const placements = Buffer.from(Array.from({ length: 16 }, (_, i) => i));
+        const placements = Buffer.from(
+          Array.from({ length: c.fighterCount }, (_, i) => i + 1),
+        );
         method = (program.methods as any)
           .adminSetResult(placements, 0)
           .accounts({
@@ -352,6 +387,8 @@ async function main() {
           config: configPda,
           rumble: rumblePda,
           vault: vaultPda,
+          treasury,
+          systemProgram: SystemProgram.programId,
         });
       }
 
@@ -368,16 +405,21 @@ async function main() {
     }
 
     if (ok) {
-      closed++;
-      reclaimedLamports += c.lamports;
-      process.stdout.write(`✓ reclaimed ${(c.lamports / LAMPORTS_PER_SOL).toFixed(6)} SOL`);
+      if (steps.includes("closeRumble")) {
+        closed++;
+        reclaimedLamports += c.lamports;
+        process.stdout.write(`✓ reclaimed ${(c.lamports / LAMPORTS_PER_SOL).toFixed(6)} SOL`);
+      } else {
+        advanced++;
+        process.stdout.write(`✓ moved to payout window`);
+      }
     }
     console.log();
   }
 
   const finalBalance = await conn.getBalance(admin.publicKey);
   console.log(`\n=== Results ===`);
-  console.log(`Closed: ${closed}, Swept: ${swept}, Failed: ${failed}`);
+  console.log(`Closed: ${closed}, Swept: ${swept}, Advanced: ${advanced}, Failed: ${failed}`);
   console.log(`Rent reclaimed: ~${(reclaimedLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL`);
   console.log(`Admin balance: ${(finalBalance / LAMPORTS_PER_SOL).toFixed(4)} SOL`);
 }

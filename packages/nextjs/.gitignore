@@ -1,18 +1,17 @@
-.vercel
-.env*.local
-.claude/
-**/*keypair*.json
-**/*deployer*.json
-**/id.json
-**/*-keypair.json
-
-# Serwist service worker output (generated at build time)
-public/sw.js
-public/sw.js.map
-
-# Android/TWA build artifacts
+.next/
+.vercel/
 .twa-build/
+node_modules/
+coverage/
+artifacts/
+dist/
+build/
+out/
+*.log
+*.tmp
+*.temp
+*.tsbuildinfo
 *.apk
-android-keystore.jks
-android-keystore-seeker.jks
-keystore.properties
+.env.local
+.env*.local
+.rumble-session.json

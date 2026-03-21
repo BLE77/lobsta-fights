@@ -314,11 +314,11 @@ export default function CombatFeed({
         <div className="sticky top-0 bg-stone-900/95 py-1 border-b border-stone-800 text-center">
           <div className="flex flex-col items-center gap-0.5">
             <span className="font-mono text-xs text-amber-500">
-              TURN {showingPendingTurn ? latestResolvedTurnNumber : currentTurn}
+              TURN {currentTurn}
             </span>
-            {showingPendingTurn && latestResolvedTurnNumber > 0 && (
+            {showingPendingTurn && (
               <span className="font-mono text-[9px] text-stone-500 uppercase">
-                Turn {currentTurn} resolving on-chain
+                resolving on-chain
               </span>
             )}
           </div>

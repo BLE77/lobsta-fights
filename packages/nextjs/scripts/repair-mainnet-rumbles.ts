@@ -24,7 +24,7 @@ import * as fs from "fs";
 // Config
 // ---------------------------------------------------------------------------
 
-const PROGRAM_ID = new PublicKey("638DcfW6NaBweznnzmJe4PyxCw51s3CTkykUNskWnxTU");
+const PROGRAM_ID = new PublicKey("2TvW4EfbmMe566ZQWZWd8kX34iFR2DM3oBUpjwpRJcqC");
 
 function getMainnetRpcUrl(): string {
   const explicit =

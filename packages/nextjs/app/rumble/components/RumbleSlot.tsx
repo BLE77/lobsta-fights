@@ -276,33 +276,36 @@ export default function RumbleSlot({
   const [heldFighters, setHeldFighters] = useState<SlotFighter[]>([]);
   const [heldCurrentTurn, setHeldCurrentTurn] = useState(0);
   const heldSnapshotRef = useRef<{ rumbleId: string; turnCount: number; finalTurnNumber: number } | null>(null);
-  const prevStateRef = useRef<string>(slot.state);
+  const completedHoldRef = useRef<{ rumbleId: string; finalTurnNumber: number } | null>(null);
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previousSlotRef = useRef<SlotData>(slot);
   const [transitionLastMatch, setTransitionLastMatch] = useState<TransitionLastMatchSnapshot | null>(null);
 
   useEffect(() => {
     const latestTurnNumber = slot.turns.length > 0 ? slot.turns[slot.turns.length - 1].turnNumber : 0;
-    const heldFinalTurnNumber = heldSnapshotRef.current?.finalTurnNumber ?? 0;
+    const completedSnapshot = completedHoldRef.current;
     const shouldCaptureFinalTurn =
       slot.state === "payout" &&
       slot.turns.length > 0 &&
       (
-        prevStateRef.current === "combat" ||
-        prevStateRef.current === "betting" ||
-        heldSnapshotRef.current?.rumbleId !== slot.rumbleId ||
-        heldFinalTurnNumber < latestTurnNumber
+        completedSnapshot?.rumbleId !== slot.rumbleId ||
+        (completedSnapshot?.finalTurnNumber ?? 0) < latestTurnNumber
       );
 
     if (shouldCaptureFinalTurn) {
-      // Capture the final combat state before switching to payout view, and
-      // refresh the hold if the definitive final turn arrives a moment later.
+      // Capture the final combat state before switching to payout view.
+      // Keep a completed snapshot marker so polling cannot restart the hold
+      // for the same rumble/final turn over and over.
       setHeldTurns(slot.turns);
       setHeldFighters(slot.fighters);
       setHeldCurrentTurn(slot.currentTurn);
       heldSnapshotRef.current = {
         rumbleId: slot.rumbleId,
         turnCount: slot.turns.length,
+        finalTurnNumber: latestTurnNumber,
+      };
+      completedHoldRef.current = {
+        rumbleId: slot.rumbleId,
         finalTurnNumber: latestTurnNumber,
       };
       setHoldingFinalTurn(true);
@@ -328,7 +331,6 @@ export default function RumbleSlot({
       setHeldCurrentTurn(0);
       heldSnapshotRef.current = null;
     }
-    prevStateRef.current = slot.state;
   }, [holdingFinalTurn, slot.currentTurn, slot.fighters, slot.rumbleId, slot.state, slot.turns]);
 
   useEffect(() => {
