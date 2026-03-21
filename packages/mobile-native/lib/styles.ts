@@ -588,6 +588,20 @@ export const styles = StyleSheet.create({
     textAlign: "center",
     letterSpacing: 0.8,
   },
+  lastFightWrap: {
+    marginTop: 12,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(168,162,158,0.15)",
+  },
+  lastFightHeader: {
+    color: "#78716c",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 1.2,
+    textAlign: "center",
+    marginBottom: 8,
+  },
   idleArtRow: {
     flexDirection: "row",
     gap: 8,
@@ -1343,6 +1357,12 @@ export const styles = StyleSheet.create({
   },
   eliminatedTag: {
     color: "#fca5a5",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.5,
+  },
+  satOutTag: {
+    color: "#fbbf24",
     fontSize: 9,
     fontWeight: "900",
     letterSpacing: 0.5,

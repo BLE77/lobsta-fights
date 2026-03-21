@@ -551,14 +551,12 @@ const MAX_FINALIZATIONS_PER_IDLE_TICK = readInt(
 const ONCHAIN_CREATE_RETRY_MS = 5_000;
 const ONCHAIN_CREATE_STALL_TIMEOUT_MS = readIntervalMs(
   "RUMBLE_ONCHAIN_CREATE_STALL_TIMEOUT_MS",
-  5 * 60_000,
+  90_000, // 90s — abort and recycle if on-chain creation can't succeed
   10_000,
   30 * 60_000,
 );
 const ABORT_STALLED_BETTING =
-  process.env.RUMBLE_ABORT_STALLED_BETTING === undefined
-    ? process.env.NODE_ENV !== "production"
-    : process.env.RUMBLE_ABORT_STALLED_BETTING === "true";
+  process.env.RUMBLE_ABORT_STALLED_BETTING === "false" ? false : true;
 const ONCHAIN_CREATE_VERIFY_ATTEMPTS = readInt(
   "RUMBLE_ONCHAIN_CREATE_VERIFY_ATTEMPTS",
   4,
@@ -718,6 +716,19 @@ async function persistWithRetry(
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
   }
+}
+
+function persistTxSignatureWithRetry(
+  rumbleId: string,
+  step: persist.TxStep,
+  sig: string | null,
+  maxRetries = 3,
+): Promise<void> {
+  return persistWithRetry(
+    () => persist.updateRumbleTxSignature(rumbleId, step, sig, { throwOnError: true }),
+    `updateRumbleTxSignature:${step}:${rumbleId}`,
+    maxRetries,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1776,10 +1787,7 @@ export class RumbleOrchestrator {
         const vrfSig = await requestMatchupSeed(rumbleIdNum, this.getConnectionForState(state));
         if (vrfSig) {
           console.log(`[VRF] requestMatchupSeed succeeded for rumble ${rumbleIdNum}: ${vrfSig}`);
-          void persistWithRetry(
-            () => persist.updateRumbleTxSignature(slot.id, "requestMatchupSeed", vrfSig),
-            `updateRumbleTxSignature:requestMatchupSeed:${slot.id}`,
-          );
+          void persistTxSignatureWithRetry(slot.id, "requestMatchupSeed", vrfSig);
         } else {
           console.warn(`[VRF] requestMatchupSeed returned null for rumble ${rumbleIdNum}; waiting for retry`);
         }
@@ -2460,10 +2468,7 @@ export class RumbleOrchestrator {
         const completeSig = await completeRumbleOnChain(entry.rumbleIdNum);
         if (completeSig) {
           console.log(`[ONCHAIN-COMPLETE] completeRumble succeeded for rumble ${entry.rumbleId}: ${completeSig}`);
-          void persistWithRetry(
-            () => persist.updateRumbleTxSignature(entry.rumbleId, "completeRumble", completeSig),
-            `updateRumbleTxSignature:completeRumble:${entry.rumbleId}`,
-          );
+          void persistTxSignatureWithRetry(entry.rumbleId, "completeRumble", completeSig);
           entry.completeDone = true;
         } else {
           throw new Error("completeRumble returned null");
@@ -2610,26 +2615,30 @@ export class RumbleOrchestrator {
           console.log(`[Sweep] Rumble ${rumbleId}: no bets placed at all, nothing to sweep`);
           return;
         } else {
+          // Winner has bets — do NOT sweep. Winners can claim forever.
           console.log(
-            `[Sweep] Rumble ${rumbleId}: winner has bets (pool=${winnerPool}). Queuing delayed sweep after claim window.`,
+            `[Sweep] Rumble ${rumbleId}: winner has bets (pool=${winnerPool}). Skipping auto-sweep — winners can claim forever.`,
           );
+          return;
         }
       } else {
-        console.log(`[Sweep] Rumble ${rumbleId}: could not read mainnet state or no winner — queuing delayed sweep`);
+        // Can't read mainnet state or no winner — don't sweep to be safe
+        console.log(`[Sweep] Rumble ${rumbleId}: could not read mainnet state or no winner — skipping auto-sweep`);
+        return;
       }
     } catch (err) {
       console.warn(`[Sweep] Failed to read mainnet state for ${rumbleId}:`, formatError(err));
+      return;
     }
 
-    // For no-winner-bets: try sweeping after a short delay (the on-chain 24h window
-    // still applies, but we retry periodically). For normal cases: sweep after 24h+.
+    // Only reach here when noWinnerBets === true (nobody bet on the winner,
+    // so no one can call claim_payout — safe to sweep to treasury).
     const SWEEP_NO_WINNERS_DELAY_MS = 60_000; // retry every 60s for no-winner case
-    const SWEEP_NORMAL_DELAY_MS = 24 * 60 * 60 * 1_000 + 120_000; // 24h + 2min buffer
 
     this.pendingSweeps.set(rumbleId, {
       rumbleId,
       rumbleIdNum,
-      sweepAfter: Date.now() + (noWinnerBets ? SWEEP_NO_WINNERS_DELAY_MS : SWEEP_NORMAL_DELAY_MS),
+      sweepAfter: Date.now() + SWEEP_NO_WINNERS_DELAY_MS,
       attempts: 0,
       noWinnerBets,
     });
@@ -2668,10 +2677,7 @@ export class RumbleOrchestrator {
           .then((devnetSig) => {
             if (devnetSig) {
               console.log(`[Sweep] Devnet vault swept for ${sweep.rumbleId}: ${devnetSig}`);
-              void persistWithRetry(
-                () => persist.updateRumbleTxSignature(sweep.rumbleId, "sweepTreasury_devnet", devnetSig),
-                `updateRumbleTxSignature:sweepTreasury_devnet:${sweep.rumbleId}`,
-              );
+              void persistTxSignatureWithRetry(sweep.rumbleId, "sweepTreasury_devnet", devnetSig);
             }
           })
           .catch(() => {}); // devnet sweep is best-effort
@@ -3019,7 +3025,10 @@ export class RumbleOrchestrator {
           console.warn(
             `[Orchestrator] BLOCKED duplicate rumble creation: slot ${idx} already has active rumble ${slotConflict.id} (status=${slotConflict.status}). Aborting this slot.`,
           );
-          this.queueManager.abortBettingSlot(idx);
+          await this.abortStalledBettingSlot(
+            slot,
+            `duplicate active rumble detected in slot ${idx} (${slotConflict.id})`,
+          );
           return;
         }
       } catch (err) {
@@ -3044,8 +3053,10 @@ export class RumbleOrchestrator {
         console.warn(
           `[Orchestrator] createRumbleRecord returned null for slot ${idx} — aborting duplicate.`,
         );
-        this.bettingPools.delete(idx);
-        this.queueManager.abortBettingSlot(idx);
+        await this.abortStalledBettingSlot(
+          slot,
+          "createRumbleRecord returned null (duplicate active slot or persistence failure)",
+        );
         return;
       }
       this.setRumbleNumber(slot.id, rumbleNumber);
@@ -3280,27 +3291,48 @@ export class RumbleOrchestrator {
     this.clearOnchainCreateFailure(rumbleId);
     this.cleanupSlot(slotIndex, rumbleId);
 
-      for (const fighterId of fighters) {
-        if (dropFighterIds.has(fighterId)) {
-          await persistWithRetry(
-            () => persist.removeQueueFighter(fighterId),
-            `removeQueueFighter:${fighterId}`,
-          );
-          continue;
-        }
-      try {
-        this.queueManager.addToQueue(fighterId, false);
-        await persist.saveQueueFighter(fighterId, "waiting", false);
-      } catch {
-        // Ignore duplicates/active-slot conflicts during recovery.
-      }
-    }
+    await this.requeueAbortedFighters(fighters, dropFighterIds);
 
     await persistWithRetry(
-      () => persist.updateRumbleStatus(rumbleId, "complete"),
+      () => persist.updateRumbleStatus(rumbleId, "complete", {}, { throwOnError: true }),
       `updateRumbleStatus:complete:${rumbleId}`,
     );
     console.warn(`[Orchestrator] Recycled stalled betting slot ${slotIndex} (${rumbleId}): ${reason}`);
+  }
+
+  private async requeueAbortedFighters(
+    fighterIds: string[],
+    dropFighterIds: Set<string> = new Set(),
+  ): Promise<void> {
+    for (const fighterId of fighterIds) {
+      if (dropFighterIds.has(fighterId)) {
+        await persistWithRetry(
+          () => persist.removeQueueFighter(fighterId, { throwOnError: true }),
+          `removeQueueFighter:${fighterId}`,
+        );
+        continue;
+      }
+
+      let shouldPersistWaiting = true;
+      try {
+        this.queueManager.addToQueue(fighterId, false);
+      } catch (err) {
+        const message = formatError(err);
+        if (message.includes("active Rumble slot")) {
+          shouldPersistWaiting = false;
+          console.warn(
+            `[Orchestrator] Skipping requeue for ${fighterId} because it is already in another active slot`,
+          );
+        }
+      }
+
+      if (!shouldPersistWaiting) continue;
+
+      await persistWithRetry(
+        () => persist.saveQueueFighter(fighterId, "waiting", false, { throwOnError: true }),
+        `saveQueueFighter:waiting:${fighterId}`,
+      );
+    }
   }
 
   /**
@@ -3329,11 +3361,12 @@ export class RumbleOrchestrator {
     }
 
     // Strict aborts must skip payout entirely; immediately recycle the slot.
-    this.queueManager.abortActiveSlot(slotIndex);
+    const fighters = this.queueManager.abortActiveSlot(slotIndex);
+    await this.requeueAbortedFighters(fighters);
 
     // Persist: mark rumble as complete (no real winner)
     await persistWithRetry(
-      () => persist.updateRumbleStatus(rumbleId, "complete"),
+      () => persist.updateRumbleStatus(rumbleId, "complete", {}, { throwOnError: true }),
       `updateRumbleStatus:complete:${rumbleId}`,
     );
 
@@ -3402,10 +3435,7 @@ export class RumbleOrchestrator {
       const sig = await createRumbleOnChain(rumbleIdNum, fighterPubkeys, bettingDeadlineUnix);
       if (sig) {
         console.log(`[ONCHAIN-CREATE] createRumble succeeded for rumble ${rumbleId}: ${sig}`);
-        void persistWithRetry(
-          () => persist.updateRumbleTxSignature(rumbleId, "createRumble", sig),
-          `updateRumbleTxSignature:createRumble:${rumbleId}`,
-        );
+        void persistTxSignatureWithRetry(rumbleId, "createRumble", sig);
         this.clearOnchainCreateFailure(rumbleId);
 
         // Also create on mainnet for betting (fire-and-forget — don't block devnet combat)
@@ -3589,10 +3619,7 @@ export class RumbleOrchestrator {
         );
       } else {
         console.log(`[OnChain:Mainnet] createRumble succeeded (self-heal): ${sig}`);
-        void persistWithRetry(
-          () => persist.updateRumbleTxSignature(rumbleId, "createRumble_mainnet", sig),
-          `updateRumbleTxSignature:createRumble_mainnet:${rumbleId}`,
-        );
+        void persistTxSignatureWithRetry(rumbleId, "createRumble_mainnet", sig);
       }
     } catch (err) {
       if (
@@ -3668,10 +3695,7 @@ export class RumbleOrchestrator {
         if (sig) {
           console.log(`[ONCHAIN-START] startCombat (recovery) succeeded for rumble ${rumbleId}: ${sig}`);
           this.clearStartCombatDelegationFailures(rumbleId);
-          void persistWithRetry(
-            () => persist.updateRumbleTxSignature(rumbleId, "startCombat", sig),
-            `updateRumbleTxSignature:startCombat:${rumbleId}`,
-          );
+          void persistTxSignatureWithRetry(rumbleId, "startCombat", sig);
         }
       } catch (err: any) {
         const errMsg = err?.message ?? String(err);
@@ -3748,10 +3772,7 @@ export class RumbleOrchestrator {
       if (sig) {
         console.log(`[ONCHAIN-START] startCombat succeeded for rumble ${slot.id}: ${sig}`);
         this.clearStartCombatDelegationFailures(slot.id);
-        void persistWithRetry(
-          () => persist.updateRumbleTxSignature(slot.id, "startCombat", sig),
-          `updateRumbleTxSignature:startCombat:${slot.id}`,
-        );
+        void persistTxSignatureWithRetry(slot.id, "startCombat", sig);
       } else {
         console.warn(
           this.strictOnchainMode
@@ -4511,10 +4532,7 @@ export class RumbleOrchestrator {
         const sig = await openTurnOnChain(rumbleIdNum, slotConn);
         if (sig) {
           console.log(`[ONCHAIN-OPEN-TURN] openTurn succeeded for rumble ${slot.id}: ${sig}`);
-          void persistWithRetry(
-            () => persist.updateRumbleTxSignature(slot.id, "openTurn", sig),
-            `updateRumbleTxSignature:openTurn:${slot.id}`,
-          );
+          void persistTxSignatureWithRetry(slot.id, "openTurn", sig);
           this.openTurnFatalFailures.delete(slot.id);
         }
       } catch (err) {
@@ -4614,10 +4632,7 @@ export class RumbleOrchestrator {
             state.lastResolveSubmittedTurn = combat.currentTurn;
             state.lastResolveSubmittedAt = now;
             console.log(`[ONCHAIN-RESOLVE] resolveTurn succeeded for rumble ${slot.id}: ${sig}`);
-            void persistWithRetry(
-              () => persist.updateRumbleTxSignature(slot.id, "resolveTurn", sig),
-              `updateRumbleTxSignature:resolveTurn:${slot.id}`,
-            );
+            void persistTxSignatureWithRetry(slot.id, "resolveTurn", sig);
           }
         }
       } catch (err) {
@@ -4772,10 +4787,7 @@ export class RumbleOrchestrator {
           state.finalizeFatalFailureStartedAt = undefined;
           state.allowFinalizeFallback = false;
           console.log(`[ONCHAIN-FINALIZE] finalizeRumble succeeded for rumble ${slot.id}: ${sig}`);
-          await persistWithRetry(
-            () => persist.updateRumbleTxSignature(slot.id, "reportResult", sig),
-            `updateRumbleTxSignature:reportResult:${slot.id}`,
-          );
+          await persistTxSignatureWithRetry(slot.id, "reportResult", sig);
         }
       } catch (err) {
         invalidateReadCache(`rumble:${rumbleIdNum}`);
@@ -4863,10 +4875,7 @@ export class RumbleOrchestrator {
           state.lastAdvanceSubmittedTurn = combat.currentTurn;
           state.lastAdvanceSubmittedAt = now;
           console.log(`[ONCHAIN-ADVANCE] advanceTurn succeeded for rumble ${slot.id}: ${sig}`);
-          void persistWithRetry(
-            () => persist.updateRumbleTxSignature(slot.id, "advanceTurn", sig),
-            `updateRumbleTxSignature:advanceTurn:${slot.id}`,
-          );
+          void persistTxSignatureWithRetry(slot.id, "advanceTurn", sig);
           invalidateReadCache(`combat:${rumbleIdNum}`);
         }
       } catch (err) {
@@ -5876,10 +5885,7 @@ export class RumbleOrchestrator {
     );
     if (sig) {
       console.log(`[ONCHAIN-POST-TURN] postTurnResult succeeded for rumble ${slot.id}: ${sig}`);
-      void persistWithRetry(
-        () => persist.updateRumbleTxSignature(slot.id, "postTurnResult", sig),
-        `updateRumbleTxSignature:postTurnResult:${slot.id}`,
-      );
+      void persistTxSignatureWithRetry(slot.id, "postTurnResult", sig);
     }
   }
 
@@ -6259,7 +6265,12 @@ export class RumbleOrchestrator {
     } finally {
       // Clean up the pending request
       void persistWithRetry(
-        () => persist.expirePendingMoveRequest(slot.id, turnNumber, fighter.id),
+        () => persist.expirePendingMoveRequest(
+          slot.id,
+          turnNumber,
+          fighter.id,
+          { throwOnError: true },
+        ),
         `expirePendingMoveRequest:${slot.id}:${turnNumber}:${fighter.id}`,
       );
     }
@@ -6649,10 +6660,7 @@ export class RumbleOrchestrator {
             const finalizeSig = await finalizeRumbleOnChainTx(rumbleIdNum, getConnection());
             if (finalizeSig) {
               console.log(`[ONCHAIN-FINALIZE] finalizeRumble succeeded for rumble ${rumbleId}: ${finalizeSig}`);
-              void persistWithRetry(
-                () => persist.updateRumbleTxSignature(rumbleId, "reportResult", finalizeSig),
-                `updateRumbleTxSignature:reportResult:${rumbleId}`,
-              );
+              void persistTxSignatureWithRetry(rumbleId, "reportResult", finalizeSig);
             }
           } catch (finalizeErr) {
             invalidateReadCache(`rumble:${rumbleIdNum}`);
@@ -6763,14 +6771,8 @@ export class RumbleOrchestrator {
           const sig = !existingSig ? await distributeRewardOnChain(winnerAta, showerVaultAta) : null;
           if (sig) {
             console.log(`[OnChain] distributeReward (1st place) succeeded: ${sig}`);
-            void persistWithRetry(
-              () => persist.updateRumbleTxSignature(rumbleId, "distributeReward", sig),
-              `updateRumbleTxSignature:distributeReward:${rumbleId}`,
-            );
-            void persistWithRetry(
-              () => persist.updateRumbleTxSignature(rumbleId, "mintRumbleReward", sig),
-              `updateRumbleTxSignature:mintRumbleReward:${rumbleId}`,
-            );
+            void persistTxSignatureWithRetry(rumbleId, "distributeReward", sig);
+            void persistTxSignatureWithRetry(rumbleId, "mintRumbleReward", sig);
           } else {
             console.warn(`[OnChain] distributeReward returned null${this.strictOnchainMode ? "" : " — continuing off-chain"}`);
           }
@@ -6804,10 +6806,7 @@ export class RumbleOrchestrator {
             const sig = await adminDistributeOnChain(ata, amountLamports);
             if (sig) {
               console.log(`[OnChain] adminDistribute fighter reward to ${fighterId} succeeded: ${sig}`);
-              await persistWithRetry(
-                () => persist.updateRumbleTxSignature(rumbleId, rewardKey, sig),
-                `updateRumbleTxSignature:${rewardKey}:${rumbleId}`,
-              );
+              await persistTxSignatureWithRetry(rumbleId, rewardKey, sig);
             } else {
               console.warn(`[OnChain] adminDistribute fighter reward to ${fighterId} returned null`);
             }
@@ -6845,10 +6844,7 @@ export class RumbleOrchestrator {
             const sig = await adminDistributeOnChain(ata, amountLamports);
             if (sig) {
               console.log(`[OnChain] adminDistribute bettor reward to ${bettorWalletStr} succeeded: ${sig}`);
-              await persistWithRetry(
-                () => persist.updateRumbleTxSignature(rumbleId, rewardKey, sig),
-                `updateRumbleTxSignature:${rewardKey}:${rumbleId}`,
-              );
+              await persistTxSignatureWithRetry(rumbleId, rewardKey, sig);
             } else {
               console.warn(`[OnChain] adminDistribute bettor reward to ${bettorWalletStr} returned null`);
             }
@@ -6942,10 +6938,7 @@ export class RumbleOrchestrator {
                   const vrfSig = await requestIchorShowerVrf(showerRecipientAta, showerVaultAta);
                   if (vrfSig) {
                     console.log(`[VRF] requestIchorShowerVrf succeeded: ${vrfSig}`);
-                    void persistWithRetry(
-                      () => persist.updateRumbleTxSignature(rumbleId, "ichorShowerVrf", vrfSig),
-                      `updateRumbleTxSignature:ichorShowerVrf:${rumbleId}`,
-                    );
+                    void persistTxSignatureWithRetry(rumbleId, "ichorShowerVrf", vrfSig);
                     await this.persistPendingVrfShowerResult({
                       rumbleId,
                       slotIndex: this.findSlotIndexByRumbleId(rumbleId),
@@ -6983,10 +6976,7 @@ export class RumbleOrchestrator {
                   const showerSig = await checkIchorShowerOnChain(showerRecipientAta, showerVaultAta);
                   if (showerSig) {
                     console.log(`[OnChain] checkIchorShower succeeded: ${showerSig}`);
-                    void persistWithRetry(
-                      () => persist.updateRumbleTxSignature(rumbleId, "checkIchorShower", showerSig),
-                      `updateRumbleTxSignature:checkIchorShower:${rumbleId}`,
-                    );
+                    void persistTxSignatureWithRetry(rumbleId, "checkIchorShower", showerSig);
                   } else {
                     console.warn(`[OnChain] checkIchorShower returned null — continuing off-chain`);
                   }
@@ -7391,14 +7381,15 @@ export class RumbleOrchestrator {
 
     // Always settle persisted bet rows if we have a winner id, even when the
     // in-memory betting pool is empty after a server restart.
-    // settleWinnerTakeAllBets is itself idempotent (stores/reuses a
-    // bet_settlement_record), but we skip the call entirely when the
-    // on-chain settlement guard already marked this rumble as done.
-    if (winnerFighterId && !this.settledRumbleIds.has(slot.id)) {
+    // settleWinnerTakeAllBets is idempotent (stores/reuses a
+    // bet_settlement_record), so it must still run even after the on-chain
+    // settlement guard marks the rumble as completed.
+    if (winnerFighterId) {
       await persist.settleWinnerTakeAllBets(
         slot.id,
         winnerFighterId,
         getRumblePayoutMode(),
+        { throwOnError: true },
       );
     }
 
@@ -7442,7 +7433,7 @@ export class RumbleOrchestrator {
       // Even if DB write fails, continue cleaning up in-memory state to prevent
       // stale maps from blocking future slots.
       try {
-        await persist.updateRumbleStatus(previousRumbleId, "complete");
+        await persist.updateRumbleStatus(previousRumbleId, "complete", {}, { throwOnError: true });
       } catch (err) {
         console.error(
           `[Orchestrator] Failed to persist payout-complete status for ${previousRumbleId} (continuing cleanup):`,

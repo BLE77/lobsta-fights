@@ -617,7 +617,7 @@ function RumbleNativeScreen() {
   const commentaryEnabledRef = useRef(commentaryEnabled);
   const currentCommentaryKeyRef = useRef<string | null>(null);
   const backgroundMusicWasPlayingRef = useRef(false);
-  const backgroundMusicVolumeBeforeCommentaryRef = useRef(0.3);
+  const backgroundMusicVolumeBeforeCommentaryRef = useRef(0.15);
   const seenCommentaryKeysRef = useRef<Set<string>>(new Set());
   const seenCommentaryOrderRef = useRef<string[]>([]);
   const lastCommentaryRumbleRef = useRef<string>("");
@@ -638,6 +638,12 @@ function RumbleNativeScreen() {
   const [idleGraceActive, setIdleGraceActive] = useState(false);
   const lastCombatTurnsRef = useRef<RumbleTurn[]>([]);
   const lastPayoutPlacementsRef = useRef<RumbleSlotFighter[]>([]);
+  // Persist last completed fight for idle-screen recap
+  const lastCompletedFightRef = useRef<{
+    turns: RumbleTurn[];
+    fighters: RumbleSlotFighter[];
+    rumbleId: string;
+  } | null>(null);
   const [clockTick, setClockTick] = useState(0);
   const [winnerPopup, setWinnerPopup] = useState<{ fighter: RumbleSlotFighter; payout: SlotPayout | null; rumbleNumber: number | null } | null>(null);
   const winnerPopupAnim = useRef(new Animated.Value(0)).current;
@@ -671,12 +677,12 @@ function RumbleNativeScreen() {
           : { label: "PENDING TRUST", tone: "pending" as const };
 
   const playSfx = useCallback(
-    async (source: number) => {
+    async (source: number, volume = 0.8) => {
       if (!sfxEnabled) return;
       try {
         const { sound } = await Audio.Sound.createAsync(source, {
           shouldPlay: true,
-          volume: 0.8,
+          volume,
         });
         sound.setOnPlaybackStatusUpdate(status => {
           if (!status.isLoaded) return;
@@ -786,8 +792,8 @@ function RumbleNativeScreen() {
       if (!status.isLoaded) return;
       backgroundMusicWasPlayingRef.current = status.isPlaying;
       backgroundMusicVolumeBeforeCommentaryRef.current =
-        typeof status.volume === "number" ? status.volume : 0.3;
-      await current.setVolumeAsync(status.isPlaying ? 0.03 : 0);
+        typeof status.volume === "number" ? status.volume : 0.15;
+      await current.setVolumeAsync(status.isPlaying ? 0.02 : 0);
     } catch {
       // Ignore transient background audio errors.
     }
@@ -797,7 +803,7 @@ function RumbleNativeScreen() {
     const current = bgMusicRef.current;
     if (!current) return;
     try {
-      const volume = backgroundMusicVolumeBeforeCommentaryRef.current || 0.3;
+      const volume = backgroundMusicVolumeBeforeCommentaryRef.current || 0.15;
       if (musicEnabledRef.current) {
         await current.setVolumeAsync(volume);
         if (backgroundMusicWasPlayingRef.current) {
@@ -911,7 +917,7 @@ function RumbleNativeScreen() {
       const source = SND_BG_TRACKS[trackIndex % SND_BG_TRACKS.length];
       const { sound } = await Audio.Sound.createAsync(source, {
         isLooping: false,
-        volume: 0.3,
+        volume: 0.15,
         shouldPlay: false,
       });
       if (cancelled?.current) {
@@ -994,6 +1000,14 @@ function RumbleNativeScreen() {
     const isIdle = !rawFeaturedSlot || rawFeaturedSlot.state === "idle";
     if (!isIdle) {
       lastNonIdleSlotRef.current = rawFeaturedSlot;
+      // Snapshot fight data for idle-screen recap while combat/payout is live
+      if (rawFeaturedSlot && lastCombatTurnsRef.current.length > 0) {
+        lastCompletedFightRef.current = {
+          turns: [...lastCombatTurnsRef.current],
+          fighters: Array.isArray(rawFeaturedSlot.fighters) ? [...rawFeaturedSlot.fighters] : [],
+          rumbleId: String(rawFeaturedSlot.rumbleId ?? ""),
+        };
+      }
       setIdleGraceActive(false);
       if (idleGraceTimeoutRef.current) {
         clearTimeout(idleGraceTimeoutRef.current);
@@ -1247,16 +1261,16 @@ function RumbleNativeScreen() {
     const elimTokens = (activeTurnData.eliminations ?? []).map((value: unknown) => String(value ?? "").trim()).filter(Boolean);
 
     if (elimTokens.length > 0) {
-      void playSfx(SND_KO);
+      void playSfx(SND_KO, 0.45);
     } else if (pairings.length > 0) {
       const loudestPairing = pairings.reduce((best: RumbleTurnPairing, current: RumbleTurnPairing) => {
         const bestDamage = safeNumber(best.damageToA, 0) + safeNumber(best.damageToB, 0);
         const currentDamage = safeNumber(current.damageToA, 0) + safeNumber(current.damageToB, 0);
         return currentDamage > bestDamage ? current : best;
       }, pairings[0] as RumbleTurnPairing);
-      void playSfx(pickPairingSfx(loudestPairing));
+      void playSfx(pickPairingSfx(loudestPairing), 0.45);
     } else {
-      void playSfx(SND_ROUND_START);
+      void playSfx(SND_ROUND_START, 0.45);
     }
 
     // Spawn floating damage numbers
@@ -1318,9 +1332,9 @@ function RumbleNativeScreen() {
     if (!stateChanged) return;
 
     if (state === "combat") {
-      void playSfx(SND_ROUND_START);
+      void playSfx(SND_ROUND_START, 0.45);
     } else if (state === "payout") {
-      void playSfx(SND_CROWD_CHEER);
+      void playSfx(SND_CROWD_CHEER, 0.45);
     }
   }, [featuredSlot?.rumbleId, featuredSlot?.state, playSfx]);
 
@@ -1826,6 +1840,10 @@ function RumbleNativeScreen() {
     setBetDrafts({});
     lastCombatTurnsRef.current = [];
     lastPayoutPlacementsRef.current = [];
+    // Clear last fight recap when a new rumble actually starts (not on idle transitions)
+    if (featuredSlot && featuredSlot.state !== "idle" && featuredSlot.rumbleId !== lastCompletedFightRef.current?.rumbleId) {
+      lastCompletedFightRef.current = null;
+    }
   }, [featuredSlot?.rumbleId]);
 
   const onConnect = useCallback(() => {
@@ -1833,7 +1851,7 @@ function RumbleNativeScreen() {
       const connected = await connect();
       const address = normalizeWalletAddress(connected);
       showToast(address ? `Connected: ${shortAddress(address, 6, 6)}` : "Connected", "success");
-      void playSfx(SND_ROUND_START);
+      void playSfx(SND_ROUND_START, 1.0);
       void triggerHaptic("success");
       await Promise.all([fetchClaimBalance(), fetchMyBets(true), fetchSolBalance()]);
     });
@@ -2253,7 +2271,7 @@ function RumbleNativeScreen() {
       setLastBetSig(txSig);
       setBetDrafts({});
       showToast(`Bet placed: ${shortAddress(txSig, 8, 8)}`, "success");
-      void playSfx(SND_BET_PLACED);
+      void playSfx(SND_BET_PLACED, 1.0);
       void triggerHaptic("success");
 
       await Promise.all([
@@ -2346,7 +2364,7 @@ function RumbleNativeScreen() {
 
         if (totalClaimed > 0) {
           showToast(`Claimed ${totalClaimed} rumble payout(s)`, "success");
-          void playSfx(SND_CLAIM);
+          void playSfx(SND_CLAIM, 1.0);
           void triggerHaptic("success");
         }
       } catch (error) {
@@ -2383,26 +2401,26 @@ function RumbleNativeScreen() {
   const handleTabChange = useCallback((tab: TabKey) => {
     setActiveTab(prev => {
       if (prev === tab) return prev;
-      void playSfx(SND_CLICK);
+      void playSfx(SND_CLICK, 1.0);
       void triggerHaptic("selection");
       return tab;
     });
   }, [playSfx, triggerHaptic]);
 
   const handleToggleCommentary = useCallback(() => {
-    void playSfx(SND_CLICK);
+    void playSfx(SND_CLICK, 1.0);
     void triggerHaptic("selection");
     setCommentaryEnabled(prev => !prev);
   }, [playSfx, triggerHaptic]);
 
   const handleToggleMusic = useCallback(() => {
-    void playSfx(SND_CLICK);
+    void playSfx(SND_CLICK, 1.0);
     void triggerHaptic("selection");
     setMusicEnabled(prev => !prev);
   }, [playSfx, triggerHaptic]);
 
   const handleToggleSfx = useCallback(() => {
-    if (sfxEnabled) void playSfx(SND_CLICK);
+    if (sfxEnabled) void playSfx(SND_CLICK, 1.0);
     void triggerHaptic("selection");
     setSfxEnabled(prev => !prev);
   }, [playSfx, sfxEnabled, triggerHaptic]);
@@ -2640,6 +2658,85 @@ function RumbleNativeScreen() {
                         </Text>
                       </View>
                     </View>
+                    {lastCompletedFightRef.current && lastCompletedFightRef.current.turns.length > 0 ? (() => {
+                      const lastFight = lastCompletedFightRef.current!;
+                      const lastFightFightersById = new Map<string, RumbleSlotFighter>();
+                      for (const f of lastFight.fighters) {
+                        const id = getFighterId(f).trim();
+                        if (id) {
+                          lastFightFightersById.set(id, f);
+                          lastFightFightersById.set(id.toLowerCase(), f);
+                        }
+                      }
+                      const lastTurns = lastFight.turns.slice(-3).reverse();
+                      return (
+                        <View style={styles.lastFightWrap}>
+                          <Text style={styles.lastFightHeader}>LAST FIGHT</Text>
+                          <View style={styles.listStack}>
+                            {lastTurns.map((turn, idx) => {
+                              const turnNumber = safeNumber(turn.turnNumber, lastTurns.length - idx);
+                              const pairings: RumbleTurnPairing[] = Array.isArray(turn.pairings) ? turn.pairings : [];
+                              const eliminations: unknown[] = Array.isArray(turn.eliminations) ? turn.eliminations : [];
+                              const byeName = typeof turn.bye === "string" && turn.bye.trim()
+                                ? (lastFightFightersById.get(turn.bye.trim())
+                                    ? getFighterName(lastFightFightersById.get(turn.bye.trim())!)
+                                    : turn.bye.trim())
+                                : null;
+                              return (
+                                <View key={`lf_turn_${turnNumber}_${idx}`} style={styles.turnFeedCard}>
+                                  <View style={styles.turnFeedTop}>
+                                    <Text style={styles.turnFeedTitle}>TURN {turnNumber}</Text>
+                                    <Text style={styles.turnFeedMeta}>
+                                      {pairings.length} pair{pairings.length === 1 ? "" : "s"} · {eliminations.length} KO{eliminations.length === 1 ? "" : "s"}
+                                    </Text>
+                                  </View>
+                                  {pairings.slice(0, 3).map((pair: RumbleTurnPairing, pairIdx: number) => {
+                                    const leftId = String(pair.fighterA ?? "").trim();
+                                    const rightId = String(pair.fighterB ?? "").trim();
+                                    const left = lastFightFightersById.get(leftId) ?? lastFightFightersById.get(leftId.toLowerCase());
+                                    const right = lastFightFightersById.get(rightId) ?? lastFightFightersById.get(rightId.toLowerCase());
+                                    const leftName = left ? getFighterName(left) : (pair.fighterAName ?? leftId);
+                                    const rightName = right ? getFighterName(right) : (pair.fighterBName ?? rightId);
+                                    const leftMove = String(pair.moveA ?? "").toUpperCase();
+                                    const rightMove = String(pair.moveB ?? "").toUpperCase();
+                                    return (
+                                      <View key={`lf_pair_${pairIdx}`} style={styles.turnFeedPairRow}>
+                                        <Text style={styles.turnFeedMatchupText}>
+                                          <Text style={styles.turnFeedOutcomeName}>{leftName}</Text>{" "}
+                                          <Text style={[styles.turnFeedMoveTag, { color: getMoveColor(leftMove) }]}>
+                                            [{formatMove(leftMove)}]
+                                          </Text>
+                                          <Text style={styles.turnFeedMoveSep}> vs </Text>
+                                          <Text style={styles.turnFeedOutcomeName}>{rightName}</Text>{" "}
+                                          <Text style={[styles.turnFeedMoveTag, { color: getMoveColor(rightMove) }]}>
+                                            [{formatMove(rightMove)}]
+                                          </Text>
+                                        </Text>
+                                        {renderTurnFeedOutcomeSummary(pair, leftName, rightName)}
+                                      </View>
+                                    );
+                                  })}
+                                  {byeName ? (
+                                    <Text style={styles.turnFeedLine}>
+                                      <Text style={styles.satOutTag}>{byeName}</Text> sat out this turn
+                                    </Text>
+                                  ) : null}
+                                  {eliminations.length > 0 ? (
+                                    <Text style={styles.turnFeedElims} numberOfLines={2}>
+                                      {eliminations.map((e) => {
+                                        const id = String(e ?? "").trim();
+                                        const f = lastFightFightersById.get(id) ?? lastFightFightersById.get(id.toLowerCase());
+                                        return `ELIMINATED: ${f ? getFighterName(f) : id}`;
+                                      }).join(" · ")}
+                                    </Text>
+                                  ) : null}
+                                </View>
+                              );
+                            })}
+                          </View>
+                        </View>
+                      );
+                    })() : null}
                   </View>
                 ) : null}
 
@@ -3051,6 +3148,7 @@ function RumbleNativeScreen() {
                                 const justEliminated = isRecentlyEliminatedFighter(fighter);
                                 const isEliminated = safeNumber(fighter.hp, 0) <= 0;
                                 const shouldFade = justEliminated || isEliminated;
+                                // Living fighter sitting out this turn (odd number)
                                 const eliminationAnimStyle = justEliminated
                                   ? {
                                       transform: [
@@ -3083,7 +3181,11 @@ function RumbleNativeScreen() {
                                     <Text style={[styles.rowSub, shouldFade ? styles.rowSubEliminated : null]}>
                                       HP {safeNumber(fighter.hp, 0).toFixed(0)} // DMG {safeNumber(fighter.totalDamageDealt, 0).toFixed(0)}
                                     </Text>
-                                    {justEliminated ? <Text style={styles.eliminatedTag}>ELIMINATED</Text> : null}
+                                    {justEliminated ? (
+                                      <Text style={styles.eliminatedTag}>ELIMINATED</Text>
+                                    ) : !isEliminated ? (
+                                      <Text style={styles.satOutTag}>SAT OUT</Text>
+                                    ) : null}
                                   </View>
                                   </Animated.View>
                                 );
@@ -3190,6 +3292,16 @@ function RumbleNativeScreen() {
                                     ) : (
                                       <Text style={styles.turnFeedLine}>No pairings resolved.</Text>
                                     )}
+                                    {typeof turn.bye === "string" && turn.bye.trim() ? (() => {
+                                      const byeId = turn.bye.trim();
+                                      const byeFighter = featuredFightersById.get(byeId) ?? featuredFightersById.get(byeId.toLowerCase());
+                                      const byeLabel = byeFighter ? getFighterName(byeFighter) : resolveFighterDisplayName(byeId, null);
+                                      return (
+                                        <Text style={styles.turnFeedLine}>
+                                          <Text style={styles.satOutTag}>{byeLabel}</Text> sat out this turn
+                                        </Text>
+                                      );
+                                    })() : null}
                                     {eliminationLabels.length > 0 ? (
                                       <Text style={styles.turnFeedElims} numberOfLines={2}>
                                         {eliminationLabels.join(" · ")}
