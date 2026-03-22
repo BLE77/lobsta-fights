@@ -109,12 +109,21 @@ function isRetryableVerificationError(message: string): boolean {
   );
 }
 
-type BetSignatureLock = { mode: "db" | "memory"; txSignature: string } | null;
+type BetSignatureLock = { mode: "db" | "db-retained" | "memory"; txSignature: string } | null;
+
+type ExistingIdempotentBetRow = {
+  tx_signature?: string | null;
+  response_payload?: unknown;
+  wallet_address?: string | null;
+};
 
 async function releaseBetSignatureLock(lock: BetSignatureLock): Promise<void> {
   if (!lock) return;
   if (lock.mode === "memory") {
     unmarkSignatureUsed(lock.txSignature);
+    return;
+  }
+  if (lock.mode === "db-retained") {
     return;
   }
   const { error } = await freshSupabase()
@@ -213,6 +222,7 @@ export async function POST(request: Request) {
 
   let signatureLock: BetSignatureLock = null;
   let betRegistered = false;
+  let existingIdempotentRow: ExistingIdempotentBetRow | null = null;
 
   try {
     const body = await request.json();
@@ -221,7 +231,7 @@ export async function POST(request: Request) {
     const bettorWallet =
       body.bettor_wallet || body.bettorWallet || body.wallet_address || body.walletAddress;
     const bettorId = body.bettor_id || body.bettorId;
-    const txSignature = body.tx_signature || body.txSignature;
+    let txSignature = body.tx_signature || body.txSignature;
     const txKind = body.tx_kind || body.txKind;
     const expectedOddsVersionRaw = body.expected_odds_version ?? body.expectedOddsVersion;
     const expectedOddsVersion =
@@ -239,12 +249,24 @@ export async function POST(request: Request) {
     {
       const { data: existingRow, error: idemError } = await freshSupabase()
         .from("ucf_used_tx_signatures")
-        .select("response_payload")
+        .select("tx_signature, response_payload, wallet_address")
         .eq("idempotency_key", idempotencyKey)
         .maybeSingle();
       if (!idemError && existingRow?.response_payload) {
         console.log("[rumble/bet] Idempotency hit — returning stored response for key:", idempotencyKey);
         return NextResponse.json(existingRow.response_payload);
+      }
+      if (!idemError && existingRow) {
+        existingIdempotentRow = existingRow;
+        if (
+          !txSignature &&
+          existingRow.tx_signature &&
+          typeof bettorWallet === "string" &&
+          typeof existingRow.wallet_address === "string" &&
+          existingRow.wallet_address.toLowerCase() === bettorWallet.toLowerCase()
+        ) {
+          txSignature = existingRow.tx_signature;
+        }
       }
       // If the query fails (e.g. column doesn't exist yet), just proceed normally
       if (idemError && !isMissingTxSignatureTableError(idemError)) {
@@ -358,6 +380,30 @@ export async function POST(request: Request) {
 
     // --- Auth mode 1: Wallet + tx_signature (spectator betting) ---
     if (bettorWallet && txSignature) {
+      if (
+        existingIdempotentRow?.tx_signature &&
+        existingIdempotentRow.tx_signature !== txSignature
+      ) {
+        return NextResponse.json(
+          {
+            error: "This idempotency key is already associated with a different transaction. Rebuild and re-sign a fresh bet.",
+            error_code: "IDEMPOTENCY_MISMATCH",
+          },
+          { status: 409 },
+        );
+      }
+      if (
+        existingIdempotentRow?.wallet_address &&
+        existingIdempotentRow.wallet_address.toLowerCase() !== bettorWallet.toLowerCase()
+      ) {
+        return NextResponse.json(
+          {
+            error: "This idempotency key is already associated with a different wallet. Rebuild and re-sign a fresh bet.",
+            error_code: "IDEMPOTENCY_MISMATCH",
+          },
+          { status: 409 },
+        );
+      }
       const { data: existingSignature, error: existingSignatureError } = await freshSupabase()
         .from("ucf_used_tx_signatures")
         .select("tx_signature")
@@ -382,7 +428,10 @@ export async function POST(request: Request) {
           return NextResponse.json({ error: "Failed to validate transaction signature usage." }, { status: 500 });
         }
       }
-      if (existingSignature) {
+      const sameIdempotentRetry =
+        !!existingSignature &&
+        existingIdempotentRow?.tx_signature === txSignature;
+      if (existingSignature && !sameIdempotentRetry) {
         return NextResponse.json(
           { error: "This transaction signature has already been used for a bet.", error_code: "REPLAY_DETECTED" },
           { status: 400 },
@@ -410,11 +459,7 @@ export async function POST(request: Request) {
           };
         }
 
-        const requestedRumbleIdNum = normalizeRumbleNumber(
-          body.rumble_id_num ?? body.rumbleIdNum,
-        );
         const rumbleIdNum =
-          requestedRumbleIdNum ??
           requestedBettingCandidate?.rumbleNumber ??
           await resolveOnchainRumbleIdForSlot(parsedSlotIndex, slotRumbleId);
         if (rumbleIdNum === null) {
@@ -519,6 +564,8 @@ export async function POST(request: Request) {
           );
         }
         signatureLock = { mode: "memory", txSignature };
+      } else if (sameIdempotentRetry) {
+        signatureLock = { mode: "db-retained", txSignature };
       } else {
         const { error: signatureInsertError } = await freshSupabase()
           .from("ucf_used_tx_signatures")

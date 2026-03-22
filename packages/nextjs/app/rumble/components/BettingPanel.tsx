@@ -111,7 +111,8 @@ export default function BettingPanel({
     setDeploying((prev) => new Set(prev).add(fighterId));
     try {
       const sig = await onPlaceBet(slotIndex, fighterId, amount);
-      if (sig) setLastTxSignature(sig);
+      if (!sig) return;
+      setLastTxSignature(sig);
       // Clear selection after submit to avoid accidental re-sending in later batch deploys.
       setBets((prev) => {
         const next = new Map(prev);
@@ -150,7 +151,8 @@ export default function BettingPanel({
           sig = await onPlaceBet(slotIndex, leg.fighterId, leg.amount) ?? undefined;
         }
       }
-      if (sig) setLastTxSignature(sig);
+      if (!sig) return;
+      setLastTxSignature(sig);
       // Clear submitted selections so subsequent bets only include newly selected fighters.
       setBets(new Map());
     } finally {

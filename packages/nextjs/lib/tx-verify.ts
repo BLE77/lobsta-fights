@@ -11,6 +11,7 @@ import { PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { getBettingConnection } from "./solana-connection";
 import { getConfiguredTreasuryAddress } from "./treasury";
 import { RUMBLE_ENGINE_ID_MAINNET } from "./solana-programs";
+import { MAX_BET_SOL, MIN_BET_SOL } from "./betting-limits";
 
 /** Tolerance for SOL amount matching (accounts for rounding). */
 const AMOUNT_TOLERANCE_SOL = 0.000000001;
@@ -38,9 +39,7 @@ async function getParsedTxWithRetry(
   return null;
 }
 
-/** Min/max bet bounds in SOL. */
-export const MIN_BET_SOL = 0.02;
-export const MAX_BET_SOL = 0.1;
+export { MIN_BET_SOL, MAX_BET_SOL };
 
 // ---------------------------------------------------------------------------
 // Replay protection: in-memory set of used tx signatures

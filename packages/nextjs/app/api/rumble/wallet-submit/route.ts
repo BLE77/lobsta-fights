@@ -5,6 +5,7 @@ import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from "~~/lib/rate-limit";
 import { requireJsonContentType, sanitizeErrorResponse } from "~~/lib/api-middleware";
 import { getBettingConnection, getCombatConnectionAuto, isErEnabled } from "~~/lib/solana-connection";
+import { freshSupabase } from "~~/lib/supabase";
 import {
   RUMBLE_ENGINE_ID,
   RUMBLE_ENGINE_ID_MAINNET,
@@ -77,6 +78,59 @@ function findUnexpectedBettingInstruction(transaction: Transaction): string | nu
     }
   }
   return null;
+}
+
+async function persistPendingBetRelay(
+  body: Record<string, unknown>,
+  signature: string,
+): Promise<void> {
+  const idempotencyKeyRaw = body.idempotency_key ?? body.idempotencyKey;
+  const walletAddressRaw = body.wallet_address ?? body.walletAddress;
+  if (typeof idempotencyKeyRaw !== "string" || idempotencyKeyRaw.trim().length === 0) return;
+  if (typeof walletAddressRaw !== "string" || walletAddressRaw.trim().length === 0) return;
+
+  const slotIndexRaw = body.slot_index ?? body.slotIndex;
+  const slotIndex = Number.isInteger(Number(slotIndexRaw)) ? Number(slotIndexRaw) : null;
+  const rumbleIdRaw = body.rumble_id ?? body.rumbleId;
+  const txKindRaw = body.tx_kind ?? body.txKind;
+  const payload = {
+    source: "wallet_submit",
+    tx_kind: typeof txKindRaw === "string" ? txKindRaw : null,
+    fighter_id: typeof body.fighter_id === "string" ? body.fighter_id : null,
+    fighter_index: Number.isInteger(Number(body.fighter_index ?? body.fighterIndex))
+      ? Number(body.fighter_index ?? body.fighterIndex)
+      : null,
+    sol_amount:
+      Number.isFinite(Number(body.sol_amount ?? body.solAmount))
+        ? Number(body.sol_amount ?? body.solAmount)
+        : null,
+    bets: Array.isArray(body.bets) ? body.bets : null,
+    expected_odds_version:
+      Number.isInteger(Number(body.expected_odds_version ?? body.expectedOddsVersion))
+        ? Number(body.expected_odds_version ?? body.expectedOddsVersion)
+        : null,
+  };
+
+  try {
+    const sb = freshSupabase();
+    const row = {
+      tx_signature: signature,
+      kind: "rumble_bet",
+      wallet_address: walletAddressRaw.trim(),
+      rumble_id: typeof rumbleIdRaw === "string" && rumbleIdRaw.trim().length > 0 ? rumbleIdRaw.trim() : null,
+      slot_index: slotIndex,
+      idempotency_key: idempotencyKeyRaw.trim(),
+      payload,
+    };
+    const { error } = await sb
+      .from("ucf_used_tx_signatures")
+      .upsert(row, { onConflict: "tx_signature" });
+    if (error && (error as { code?: string }).code !== "23505") {
+      console.warn("[wallet-submit] Failed to persist pending bet relay:", error);
+    }
+  } catch (error) {
+    console.warn("[wallet-submit] Pending bet relay persistence threw:", error);
+  }
 }
 
 export async function POST(request: Request) {
@@ -172,6 +226,10 @@ export async function POST(request: Request) {
       preflightCommitment: erEnabled ? undefined : "processed",
       maxRetries: 3,
     });
+
+    if (network === "betting") {
+      await persistPendingBetRelay(body, signature);
+    }
 
     return NextResponse.json({
       signature,

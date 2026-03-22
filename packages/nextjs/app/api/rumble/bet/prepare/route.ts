@@ -382,6 +382,23 @@ export async function POST(request: Request) {
         Number.isFinite(onchainDeadlineMsEstimate) && onchainDeadlineMsEstimate > 0
           ? onchainDeadlineMsEstimate - 20_000
           : null;
+      if (recommendedSignByMs !== null && recommendedSignByMs <= Date.now()) {
+        return NextResponse.json(
+          {
+            error: "Betting is closing right now. Wait for the next rumble to avoid a failed transaction.",
+            error_code: "BETTING_CLOSED",
+            onchain_state: onchainRumble.state,
+            onchain_betting_close_slot: onchainCloseRaw > 0n ? onchainCloseRaw.toString() : null,
+            onchain_betting_deadline_unix: null,
+            current_slot: String(currentSlot),
+            slots_until_close: slotsUntilClose,
+            guard_ms: BETTING_CLOSE_GUARD_MS,
+            guard_slots: BETTING_CLOSE_GUARD_SLOTS,
+            recommended_sign_by_ms: recommendedSignByMs,
+          },
+          { status: 409 },
+        );
+      }
 
       return NextResponse.json({
         idempotency_key: idempotencyKey,

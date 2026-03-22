@@ -24,6 +24,7 @@ import { BoltIcon, ChatBubbleLeftRightIcon, ListBulletIcon } from "@heroicons/re
 import AudioToggle from "~~/components/AudioToggle";
 import { useSolanaMobileContext } from "~~/lib/solana-mobile";
 import { usePageVisibility } from "~~/hooks/usePageVisibility";
+import { MAX_BET_SOL, MIN_BET_SOL } from "~~/lib/betting-limits";
 
 // ---------------------------------------------------------------------------
 // Types for the status API response
@@ -1190,7 +1191,8 @@ export default function RumblePage() {
         for (const bet of slot.bets ?? []) {
           const amount = Number(bet.sol_amount ?? 0);
           if (!Number.isFinite(amount) || amount <= 0) continue;
-          fighterMap.set(String(bet.fighter_id), amount);
+          const fighterId = String(bet.fighter_id);
+          fighterMap.set(fighterId, (fighterMap.get(fighterId) ?? 0) + amount);
         }
         if (fighterMap.size > 0) {
           next.set(slot.slot_index, fighterMap);
@@ -1207,9 +1209,7 @@ export default function RumblePage() {
             } else {
               const serverMap = merged.get(slotIndex)!;
               for (const [fighterId, amount] of fighterMap) {
-                if (!serverMap.has(fighterId)) {
-                  serverMap.set(fighterId, amount);
-                }
+                serverMap.set(fighterId, Math.max(serverMap.get(fighterId) ?? 0, amount));
               }
             }
           }
@@ -1616,6 +1616,7 @@ export default function RumblePage() {
     async (
       signedTx: { serialize: () => Uint8Array },
       network: "betting" | "combat" = "betting",
+      metadata?: Record<string, unknown>,
     ): Promise<string> => {
       const submitRes = await fetch("/api/rumble/wallet-submit", {
         method: "POST",
@@ -1623,6 +1624,7 @@ export default function RumblePage() {
         body: JSON.stringify({
           signed_tx: encodeSignedTx(signedTx.serialize()),
           network,
+          ...(metadata ?? {}),
         }),
       });
       const submitData = await submitRes.json().catch(() => ({}));
@@ -1757,8 +1759,8 @@ export default function RumblePage() {
       throw new Error("No bets selected.");
     }
     for (const bet of bets) {
-      if (!Number.isFinite(bet.amount) || bet.amount < 0.02 || bet.amount > 10) {
-        setBetError("Each bet must be between 0.02 and 10 SOL");
+      if (!Number.isFinite(bet.amount) || bet.amount < MIN_BET_SOL || bet.amount > MAX_BET_SOL) {
+        setBetError(`Each bet must be between ${MIN_BET_SOL} and ${MAX_BET_SOL} SOL`);
         setTimeout(() => setBetError(null), 5000);
         throw new Error("Invalid amount");
       }
@@ -1810,12 +1812,24 @@ export default function RumblePage() {
         Number.isFinite(Number(prepared?.guard_ms)) && Number(prepared.guard_ms) > 0
           ? Number(prepared.guard_ms)
           : Math.max(1_000, status?.bettingCloseGuardMs ?? DEFAULT_BET_CLOSE_GUARD_MS);
+      const recommendedSignByMs =
+        Number.isFinite(Number(prepared?.recommended_sign_by_ms))
+          ? Number(prepared.recommended_sign_by_ms)
+          : Number.NaN;
       if (Number.isFinite(onchainDeadlineMs) && Date.now() >= onchainDeadlineMs - closeGuardMs) {
         throw new Error("Betting just closed on-chain. Wait for the next rumble.");
       }
 
       const tx = decodeBase64Tx(prepared.transaction_base64);
       tx.feePayer = publicKey;
+      const preparedLegs: Array<{
+        fighter_id: string;
+        fighter_index?: number;
+        sol_amount: number;
+      }> =
+        Array.isArray(prepared?.bets) && prepared.bets.length > 0
+          ? prepared.bets
+          : bets.map((b) => ({ fighter_id: b.fighterId, sol_amount: b.amount }));
 
       const closeSlotRaw = Number(prepared?.onchain_betting_close_slot);
       const guardSlotsRaw = Number(prepared?.guard_slots);
@@ -1828,19 +1842,29 @@ export default function RumblePage() {
       // 2) Sign with wallet
       const signed = await signTransaction(tx);
 
+      if (Number.isFinite(recommendedSignByMs) && Date.now() > recommendedSignByMs) {
+        throw new Error("Bet signed too late. Refresh and try again.");
+      }
+      if (Number.isFinite(onchainDeadlineMs) && Date.now() >= onchainDeadlineMs - closeGuardMs) {
+        throw new Error("Betting just closed on-chain. Wait for the next rumble.");
+      }
+
       // 3) Send to Solana (fire-and-forget — don't block on confirmation)
-      const txSig = await submitSignedWalletTransaction(signed, "betting");
+      const txSig = await submitSignedWalletTransaction(signed, "betting", {
+        wallet_address: publicKey.toBase58(),
+        slot_index: slotIndex,
+        rumble_id: prepared.rumble_id,
+        tx_kind: prepared.tx_kind ?? "rumble_place_bet",
+        idempotency_key: prepared.idempotency_key,
+        expected_odds_version: prepared.odds_version,
+        bets: preparedLegs,
+        fighter_id: preparedLegs[0]?.fighter_id,
+        fighter_index: preparedLegs[0]?.fighter_index ?? prepared.fighter_index,
+        sol_amount: preparedLegs[0]?.sol_amount,
+      });
 
       // 4) Register bet immediately — the API verifies the tx on-chain.
       //    Blocking on confirmTransaction hangs the UI on devnet (30s+ timeouts).
-      const preparedLegs: Array<{
-        fighter_id: string;
-        fighter_index?: number;
-        sol_amount: number;
-      }> =
-        Array.isArray(prepared?.bets) && prepared.bets.length > 0
-          ? prepared.bets
-          : bets.map((b) => ({ fighter_id: b.fighterId, sol_amount: b.amount }));
       const registerBody = {
         slot_index: slotIndex,
         fighter_id: preparedLegs[0]?.fighter_id,
@@ -1849,6 +1873,8 @@ export default function RumblePage() {
         wallet_address: publicKey.toBase58(),
         tx_signature: txSig,
         tx_kind: prepared.tx_kind ?? "rumble_place_bet",
+        idempotency_key: prepared.idempotency_key,
+        expected_odds_version: prepared.odds_version,
         rumble_id: prepared.rumble_id,
         rumble_id_num: prepared.rumble_id_num,
         fighter_index: preparedLegs[0]?.fighter_index ?? prepared.fighter_index,
