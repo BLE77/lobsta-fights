@@ -33,14 +33,17 @@ const COMMON_ALLOWED_PROGRAMS = new Set([
   TOKEN_PROGRAM_ID.toBase58(),
   ASSOCIATED_TOKEN_PROGRAM_ID.toBase58(),
 ]);
+const MEMO_PROGRAM_ID = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
 
 const ALLOWED_PROGRAMS_BY_NETWORK: Record<WalletSubmitNetwork, Set<string>> = {
   betting: new Set([
-    ComputeBudgetProgram.programId.toBase58(),
+    ...COMMON_ALLOWED_PROGRAMS,
+    MEMO_PROGRAM_ID,
     RUMBLE_ENGINE_ID_MAINNET.toBase58(),
   ]),
   combat: new Set([
     ...COMMON_ALLOWED_PROGRAMS,
+    MEMO_PROGRAM_ID,
     RUMBLE_ENGINE_ID.toBase58(),
   ]),
 };
@@ -186,6 +189,7 @@ export async function POST(request: Request) {
         {
           error: "Transaction includes a program that is not allowed for this relay.",
           program_id: unexpectedProgramId,
+          found_program_ids: getInstructionProgramIds(transaction),
         },
         { status: 400 },
       );
