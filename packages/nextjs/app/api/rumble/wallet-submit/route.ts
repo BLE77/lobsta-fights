@@ -183,16 +183,18 @@ export async function POST(request: Request) {
       );
     }
 
-    const unexpectedProgramId = findUnexpectedProgramId(transaction, network);
-    if (unexpectedProgramId) {
-      return NextResponse.json(
-        {
-          error: "Transaction includes a program that is not allowed for this relay.",
-          program_id: unexpectedProgramId,
-          found_program_ids: getInstructionProgramIds(transaction),
-        },
-        { status: 400 },
-      );
+    if (network === "combat") {
+      const unexpectedProgramId = findUnexpectedProgramId(transaction, network);
+      if (unexpectedProgramId) {
+        return NextResponse.json(
+          {
+            error: "Transaction includes a program that is not allowed for this relay.",
+            program_id: unexpectedProgramId,
+            found_program_ids: getInstructionProgramIds(transaction),
+          },
+          { status: 400 },
+        );
+      }
     }
 
     if (
