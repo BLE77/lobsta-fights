@@ -1629,12 +1629,29 @@ export async function GET(request: Request) {
       if (!reportedRumbleId) return false;
       return !activePersistedRumbleIds.has(reportedRumbleId);
     };
+    const sanitizeWorkerSlotReport = (report: any) => {
+      if (!report || typeof report !== "object") return report;
+      const state =
+        report.state === "betting" || report.state === "combat" || report.state === "payout" || report.state === "idle"
+          ? report.state
+          : null;
+      if (!state) return report;
+      return {
+        ...report,
+        // Once a slot has moved out of betting, do not keep exposing the old
+        // betting deadline from worker runtime health. That stale deadline can
+        // conflict with the live combat timer family in downstream consumers.
+        bettingDeadline: state === "betting" ? report.bettingDeadline ?? null : null,
+      };
+    };
     const workerSnapshotSlotReports =
       workerSnapshot && Array.isArray(workerSnapshot.slotReports)
         ? workerSnapshot.slotReports
         : null;
     const filteredWorkerSlotReports = workerSnapshotSlotReports
-      ? workerSnapshotSlotReports.filter((report: any) => !isGhostWorkerSlotReport(report))
+      ? workerSnapshotSlotReports
+          .filter((report: any) => !isGhostWorkerSlotReport(report))
+          .map((report: any) => sanitizeWorkerSlotReport(report))
       : null;
     const ignoredGhostWorkerSlotReports = workerSnapshotSlotReports
       ? workerSnapshotSlotReports.filter((report: any) => isGhostWorkerSlotReport(report))
@@ -1642,6 +1659,14 @@ export async function GET(request: Request) {
     const runtimeHealth = workerSnapshot
       ? {
           ...runtimeHealthLocal,
+          workerId:
+            typeof workerSnapshot.workerId === "string"
+              ? workerSnapshot.workerId
+              : (runtimeHealthLocal as any).workerId ?? null,
+          lastTickAt:
+            typeof workerSnapshot.lastTickAt === "string"
+              ? workerSnapshot.lastTickAt
+              : (runtimeHealthLocal as any).lastTickAt ?? null,
           onchainAdmin:
             typeof workerSnapshot.onchainAdmin === "object" && workerSnapshot.onchainAdmin
               ? workerSnapshot.onchainAdmin
@@ -1677,7 +1702,15 @@ export async function GET(request: Request) {
     const effectiveQueueLen = queueEntries.length;
     let nextRumbleIn: string | null = null;
     const fightersNeeded = MIN_FIGHTERS_TO_START;
-    if (effectiveQueueLen > 0 && effectiveQueueLen < fightersNeeded) {
+    const hasArmedBettingSlot =
+      slots.some((s) => s.state === "betting" && !!s.bettingDeadline) ||
+      runtimeSlotReports.some((report) => report?.state === "betting" && !!report?.bettingDeadline);
+    if (hasArmedBettingSlot) {
+      // Once a slot has a real betting deadline, that slot timer is the only
+      // countdown we want to show. Suppress the queue lock timer so the UI
+      // doesn't show conflicting values like "20s" and "4s" at once.
+      nextRumbleIn = null;
+    } else if (effectiveQueueLen > 0 && effectiveQueueLen < fightersNeeded) {
       nextRumbleIn = `Need ${fightersNeeded - effectiveQueueLen} more fighters`;
     } else if (effectiveQueueLen >= fightersNeeded) {
       // Check if any slot is stuck in betting-init (no deadline armed yet).
