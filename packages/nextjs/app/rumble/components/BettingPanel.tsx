@@ -264,15 +264,14 @@ export default function BettingPanel({
         </div>
       )}
 
-      {/* Fighter Odds List — click to toggle selection */}
+      {/* Fighter Pool List — click to toggle selection */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 max-h-[600px] overflow-y-auto p-1">
         {fighters.map((f) => {
           const isSelected = bets.has(f.fighterId);
           const isDeploying = deploying.has(f.fighterId);
           const myStake = myBetAmounts?.get(f.fighterId) ?? 0;
-          const potentialReturn = Number.isFinite(Number(f.potentialReturn)) ? Number(f.potentialReturn) : 0;
-          const impliedProbability = Number.isFinite(Number(f.impliedProbability)) ? Number(f.impliedProbability) : 0;
           const deployed = Number.isFinite(Number(f.solDeployed)) ? Number(f.solDeployed) : 0;
+          const backers = Number.isFinite(Number(f.betCount)) ? Number(f.betCount) : 0;
 
           return (
             <div key={f.fighterId} className="flex flex-col h-full bg-stone-900/50 rounded-sm">
@@ -325,19 +324,16 @@ export default function BettingPanel({
 
                   <div className="grid grid-cols-2 gap-1 mt-auto">
                     <div className="bg-stone-950/50 p-1 rounded-sm border border-stone-800">
-                      <p className="font-mono text-[9px] text-stone-500 uppercase">Return</p>
-                      <p className="font-mono text-xs text-amber-400 font-bold">{potentialReturn.toFixed(1)}x</p>
+                      <p className="font-mono text-[9px] text-stone-500 uppercase">Pool</p>
+                      <p className="font-mono text-xs text-amber-400 font-bold">{deployed.toFixed(2)} SOL</p>
                     </div>
                     <div className="bg-stone-950/50 p-1 rounded-sm border border-stone-800">
-                      <p className="font-mono text-[9px] text-stone-500 uppercase">Win %</p>
-                      <p className="font-mono text-xs text-stone-300">{(impliedProbability * 100).toFixed(0)}%</p>
+                      <p className="font-mono text-[9px] text-stone-500 uppercase">Backers</p>
+                      <p className="font-mono text-xs text-stone-300">{backers}</p>
                     </div>
                   </div>
 
-                  <div className="mt-1 flex items-center justify-between">
-                    <p className="font-mono text-[9px] text-stone-500">
-                      Pool: {deployed.toFixed(2)} SOL
-                    </p>
+                  <div className="mt-1 flex items-center justify-end">
                     {myStake > 0 && (
                       <p className="font-mono text-[9px] text-cyan-400">
                         You: {myStake.toFixed(2)}
