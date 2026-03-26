@@ -970,8 +970,16 @@ export default function RumblePage() {
           completed: LastCompletedSlotResult,
           slotOdds?: SlotData["odds"],
         ) => {
+          const currentSlotForIndex = data.slots.find((slot) => slot.slotIndex === slotIndex);
           const slotBets = myBetAmountsBySlotRef.current.get(slotIndex);
-          if (slotBets && slotBets.size > 0 && (!completed.myBetFighterIds || completed.myBetFighterIds.length === 0)) {
+          const slotStillRepresentsCompletedRumble =
+            !currentSlotForIndex || currentSlotForIndex.rumbleId === completed.rumbleId;
+          if (
+            slotStillRepresentsCompletedRumble &&
+            slotBets &&
+            slotBets.size > 0 &&
+            (!completed.myBetFighterIds || completed.myBetFighterIds.length === 0)
+          ) {
             completed.myBetFighterIds = [...slotBets.keys()];
           }
 
